@@ -3,10 +3,9 @@ import { resolve } from "node:path";
 import { applyBridgeCliArgs, loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
 
 const workspaceRoot = process.cwd();
-const shouldPrompt = process.argv.includes("--prompt");
-const env = await resolveBridgeRuntimeEnv(applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2)), {
-  prompt: shouldPrompt
-});
+const env = await resolveBridgeRuntimeEnv(
+  applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2))
+);
 
 console.log("OctOP bridge launcher");
 console.log(`- bridge: http://${env.OCTOP_BRIDGE_HOST}:${env.OCTOP_BRIDGE_PORT}`);

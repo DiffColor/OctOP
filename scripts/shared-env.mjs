@@ -1,8 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { resolve } from "node:path";
-import { stdin as input, stdout as output } from "node:process";
-import { createInterface } from "node:readline/promises";
 
 export function loadOctopEnv(workspaceRoot) {
   const envFilePaths = [".env.local", ".env"].map((file) => resolve(workspaceRoot, file));
@@ -85,81 +84,25 @@ export function applyBridgeCliArgs(env, argv) {
 
   return {
     ...env,
-    ...(args.bridgeId ? { OCTOP_BRIDGE_ID: args.bridgeId } : {}),
     ...(args.deviceName ? { OCTOP_BRIDGE_DEVICE_NAME: args.deviceName } : {}),
     ...(args.ownerUserId ? { OCTOP_BRIDGE_OWNER_USER_ID: args.ownerUserId } : {})
   };
 }
 
-export async function resolveBridgeRuntimeEnv(env, options = {}) {
-  const { prompt = false } = options;
-
-  if (!input.isTTY || !output.isTTY) {
-    return applyBridgeIdentityDefaults(env);
-  }
-
-  const currentEnv = applyBridgeIdentityDefaults(env);
-  const shouldPrompt =
-    prompt ||
-    !currentEnv.OCTOP_BRIDGE_ID ||
-    !currentEnv.OCTOP_BRIDGE_DEVICE_NAME ||
-    !currentEnv.OCTOP_BRIDGE_OWNER_USER_ID;
-
-  if (!shouldPrompt) {
-    return currentEnv;
-  }
-
-  const readline = createInterface({ input, output });
-
-  try {
-    const bridgeId = await askQuestion(
-      readline,
-      "Bridge ID",
-      currentEnv.OCTOP_BRIDGE_ID
-    );
-    const deviceName = await askQuestion(
-      readline,
-      "Bridge 표시 이름",
-      currentEnv.OCTOP_BRIDGE_DEVICE_NAME
-    );
-    const ownerUserId = await askQuestion(
-      readline,
-      "LicenseHub userId",
-      currentEnv.OCTOP_BRIDGE_OWNER_USER_ID
-    );
-
-    return {
-      ...currentEnv,
-      OCTOP_BRIDGE_ID: bridgeId,
-      OCTOP_BRIDGE_DEVICE_NAME: deviceName,
-      OCTOP_BRIDGE_OWNER_USER_ID: ownerUserId
-    };
-  } finally {
-    readline.close();
-  }
+export async function resolveBridgeRuntimeEnv(env) {
+  return applyBridgeIdentityDefaults(env);
 }
 
 function applyBridgeIdentityDefaults(env) {
   const hostname = os.hostname();
+  const bridgeId = env.OCTOP_BRIDGE_ID?.trim() || loadOrCreateBridgeId();
 
   return {
     ...env,
-    OCTOP_BRIDGE_ID: env.OCTOP_BRIDGE_ID?.trim() || hostname,
+    OCTOP_BRIDGE_ID: bridgeId,
     OCTOP_BRIDGE_DEVICE_NAME: env.OCTOP_BRIDGE_DEVICE_NAME?.trim() || hostname,
     OCTOP_BRIDGE_OWNER_USER_ID: env.OCTOP_BRIDGE_OWNER_USER_ID?.trim() || "local-user"
   };
-}
-
-async function askQuestion(readline, label, fallbackValue) {
-  while (true) {
-    const suffix = fallbackValue ? ` [${fallbackValue}]` : "";
-    const answer = (await readline.question(`${label}${suffix}: `)).trim();
-    const resolved = answer || fallbackValue || "";
-
-    if (resolved) {
-      return resolved;
-    }
-  }
 }
 
 function parseCliArgs(argv = []) {
@@ -168,11 +111,12 @@ function parseCliArgs(argv = []) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
 
-    if (!token.startsWith("--")) {
+    if (!token.startsWith("-")) {
       continue;
     }
 
-    const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+    const normalized = token.startsWith("--") ? token.slice(2) : token.slice(1);
+    const [rawKey, inlineValue] = normalized.split("=", 2);
     const key = rawKey.trim();
 
     if (!key) {
@@ -187,20 +131,33 @@ function parseCliArgs(argv = []) {
       continue;
     }
 
-    if (key === "bridge-id") {
-      parsed.bridgeId = value.trim();
-      continue;
-    }
-
-    if (key === "device-name") {
+    if (key === "name") {
       parsed.deviceName = value.trim();
       continue;
     }
 
-    if (key === "owner-user-id") {
+    if (key === "id") {
       parsed.ownerUserId = value.trim();
     }
   }
 
   return parsed;
+}
+
+function loadOrCreateBridgeId() {
+  const configDir = resolve(os.homedir(), ".octop");
+  const bridgeIdPath = resolve(configDir, "bridge-id");
+
+  if (existsSync(bridgeIdPath)) {
+    const existing = readFileSync(bridgeIdPath, "utf8").trim();
+
+    if (existing) {
+      return existing;
+    }
+  }
+
+  mkdirSync(configDir, { recursive: true });
+  const generated = `bridge-${randomUUID()}`;
+  writeFileSync(bridgeIdPath, `${generated}\n`, "utf8");
+  return generated;
 }
