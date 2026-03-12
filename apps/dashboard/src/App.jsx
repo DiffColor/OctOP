@@ -1114,29 +1114,12 @@ export default function App() {
     }
   }
 
-  async function loadBootstrap(sessionArg) {
-    if (!sessionArg?.accessToken) {
-      return;
-    }
-
-    try {
-      await apiRequest("/api/auth/bootstrap", {
-        headers: {
-          Authorization: `Bearer ${sessionArg.accessToken}`
-        }
-      });
-    } catch {
-      // 일반 계정일 경우 bootstrap이 403일 수 있으므로 로그인 흐름은 유지합니다.
-    }
-  }
-
   useEffect(() => {
     if (!session?.userId) {
       return;
     }
 
     void loadDashboard(session);
-    void loadBootstrap(session);
   }, [session]);
 
   useEffect(() => {

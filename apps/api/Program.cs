@@ -60,28 +60,6 @@ app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactor
   );
 });
 
-app.MapGet("/api/auth/bootstrap", async (HttpContext httpContext, IHttpClientFactory httpClientFactory, CancellationToken cancellationToken) =>
-{
-  var authorization = httpContext.Request.Headers.Authorization.ToString();
-
-  if (string.IsNullOrWhiteSpace(authorization))
-  {
-    return Results.Json(new Dictionary<string, object?>
-    {
-      ["error"] = "Authorization header is required."
-    }, statusCode: StatusCodes.Status401Unauthorized);
-  }
-
-  return await ProxyJsonAsync(
-    httpClientFactory.CreateClient(),
-    $"{licenseHubApiBaseUrl}/api/admin/bootstrap",
-    HttpMethod.Get,
-    null,
-    authorization,
-    cancellationToken
-  );
-});
-
 app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
 {
   var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
