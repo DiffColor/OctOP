@@ -14,6 +14,7 @@ const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
 const APP_SERVER_COMMAND =
   process.env.OCTOP_APP_SERVER_COMMAND ?? `codex app-server --listen ${APP_SERVER_WS_URL}`;
+const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") !== "false";
 const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
@@ -262,6 +263,10 @@ class AppServerClient {
   }
 
   async startProcess() {
+    if (!APP_SERVER_AUTOSTART) {
+      return;
+    }
+
     if (this.child && this.child.exitCode === null) {
       return;
     }

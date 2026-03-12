@@ -1,0 +1,54 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.2.11415.280 d18.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "apps", "apps", "{1787FE1D-075E-9E68-7218-25F1BD1BBEAB}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "api", "api", "{BC2D172B-13BC-136C-CDB1-4B1A687208C4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OctOP.Gateway", "apps\api\OctOP.Gateway.csproj", "{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "packages", "packages", "{809F86A1-1C4C-B159-0CD4-DF9D33D876CE}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "server-shared", "server-shared", "{1A1FEFAC-D3C1-BE95-1526-E7F6B9089797}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OctOP.ServerShared", "packages\server-shared\OctOP.ServerShared.csproj", "{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "services", "services", "{5854FF58-B8C5-05C6-5BF2-ACE42193F22B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "projection-worker", "projection-worker", "{2A8822C1-2D76-6DF9-E72A-6101019C610F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OctOP.ProjectionWorker", "services\projection-worker\OctOP.ProjectionWorker.csproj", "{A27CBECD-2CE3-4447-B613-E70533CF76B6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE}.Debug|x64.ActiveCfg = Debug|x64
+		{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE}.Debug|x64.Build.0 = Debug|x64
+		{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE}.Release|x64.ActiveCfg = Release|Any CPU
+		{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE}.Release|x64.Build.0 = Release|Any CPU
+		{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0}.Debug|x64.ActiveCfg = Debug|x64
+		{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0}.Debug|x64.Build.0 = Debug|x64
+		{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0}.Release|x64.ActiveCfg = Release|Any CPU
+		{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0}.Release|x64.Build.0 = Release|Any CPU
+		{A27CBECD-2CE3-4447-B613-E70533CF76B6}.Debug|x64.ActiveCfg = Debug|x64
+		{A27CBECD-2CE3-4447-B613-E70533CF76B6}.Debug|x64.Build.0 = Debug|x64
+		{A27CBECD-2CE3-4447-B613-E70533CF76B6}.Release|x64.ActiveCfg = Release|Any CPU
+		{A27CBECD-2CE3-4447-B613-E70533CF76B6}.Release|x64.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{BC2D172B-13BC-136C-CDB1-4B1A687208C4} = {1787FE1D-075E-9E68-7218-25F1BD1BBEAB}
+		{0BC8C0F0-138E-49BA-AA9E-B5EA8EBADAEE} = {BC2D172B-13BC-136C-CDB1-4B1A687208C4}
+		{1A1FEFAC-D3C1-BE95-1526-E7F6B9089797} = {809F86A1-1C4C-B159-0CD4-DF9D33D876CE}
+		{ADB9C6D1-E3BC-4D45-8E0C-7E01FDE2BEA0} = {1A1FEFAC-D3C1-BE95-1526-E7F6B9089797}
+		{2A8822C1-2D76-6DF9-E72A-6101019C610F} = {5854FF58-B8C5-05C6-5BF2-ACE42193F22B}
+		{A27CBECD-2CE3-4447-B613-E70533CF76B6} = {2A8822C1-2D76-6DF9-E72A-6101019C610F}
+	EndGlobalSection
+EndGlobal

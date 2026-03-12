@@ -9,10 +9,15 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:api": "npm run dev --workspace @octop/api",
+    "dev:api": "dotnet run --project apps/api/OctOP.Gateway.csproj",
     "dev:dashboard": "npm run dev --workspace @octop/dashboard",
     "dev:bridge": "npm run dev --workspace @octop/codex-adapter",
-    "dev:projector": "npm run dev --workspace @octop/projection-worker",
-    "build:dashboard": "npm run build --workspace @octop/dashboard"
+    "app-server:start": "node ./scripts/run-app-server.mjs",
+    "bridge:start": "node ./scripts/run-bridge.mjs",
+    "local-agent:start": "node ./scripts/run-local-agent.mjs",
+    "dev:projector": "dotnet run --project services/projection-worker/OctOP.ProjectionWorker.csproj",
+    "build:dashboard": "npm run build --workspace @octop/dashboard",
+    "build:api": "dotnet build apps/api/OctOP.Gateway.csproj",
+    "build:projector": "dotnet build services/projection-worker/OctOP.ProjectionWorker.csproj"
   }
 }

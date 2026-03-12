@@ -8,3 +8,5 @@ build
 coverage
 .idea
 .vscode
+bin
+obj
