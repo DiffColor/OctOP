@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
 using Newtonsoft.Json.Linq;
 using OctOP.Gateway;
@@ -18,23 +19,49 @@ var corsOrigins = (Environment.GetEnvironmentVariable("OCTOP_DASHBOARD_ORIGIN")
   .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var licenseHubApiBaseUrl =
   Environment.GetEnvironmentVariable("OCTOP_LICENSEHUB_API_BASE_URL") ?? "https://licensehub.ilycode.app";
+var allowedOriginSet = corsOrigins.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
 builder.WebHost.UseUrls($"http://{gatewayHost}:{gatewayPort}");
-builder.Services.AddCors(options =>
-{
-  options.AddDefaultPolicy(policy =>
-  {
-    policy.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod();
-  });
-});
 builder.Services.AddHttpClient();
-builder.Services.AddSingleton(new BridgeNatsClient(natsUrl));
+builder.Services.AddSingleton(_ => new BridgeNatsClient(natsUrl));
 builder.Services.AddSingleton<OctopStore>();
 
 var app = builder.Build();
-app.UseCors();
+app.UseExceptionHandler(errorApp =>
+{
+  errorApp.Run(async httpContext =>
+  {
+    var exception = httpContext.Features.Get<IExceptionHandlerFeature>()?.Error;
+    httpContext.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+    httpContext.Response.ContentType = "application/json; charset=utf-8";
+    await httpContext.Response.WriteAsync(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = exception?.Message ?? "gateway unavailable"
+      }));
+  });
+});
+app.Use(async (httpContext, next) =>
+{
+  var origin = httpContext.Request.Headers.Origin.ToString();
 
-await app.Services.GetRequiredService<OctopStore>().EnsureStorageAsync();
+  if (!string.IsNullOrWhiteSpace(origin) && allowedOriginSet.Contains(origin))
+  {
+    httpContext.Response.Headers.AccessControlAllowOrigin = origin;
+    httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,OPTIONS";
+    httpContext.Response.Headers.AccessControlAllowHeaders = "content-type,authorization";
+    httpContext.Response.Headers.Append("Vary", "Origin");
+  }
+
+  if (HttpMethods.IsOptions(httpContext.Request.Method))
+  {
+    httpContext.Response.StatusCode = StatusCodes.Status204NoContent;
+    return;
+  }
+
+  await next();
+});
 
 app.MapGet("/health", () =>
 {
@@ -76,16 +103,23 @@ app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactor
 
   if (!string.IsNullOrWhiteSpace(userId))
   {
-    await octopStore.UpsertUserAsync(new JObject
+    try
     {
-      ["id"] = BridgeSubjects.SanitizeUserId(userId),
-      ["user_id"] = BridgeSubjects.SanitizeUserId(userId),
-      ["login_id"] = loginId,
-      ["display_name"] = payload.Value<string>("displayName") ?? loginId,
-      ["role"] = payload.Value<string>("role") ?? "viewer",
-      ["is_active"] = payload.Value<bool?>("isActive") ?? true,
-      ["last_login_at"] = DateTimeOffset.UtcNow.ToString("O")
-    });
+      await octopStore.UpsertUserAsync(new JObject
+      {
+        ["id"] = BridgeSubjects.SanitizeUserId(userId),
+        ["user_id"] = BridgeSubjects.SanitizeUserId(userId),
+        ["login_id"] = loginId,
+        ["display_name"] = payload.Value<string>("displayName") ?? loginId,
+        ["role"] = payload.Value<string>("role") ?? "viewer",
+        ["is_active"] = payload.Value<bool?>("isActive") ?? true,
+        ["last_login_at"] = DateTimeOffset.UtcNow.ToString("O")
+      });
+    }
+    catch (Exception exception)
+    {
+      app.Logger.LogWarning(exception, "OctOP user sync failed for {UserId}", userId);
+    }
   }
 
   return Results.Text(content, contentType, statusCode: StatusCodes.Status200OK);

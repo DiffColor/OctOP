@@ -18,7 +18,9 @@ public sealed class OctopStore : IAsyncDisposable
   private readonly string _user;
   private readonly string _password;
   private readonly RethinkDB _r = RethinkDB.R;
+  private readonly SemaphoreSlim _storageLock = new(1, 1);
   private RethinkConnection? _connection;
+  private bool _storageEnsured;
 
   public OctopStore()
   {
@@ -33,20 +35,44 @@ public sealed class OctopStore : IAsyncDisposable
 
   public async Task EnsureStorageAsync()
   {
-    var connection = await GetConnectionAsync();
-    var databases = await _r.DbList().RunResultAsync<List<string>>(connection);
-
-    if (!databases.Contains(_db))
+    if (_storageEnsured)
     {
-      await _r.DbCreate(_db).RunResultAsync<object>(connection);
+      return;
     }
 
-    var tables = await _r.Db(_db).TableList().RunResultAsync<List<string>>(connection);
-    await EnsureTableAsync(connection, tables, UserTable);
-    await EnsureTableAsync(connection, tables, BridgeNodeTable);
-    await EnsureTableAsync(connection, tables, ProjectTable);
-    await EnsureTableAsync(connection, tables, ProjectMemberTable);
-    await EnsureTableAsync(connection, tables, ThreadTable);
+    await _storageLock.WaitAsync();
+    try
+    {
+      if (_storageEnsured)
+      {
+        return;
+      }
+
+      using var connection = await _r.Connection()
+        .Hostname(_host)
+        .Port(_port)
+        .User(_user, _password)
+        .ConnectAsync();
+
+      var databases = await _r.DbList().RunResultAsync<List<string>>(connection);
+
+      if (!databases.Contains(_db))
+      {
+        await _r.DbCreate(_db).RunResultAsync<object>(connection);
+      }
+
+      var tables = await _r.Db(_db).TableList().RunResultAsync<List<string>>(connection);
+      await EnsureTableAsync(connection, tables, UserTable);
+      await EnsureTableAsync(connection, tables, BridgeNodeTable);
+      await EnsureTableAsync(connection, tables, ProjectTable);
+      await EnsureTableAsync(connection, tables, ProjectMemberTable);
+      await EnsureTableAsync(connection, tables, ThreadTable);
+      _storageEnsured = true;
+    }
+    finally
+    {
+      _storageLock.Release();
+    }
   }
 
   public async Task UpsertUserAsync(JObject user)
@@ -156,6 +182,8 @@ public sealed class OctopStore : IAsyncDisposable
 
   private async Task<RethinkConnection> GetConnectionAsync()
   {
+    await EnsureStorageAsync();
+
     if (_connection is not null)
     {
       return _connection;

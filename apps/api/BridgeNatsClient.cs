@@ -7,19 +7,19 @@ namespace OctOP.Gateway;
 
 public sealed class BridgeNatsClient : IDisposable
 {
-  private readonly IConnection _connection;
+  private readonly string _natsUrl;
+  private readonly object _syncRoot = new();
+  private IConnection? _connection;
 
   public BridgeNatsClient(string natsUrl)
   {
-    var options = ConnectionFactory.GetDefaultOptions();
-    options.Url = natsUrl;
-    _connection = new ConnectionFactory().CreateConnection(options);
+    _natsUrl = natsUrl;
   }
 
   public async Task<JsonNode?> RequestAsync(string subject, object payload, CancellationToken cancellationToken)
   {
     var data = JsonSerializer.SerializeToUtf8Bytes(payload);
-    var response = await Task.Run(() => _connection.Request(subject, data, 10000), cancellationToken);
+    var response = await Task.Run(() => GetConnection().Request(subject, data, 10000), cancellationToken);
 
     if (response?.Data is null || response.Data.Length == 0)
     {
@@ -31,7 +31,7 @@ public sealed class BridgeNatsClient : IDisposable
 
   public IAsyncSubscription Subscribe(string subject, EventHandler<MsgHandlerEventArgs> handler)
   {
-    var subscription = _connection.SubscribeAsync(subject);
+    var subscription = GetConnection().SubscribeAsync(subject);
     subscription.MessageHandler += handler;
     subscription.Start();
     return subscription;
@@ -44,6 +44,32 @@ public sealed class BridgeNatsClient : IDisposable
 
   public void Dispose()
   {
-    _connection.Dispose();
+    lock (_syncRoot)
+    {
+      _connection?.Dispose();
+      _connection = null;
+    }
+  }
+
+  private IConnection GetConnection()
+  {
+    if (_connection is { State: ConnState.CONNECTED })
+    {
+      return _connection;
+    }
+
+    lock (_syncRoot)
+    {
+      if (_connection is { State: ConnState.CONNECTED })
+      {
+        return _connection;
+      }
+
+      _connection?.Dispose();
+      var options = ConnectionFactory.GetDefaultOptions();
+      options.Url = _natsUrl;
+      _connection = new ConnectionFactory().CreateConnection(options);
+      return _connection;
+    }
   }
 }
