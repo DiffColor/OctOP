@@ -1,5 +1,5 @@
-const CACHE_NAME = "octop-dashboard-v1";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.svg", "/icon-512.svg"];
+const CACHE_NAME = "octop-dashboard-v2";
+const APP_SHELL = ["/manifest.webmanifest", "/icon-192.svg", "/icon-512.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -7,6 +7,8 @@ self.addEventListener("install", (event) => {
       return cache.addAll(APP_SHELL);
     })
   );
+
+  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
@@ -23,10 +25,45 @@ self.addEventListener("activate", (event) => {
       )
     )
   );
+
+  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") {
+    return;
+  }
+
+  const requestUrl = new URL(event.request.url);
+  const isSameOrigin = requestUrl.origin === self.location.origin;
+
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const cloned = response.clone();
+
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put("/", cloned);
+          });
+
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match("/");
+
+          if (cached) {
+            return cached;
+          }
+
+          return Response.error();
+        })
+    );
+
+    return;
+  }
+
+  if (!isSameOrigin) {
     return;
   }
 
