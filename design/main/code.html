@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+
+<html class="h-full bg-slate-900" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OctOP | AI Orchestration Dashboard</title>
+<!-- Tailwind CSS CDN with plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Custom Tailwind Configuration -->
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'octo-blue': '#0ea5e9',
+            'octo-purple': '#8b5cf6',
+            'octo-dark': '#0f172a',
+            'octo-card': '#1e293b'
+          }
+        }
+      }
+    }
+  </script>
+<!-- Custom Styles for Scrollbars and Glow Effects -->
+<style data-purpose="custom-ui-effects">
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 10px;
+    }
+    .ai-glow {
+      box-shadow: 0 0 15px rgba(14, 165, 233, 0.1);
+    }
+    .kanban-column {
+      min-height: calc(100vh - 12rem);
+    }
+  </style>
+</head>
+<body class="h-full text-slate-200 font-sans selection:bg-octo-blue/30 overflow-hidden">
+<!-- BEGIN: MainLayoutWrapper -->
+<div class="flex h-full" data-purpose="app-container">
+<!-- BEGIN: Sidebar -->
+<aside class="w-64 bg-octo-dark border-r border-slate-800 flex flex-col hidden md:flex" data-purpose="navigation-sidebar">
+<!-- Logo Section -->
+<div class="p-6 flex items-center space-x-3">
+<div class="w-8 h-8 bg-gradient-to-br from-octo-blue to-octo-purple rounded-lg flex items-center justify-center">
+<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+<span class="text-xl font-bold tracking-tight text-white">OctOP</span>
+</div>
+<!-- Navigation Links -->
+<nav class="flex-1 px-4 space-y-1 mt-4">
+<a class="flex items-center px-3 py-2 text-sm font-medium rounded-md bg-slate-800 text-white ai-glow" href="#">
+<svg class="w-5 h-5 mr-3 text-octo-blue" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+          Projects
+        </a>
+<a class="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors" href="#">
+<svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+          Orchestrators
+        </a>
+<a class="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors" href="#">
+<svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+          Analytics
+        </a>
+<a class="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors" href="#">
+<svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+          Settings
+        </a>
+</nav>
+<!-- Sidebar Footer/User Profile -->
+<div class="p-4 border-t border-slate-800 mt-auto">
+<div class="flex items-center">
+<img alt="User Avatar" class="h-8 w-8 rounded-full ring-2 ring-octo-blue/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAqiAAApAOqanMWsPsltijAnFAGxW8LLnowQR5DoIeFdVIjjLqZNdCAfPR0BiFCL3GTUzIVAtDa9NC-EHBZbM9vkhz5PiI-112imRbh338KnO1MUCj7U1UwuEL1a7XbTFpgaHgylGR0-XmGxxJBbG4ZTVss-3vA7o3XuytxgGF1_LW8O0vkWG6a8PawFlgarDPR1EyPLF8Tl5h2xyQOnYf1uz4pMrZhEvZis_36T-ZhqH1LQVrzp7cyasNmvdke6N51vasI-Pt5mzw"/>
+<div class="ml-3">
+<p class="text-xs font-semibold text-white">Project Manager</p>
+<p class="text-[10px] text-slate-500 uppercase tracking-wider">Enterprise Plan</p>
+</div>
+</div>
+</div>
+</aside>
+<!-- END: Sidebar -->
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col min-w-0 bg-slate-900 overflow-hidden">
+<!-- BEGIN: TopBar -->
+<header class="h-16 border-b border-slate-800 bg-octo-dark/50 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-10" data-purpose="top-navigation">
+<!-- Breadcrumbs / Current Project -->
+<div class="flex items-center space-x-2 text-sm">
+<span class="text-slate-500">Projects</span>
+<span class="text-slate-700">/</span>
+<span class="text-white font-medium">Neural-Net-Optimization</span>
+</div>
+<!-- Search and Action Area -->
+<div class="flex items-center space-x-6">
+<div class="relative group">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<svg class="h-4 w-4 text-slate-500 group-focus-within:text-octo-blue transition-colors" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+<input class="bg-slate-800 border-transparent focus:ring-1 focus:ring-octo-blue focus:border-octo-blue block w-64 pl-10 sm:text-sm rounded-lg text-slate-300 transition-all" placeholder="Search tasks..." type="text"/>
+</div>
+<button class="bg-octo-blue hover:bg-sky-500 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center transition-all shadow-lg shadow-octo-blue/20">
+<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+            New Issue
+          </button>
+</div>
+</header>
+<!-- END: TopBar -->
+<!-- BEGIN: KanbanBoard -->
+<div class="flex-1 overflow-x-auto p-8 custom-scrollbar" data-purpose="kanban-container">
+<div class="flex space-x-6 h-full min-w-max">
+<!-- Column: To Do -->
+<section class="w-80 flex flex-col" data-purpose="kanban-column">
+<div class="flex items-center justify-between mb-4">
+<h3 class="flex items-center text-sm font-bold text-slate-400 uppercase tracking-widest">
+<span class="w-2 h-2 rounded-full bg-slate-400 mr-2"></span>
+                To Do
+                <span class="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">3</span>
+</h3>
+</div>
+<div class="kanban-column space-y-4 rounded-xl">
+<!-- Card 1 -->
+<div class="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+<div class="flex justify-between items-start mb-2">
+<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-orange-500/10 text-orange-500 uppercase tracking-tighter">High</span>
+<span class="text-[10px] font-mono text-slate-500">OCTO-102</span>
+</div>
+<h4 class="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">Implement Vector Embedding Cache</h4>
+<div class="flex items-center justify-between">
+<div class="flex items-center text-[10px] text-slate-500">
+<svg class="w-3 h-3 mr-1 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+                    AI Suggested
+                  </div>
+<img alt="Assignee" class="w-6 h-6 rounded-full border border-slate-700" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqMsP1Z0p-Wpi8wq8wijrIdV3jIRjnYCj-IAlY6Mlfea1bNgUBdPHeTbK2k3fLsUHqVSa5gIZZDlOHTUsgbGN3_8dbiuEF4oC5iM-xyVMQgg5EgGid_DEgtCTe_iiE5xale740sY1SOuKIogIdA_uW-PwvnZkFgek0UiIzj2_fwyQoyMIYCEqfoHqN2PUahXB-3ruXFtMTfgu3ebMQ230YJJTm_r3E3x1hZiu7uXAuoouWas-4nbJ5L0i9vW8_3Cn8yvSju7k8uJI"/>
+</div>
+</div>
+<!-- Card 2 -->
+<div class="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+<div class="flex justify-between items-start mb-2">
+<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">Med</span>
+<span class="text-[10px] font-mono text-slate-500">OCTO-105</span>
+</div>
+<h4 class="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">Update Model API Endpoints</h4>
+<div class="flex items-center justify-between">
+<div class="flex items-center text-[10px] text-slate-500">
+<svg class="w-3 h-3 mr-1 text-slate-600" fill="currentColor" viewbox="0 0 20 20"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"></path></svg>
+                    Manual
+                  </div>
+<img alt="Assignee" class="w-6 h-6 rounded-full border border-slate-700" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC5TK9mccrSlCU_VyiHhq2W7xK8n-sRJuTa7lE3bf2_ASpcdKf7DvjdW6zvwtQo3nKC6ErT5-oZM4QccXhuvawvFimhNsIFLmIROhzmQbGupbuGVfwpZNyaMQBujxPK03_JmcpoJky6soemJrAUfkktgqTLkIA8RFU4qQxvyS_d8_i9vSNvO--Q8Zjsh8fNOsNmZpnROmM2KAJDnW9ofbaKF4GdlZWZmXUXx0ObxUKs_LTVwVptEk8lWIKg6wWPX6OOMHd2KRWkrzA"/>
+</div>
+</div>
+</div>
+</section>
+<!-- Column: In Progress -->
+<section class="w-80 flex flex-col" data-purpose="kanban-column">
+<div class="flex items-center justify-between mb-4">
+<h3 class="flex items-center text-sm font-bold text-octo-blue uppercase tracking-widest">
+<span class="w-2 h-2 rounded-full bg-octo-blue mr-2 animate-pulse"></span>
+                In Progress
+                <span class="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">1</span>
+</h3>
+</div>
+<div class="kanban-column space-y-4">
+<div class="bg-octo-card p-4 rounded-xl border border-octo-blue/30 shadow-lg shadow-octo-blue/5 group">
+<div class="flex justify-between items-start mb-2">
+<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-red-500/10 text-red-500 uppercase tracking-tighter">Critical</span>
+<span class="text-[10px] font-mono text-slate-500">OCTO-98</span>
+</div>
+<h4 class="text-sm font-medium text-slate-200 mb-2">Refactor Tokenizer Middleware</h4>
+<!-- AI Processing Progress Bar -->
+<div class="mb-4">
+<div class="flex justify-between text-[10px] mb-1">
+<span class="text-octo-blue font-semibold">AI Agent Working...</span>
+<span class="text-slate-500">65%</span>
+</div>
+<div class="w-full bg-slate-800 rounded-full h-1">
+<div class="bg-gradient-to-r from-octo-blue to-octo-purple h-1 rounded-full" style="width: 65%"></div>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center text-[10px] text-octo-blue">
+<svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+                    Automated
+                  </div>
+<img alt="Assignee" class="w-6 h-6 rounded-full border-2 border-octo-blue" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAIYk9yLvtWc6meRXLDf0_UUtL3AL1bBzXsn8g1_MswTvVPFIh0XYQoK9GUdb-x1HgTh2742_d3xM7t16SuplRoRncukbW2Rvcfh0xexauULN-Xvu9hvXJa_Yey5w7ny_XIIyNAENs0QAKBNxDtLAdnzUPRyj5_Az2VMR0lJHfNUPpCqePVb5hiQAVL-j4sHi9uzP8zaomwstqWjqPEMfnmjGjMlGgdnSGdSlR12qP4lEsXK-IeCIm4xrjIv1KX_D0vFmOgiPl6ISI"/>
+</div>
+</div>
+</div>
+</section>
+<!-- Column: Review -->
+<section class="w-80 flex flex-col" data-purpose="kanban-column">
+<div class="flex items-center justify-between mb-4">
+<h3 class="flex items-center text-sm font-bold text-octo-purple uppercase tracking-widest">
+<span class="w-2 h-2 rounded-full bg-octo-purple mr-2"></span>
+                Review
+                <span class="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">2</span>
+</h3>
+</div>
+<div class="kanban-column space-y-4">
+<div class="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+<div class="flex justify-between items-start mb-2">
+<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">Med</span>
+<span class="text-[10px] font-mono text-slate-500">OCTO-92</span>
+</div>
+<h4 class="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">Setup CI/CD for Model Testing</h4>
+<div class="flex items-center justify-between">
+<div class="flex items-center text-[10px] text-green-500">
+<svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+                    AI Verified
+                  </div>
+<img alt="Assignee" class="w-6 h-6 rounded-full border border-slate-700" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA5ToSkhaTy6URHx2EdLZ8WYsHnWjwGrxdgzbCp9apU-hb2M3es-sRheZ3CbFnvskjHMAXzOEBAv7mYrtfZQuL1teMug7-TXSngzuPv_PUiOuNXnVs7kZvmEFRG1qnADAYhygErjM9_89OrqMzwgSDQYknm_ePQmndfd4sMN8sHthCHzWi_k76G2ii4z3MtSb2SR39CiNTaTu2eBWqrDVL1v2u4Vq8B2iJqonoe6F00nfCu3rdhf3mG6zZhMr_S8zxxvA2xEeQoi_Y"/>
+</div>
+</div>
+</div>
+</section>
+<!-- Column: Done -->
+<section class="w-80 flex flex-col" data-purpose="kanban-column">
+<div class="flex items-center justify-between mb-4">
+<h3 class="flex items-center text-sm font-bold text-green-500 uppercase tracking-widest">
+<span class="w-2 h-2 rounded-full bg-green-500 mr-2"></span>
+                Done
+                <span class="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">12</span>
+</h3>
+</div>
+<div class="kanban-column space-y-4">
+<div class="bg-octo-card/50 p-4 rounded-xl border border-slate-800/50 opacity-60 hover:opacity-100 transition-all cursor-pointer group">
+<div class="flex justify-between items-start mb-2">
+<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-700 text-slate-400 uppercase tracking-tighter line-through">Low</span>
+<span class="text-[10px] font-mono text-slate-600">OCTO-84</span>
+</div>
+<h4 class="text-sm font-medium text-slate-400 mb-4 group-hover:text-octo-blue transition-colors">Documentation Cleanup</h4>
+<div class="flex items-center justify-between">
+<div class="flex items-center text-[10px] text-slate-600">
+<svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+                    Completed
+                  </div>
+<img alt="Assignee" class="w-6 h-6 rounded-full border border-slate-700 grayscale" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC-KK_bnsh1yTN9GRs4Hr34PWBTZT58OLUb7trQ8YDjwIWVjNmEzozsxKr4ejog-nKTHUV9m5TXEbEr0Ft5-4NHtxr1M9miobEjUn4VotCOvQPzT2rhcrtIsn2I_3F8M_nFf_tE22UB17e6hesLBCJC0E1KsJse7_CmdPcWDN7wtnkwzvL_ofdVnpfIMwW6axvIlntx-7EAC3GHT6o1gWSPbFJUm8DUD8aELX_f11UqebHi-wnM0gP9i2QnOd9k8iQusAeNqcAIB74"/>
+</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+<!-- END: KanbanBoard -->
+</main>
+</div>
+<!-- END: MainLayoutWrapper -->
+</body></html>

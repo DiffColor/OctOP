@@ -1,1203 +1,472 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "https://gateway.example.com";
+function LoginPage({ onSuccess }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [rememberDevice, setRememberDevice] = useState(false);
 
-const BOARD_COLUMNS = [
-  { id: "queued", title: "Queued", subtitle: "대기 중인 스레드" },
-  { id: "running", title: "In Progress", subtitle: "현재 처리 중" },
-  { id: "attention", title: "Needs Review", subtitle: "입력 또는 확인 필요" },
-  { id: "completed", title: "Done", subtitle: "완료된 작업" },
-  { id: "failed", title: "Blocked", subtitle: "복구가 필요한 항목" }
-];
+  const handleSubmit = (event) => {
+    event.preventDefault();
 
-const STATUS_META = {
-  queued: { label: "Queued", tone: "queued", progressTone: "cool" },
-  idle: { label: "Idle", tone: "idle", progressTone: "cool" },
-  running: { label: "Running", tone: "running", progressTone: "warm" },
-  awaiting_input: { label: "Needs Input", tone: "attention", progressTone: "warm" },
-  completed: { label: "Completed", tone: "done", progressTone: "done" },
-  failed: { label: "Blocked", tone: "failed", progressTone: "failed" }
-};
-
-function formatTime(value) {
-  if (!value) {
-    return "-";
-  }
-
-  return new Date(value).toLocaleTimeString("ko-KR", {
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return "-";
-  }
-
-  return new Date(value).toLocaleString("ko-KR", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function summarizeMessage(thread) {
-  if (thread.last_message?.trim()) {
-    return thread.last_message.trim();
-  }
-
-  if (thread.status === "completed") {
-    return "최종 응답이 수집되었습니다.";
-  }
-
-  if (thread.status === "failed") {
-    return "오류 확인 후 재시도가 필요합니다.";
-  }
-
-  if (thread.status === "awaiting_input") {
-    return "추가 입력 또는 승인 대기가 있습니다.";
-  }
-
-  return "작업 로그를 수집하는 중입니다.";
-}
-
-function mapThreadToColumn(thread) {
-  if (thread.status === "completed") {
-    return "completed";
-  }
-
-  if (thread.status === "failed") {
-    return "failed";
-  }
-
-  if (thread.status === "awaiting_input") {
-    return "attention";
-  }
-
-  if (thread.status === "running") {
-    return "running";
-  }
-
-  return "queued";
-}
-
-function getProjectForThread(thread, projects) {
-  if (!projects.length) {
-    return null;
-  }
-
-  if (thread?.project_id) {
-    return projects.find((project) => project.id === thread.project_id) ?? projects[0];
-  }
-
-  return projects[0];
-}
-
-function getThreadPriority(thread) {
-  if (thread.status === "failed") {
-    return { label: "High", tone: "high" };
-  }
-
-  if (thread.status === "awaiting_input") {
-    return { label: "Review", tone: "review" };
-  }
-
-  if ((thread.progress ?? 0) >= 70) {
-    return { label: "Medium", tone: "medium" };
-  }
-
-  return { label: "Normal", tone: "normal" };
-}
-
-function getDoneRate(threads) {
-  if (!threads.length) {
-    return "0%";
-  }
-
-  const completedCount = threads.filter((thread) => thread.status === "completed").length;
-  return `${Math.round((completedCount / threads.length) * 100)}%`;
-}
-
-function buildTodoItems(thread) {
-  const progress = Number(thread.progress ?? 0);
-  const lastEvent = thread.last_event ?? "";
-
-  return [
-    {
-      id: "intake",
-      label: "요청 캡처",
-      hint: "thread가 생성되고 담당 프로젝트에 연결됩니다.",
-      done: Boolean(thread.created_at)
-    },
-    {
-      id: "plan",
-      label: "실행 계획 수립",
-      hint: "작업 플랜과 우선순위가 정리됩니다.",
-      done: progress >= 25 || lastEvent.includes("plan") || thread.status === "completed"
-    },
-    {
-      id: "execution",
-      label: "변경 반영",
-      hint: "diff 또는 답변이 생성되며 실행 상태가 업데이트됩니다.",
-      done:
-        progress >= 70 ||
-        lastEvent.includes("diff") ||
-        lastEvent.includes("agentMessage") ||
-        thread.status === "completed"
-    },
-    {
-      id: "review",
-      label: "종료 및 검수",
-      hint: "최종 응답을 확인하고 종료 상태를 확정합니다.",
-      done: thread.status === "completed"
+    if (!email || !password) {
+      return;
     }
-  ];
-}
 
-function resolveThreadEventId(event) {
-  return (
-    event?.payload?.threadId ??
-    event?.payload?.thread?.id ??
-    event?.payload?.thread_id ??
-    event?.payload?.conversationId ??
-    null
-  );
-}
-
-function IconBoard() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 5.5h16v3H4zm0 5h9v3H4zm11 0h5v8h-5zm-11 5h9v3H4z" fill="currentColor" />
-    </svg>
-  );
-}
-
-function IconMobile() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2m0 4v11h8V6zm4 14.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-function IconPulse() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M3 12h4l2.2-5.2L13 18l2.1-5H21"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconSpark() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="m12 3 1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9zM6 15l.9 2.1L9 18l-2.1.9L6 21l-.9-2.1L3 18l2.1-.9z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-function IconInstall() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 4v9m0 0 3.5-3.5M12 13 8.5 9.5M5 18.5h14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function IconPlus() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 5v14M5 12h14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function StatusChip({ status }) {
-  const meta = STATUS_META[status] ?? STATUS_META.queued;
-
-  return <span className={`status-chip tone-${meta.tone}`}>{meta.label}</span>;
-}
-
-function ThreadCard({ thread, onSelect, selected, projectName }) {
-  const priority = getThreadPriority(thread);
+    onSuccess({ email, rememberDevice });
+  };
 
   return (
-    <button
-      type="button"
-      className={`thread-card thread-card--dense ${selected ? "is-selected" : ""}`}
-      onClick={() => onSelect(thread.id)}
-    >
-      <div className="thread-card__header">
-        <span className="thread-card__key">{thread.id.slice(0, 8)}</span>
-        <span>{formatTime(thread.updated_at)}</span>
+    <div className="relative min-h-screen bg-brand-dark text-slate-200 font-sans flex items-center justify-center p-4 overflow-hidden">
+      <div className="fixed inset-0 -z-10 overflow-hidden">
+        <div className="bg-mesh absolute inset-0" />
+        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-brand-accent opacity-10 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-600 opacity-10 blur-[120px] rounded-full" />
       </div>
-      <span className="thread-card__project">{projectName ?? "Unassigned"}</span>
-      <strong>{thread.title}</strong>
-      <p>{summarizeMessage(thread)}</p>
-      <div className="thread-card__meta">
-        <StatusChip status={thread.status} />
-        <span className={`priority-pill tone-${priority.tone}`}>{priority.label}</span>
-      </div>
-      <div className={`progress-bar tone-${STATUS_META[thread.status]?.progressTone ?? "cool"}`}>
-        <span style={{ width: `${Math.max(thread.progress ?? 0, 6)}%` }} />
-      </div>
-      <div className="thread-card__footer">
-        <span>{thread.progress}% synced</span>
-        <span>{thread.last_event ?? "thread.synced"}</span>
-      </div>
-    </button>
-  );
-}
 
-function MobileThreadCard({ thread, onSelect, selected }) {
-  const todos = buildTodoItems(thread);
+      <main className="w-full max-w-md" data-purpose="login-container">
+        <header className="text-center mb-10" data-purpose="login-header">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-tr from-brand-accent to-purple-500 rounded-2xl mb-6 shadow-lg shadow-brand-accent/20">
+            <svg className="w-10 h-10 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-white mb-2 font-display">OctOP</h1>
+          <p className="text-slate-400">Scale your AI orchestration with intelligence.</p>
+        </header>
 
-  return (
-    <button
-      type="button"
-      className={`mobile-thread-card ${selected ? "is-selected" : ""}`}
-      onClick={() => onSelect(thread.id)}
-    >
-      <div className="mobile-thread-card__top">
-        <StatusChip status={thread.status} />
-        <span>{formatTime(thread.updated_at)}</span>
-      </div>
-      <strong>{thread.title}</strong>
-      <p>{summarizeMessage(thread)}</p>
-      <div className={`progress-bar tone-${STATUS_META[thread.status]?.progressTone ?? "cool"}`}>
-        <span style={{ width: `${Math.max(thread.progress ?? 0, 8)}%` }} />
-      </div>
-      <ul className="todo-checklist">
-        {todos.map((item) => (
-          <li key={item.id} className={item.done ? "is-done" : ""}>
-            <span className="todo-bullet" />
+        <section className="glass-effect p-8 rounded-3xl shadow-2xl" data-purpose="login-card">
+          <form className="space-y-6" onSubmit={handleSubmit}>
             <div>
-              <strong>{item.label}</strong>
-              <small>{item.hint}</small>
+              <label className="block text-sm font-medium text-slate-300 mb-2" htmlFor="email">
+                Work Email
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                required
+                placeholder="name@company.com"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none"
+              />
             </div>
-          </li>
-        ))}
-      </ul>
-    </button>
+
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <label className="block text-sm font-medium text-slate-300" htmlFor="password">
+                  Password
+                </label>
+                <a href="#" className="text-xs font-semibold text-brand-accent hover:text-brand-glow transition-colors">
+                  Forgot password?
+                </a>
+              </div>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                required
+                placeholder="••••••••"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none"
+              />
+            </div>
+
+            <div className="flex items-center">
+              <input
+                id="remember-me"
+                name="remember-me"
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-700 bg-brand-dark text-brand-accent focus:ring-brand-accent focus:ring-offset-brand-dark"
+                checked={rememberDevice}
+                onChange={(event) => setRememberDevice(event.target.checked)}
+              />
+              <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-400">
+                Remember this device
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 px-4 rounded-xl bg-brand-accent hover:bg-indigo-500 text-white font-bold text-lg shadow-lg shadow-brand-accent/25 transform transition active:scale-[0.98] duration-200"
+            >
+              Sign In
+            </button>
+          </form>
+
+          <div className="relative my-8">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-700" />
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-4 bg-brand-surface text-slate-500 rounded-full glass-effect">Or continue with</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4" data-purpose="social-auth-buttons">
+            <button
+              type="button"
+              className="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200"
+            >
+              <img
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuB2eKGEzBfd8bSm9RyXkwkpENR94QTpx5z8QZIfOhUBXH_7FE3wq3Ii5SWG88-kodC6f-jAX2ldvESYqbVSOSEwQuAcO9tXfqjBHwseEq2qf3QAw-_JTYszceQ_xX5965yLXlED-cB56jMJ0rh3VR43R1fxrXBocGPzbJamleB_StVCWcrMCUfIptP_vIqx7mMMxwNGyEKBB2gPKrmWL_DHcX4RXNA_By7Scq4y6HriVO4TmJvBsLXtRdXCbvhtuHwnHbdt8fpGx8Y"
+                alt="Google Logo"
+                className="w-5 h-5 mr-2"
+              />
+              <span className="text-sm font-medium">Google</span>
+            </button>
+            <button
+              type="button"
+              className="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200"
+            >
+              <svg className="w-5 h-5 mr-2 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path
+                  fillRule="evenodd"
+                  clipRule="evenodd"
+                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                />
+              </svg>
+              <span className="text-sm font-medium">GitHub</span>
+            </button>
+          </div>
+        </section>
+
+        <footer className="mt-8 text-center text-sm text-slate-500" data-purpose="login-footer">
+          Don't have an account?{" "}
+          <a href="#" className="font-semibold text-brand-accent hover:text-brand-glow transition-colors">
+            Start your 14-day free trial
+          </a>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+function MainPage() {
+  return (
+    <div className="min-h-screen h-full bg-slate-900 text-slate-200 font-sans selection:bg-octo-blue/30 overflow-hidden">
+      <div className="flex h-full" data-purpose="app-container">
+        <aside className="w-64 bg-octo-dark border-r border-slate-800 flex flex-col hidden md:flex" data-purpose="navigation-sidebar">
+          <div className="p-6 flex items-center space-x-3">
+            <div className="w-8 h-8 bg-gradient-to-br from-octo-blue to-octo-purple rounded-lg flex items-center justify-center">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <span className="text-xl font-bold tracking-tight text-white">OctOP</span>
+          </div>
+
+          <nav className="flex-1 px-4 space-y-1 mt-4">
+            <a
+              href="#"
+              className="flex items-center px-3 py-2 text-sm font-medium rounded-md bg-slate-800 text-white ai-glow"
+            >
+              <svg className="w-5 h-5 mr-3 text-octo-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Projects
+            </a>
+            <a
+              href="#"
+              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+            >
+              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Orchestrators
+            </a>
+            <a
+              href="#"
+              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+            >
+              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Analytics
+            </a>
+            <a
+              href="#"
+              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+            >
+              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Settings
+            </a>
+          </nav>
+
+          <div className="p-4 border-t border-slate-800 mt-auto">
+            <div className="flex items-center">
+              <img
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAqiAAApAOqanMWsPsltijAnFAGxW8LLnowQR5DoIeFdVIjjLqZNdCAfPR0BiFCL3GTUzIVAtDa9NC-EHBZbM9vkhz5PiI-112imRbh338KnO1MUCj7U1UwuEL1a7XbTFpgaHgylGR0-XmGxxJBbG4ZTVss-3vA7o3XuytxgGF1_LW8O0vkWG6a8PawFlgarDPR1EyPLF8Tl5h2xyQOnYf1uz4pMrZhEvZis_36T-ZhqH1LQVrzp7cyasNmvdke6N51vasI-Pt5mzw"
+                alt="User Avatar"
+                className="h-8 w-8 rounded-full ring-2 ring-octo-blue/20"
+              />
+              <div className="ml-3">
+                <p className="text-xs font-semibold text-white">Project Manager</p>
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider">Enterprise Plan</p>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <main className="flex-1 flex flex-col min-w-0 bg-slate-900 overflow-hidden">
+          <header
+            className="h-16 border-b border-slate-800 bg-octo-dark/50 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-10"
+            data-purpose="top-navigation"
+          >
+            <div className="flex items-center space-x-2 text-sm">
+              <span className="text-slate-500">Projects</span>
+              <span className="text-slate-700">/</span>
+              <span className="text-white font-medium">Neural-Net-Optimization</span>
+            </div>
+            <div className="flex items-center space-x-6">
+              <div className="relative group">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg
+                    className="h-4 w-4 text-slate-500 group-focus-within:text-octo-blue transition-colors"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search tasks..."
+                  className="bg-slate-800 border-transparent focus:ring-1 focus:ring-octo-blue focus:border-octo-blue block w-64 pl-10 sm:text-sm rounded-lg text-slate-300 transition-all"
+                />
+              </div>
+              <button
+                type="button"
+                className="bg-octo-blue hover:bg-sky-500 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center transition-all shadow-lg shadow-octo-blue/20"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 4v16m8-8H4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                New Issue
+              </button>
+            </div>
+          </header>
+
+          <div className="flex-1 overflow-x-auto p-8 custom-scrollbar" data-purpose="kanban-container">
+            <div className="flex space-x-6 h-full min-w-max">
+              <section className="w-80 flex flex-col" data-purpose="kanban-column">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="flex items-center text-sm font-bold text-slate-400 uppercase tracking-widest">
+                    <span className="w-2 h-2 rounded-full bg-slate-400 mr-2" />
+                    To Do
+                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">3</span>
+                  </h3>
+                </div>
+                <div className="kanban-column space-y-4 rounded-xl">
+                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-orange-500/10 text-orange-500 uppercase tracking-tighter">
+                        High
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">OCTO-102</span>
+                    </div>
+                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
+                      Implement Vector Embedding Cache
+                    </h4>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center text-[10px] text-slate-500">
+                        <svg className="w-3 h-3 mr-1 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        AI Suggested
+                      </div>
+                      <img
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqMsP1Z0p-Wpi8wq8wijrIdV3jIRjnYCj-IAlY6Mlfea1bNgUBdPHeTbK2k3fLsUHqVSa5gIZZDlOHTUsgbGN3_8dbiuEF4oC5iM-xyVMQgg5EgGid_DEgtCTe_iiE5xale740sY1SOuKIogIdA_uW-PwvnZkFgek0UiIzj2_fwyQoyMIYCEqfoHqN2PUahXB-3ruXFtMTfgu3ebMQ230YJJTm_r3E3x1hZiu7uXAuoouWas-4nbJ5L0i9vW8_3Cn8yvSju7k8uJI"
+                        alt="Assignee"
+                        className="w-6 h-6 rounded-full border border-slate-700"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">
+                        Med
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">OCTO-105</span>
+                    </div>
+                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
+                      Update Model API Endpoints
+                    </h4>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center text-[10px] text-slate-500">
+                        <svg className="w-3 h-3 mr-1 text-slate-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" />
+                        </svg>
+                        Manual
+                      </div>
+                      <img
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuC5TK9mccrSlCU_VyiHhq2W7xK8n-sRJuTa7lE3bf2_ASpcdKf7DvjdW6zvwtQo3nKC6ErT5-oZM4QccXhuvawvFimhNsIFLmIROhzmQbGupbuGVfwpZNyaMQBujxPK03_JmcpoJky6soemJrAUfkktgqTLkIA8RFU4qQxvyS_d8_i9vSNvO--Q8Zjsh8fNOsNmZpnROmM2KAJDnW9ofbaKF4GdlZWZmXUXx0ObxUKs_LTVwVptEk8lWIKg6wWPX6OOMHd2KRWkrzA"
+                        alt="Assignee"
+                        className="w-6 h-6 rounded-full border border-slate-700"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="w-80 flex flex-col" data-purpose="kanban-column">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="flex items-center text-sm font-bold text-octo-blue uppercase tracking-widest">
+                    <span className="w-2 h-2 rounded-full bg-octo-blue mr-2 animate-pulse" />
+                    In Progress
+                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">1</span>
+                  </h3>
+                </div>
+                <div className="kanban-column space-y-4">
+                  <div className="bg-octo-card p-4 rounded-xl border border-octo-blue/30 shadow-lg shadow-octo-blue/5 group">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-red-500/10 text-red-500 uppercase tracking-tighter">
+                        Critical
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">OCTO-98</span>
+                    </div>
+                    <h4 className="text-sm font-medium text-slate-200 mb-2">Refactor Tokenizer Middleware</h4>
+                    <div className="mb-4">
+                      <div className="flex justify-between text-[10px] mb-1">
+                        <span className="text-octo-blue font-semibold">AI Agent Working...</span>
+                        <span className="text-slate-500">65%</span>
+                      </div>
+                      <div className="w-full bg-slate-800 rounded-full h-1">
+                        <div className="bg-gradient-to-r from-octo-blue to-octo-purple h-1 rounded-full" style={{ width: "65%" }} />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center text-[10px] text-octo-blue">
+                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        Automated
+                      </div>
+                      <img
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuAIYk9yLvtWc6meRXLDf0_UUtL3AL1bBzXsn8g1_MswTvVPFIh0XYQoK9GUdb-x1HgTh2742_d3xM7t16SuplRoRncukbW2Rvcfh0xexauULN-Xvu9hvXJa_Yey5w7ny_XIIyNAENs0QAKBNxDtLAdnzUPRyj5_Az2VMR0lJHfNUPpCqePVb5hiQAVL-j4sHi9uzP8zaomwstqWjqPEMfnmjGjMlGgdnSGdSlR12qP4lEsXK-IeCIm4xrjIv1KX_D0vFmOgiPl6ISI"
+                        alt="Assignee"
+                        className="w-6 h-6 rounded-full border-2 border-octo-blue"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="w-80 flex flex-col" data-purpose="kanban-column">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="flex items-center text-sm font-bold text-octo-purple uppercase tracking-widest">
+                    <span className="w-2 h-2 rounded-full bg-octo-purple mr-2" />
+                    Review
+                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">2</span>
+                  </h3>
+                </div>
+                <div className="kanban-column space-y-4">
+                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">
+                        Med
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">OCTO-92</span>
+                    </div>
+                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
+                      Setup CI/CD for Model Testing
+                    </h4>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center text-[10px] text-green-500">
+                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        AI Verified
+                      </div>
+                      <img
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuA5ToSkhaTy6URHx2EdLZ8WYsHnWjwGrxdgzbCp9apU-hb2M3es-sRheZ3CbFnvskjHMAXzOEBAv7mYrtfZQuL1teMug7-TXSngzuPv_PUiOuNXnVs7kZvmEFRG1qnADAYhygErjM9_89OrqMzwgSDQYknm_ePQmndfd4sMN8sHthCHzWi_k76G2ii4z3MtSb2SR39CiNTaTu2eBWqrDVL1v2u4Vq8B2iJqonoe6F00nfCu3rdhf3mG6zZhMr_S8zxxvA2xEeQoi_Y"
+                        alt="Assignee"
+                        className="w-6 h-6 rounded-full border border-slate-700"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="w-80 flex flex-col" data-purpose="kanban-column">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="flex items-center text-sm font-bold text-green-500 uppercase tracking-widest">
+                    <span className="w-2 h-2 rounded-full bg-green-500 mr-2" />
+                    Done
+                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">12</span>
+                  </h3>
+                </div>
+                <div className="kanban-column space-y-4">
+                  <div className="bg-octo-card/50 p-4 rounded-xl border border-slate-800/50 opacity-60 hover:opacity-100 transition-all cursor-pointer group">
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-700 text-slate-400 uppercase tracking-tighter line-through">
+                        Low
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-600">OCTO-84</span>
+                    </div>
+                    <h4 className="text-sm font-medium text-slate-400 mb-4 group-hover:text-octo-blue transition-colors">
+                      Documentation Cleanup
+                    </h4>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center text-[10px] text-slate-600">
+                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M5 13l4 4L19 7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        Completed
+                      </div>
+                      <img
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuC-KK_bnsh1yTN9GRs4Hr34PWBTZT58OLUb7trQ8YDjwIWVjNmEzozsxKr4ejog-nKTHUV9m5TXEbEr0Ft5-4NHtxr1M9miobEjUn4VotCOvQPzT2rhcrtIsn2I_3F8M_nFf_tE22UB17e6hesLBCJC0E1KsJse7_CmdPcWDN7wtnkwzvL_ofdVnpfIMwW6axvIlntx-7EAC3GHT6o1gWSPbFJUm8DUD8aELX_f11UqebHi-wnM0gP9i2QnOd9k8iQusAeNqcAIB74"
+                        alt="Assignee"
+                        className="w-6 h-6 rounded-full border border-slate-700 grayscale"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
   );
 }
 
 export default function App() {
-  const [loginId, setLoginId] = useState("");
-  const [password, setPassword] = useState("");
-  const [auth, setAuth] = useState(null);
-  const [authError, setAuthError] = useState("");
-  const [status, setStatus] = useState(null);
-  const [bootstrap, setBootstrap] = useState(null);
-  const [projects, setProjects] = useState([]);
-  const [threads, setThreads] = useState([]);
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedThreadId, setSelectedThreadId] = useState("");
-  const [commandPrompt, setCommandPrompt] = useState(
-    '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
-  );
-  const [installPrompt, setInstallPrompt] = useState(null);
-  const [installState, setInstallState] = useState("available");
-  const [streamState, setStreamState] = useState("idle");
-  const [isOnline, setIsOnline] = useState(() => window.navigator.onLine);
-  const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
-  const [issueTitle, setIssueTitle] = useState("");
-  const [issuePrompt, setIssuePrompt] = useState("");
-  const [issueProjectId, setIssueProjectId] = useState("");
-  const [issueSubmitting, setIssueSubmitting] = useState(false);
-  const [issueError, setIssueError] = useState("");
+  const [screen, setScreen] = useState("login");
 
-  const userId = auth?.userId ?? "";
-
-  const eventsUrl = useMemo(
-    () =>
-      userId ? `${API_BASE_URL}/api/events?user_id=${encodeURIComponent(userId)}` : null,
-    [userId]
-  );
-
-  const selectedThread = useMemo(
-    () => threads.find((thread) => thread.id === selectedThreadId) ?? threads[0] ?? null,
-    [selectedThreadId, threads]
-  );
-
-  const groupedThreads = useMemo(() => {
-    return BOARD_COLUMNS.map((column) => ({
-      ...column,
-      items: threads.filter((thread) => mapThreadToColumn(thread) === column.id)
-    }));
-  }, [threads]);
-
-  const selectedThreadEvents = useMemo(() => {
-    if (!selectedThread) {
-      return [];
-    }
-
-    return events.filter((event) => resolveThreadEventId(event) === selectedThread.id).slice(0, 8);
-  }, [events, selectedThread]);
-
-  const activeProject = useMemo(
-    () => getProjectForThread(selectedThread, projects) ?? projects[0] ?? null,
-    [projects, selectedThread]
-  );
-
-  const desktopMetrics = useMemo(() => {
-    const awaitingReview = threads.filter((thread) => thread.status === "awaiting_input").length;
-    const blocked = threads.filter((thread) => thread.status === "failed").length;
-    const active = threads.filter((thread) => thread.status === "running").length;
-
-    return [
-      { label: "Active Threads", value: active, tone: "blue" },
-      { label: "Needs Review", value: awaitingReview, tone: "amber" },
-      { label: "Blocked", value: blocked, tone: "red" },
-      { label: "Done Rate", value: getDoneRate(threads), tone: "green" }
-    ];
-  }, [threads]);
-
-  const desktopFilters = useMemo(() => {
-    return [
-      {
-        label: "User",
-        value: auth?.displayName ?? auth?.userId ?? "Unknown"
-      },
-      {
-        label: "Project",
-        value: activeProject?.name ?? "All Projects"
-      },
-      {
-        label: "Priority",
-        value: threads.some((thread) => thread.status === "failed") ? "Urgent" : "Normal"
-      },
-      {
-        label: "Stream",
-        value: streamState === "live" ? "Live" : "Reconnect"
-      }
-    ];
-  }, [activeProject?.name, auth?.displayName, auth?.userId, streamState, threads]);
-
-  const desktopSidebarFacts = useMemo(() => {
-    return [
-      {
-        label: "Bridge",
-        value: status?.bridge_mode ?? "-"
-      },
-      {
-        label: "App Server",
-        value: status?.app_server?.connected ? "Connected" : "Offline"
-      },
-      {
-        label: "NATS",
-        value: status?.nats?.connected ? "Live" : "Down"
-      },
-      {
-        label: "Operator",
-        value: status?.app_server?.account?.email ?? auth?.displayName ?? "-"
-      }
-    ];
-  }, [auth?.displayName, status?.app_server?.account?.email, status?.app_server?.connected, status?.bridge_mode, status?.nats?.connected]);
-
-  const sidebarThreads = useMemo(() => threads.slice(0, 7), [threads]);
-
-  const summaryCards = useMemo(() => {
-    return [
-      {
-        label: "프로젝트",
-        value: projects.length,
-        icon: IconBoard,
-        tone: "blue"
-      },
-      {
-        label: "실행 중",
-        value: threads.filter((thread) => thread.status === "running").length,
-        icon: IconPulse,
-        tone: "orange"
-      },
-      {
-        label: "모바일 준비",
-        value: installPrompt ? "Install" : "Ready",
-        icon: IconMobile,
-        tone: "slate"
-      },
-      {
-        label: "라이선스",
-        value: bootstrap?.licenses?.length ?? 0,
-        icon: IconSpark,
-        tone: "green"
-      }
-    ];
-  }, [bootstrap?.licenses?.length, installPrompt, projects.length, threads]);
-
-  async function loadSnapshot() {
-    if (!userId) {
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const [statusResponse, projectResponse, threadResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/bridge/status?user_id=${encodeURIComponent(userId)}`),
-        fetch(`${API_BASE_URL}/api/projects?user_id=${encodeURIComponent(userId)}`),
-        fetch(`${API_BASE_URL}/api/threads?user_id=${encodeURIComponent(userId)}`)
-      ]);
-
-      const [statusPayload, projectPayload, threadPayload] = await Promise.all([
-        statusResponse.json(),
-        projectResponse.json(),
-        threadResponse.json()
-      ]);
-
-      setStatus(statusPayload);
-      setProjects(projectPayload.projects ?? []);
-      setThreads(threadPayload.threads ?? []);
-    } finally {
-      setLoading(false);
-    }
+  if (screen === "login") {
+    return <LoginPage onSuccess={() => setScreen("dashboard")} />;
   }
 
-  async function loadBootstrap(accessToken) {
-    const response = await fetch(`${API_BASE_URL}/api/auth/bootstrap`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
-
-    if (!response.ok) {
-      setBootstrap(null);
-      return;
-    }
-
-    setBootstrap(await response.json());
-  }
-
-  async function handleLogin(event) {
-    event.preventDefault();
-    setAuthError("");
-
-    const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        loginId,
-        password
-      })
-    });
-
-    if (!response.ok) {
-      setAuth(null);
-      setBootstrap(null);
-      setAuthError("로그인에 실패했습니다.");
-      return;
-    }
-
-    const payload = await response.json();
-    setAuth(payload);
-  }
-
-  async function startPingCommand() {
-    if (!userId) {
-      return;
-    }
-
-    await fetch(`${API_BASE_URL}/api/commands/ping?user_id=${encodeURIComponent(userId)}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        prompt: commandPrompt,
-        project_id: projects[0]?.id
-      })
-    });
-  }
-
-  async function handleIssueSubmit(event) {
-    event.preventDefault();
-
-    const normalizedTitle = issueTitle.trim();
-    const normalizedPrompt = issuePrompt.trim();
-    const projectId = issueProjectId || projects[0]?.id || "";
-
-    if (!userId) {
-      return;
-    }
-
-    if (!normalizedTitle || !normalizedPrompt) {
-      setIssueError("이슈 제목과 설명을 모두 입력해 주세요.");
-      return;
-    }
-
-    setIssueSubmitting(true);
-    setIssueError("");
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/commands/ping?user_id=${encodeURIComponent(userId)}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          title: normalizedTitle,
-          prompt: normalizedPrompt,
-          project_id: projectId
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("이슈 등록 요청이 실패했습니다.");
-      }
-
-      setIsIssueModalOpen(false);
-      setIssueTitle("");
-      setIssuePrompt("");
-      await loadSnapshot();
-    } catch (error) {
-      setIssueError(error.message);
-    } finally {
-      setIssueSubmitting(false);
-    }
-  }
-
-  async function handleInstall() {
-    if (!installPrompt) {
-      return;
-    }
-
-    await installPrompt.prompt();
-    setInstallState("requested");
-    setInstallPrompt(null);
-  }
-
-  useEffect(() => {
-    if (!auth?.accessToken || !auth?.userId) {
-      setStatus(null);
-      setProjects([]);
-      setThreads([]);
-      setEvents([]);
-      setBootstrap(null);
-      return;
-    }
-
-    loadSnapshot();
-    loadBootstrap(auth.accessToken);
-  }, [auth?.accessToken, auth?.userId]);
-
-  useEffect(() => {
-    if (!threads.length) {
-      setSelectedThreadId("");
-      return;
-    }
-
-    const nextSelected =
-      threads.find((thread) => thread.id === selectedThreadId)?.id ?? threads[0].id;
-
-    if (nextSelected !== selectedThreadId) {
-      setSelectedThreadId(nextSelected);
-    }
-  }, [selectedThreadId, threads]);
-
-  useEffect(() => {
-    if (!projects.length) {
-      setIssueProjectId("");
-      return;
-    }
-
-    if (!issueProjectId || !projects.some((project) => project.id === issueProjectId)) {
-      setIssueProjectId(projects[0].id);
-    }
-  }, [issueProjectId, projects]);
-
-  useEffect(() => {
-    function handleOnline() {
-      setIsOnline(true);
-    }
-
-    function handleOffline() {
-      setIsOnline(false);
-    }
-
-    function handleBeforeInstallPrompt(event) {
-      event.preventDefault();
-      setInstallPrompt(event);
-      setInstallState("ready");
-    }
-
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!eventsUrl) {
-      return undefined;
-    }
-
-    const stream = new EventSource(eventsUrl);
-    setStreamState("live");
-
-    stream.addEventListener("message", (event) => {
-      const payload = JSON.parse(event.data);
-
-      setStreamState("live");
-      setEvents((current) => [payload, ...current].slice(0, 40));
-
-      if (payload.type === "bridge.status.updated") {
-        setStatus(payload.payload);
-      }
-
-      if (payload.type === "bridge.projects.updated") {
-        setProjects(payload.payload.projects ?? []);
-      }
-
-      if (payload.type === "bridge.threads.updated") {
-        setThreads(payload.payload.threads ?? []);
-      }
-    });
-
-    stream.addEventListener("error", () => {
-      setStreamState("reconnecting");
-    });
-
-    return () => stream.close();
-  }, [eventsUrl]);
-
-  return (
-    <div className="shell">
-      <div className="ambient ambient-a" />
-      <div className="ambient ambient-b" />
-
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">
-            <IconSpark />
-          </span>
-          <div>
-            <p>OctOP</p>
-            <strong>Threads Workspace</strong>
-          </div>
-        </div>
-
-        <div className="topbar-actions">
-          <span className={`live-pill ${isOnline ? "is-online" : "is-offline"}`}>
-            {isOnline ? "Online" : "Offline"}
-          </span>
-          <span className={`live-pill ${streamState === "live" ? "is-live" : ""}`}>
-            {streamState === "live" ? "Stream Live" : "Reconnecting"}
-          </span>
-          {installPrompt ? (
-            <button type="button" className="ghost-button" onClick={handleInstall}>
-              <IconInstall />
-              <span>PWA 설치</span>
-            </button>
-          ) : null}
-        </div>
-      </header>
-
-      {!auth ? (
-        <main className="login-layout">
-          <section className="intro-panel">
-            <div className="intro-copy">
-              <p className="eyebrow">PWA + Desktop Workspace</p>
-              <h1>모바일에서는 thread todo, 데스크톱에서는 칸반 보드로 관리합니다.</h1>
-              <p>
-                OctOP는 로컬 bridge와 원격 gateway를 연결해 thread 실행을 추적합니다. 모바일은
-                빠른 체크리스트 중심, 데스크톱은 Linear 같은 컬럼 보드 중심으로 설계했습니다.
-              </p>
-            </div>
-
-            <div className="preview-grid">
-              <article className="preview-card preview-card--desktop">
-                <div className="preview-card__title">
-                  <IconBoard />
-                  <span>Desktop Board</span>
-                </div>
-                <div className="mini-board">
-                  {["Queued", "In Progress", "Review", "Done"].map((label, index) => (
-                    <div key={label} className="mini-column">
-                      <strong>{label}</strong>
-                      <div className="mini-ticket" />
-                      <div className="mini-ticket dimmed" />
-                      {index === 1 ? <div className="mini-ticket accent" /> : null}
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="preview-card preview-card--mobile">
-                <div className="preview-card__title">
-                  <IconMobile />
-                  <span>Mobile Todo Stack</span>
-                </div>
-                <div className="mini-phone">
-                  <div className="mini-phone__card" />
-                  <div className="mini-phone__card accent" />
-                  <div className="mini-phone__list">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          <section className="login-panel">
-            <form className="login-form" onSubmit={handleLogin}>
-              <div>
-                <p className="eyebrow">LicenseHub Access</p>
-                <h2>워크스페이스에 로그인</h2>
-              </div>
-
-              <label>
-                Login ID
-                <input value={loginId} onChange={(event) => setLoginId(event.target.value)} />
-              </label>
-
-              <label>
-                Password
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-              </label>
-
-              <button type="submit" className="primary-button">
-                Dashboard 진입
-              </button>
-
-              {authError ? <p className="error-text">{authError}</p> : null}
-            </form>
-          </section>
-        </main>
-      ) : (
-        <main className="workspace">
-          <section className="workspace-hero">
-            <div className="workspace-hero__copy">
-              <p className="eyebrow">Thread Command Center</p>
-              <h1>프로젝트 단위로 thread를 분배하고, 모바일과 데스크톱에서 다른 밀도로 관리합니다.</h1>
-              <p>
-                현재 선택 사용자 <strong>{auth.displayName}</strong>의 실행 상태를 바탕으로 모바일
-                체크리스트와 데스크톱 칸반 보드를 동시에 제공합니다.
-              </p>
-            </div>
-
-            <div className="hero-command-card">
-              <div className="hero-command-card__header">
-                <div>
-                  <small>빠른 명령 등록</small>
-                  <strong>{projects[0]?.name ?? "프로젝트를 불러오는 중"}</strong>
-                </div>
-                <StatusChip status={status?.app_server?.connected ? "running" : "failed"} />
-              </div>
-
-              <label>
-                Thread 입력
-                <textarea
-                  rows="4"
-                  value={commandPrompt}
-                  onChange={(event) => setCommandPrompt(event.target.value)}
-                />
-              </label>
-
-              <div className="hero-command-card__actions">
-                <button type="button" className="primary-button" onClick={startPingCommand}>
-                  연결 점검 실행
-                </button>
-                <button type="button" className="ghost-button" onClick={loadSnapshot} disabled={loading}>
-                  새로고침
-                </button>
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => {
-                    setAuth(null);
-                    setPassword("");
-                  }}
-                >
-                  로그아웃
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section className="summary-strip">
-            {summaryCards.map((card) => {
-              const Icon = card.icon;
-
-              return (
-                <article key={card.label} className={`summary-card tone-${card.tone}`}>
-                  <span className="summary-card__icon">
-                    <Icon />
-                  </span>
-                  <div>
-                    <small>{card.label}</small>
-                    <strong>{card.value}</strong>
-                  </div>
-                </article>
-              );
-            })}
-          </section>
-
-          <section className="workspace-panels">
-            <div className="insight-panel">
-              <article className="surface-card">
-                <div className="surface-card__title">
-                  <h2>인프라 상태</h2>
-                  <span>{formatDateTime(status?.updated_at)}</span>
-                </div>
-                <dl className="facts-grid">
-                  <div>
-                    <dt>Bridge</dt>
-                    <dd>{status?.bridge_mode ?? "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>App Server</dt>
-                    <dd>{status?.app_server?.connected ? "connected" : "offline"}</dd>
-                  </div>
-                  <div>
-                    <dt>NATS</dt>
-                    <dd>{status?.nats?.connected ? "live" : "down"}</dd>
-                  </div>
-                  <div>
-                    <dt>Plan</dt>
-                    <dd>{status?.app_server?.account?.plan_type ?? "-"}</dd>
-                  </div>
-                </dl>
-              </article>
-
-              <article className="surface-card">
-                <div className="surface-card__title">
-                  <h2>프로젝트 컨텍스트</h2>
-                  <span>{projects.length} active</span>
-                </div>
-                <ul className="project-list">
-                  {projects.map((project) => (
-                    <li key={project.id}>
-                      <strong>{project.name}</strong>
-                      <span>{project.description}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </div>
-
-            <section className="mobile-pwa-view">
-              <div className="surface-card mobile-surface">
-                <div className="surface-card__title">
-                  <h2>모바일 PWA Todo</h2>
-                  <span>{threads.length} threads</span>
-                </div>
-
-                {selectedThread ? (
-                  <div className="mobile-focus-card">
-                    <div className="mobile-focus-card__header">
-                      <div>
-                        <small>현재 포커스</small>
-                        <strong>{selectedThread.title}</strong>
-                      </div>
-                      <StatusChip status={selectedThread.status} />
-                    </div>
-                    <p>{summarizeMessage(selectedThread)}</p>
-                    <div className="progress-bar tone-warm">
-                      <span style={{ width: `${Math.max(selectedThread.progress ?? 0, 8)}%` }} />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="empty-state">표시할 thread가 아직 없습니다.</div>
-                )}
-
-                <div className="mobile-thread-stack">
-                  {threads.map((thread) => (
-                    <MobileThreadCard
-                      key={thread.id}
-                      thread={thread}
-                      selected={thread.id === selectedThread?.id}
-                      onSelect={setSelectedThreadId}
-                    />
-                  ))}
-                </div>
-              </div>
-            </section>
-
-            <section className="desktop-board-view">
-              <div className="ide-layout">
-                <aside className="ide-sidebar">
-                  <div className="ide-sidebar__workspace">
-                    <div className="ide-sidebar__brand">
-                      <span className="brand-mark">
-                        <IconBoard />
-                      </span>
-                      <div>
-                        <small>Workspace</small>
-                        <strong>{activeProject?.name ?? "No Project"}</strong>
-                      </div>
-                    </div>
-                    <span className="board-shell__meta">{threads.length} issues</span>
-                  </div>
-
-                  <div className="ide-sidebar__group">
-                    <small className="desktop-sidebar__label">Explorer</small>
-                    <div className="ide-nav-list">
-                      <button type="button" className="ide-nav-item is-active">
-                        <span>Threads</span>
-                        <strong>{threads.length}</strong>
-                      </button>
-                      <button type="button" className="ide-nav-item">
-                        <span>Projects</span>
-                        <strong>{projects.length}</strong>
-                      </button>
-                      <button type="button" className="ide-nav-item">
-                        <span>Runtime</span>
-                        <strong>{status?.nats?.connected ? "Live" : "Down"}</strong>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="ide-sidebar__group">
-                    <small className="desktop-sidebar__label">Recent Threads</small>
-                    <ul className="ide-thread-list">
-                      {sidebarThreads.map((thread) => (
-                        <li key={thread.id}>
-                          <button
-                            type="button"
-                            className={`ide-thread-item ${thread.id === selectedThread?.id ? "is-selected" : ""}`}
-                            onClick={() => setSelectedThreadId(thread.id)}
-                          >
-                            <strong>{thread.title}</strong>
-                            <span>{getProjectForThread(thread, projects)?.name ?? "Unassigned"}</span>
-                            <div className="ide-thread-item__meta">
-                              <StatusChip status={thread.status} />
-                              <small>{formatTime(thread.updated_at)}</small>
-                            </div>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {selectedThread ? (
-                    <div className="ide-sidebar__group ide-inspector">
-                      <div className="ide-inspector__header">
-                        <small className="desktop-sidebar__label">Selection</small>
-                        <StatusChip status={selectedThread.status} />
-                      </div>
-                      <strong>{selectedThread.title}</strong>
-                      <p>{summarizeMessage(selectedThread)}</p>
-                      <div className="progress-bar tone-cool">
-                        <span style={{ width: `${Math.max(selectedThread.progress ?? 0, 8)}%` }} />
-                      </div>
-                      <ul className="detail-checklist">
-                        {buildTodoItems(selectedThread).map((item) => (
-                          <li key={item.id} className={item.done ? "is-done" : ""}>
-                            <span className="todo-bullet" />
-                            <div>
-                              <strong>{item.label}</strong>
-                              <small>{item.hint}</small>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  <div className="ide-sidebar__group">
-                    <small className="desktop-sidebar__label">Runtime</small>
-                    <dl className="desktop-sidebar__facts">
-                      {desktopSidebarFacts.map((item) => (
-                        <div key={item.label}>
-                          <dt>{item.label}</dt>
-                          <dd>{item.value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </div>
-                </aside>
-
-                <div className="ide-board-panel surface-card">
-                  <div className="surface-card__title board-shell__title">
-                    <div>
-                      <h2>Issue Board</h2>
-                      <span>Codex IDE 스타일의 좌측 탐색 패널과 thread 칸반</span>
-                    </div>
-                    <div className="ide-board-panel__actions">
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => {
-                          setIssueError("");
-                          setIssueTitle("");
-                          setIssuePrompt("");
-                          setIssueProjectId(activeProject?.id ?? projects[0]?.id ?? "");
-                          setIsIssueModalOpen(true);
-                        }}
-                      >
-                        <IconPlus />
-                        <span>이슈 등록</span>
-                      </button>
-                      <button type="button" className="ghost-button" onClick={loadSnapshot} disabled={loading}>
-                        새로고침
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={() => {
-                          setAuth(null);
-                          setPassword("");
-                        }}
-                      >
-                        로그아웃
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="desktop-toolbar">
-                    <div className="desktop-filter-row">
-                      {desktopFilters.map((filter) => (
-                        <button key={filter.label} type="button" className="filter-chip">
-                          <span>{filter.label}</span>
-                          <strong>{filter.value}</strong>
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="desktop-metrics">
-                      {desktopMetrics.map((metric) => (
-                        <article key={metric.label} className={`desktop-metric tone-${metric.tone}`}>
-                          <small>{metric.label}</small>
-                          <strong>{metric.value}</strong>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="board-columns">
-                    {groupedThreads.map((column) => (
-                      <section key={column.id} className="board-column">
-                        <header className="board-column__header">
-                          <div>
-                            <strong>{column.title}</strong>
-                            <small>{column.subtitle}</small>
-                          </div>
-                          <span>{column.items.length}</span>
-                        </header>
-
-                        <div className="board-column__body">
-                          {column.items.length ? (
-                            column.items.map((thread) => (
-                              <ThreadCard
-                                key={thread.id}
-                                thread={thread}
-                                selected={thread.id === selectedThread?.id}
-                                onSelect={setSelectedThreadId}
-                                projectName={getProjectForThread(thread, projects)?.name}
-                              />
-                            ))
-                          ) : (
-                            <div className="empty-column">비어 있습니다.</div>
-                          )}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
-          </section>
-        </main>
-      )}
-
-      {isIssueModalOpen ? (
-        <div className="issue-modal-backdrop" role="presentation" onClick={() => setIsIssueModalOpen(false)}>
-          <div className="issue-modal surface-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="surface-card__title">
-              <div>
-                <h2>새 이슈 등록</h2>
-                <span>등록 즉시 thread를 생성하고 칸반에 추가합니다.</span>
-              </div>
-              <button type="button" className="ghost-button" onClick={() => setIsIssueModalOpen(false)}>
-                닫기
-              </button>
-            </div>
-
-            <form className="issue-form" onSubmit={handleIssueSubmit}>
-              <label>
-                이슈 제목
-                <input value={issueTitle} onChange={(event) => setIssueTitle(event.target.value)} placeholder="예: dashboard 로그인 CORS 점검" />
-              </label>
-
-              <label>
-                프로젝트
-                <select value={issueProjectId} onChange={(event) => setIssueProjectId(event.target.value)}>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                이슈 설명
-                <textarea
-                  rows="5"
-                  value={issuePrompt}
-                  onChange={(event) => setIssuePrompt(event.target.value)}
-                  placeholder="작업 목적, 기대 결과, 제약 조건을 적어 주세요."
-                />
-              </label>
-
-              {issueError ? <p className="error-text">{issueError}</p> : null}
-
-              <div className="issue-form__actions">
-                <button type="button" className="ghost-button" onClick={() => setIsIssueModalOpen(false)}>
-                  취소
-                </button>
-                <button type="submit" className="primary-button" disabled={issueSubmitting}>
-                  {issueSubmitting ? "등록 중..." : "이슈 등록"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
+  return <MainPage />;
 }
