@@ -43,10 +43,12 @@
 - macOS/Linux 직접 실행: `./scripts/run-app-server.sh`
 - Windows 직접 실행: `scripts\\run-app-server.cmd`
 - Bridge 간편 실행: `npm run bridge:start`
+- Bridge 파라미터 실행: `npm run bridge:start -- --bridge-id=my-mac --device-name="My Mac" --owner-user-id=<userId>`
 - Bridge 입력 실행: `npm run bridge:start:prompt`
 - macOS/Linux 직접 실행: `./scripts/run-bridge.sh`
 - Windows 직접 실행: `scripts\\run-bridge.cmd`
 - App Server + Bridge 동시 실행: `npm run local-agent:start`
+- App Server + Bridge 파라미터 실행: `npm run local-agent:start -- --bridge-id=my-mac --device-name="My Mac" --owner-user-id=<userId>`
 - App Server + Bridge 입력 실행: `npm run local-agent:start:prompt`
 - macOS/Linux 직접 실행: `./scripts/run-local-agent.sh`
 - Windows 직접 실행: `scripts\\run-local-agent.cmd`
@@ -56,6 +58,7 @@
 브릿지 런처 동작:
 - `.env.local` -> `.env` 순서로 환경변수를 읽습니다.
 - 파일에 값이 없으면 NATS, bridge 포트, app-server listen 주소 기본값을 채웁니다.
+- 실행 인자로 `--bridge-id`, `--device-name`, `--owner-user-id`를 넘기면 환경값보다 우선 적용됩니다.
 - TTY 실행에서는 bridge ID, 표시 이름, owner userId를 실행 시점에 입력받을 수 있습니다.
 - 브릿지 프로세스를 띄우고, 필요하면 bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
 

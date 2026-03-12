@@ -80,6 +80,17 @@ export function loadOctopEnv(workspaceRoot) {
   return env;
 }
 
+export function applyBridgeCliArgs(env, argv) {
+  const args = parseCliArgs(argv);
+
+  return {
+    ...env,
+    ...(args.bridgeId ? { OCTOP_BRIDGE_ID: args.bridgeId } : {}),
+    ...(args.deviceName ? { OCTOP_BRIDGE_DEVICE_NAME: args.deviceName } : {}),
+    ...(args.ownerUserId ? { OCTOP_BRIDGE_OWNER_USER_ID: args.ownerUserId } : {})
+  };
+}
+
 export async function resolveBridgeRuntimeEnv(env, options = {}) {
   const { prompt = false } = options;
 
@@ -149,4 +160,47 @@ async function askQuestion(readline, label, fallbackValue) {
       return resolved;
     }
   }
+}
+
+function parseCliArgs(argv = []) {
+  const parsed = {};
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+
+    if (!token.startsWith("--")) {
+      continue;
+    }
+
+    const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+    const key = rawKey.trim();
+
+    if (!key) {
+      continue;
+    }
+
+    const nextToken = argv[index + 1];
+    const value =
+      inlineValue ?? (nextToken && !nextToken.startsWith("--") ? (index += 1, nextToken) : "");
+
+    if (!value) {
+      continue;
+    }
+
+    if (key === "bridge-id") {
+      parsed.bridgeId = value.trim();
+      continue;
+    }
+
+    if (key === "device-name") {
+      parsed.deviceName = value.trim();
+      continue;
+    }
+
+    if (key === "owner-user-id") {
+      parsed.ownerUserId = value.trim();
+    }
+  }
+
+  return parsed;
 }

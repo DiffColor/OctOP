@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
+import { applyBridgeCliArgs, loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
 
 const workspaceRoot = process.cwd();
 const shouldPrompt = process.argv.includes("--prompt");
-const env = await resolveBridgeRuntimeEnv(loadOctopEnv(workspaceRoot), {
+const env = await resolveBridgeRuntimeEnv(applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2)), {
   prompt: shouldPrompt
 });
 const bridgeEnv = {
