@@ -276,6 +276,18 @@ function summarizeProjects(projects) {
   return `${projects[0].name} 외 ${projects.length - 1}개 프로젝트`;
 }
 
+function summarizeEvent(event) {
+  return (
+    event?.summary ??
+    event?.payload?.thread?.title ??
+    event?.payload?.error ??
+    event?.payload?.projects?.[0]?.name ??
+    event?.payload?.threads?.[0]?.title ??
+    event?.type ??
+    "브릿지 상태가 갱신되었습니다."
+  );
+}
+
 function LoginPage({ initialLoginId, loading, error, onSubmit }) {
   const [loginId, setLoginId] = useState(initialLoginId ?? "");
   const [password, setPassword] = useState("");
@@ -651,11 +663,12 @@ function MainPage({
   onRefresh,
   onLogout
 }) {
-  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
-  const filteredThreads = threads.filter((thread) => {
-    const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
+  const projectScopedThreads = threads.filter((thread) => {
+    return !selectedProjectId || thread.project_id === selectedProjectId;
+  });
+  const filteredThreads = projectScopedThreads.filter((thread) => {
     const keyword = search.trim().toLowerCase();
     const matchesSearch =
       !keyword ||
@@ -663,7 +676,26 @@ function MainPage({
       thread.last_event.toLowerCase().includes(keyword) ||
       thread.last_message.toLowerCase().includes(keyword);
 
-    return matchesProject && matchesSearch;
+    return matchesSearch;
+  });
+  const selectedThread =
+    filteredThreads.find((thread) => thread.id === selectedThreadId) ??
+    projectScopedThreads.find((thread) => thread.id === selectedThreadId) ??
+    null;
+  const projectTree = projects.map((project) => {
+    const projectThreads = threads.filter((thread) => thread.project_id === project.id);
+
+    return {
+      ...project,
+      totalThreads: projectThreads.length,
+      runningThreads: projectThreads.filter((thread) => thread.status === "running").length,
+      reviewThreads: projectThreads.filter((thread) =>
+        ["failed", "awaiting_input"].includes(thread.status)
+      ).length,
+      latestThreads: [...projectThreads]
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+        .slice(0, 3)
+    };
   });
 
   const columns = COLUMN_ORDER.map((column) => ({
@@ -674,7 +706,7 @@ function MainPage({
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col lg:flex-row">
-        <aside className="border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:border-b-0 lg:border-r lg:px-5">
+        <aside className="flex border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:flex-col lg:border-b-0 lg:border-r lg:px-5">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
               <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -687,53 +719,12 @@ function MainPage({
             </div>
           </div>
 
-          <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Signed In</p>
-            <div className="mt-3 flex items-center justify-between gap-4">
+          <div className="mt-6 flex-1">
+            <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-base font-semibold text-white">{session.displayName || session.loginId}</p>
-                <p className="mt-1 text-sm text-slate-400">
-                  {session.loginId} · {session.role || "viewer"}
-                </p>
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
+                <h2 className="mt-2 text-lg font-semibold text-white">{summarizeProjects(projects)}</h2>
               </div>
-              <button
-                type="button"
-                onClick={onLogout}
-                className="rounded-2xl border border-slate-800 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
-              >
-                로그아웃
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Bridge</p>
-              <div className="mt-3 flex items-center gap-2 text-sm font-medium text-white">
-                <span className={`h-2.5 w-2.5 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
-                {status.app_server?.connected ? "Connected" : "Disconnected"}
-              </div>
-              <p className="mt-2 text-sm text-slate-400">
-                {status.app_server?.last_error || "로컬 app-server와 정상 연결 상태입니다."}
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Projects</p>
-              <p className="mt-3 text-2xl font-semibold text-white">{projects.length}</p>
-              <p className="mt-2 text-sm text-slate-400">{summarizeProjects(projects)}</p>
-            </div>
-
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Threads</p>
-              <p className="mt-3 text-2xl font-semibold text-white">{threads.length}</p>
-              <p className="mt-2 text-sm text-slate-400">최근 이벤트 기준으로 최신 순 정렬</p>
-            </div>
-          </div>
-
-          <section className="mt-6">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-white">Projects</h2>
               <button
                 type="button"
                 onClick={onRefresh}
@@ -742,58 +733,135 @@ function MainPage({
                 새로고침
               </button>
             </div>
-            <div className="space-y-2">
-              {projects.map((project) => {
+
+            <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-13rem)]">
+              {projectTree.map((project) => {
                 const active = project.id === selectedProjectId;
 
                 return (
-                  <button
+                  <div
                     key={project.id}
-                    type="button"
-                    onClick={() => onSelectProject(project.id)}
-                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    className={`rounded-[1.5rem] border transition ${
                       active
-                        ? "border-sky-400/40 bg-sky-500/10 text-white"
-                        : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:text-white"
+                        ? "border-sky-400/40 bg-sky-500/10"
+                        : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold">{project.name}</p>
-                        <p className="mt-1 text-xs text-slate-500">{project.key}</p>
+                    <button
+                      type="button"
+                      onClick={() => onSelectProject(project.id)}
+                      className="w-full px-4 py-4 text-left"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
+                            {project.name}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">{project.key}</p>
+                        </div>
+                        <span className="rounded-full bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
+                          {project.totalThreads}
+                        </span>
                       </div>
-                      <span className="rounded-full bg-slate-900/70 px-2 py-1 text-[11px] text-slate-400">
-                        {threads.filter((thread) => thread.project_id === project.id).length}
-                      </span>
-                    </div>
-                  </button>
+
+                      <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
+                        <span className="rounded-full bg-slate-950/80 px-2 py-1 text-slate-400">
+                          전체 {project.totalThreads}
+                        </span>
+                        <span className="rounded-full bg-sky-500/10 px-2 py-1 text-sky-300">
+                          실행 {project.runningThreads}
+                        </span>
+                        <span className="rounded-full bg-violet-500/10 px-2 py-1 text-violet-300">
+                          검토 {project.reviewThreads}
+                        </span>
+                      </div>
+                    </button>
+
+                    {active ? (
+                      <div className="border-t border-white/6 px-4 py-4">
+                        <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                          Project Tree
+                        </p>
+                        <div className="space-y-2">
+                          {project.latestThreads.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-3 py-4 text-xs text-slate-500">
+                              아직 등록된 이슈가 없습니다.
+                            </div>
+                          ) : (
+                            project.latestThreads.map((thread) => (
+                              <button
+                                key={thread.id}
+                                type="button"
+                                onClick={() => onSelectThread(thread.id)}
+                                className={`flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left transition ${
+                                  thread.id === selectedThreadId
+                                    ? "bg-slate-950/90 text-white"
+                                    : "bg-slate-950/50 text-slate-300 hover:bg-slate-950/80"
+                                }`}
+                              >
+                                <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm font-medium">{thread.title}</span>
+                                  <span className="mt-1 block font-mono text-[11px] text-slate-500">
+                                    {thread.last_event}
+                                  </span>
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
-          </section>
+          </div>
 
-          <section className="mt-6">
-            <h2 className="mb-3 text-sm font-semibold text-white">Recent Events</h2>
-            <div className="custom-scrollbar max-h-64 space-y-2 overflow-y-auto pr-1">
-              {recentEvents.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 px-4 py-5 text-sm text-slate-500">
-                  아직 수신된 이벤트가 없습니다.
-                </div>
-              ) : (
-                recentEvents.map((event) => (
-                  <div key={event.id} className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium text-white">{event.type}</p>
-                      <span className="text-[11px] text-slate-500">{formatRelativeTime(event.timestamp)}</span>
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-slate-400">
-                      {event.summary || "브릿지 상태가 갱신되었습니다."}
-                    </p>
-                  </div>
-                ))
-              )}
+          <footer className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/65 px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {session.loginId} · {session.role || "viewer"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] ${
+                    status.app_server?.connected
+                      ? "bg-emerald-500/10 text-emerald-300"
+                      : "bg-rose-500/10 text-rose-300"
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"
+                    }`}
+                  />
+                  {status.app_server?.connected ? "Bridge OK" : "Bridge Down"}
+                </span>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+                >
+                  로그아웃
+                </button>
+              </div>
             </div>
-          </section>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
+                Projects {projects.length}
+              </span>
+              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
+                Threads {threads.length}
+              </span>
+              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
+                {status.app_server?.account?.plan_type ?? "Unknown"}
+              </span>
+            </div>
+          </footer>
         </aside>
 
         <main className="flex min-h-screen flex-1 flex-col">
@@ -803,7 +871,7 @@ function MainPage({
                 <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Project Board</p>
                 <h2 className="mt-2 text-2xl font-semibold text-white">{selectedProject?.name ?? "프로젝트 선택 필요"}</h2>
                 <p className="mt-2 text-sm text-slate-400">
-                  {status.app_server?.account?.email ?? "app-server 계정 정보 대기 중"} · 마지막 갱신 {formatRelativeTime(status.updated_at)}
+                  선택한 프로젝트의 thread만 칸반에 표시됩니다. 마지막 갱신 {formatRelativeTime(status.updated_at)}
                 </p>
               </div>
 
@@ -834,37 +902,6 @@ function MainPage({
                   </svg>
                   이슈 등록
                 </button>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Status</p>
-                <p className="mt-3 text-lg font-semibold text-white">
-                  {status.app_server?.initialized ? "Ready" : "Starting"}
-                </p>
-                <p className="mt-2 text-sm text-slate-400">계정 연결과 초기화 완료 여부</p>
-              </div>
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Account</p>
-                <p className="mt-3 text-lg font-semibold text-white">
-                  {status.app_server?.account?.plan_type ?? "Unknown"}
-                </p>
-                <p className="mt-2 text-sm text-slate-400">app-server에 연결된 Codex 플랜</p>
-              </div>
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Running</p>
-                <p className="mt-3 text-lg font-semibold text-white">
-                  {threads.filter((thread) => thread.status === "running").length}
-                </p>
-                <p className="mt-2 text-sm text-slate-400">현재 turn 실행 중인 thread 수</p>
-              </div>
-              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Refresh</p>
-                <p className="mt-3 text-lg font-semibold text-white">
-                  {loadingState === "loading" ? "Syncing" : "Stable"}
-                </p>
-                <p className="mt-2 text-sm text-slate-400">Gateway snapshot과 SSE 이벤트 기준 상태</p>
               </div>
             </div>
           </header>
@@ -971,6 +1008,30 @@ function MainPage({
                         <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">
                           {selectedThread.last_message || "아직 agent 메시지가 수신되지 않았습니다."}
                         </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Recent Events</p>
+                          <span className="text-[11px] text-slate-500">{loadingState === "loading" ? "동기화 중" : "실시간"}</span>
+                        </div>
+                        <div className="custom-scrollbar mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+                          {recentEvents.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
+                              아직 수신된 이벤트가 없습니다.
+                            </div>
+                          ) : (
+                            recentEvents.map((event) => (
+                              <div key={event.id} className="rounded-2xl border border-slate-800 bg-slate-900/50 px-3 py-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-medium text-white">{event.type}</p>
+                                  <span className="text-[10px] text-slate-500">{formatRelativeTime(event.timestamp)}</span>
+                                </div>
+                                <p className="mt-1 text-xs leading-5 text-slate-400">{summarizeEvent(event)}</p>
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1173,6 +1234,23 @@ export default function App() {
       setSelectedThreadId(threads[0]?.id ?? "");
     }
   }, [selectedThreadId, threads]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return;
+    }
+
+    const projectThreads = threads.filter((thread) => thread.project_id === selectedProjectId);
+
+    if (projectThreads.length === 0) {
+      setSelectedThreadId("");
+      return;
+    }
+
+    if (!projectThreads.some((thread) => thread.id === selectedThreadId)) {
+      setSelectedThreadId(projectThreads[0].id);
+    }
+  }, [selectedProjectId, selectedThreadId, threads]);
 
   const handleLogin = async ({ loginId, password, rememberDevice }) => {
     setLoginState({ loading: true, error: "" });
