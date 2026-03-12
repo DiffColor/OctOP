@@ -725,173 +725,131 @@ function MainPage({
       <div className="flex min-h-screen flex-col">
         <div className="flex flex-1 flex-col lg:flex-row">
           <aside className="border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:border-b-0 lg:border-r lg:px-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
-              <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">OctOP IDE</p>
-              <h1 className="text-xl font-semibold text-white">Thread Workspace</h1>
-            </div>
-          </div>
-
-          <div className="mt-6">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">My Bridges</p>
-                <h2 className="mt-2 text-lg font-semibold text-white">{summarizeBridges(bridges)}</h2>
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
+                <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
               </div>
-              <button
-                type="button"
-                onClick={onRefresh}
-                className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
-              >
-                새로고침
-              </button>
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-500">OctOP IDE</p>
+                <h1 className="text-xl font-semibold text-white">Projects</h1>
+              </div>
             </div>
 
-            <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
-              <section className="space-y-2">
-                {bridges.length === 0 ? (
+            <div className="mt-6">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
+                  <h2 className="mt-2 text-lg font-semibold text-white">{summarizeProjects(projects)}</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
+                >
+                  새로고침
+                </button>
+              </div>
+
+              <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
+                <section>
+                  <div className="mb-3">
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
+                  <p className="mt-2 text-base font-semibold text-white">Project Tree</p>
+                </div>
+                {projectTree.length === 0 ? (
                   <div className="rounded-[1.5rem] border border-dashed border-slate-800 bg-slate-900/30 px-4 py-5 text-sm text-slate-500">
-                    현재 로그인 사용자에 연결된 bridge가 없습니다.
+                    현재 선택된 bridge에 연결된 프로젝트가 없습니다.
                   </div>
                 ) : (
-                  bridges.map((bridge) => {
-                    const active = bridge.bridge_id === selectedBridgeId;
+                  projectTree.map((project) => {
+                    const active = project.id === selectedProjectId;
 
                     return (
-                      <button
-                        key={bridge.bridge_id}
-                        type="button"
-                        onClick={() => onSelectBridge(bridge.bridge_id)}
-                        className={`w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
+                      <div
+                        key={project.id}
+                        className={`rounded-[1.5rem] border transition ${
                           active
-                            ? "border-emerald-400/40 bg-emerald-500/10"
+                            ? "border-sky-400/40 bg-sky-500/10"
                             : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
-                              {bridge.device_name ?? bridge.bridge_id}
-                            </p>
-                            <p className="mt-1 font-mono text-[11px] text-slate-500">
-                              {bridge.bridge_id}
-                            </p>
+                        <button
+                          type="button"
+                          onClick={() => onSelectProject(project.id)}
+                          className="w-full px-4 py-4 text-left"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
+                                {project.name}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">{project.key}</p>
+                            </div>
+                            <span className="rounded-full bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
+                              {project.totalThreads}
+                            </span>
                           </div>
-                          <span
-                            className={`rounded-full px-2 py-1 text-[11px] ${
-                              bridge.status === "online"
-                                ? "bg-emerald-500/10 text-emerald-300"
-                                : "bg-rose-500/10 text-rose-300"
-                            }`}
-                          >
-                            {bridge.status === "online" ? "online" : bridge.status ?? "unknown"}
-                          </span>
-                        </div>
-                        <p className="mt-3 text-xs text-slate-500">
-                          마지막 확인 {formatRelativeTime(bridge.last_seen_at)}
-                        </p>
-                      </button>
+
+                          <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
+                            <span className="rounded-full bg-slate-950/80 px-2 py-1 text-slate-400">
+                              전체 {project.totalThreads}
+                            </span>
+                            <span className="rounded-full bg-sky-500/10 px-2 py-1 text-sky-300">
+                              실행 {project.runningThreads}
+                            </span>
+                            <span className="rounded-full bg-violet-500/10 px-2 py-1 text-violet-300">
+                              검토 {project.reviewThreads}
+                            </span>
+                          </div>
+                        </button>
+
+                        {active ? (
+                          <div className="border-t border-white/6 px-4 py-4">
+                            <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                              Project Tree
+                            </p>
+                            <div className="space-y-2">
+                              {project.latestThreads.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-3 py-4 text-xs text-slate-500">
+                                  아직 등록된 이슈가 없습니다.
+                                </div>
+                              ) : (
+                                project.latestThreads.map((thread) => (
+                                  <button
+                                    key={thread.id}
+                                    type="button"
+                                    onClick={() => onSelectThread(thread.id)}
+                                    className={`flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left transition ${
+                                      thread.id === selectedThreadId
+                                        ? "bg-slate-950/90 text-white"
+                                        : "bg-slate-950/50 text-slate-300 hover:bg-slate-950/80"
+                                    }`}
+                                  >
+                                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-sm font-medium">{thread.title}</span>
+                                      <span className="mt-1 block font-mono text-[11px] text-slate-500">
+                                        {thread.last_event}
+                                      </span>
+                                    </span>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
                     );
                   })
                 )}
-              </section>
-
-              <section className="pt-4">
-                <div className="mb-3">
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
-                  <h3 className="mt-2 text-base font-semibold text-white">{summarizeProjects(projects)}</h3>
-                </div>
-              {projectTree.map((project) => {
-                const active = project.id === selectedProjectId;
-
-                return (
-                  <div
-                    key={project.id}
-                    className={`rounded-[1.5rem] border transition ${
-                      active
-                        ? "border-sky-400/40 bg-sky-500/10"
-                        : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectProject(project.id)}
-                      className="w-full px-4 py-4 text-left"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
-                            {project.name}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">{project.key}</p>
-                        </div>
-                        <span className="rounded-full bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
-                          {project.totalThreads}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
-                        <span className="rounded-full bg-slate-950/80 px-2 py-1 text-slate-400">
-                          전체 {project.totalThreads}
-                        </span>
-                        <span className="rounded-full bg-sky-500/10 px-2 py-1 text-sky-300">
-                          실행 {project.runningThreads}
-                        </span>
-                        <span className="rounded-full bg-violet-500/10 px-2 py-1 text-violet-300">
-                          검토 {project.reviewThreads}
-                        </span>
-                      </div>
-                    </button>
-
-                    {active ? (
-                      <div className="border-t border-white/6 px-4 py-4">
-                        <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                          Project Tree
-                        </p>
-                        <div className="space-y-2">
-                          {project.latestThreads.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-3 py-4 text-xs text-slate-500">
-                              아직 등록된 이슈가 없습니다.
-                            </div>
-                          ) : (
-                            project.latestThreads.map((thread) => (
-                              <button
-                                key={thread.id}
-                                type="button"
-                                onClick={() => onSelectThread(thread.id)}
-                                className={`flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left transition ${
-                                  thread.id === selectedThreadId
-                                    ? "bg-slate-950/90 text-white"
-                                    : "bg-slate-950/50 text-slate-300 hover:bg-slate-950/80"
-                                }`}
-                              >
-                                <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate text-sm font-medium">{thread.title}</span>
-                                  <span className="mt-1 block font-mono text-[11px] text-slate-500">
-                                    {thread.last_event}
-                                  </span>
-                                </span>
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-              </section>
+                </section>
+              </div>
             </div>
-          </div>
           </aside>
 
-          <main className="flex min-h-screen flex-1 flex-col">
+          <main className="flex min-h-screen flex-1 flex-col pb-14">
           <header className="border-b border-slate-800 bg-slate-950/70 px-4 py-5 backdrop-blur md:px-6 lg:px-8">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
@@ -903,6 +861,27 @@ function MainPage({
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="block w-full sm:w-60">
+                  <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                    Bridge
+                  </span>
+                  <select
+                    value={selectedBridgeId}
+                    onChange={(event) => onSelectBridge(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                  >
+                    {bridges.length === 0 ? (
+                      <option value="">연결된 bridge 없음</option>
+                    ) : (
+                      bridges.map((bridge) => (
+                        <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                          {bridge.device_name ?? bridge.bridge_id}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
                 <label className="relative block w-full sm:w-72">
                   <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-500">
                     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1073,7 +1052,7 @@ function MainPage({
           </main>
         </div>
 
-        <footer className="border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
+        <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-slate-200">{session.displayName || session.loginId}</span>
