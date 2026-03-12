@@ -3,7 +3,7 @@
 <html lang="en"><head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>OctOP - Sign In to AI Orchestration</title>
+<title>OctOP - Sign In with LicenseHub ID</title>
 <!-- BEGIN: External Scripts -->
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <script>
@@ -68,10 +68,10 @@
 <section class="glass-effect p-8 rounded-3xl shadow-2xl" data-purpose="login-card">
 <!-- BEGIN: LoginForm -->
 <form action="#" class="space-y-6" method="POST">
-<!-- Email Field -->
+<!-- Login ID Field -->
 <div data-purpose="form-group">
-<label class="block text-sm font-medium text-slate-300 mb-2" for="email">Work Email</label>
-<input class="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none" id="email" name="email" placeholder="name@company.com" required="" type="email"/>
+<label class="block text-sm font-medium text-slate-300 mb-2" for="loginId">Login ID</label>
+<input class="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none" id="loginId" name="loginId" placeholder="관리자 ID를 입력하세요" required="" type="text"/>
 </div>
 <!-- Password Field -->
 <div data-purpose="form-group">
@@ -92,32 +92,9 @@
         </button>
 </form>
 <!-- END: LoginForm -->
-<!-- BEGIN: Divider -->
-<div class="relative my-8">
-<div class="absolute inset-0 flex items-center">
-<div class="w-full border-t border-slate-700"></div>
-</div>
-<div class="relative flex justify-center text-sm">
-<span class="px-4 bg-brand-surface text-slate-500 rounded-full glass-effect">Or continue with</span>
-</div>
-</div>
-<!-- END: Divider -->
-<!-- BEGIN: Social Logins -->
-<div class="grid grid-cols-2 gap-4" data-purpose="social-auth-buttons">
-<!-- Google Button -->
-<button class="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200">
-<img alt="Google Logo" class="w-5 h-5 mr-2" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB2eKGEzBfd8bSm9RyXkwkpENR94QTpx5z8QZIfOhUBXH_7FE3wq3Ii5SWG88-kodC6f-jAX2ldvESYqbVSOSEwQuAcO9tXfqjBHwseEq2qf3QAw-_JTYszceQ_xX5965yLXlED-cB56jMJ0rh3VR43R1fxrXBocGPzbJamleB_StVCWcrMCUfIptP_vIqx7mMMxwNGyEKBB2gPKrmWL_DHcX4RXNA_By7Scq4y6HriVO4TmJvBsLXtRdXCbvhtuHwnHbdt8fpGx8Y"/>
-<span class="text-sm font-medium">Google</span>
-</button>
-<!-- GitHub Button -->
-<button class="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200">
-<svg class="w-5 h-5 mr-2 text-white" fill="currentColor" viewbox="0 0 24 24">
-<path clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" fill-rule="evenodd"></path>
-</svg>
-<span class="text-sm font-medium">GitHub</span>
-</button>
-</div>
-<!-- END: Social Logins -->
+<div class="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-4 text-sm leading-6 text-slate-400">
+      LicenseHub 계정은 이메일이 아닌 <strong>Login ID</strong> 기반으로 로그인합니다.
+    </div>
 </section>
 <!-- END: Card -->
 <!-- BEGIN: Footer Links -->

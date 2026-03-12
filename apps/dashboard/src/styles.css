@@ -1,11 +1,17 @@
+@import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap");
+
 * {
   box-sizing: border-box;
 }
 
 :root {
-  font-family: "Inter", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Fira Sans", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #e2e8f0;
-  background-color: #0f172a;
+  background-color: #020617;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 html,
@@ -17,41 +23,55 @@ body,
 body {
   margin: 0;
   font-family: inherit;
-  background-color: #0f172a;
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.08), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.08), transparent 28%),
+    #020617;
   color: inherit;
-  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 img {
+  display: block;
   max-width: 100%;
   height: auto;
-  display: block;
+}
+
+code,
+.font-mono {
+  font-family: "Fira Code", "SFMono-Regular", ui-monospace, monospace;
 }
 
 .bg-mesh {
-  background: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.18), rgba(15, 23, 42, 1) 70%);
+  background:
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.16), transparent 26%),
+    radial-gradient(circle at 80% 0%, rgba(129, 140, 248, 0.14), transparent 24%),
+    radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.55), rgba(2, 6, 23, 1) 72%);
 }
 
 .glass-effect {
-  background: rgba(30, 41, 59, 0.75);
+  background: rgba(15, 23, 42, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 40px 120px rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(18px);
+  box-shadow:
+    0 36px 90px rgba(2, 6, 23, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(22px);
 }
 
-@keyframes pulse-slow {
-  0%,
-  100% {
-    opacity: 0.3;
-  }
-
-  50% {
-    opacity: 0.65;
-  }
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
 }
 
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -59,14 +79,41 @@ img {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
   background: #334155;
-  border-radius: 9999px;
-}
-
-.ai-glow {
-  box-shadow: 0 0 18px rgba(14, 165, 233, 0.18);
 }
 
 .kanban-column {
-  min-height: calc(100vh - 12rem);
+  min-height: calc(100vh - 20rem);
+}
+
+.issue-card {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.02),
+    0 18px 42px rgba(2, 6, 23, 0.18);
+}
+
+.issue-card:hover {
+  transform: translateY(-2px);
+}
+
+@media (max-width: 1279px) {
+  .kanban-column {
+    min-height: 24rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .issue-card:hover {
+    transform: none;
+  }
 }

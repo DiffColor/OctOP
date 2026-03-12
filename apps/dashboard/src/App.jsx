@@ -1,472 +1,1289 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-function LoginPage({ onSuccess }) {
-  const [email, setEmail] = useState("");
+const LOCAL_STORAGE_KEY = "octop.dashboard.session";
+const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
+const DEFAULT_API_BASE_URL =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+    ? "http://127.0.0.1:4000"
+    : "https://octop.ilycode.app";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+
+const COLUMN_ORDER = [
+  { id: "todo", label: "To Do", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
+  { id: "running", label: "In Progress", accent: "blue", countClassName: "bg-sky-500/10 text-sky-300" },
+  { id: "review", label: "Review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
+  { id: "done", label: "Done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
+];
+
+const STATUS_META = {
+  queued: {
+    column: "todo",
+    label: "Queued",
+    chipClassName: "bg-slate-800 text-slate-300",
+    dotClassName: "bg-slate-400"
+  },
+  idle: {
+    column: "todo",
+    label: "Idle",
+    chipClassName: "bg-slate-800 text-slate-300",
+    dotClassName: "bg-slate-400"
+  },
+  awaiting_input: {
+    column: "review",
+    label: "Need Input",
+    chipClassName: "bg-amber-500/10 text-amber-300",
+    dotClassName: "bg-amber-400"
+  },
+  running: {
+    column: "running",
+    label: "Running",
+    chipClassName: "bg-sky-500/10 text-sky-300",
+    dotClassName: "bg-sky-400"
+  },
+  failed: {
+    column: "review",
+    label: "Failed",
+    chipClassName: "bg-rose-500/10 text-rose-300",
+    dotClassName: "bg-rose-400"
+  },
+  completed: {
+    column: "done",
+    label: "Done",
+    chipClassName: "bg-emerald-500/10 text-emerald-300",
+    dotClassName: "bg-emerald-400"
+  }
+};
+
+function readStoredSession() {
+  for (const key of [LOCAL_STORAGE_KEY, SESSION_STORAGE_KEY]) {
+    try {
+      const raw = window.localStorage.getItem(key) ?? window.sessionStorage.getItem(key);
+
+      if (!raw) {
+        continue;
+      }
+
+      const parsed = JSON.parse(raw);
+
+      if (parsed?.accessToken && parsed?.userId) {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function storeSession(session, rememberDevice) {
+  const serialized = JSON.stringify(session);
+
+  window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+  window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+
+  if (rememberDevice) {
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, serialized);
+    return;
+  }
+
+  window.sessionStorage.setItem(SESSION_STORAGE_KEY, serialized);
+}
+
+function clearSessionStorage() {
+  window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+  window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `octop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
+}
+
+function formatRelativeTime(value) {
+  if (!value) {
+    return "방금 전";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "방금 전";
+  }
+
+  const diffSeconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const formatter = new Intl.RelativeTimeFormat("ko-KR", { numeric: "auto" });
+  const ranges = [
+    { limit: 60, unit: "second" },
+    { limit: 3600, unit: "minute" },
+    { limit: 86400, unit: "hour" },
+    { limit: 604800, unit: "day" }
+  ];
+
+  for (const range of ranges) {
+    if (Math.abs(diffSeconds) < range.limit) {
+      const divisor =
+        range.unit === "second" ? 1 : range.unit === "minute" ? 60 : range.unit === "hour" ? 3600 : 86400;
+      return formatter.format(Math.round(diffSeconds / divisor), range.unit);
+    }
+  }
+
+  return formatter.format(Math.round(diffSeconds / 604800), "week");
+}
+
+function clampProgress(value) {
+  const numeric = Number(value);
+
+  if (Number.isNaN(numeric)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function getStatusMeta(status) {
+  return STATUS_META[status] ?? STATUS_META.queued;
+}
+
+function parseResponseBody(response, text) {
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (!response.ok) {
+      throw new Error(text);
+    }
+
+    return { message: text };
+  }
+}
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers ?? {})
+    }
+  });
+  const text = await response.text();
+  const payload = parseResponseBody(response, text);
+
+  if (!response.ok) {
+    const message =
+      payload?.error ??
+      payload?.message ??
+      payload?.title ??
+      `요청에 실패했습니다. (${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+function normalizeThread(thread, fallbackProjectId = null) {
+  if (!thread?.id) {
+    return null;
+  }
+
+  return {
+    id: thread.id,
+    title: thread.title ?? thread.name ?? "제목 없는 이슈",
+    project_id: thread.project_id ?? fallbackProjectId,
+    status: thread.status ?? "queued",
+    progress: clampProgress(thread.progress),
+    last_event: thread.last_event ?? "thread.started",
+    last_message: thread.last_message ?? "",
+    created_at: thread.created_at ?? new Date().toISOString(),
+    updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
+    source: thread.source ?? "appServer",
+    turn_id: thread.turn_id ?? null
+  };
+}
+
+function mergeThreads(currentThreads, nextThreads) {
+  const nextById = new Map();
+
+  for (const thread of nextThreads) {
+    const normalized = normalizeThread(thread);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
+
+  return [...nextById.values()].sort(
+    (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+  );
+}
+
+function upsertThread(currentThreads, thread) {
+  const normalized = normalizeThread(thread);
+
+  if (!normalized) {
+    return currentThreads;
+  }
+
+  const next = [...currentThreads];
+  const index = next.findIndex((item) => item.id === normalized.id);
+
+  if (index === -1) {
+    next.unshift(normalized);
+  } else {
+    next[index] = {
+      ...next[index],
+      ...normalized
+    };
+  }
+
+  return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function summarizeProjects(projects) {
+  if (projects.length === 0) {
+    return "프로젝트가 아직 없습니다.";
+  }
+
+  if (projects.length === 1) {
+    return `${projects[0].name} 1개 프로젝트`;
+  }
+
+  return `${projects[0].name} 외 ${projects.length - 1}개 프로젝트`;
+}
+
+function LoginPage({ initialLoginId, loading, error, onSubmit }) {
+  const [loginId, setLoginId] = useState(initialLoginId ?? "");
   const [password, setPassword] = useState("");
-  const [rememberDevice, setRememberDevice] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(Boolean(initialLoginId));
 
-  const handleSubmit = (event) => {
+  useEffect(() => {
+    setLoginId(initialLoginId ?? "");
+  }, [initialLoginId]);
+
+  const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!email || !password) {
+    if (!loginId.trim() || !password.trim()) {
       return;
     }
 
-    onSuccess({ email, rememberDevice });
+    await onSubmit({
+      loginId: loginId.trim(),
+      password,
+      rememberDevice
+    });
   };
 
   return (
-    <div className="relative min-h-screen bg-brand-dark text-slate-200 font-sans flex items-center justify-center p-4 overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden bg-brand-dark text-slate-200">
       <div className="fixed inset-0 -z-10 overflow-hidden">
         <div className="bg-mesh absolute inset-0" />
-        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-brand-accent opacity-10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-600 opacity-10 blur-[120px] rounded-full" />
+        <div className="absolute left-[-10%] top-[-8%] h-[24rem] w-[24rem] rounded-full bg-brand-accent/10 blur-[120px]" />
+        <div className="absolute bottom-[-12%] right-[-12%] h-[28rem] w-[28rem] rounded-full bg-emerald-500/10 blur-[160px]" />
       </div>
 
-      <main className="w-full max-w-md" data-purpose="login-container">
-        <header className="text-center mb-10" data-purpose="login-header">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-tr from-brand-accent to-purple-500 rounded-2xl mb-6 shadow-lg shadow-brand-accent/20">
-            <svg className="w-10 h-10 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight text-white mb-2 font-display">OctOP</h1>
-          <p className="text-slate-400">Scale your AI orchestration with intelligence.</p>
-        </header>
-
-        <section className="glass-effect p-8 rounded-3xl shadow-2xl" data-purpose="login-card">
-          <form className="space-y-6" onSubmit={handleSubmit}>
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2" htmlFor="email">
-                Work Email
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                required
-                placeholder="name@company.com"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm font-medium text-slate-300" htmlFor="password">
-                  Password
-                </label>
-                <a href="#" className="text-xs font-semibold text-brand-accent hover:text-brand-glow transition-colors">
-                  Forgot password?
-                </a>
+      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10 lg:px-8">
+        <div className="grid w-full gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+          <section className="hidden rounded-[2rem] border border-white/8 bg-slate-950/55 p-8 shadow-2xl shadow-slate-950/40 backdrop-blur xl:block">
+            <div className="mb-10 flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
+                <svg className="h-7 w-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
               </div>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                required
-                placeholder="••••••••"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-brand-dark border border-slate-700 text-white focus:ring-2 focus:ring-brand-accent focus:border-transparent transition-all duration-200 outline-none"
-              />
+              <div>
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">OctOP Control Plane</p>
+                <h1 className="mt-2 text-3xl font-semibold text-white">AI orchestration workspace</h1>
+              </div>
             </div>
 
-            <div className="flex items-center">
-              <input
-                id="remember-me"
-                name="remember-me"
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-700 bg-brand-dark text-brand-accent focus:ring-brand-accent focus:ring-offset-brand-dark"
-                checked={rememberDevice}
-                onChange={(event) => setRememberDevice(event.target.checked)}
-              />
-              <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-400">
-                Remember this device
-              </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Runtime</p>
+                <p className="mt-3 text-3xl font-semibold text-white">24/7</p>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  숨겨진 로컬 bridge와 app-server 상태를 원격 보드에서 계속 추적합니다.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Threads</p>
+                <p className="mt-3 text-3xl font-semibold text-white">Live</p>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  실행 중인 turn, diff, 마지막 메시지를 칸반과 모바일 체크리스트에서 동시에 확인합니다.
+                </p>
+              </div>
             </div>
 
-            <button
-              type="submit"
-              className="w-full py-3 px-4 rounded-xl bg-brand-accent hover:bg-indigo-500 text-white font-bold text-lg shadow-lg shadow-brand-accent/25 transform transition active:scale-[0.98] duration-200"
-            >
-              Sign In
-            </button>
-          </form>
-
-          <div className="relative my-8">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-700" />
+            <div className="mt-8 rounded-3xl border border-slate-800 bg-slate-900/70 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Workspace Snapshot</p>
+                  <h2 className="mt-2 text-xl font-semibold text-white">운영 팀을 위한 단일 관제 화면</h2>
+                </div>
+                <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-300">
+                  Bridge Online Ready
+                </span>
+              </div>
+              <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                {[
+                  ["Issue intake", "보드에서 바로 등록하고 즉시 thread 생성"],
+                  ["Event stream", "SSE 기반으로 plan/diff/완료 상태 반영"],
+                  ["Agent runtime", "Codex app-server 상태와 계정 정보를 한 곳에서 확인"]
+                ].map(([title, description]) => (
+                  <div key={title} className="rounded-2xl border border-slate-800 bg-slate-950/75 p-4">
+                    <p className="text-sm font-medium text-white">{title}</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">{description}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-4 bg-brand-surface text-slate-500 rounded-full glass-effect">Or continue with</span>
-            </div>
-          </div>
+          </section>
 
-          <div className="grid grid-cols-2 gap-4" data-purpose="social-auth-buttons">
-            <button
-              type="button"
-              className="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200"
-            >
-              <img
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuB2eKGEzBfd8bSm9RyXkwkpENR94QTpx5z8QZIfOhUBXH_7FE3wq3Ii5SWG88-kodC6f-jAX2ldvESYqbVSOSEwQuAcO9tXfqjBHwseEq2qf3QAw-_JTYszceQ_xX5965yLXlED-cB56jMJ0rh3VR43R1fxrXBocGPzbJamleB_StVCWcrMCUfIptP_vIqx7mMMxwNGyEKBB2gPKrmWL_DHcX4RXNA_By7Scq4y6HriVO4TmJvBsLXtRdXCbvhtuHwnHbdt8fpGx8Y"
-                alt="Google Logo"
-                className="w-5 h-5 mr-2"
-              />
-              <span className="text-sm font-medium">Google</span>
-            </button>
-            <button
-              type="button"
-              className="flex items-center justify-center py-2.5 px-4 rounded-xl border border-slate-700 hover:bg-slate-800 transition-colors duration-200"
-            >
-              <svg className="w-5 h-5 mr-2 text-white" fill="currentColor" viewBox="0 0 24 24">
-                <path
-                  fillRule="evenodd"
-                  clipRule="evenodd"
-                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-                />
-              </svg>
-              <span className="text-sm font-medium">GitHub</span>
-            </button>
-          </div>
-        </section>
+          <main className="mx-auto w-full max-w-md">
+            <header className="mb-10 text-center">
+              <div className="inline-flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-tr from-brand-accent to-violet-500 shadow-lg shadow-brand-accent/20">
+                <svg className="h-9 w-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              </div>
+              <h1 className="mt-6 text-3xl font-semibold tracking-tight text-white">OctOP</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                LicenseHub 계정의 <span className="font-medium text-slate-200">ID</span>로 로그인해 작업 보드를 여십시오.
+              </p>
+            </header>
 
-        <footer className="mt-8 text-center text-sm text-slate-500" data-purpose="login-footer">
-          Don't have an account?{" "}
-          <a href="#" className="font-semibold text-brand-accent hover:text-brand-glow transition-colors">
-            Start your 14-day free trial
-          </a>
-        </footer>
-      </main>
+            <section className="glass-effect rounded-[2rem] p-8 shadow-2xl shadow-slate-950/35">
+              <form className="space-y-6" onSubmit={handleSubmit}>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
+                    Login ID
+                  </label>
+                  <input
+                    id="loginId"
+                    name="loginId"
+                    type="text"
+                    autoComplete="username"
+                    required
+                    placeholder="관리자 ID를 입력하세요"
+                    value={loginId}
+                    onChange={(event) => setLoginId(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-700 bg-brand-dark px-4 py-3 text-white outline-none transition duration-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/40"
+                  />
+                </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="block text-sm font-medium text-slate-300" htmlFor="password">
+                      Password
+                    </label>
+                    <span className="text-xs text-slate-500">LicenseHub 계정 비밀번호</span>
+                  </div>
+                  <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-700 bg-brand-dark px-4 py-3 text-white outline-none transition duration-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/40"
+                  />
+                </div>
+
+                <label className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
+                  <input
+                    id="remember-device"
+                    name="remember-device"
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-700 bg-brand-dark text-sky-400 focus:ring-sky-400"
+                    checked={rememberDevice}
+                    onChange={(event) => setRememberDevice(event.target.checked)}
+                  />
+                  이 기기에서 로그인 상태 유지
+                </label>
+
+                {error ? (
+                  <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                    {error}
+                  </div>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-accent px-4 py-3 text-base font-semibold text-white shadow-lg shadow-brand-accent/20 transition duration-200 hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loading ? (
+                    <>
+                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      로그인 중...
+                    </>
+                  ) : (
+                    "Sign In"
+                  )}
+                </button>
+              </form>
+
+              <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-4 text-sm leading-6 text-slate-400">
+                로그인 후 project 목록, thread 진행 상태, app-server 연결 상태가 자동으로 동기화됩니다.
+              </div>
+            </section>
+          </main>
+        </div>
+      </div>
     </div>
   );
 }
 
-function MainPage() {
+function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSubmit }) {
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [projectId, setProjectId] = useState(selectedProjectId ?? projects[0]?.id ?? "");
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    setProjectId(selectedProjectId ?? projects[0]?.id ?? "");
+  }, [open, projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      setPrompt("");
+    }
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+
+    if (!title.trim() || !projectId) {
+      return;
+    }
+
+    await onSubmit({
+      title: title.trim(),
+      prompt: prompt.trim(),
+      project_id: projectId
+    });
+  };
+
   return (
-    <div className="min-h-screen h-full bg-slate-900 text-slate-200 font-sans selection:bg-octo-blue/30 overflow-hidden">
-      <div className="flex h-full" data-purpose="app-container">
-        <aside className="w-64 bg-octo-dark border-r border-slate-800 flex flex-col hidden md:flex" data-purpose="navigation-sidebar">
-          <div className="p-6 flex items-center space-x-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-octo-blue to-octo-purple rounded-lg flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </div>
-            <span className="text-xl font-bold tracking-tight text-white">OctOP</span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Issue</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">새 thread 등록</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">
+              제목은 칸반 카드의 이슈명으로 사용되고, 설명은 Codex turn 입력으로 전달됩니다.
+            </p>
           </div>
-
-          <nav className="flex-1 px-4 space-y-1 mt-4">
-            <a
-              href="#"
-              className="flex items-center px-3 py-2 text-sm font-medium rounded-md bg-slate-800 text-white ai-glow"
-            >
-              <svg className="w-5 h-5 mr-3 text-octo-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Projects
-            </a>
-            <a
-              href="#"
-              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-            >
-              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Orchestrators
-            </a>
-            <a
-              href="#"
-              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-            >
-              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Analytics
-            </a>
-            <a
-              href="#"
-              className="flex items-center px-3 py-2 text-sm font-medium rounded-md text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-            >
-              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Settings
-            </a>
-          </nav>
-
-          <div className="p-4 border-t border-slate-800 mt-auto">
-            <div className="flex items-center">
-              <img
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAqiAAApAOqanMWsPsltijAnFAGxW8LLnowQR5DoIeFdVIjjLqZNdCAfPR0BiFCL3GTUzIVAtDa9NC-EHBZbM9vkhz5PiI-112imRbh338KnO1MUCj7U1UwuEL1a7XbTFpgaHgylGR0-XmGxxJBbG4ZTVss-3vA7o3XuytxgGF1_LW8O0vkWG6a8PawFlgarDPR1EyPLF8Tl5h2xyQOnYf1uz4pMrZhEvZis_36T-ZhqH1LQVrzp7cyasNmvdke6N51vasI-Pt5mzw"
-                alt="User Avatar"
-                className="h-8 w-8 rounded-full ring-2 ring-octo-blue/20"
-              />
-              <div className="ml-3">
-                <p className="text-xs font-semibold text-white">Project Manager</p>
-                <p className="text-[10px] text-slate-500 uppercase tracking-wider">Enterprise Plan</p>
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        <main className="flex-1 flex flex-col min-w-0 bg-slate-900 overflow-hidden">
-          <header
-            className="h-16 border-b border-slate-800 bg-octo-dark/50 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-10"
-            data-purpose="top-navigation"
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
-            <div className="flex items-center space-x-2 text-sm">
-              <span className="text-slate-500">Projects</span>
-              <span className="text-slate-700">/</span>
-              <span className="text-white font-medium">Neural-Net-Optimization</span>
+            닫기
+          </button>
+        </div>
+
+        <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-title">
+              이슈 제목
+            </label>
+            <input
+              id="issue-title"
+              type="text"
+              required
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="예: Codex bridge 상태 전이를 정리해 주세요"
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-project">
+              프로젝트
+            </label>
+            <select
+              id="issue-project"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-prompt">
+              작업 설명
+            </label>
+            <textarea
+              id="issue-prompt"
+              rows="5"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="필요한 작업 내용이나 확인하고 싶은 내용을 입력해 주세요."
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? "등록 중..." : "이슈 등록"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ThreadCard({ thread, selected, onSelect }) {
+  const status = getStatusMeta(thread.status);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(thread.id)}
+      className={`issue-card w-full rounded-2xl border p-4 text-left transition ${
+        selected
+          ? "border-sky-400/50 bg-slate-900 shadow-lg shadow-sky-950/20"
+          : "border-slate-800 bg-slate-900/90 hover:border-slate-700"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <span className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] font-medium ${status.chipClassName}`}>
+          <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+          {status.label}
+        </span>
+        <span className="font-mono text-[11px] text-slate-500">{thread.id.slice(0, 8)}</span>
+      </div>
+
+      <h4 className="mt-4 text-sm font-semibold leading-6 text-white">{thread.title}</h4>
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center justify-between text-[11px] text-slate-400">
+          <span>{thread.last_event ?? "thread.started"}</span>
+          <span>{thread.progress}%</span>
+        </div>
+        <div className="h-1.5 rounded-full bg-slate-800">
+          <div className="h-1.5 rounded-full bg-gradient-to-r from-sky-400 to-violet-400" style={{ width: `${thread.progress}%` }} />
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500">
+        <span>{thread.source === "appServer" ? "app-server" : thread.source}</span>
+        <span>{formatRelativeTime(thread.updated_at)}</span>
+      </div>
+    </button>
+  );
+}
+
+function MainPage({
+  session,
+  status,
+  projects,
+  threads,
+  selectedProjectId,
+  selectedThreadId,
+  search,
+  recentEvents,
+  loadingState,
+  issueBusy,
+  composerOpen,
+  onSearchChange,
+  onSelectProject,
+  onSelectThread,
+  onOpenComposer,
+  onCloseComposer,
+  onSubmitIssue,
+  onRefresh,
+  onLogout
+}) {
+  const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const filteredThreads = threads.filter((thread) => {
+    const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
+    const keyword = search.trim().toLowerCase();
+    const matchesSearch =
+      !keyword ||
+      thread.title.toLowerCase().includes(keyword) ||
+      thread.last_event.toLowerCase().includes(keyword) ||
+      thread.last_message.toLowerCase().includes(keyword);
+
+    return matchesProject && matchesSearch;
+  });
+
+  const columns = COLUMN_ORDER.map((column) => ({
+    ...column,
+    threads: filteredThreads.filter((thread) => getStatusMeta(thread.status).column === column.id)
+  }));
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200">
+      <div className="flex min-h-screen flex-col lg:flex-row">
+        <aside className="border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:border-b-0 lg:border-r lg:px-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
+              <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
             </div>
-            <div className="flex items-center space-x-6">
-              <div className="relative group">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <svg
-                    className="h-4 w-4 text-slate-500 group-focus-within:text-octo-blue transition-colors"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </div>
-                <input
-                  type="text"
-                  placeholder="Search tasks..."
-                  className="bg-slate-800 border-transparent focus:ring-1 focus:ring-octo-blue focus:border-octo-blue block w-64 pl-10 sm:text-sm rounded-lg text-slate-300 transition-all"
-                />
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">OctOP IDE</p>
+              <h1 className="text-xl font-semibold text-white">Thread Workspace</h1>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Signed In</p>
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-base font-semibold text-white">{session.displayName || session.loginId}</p>
+                <p className="mt-1 text-sm text-slate-400">
+                  {session.loginId} · {session.role || "viewer"}
+                </p>
               </div>
               <button
                 type="button"
-                className="bg-octo-blue hover:bg-sky-500 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center transition-all shadow-lg shadow-octo-blue/20"
+                onClick={onLogout}
+                className="rounded-2xl border border-slate-800 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
               >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 4v16m8-8H4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                New Issue
+                로그아웃
               </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Bridge</p>
+              <div className="mt-3 flex items-center gap-2 text-sm font-medium text-white">
+                <span className={`h-2.5 w-2.5 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
+                {status.app_server?.connected ? "Connected" : "Disconnected"}
+              </div>
+              <p className="mt-2 text-sm text-slate-400">
+                {status.app_server?.last_error || "로컬 app-server와 정상 연결 상태입니다."}
+              </p>
+            </div>
+
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Projects</p>
+              <p className="mt-3 text-2xl font-semibold text-white">{projects.length}</p>
+              <p className="mt-2 text-sm text-slate-400">{summarizeProjects(projects)}</p>
+            </div>
+
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Threads</p>
+              <p className="mt-3 text-2xl font-semibold text-white">{threads.length}</p>
+              <p className="mt-2 text-sm text-slate-400">최근 이벤트 기준으로 최신 순 정렬</p>
+            </div>
+          </div>
+
+          <section className="mt-6">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-white">Projects</h2>
+              <button
+                type="button"
+                onClick={onRefresh}
+                className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
+              >
+                새로고침
+              </button>
+            </div>
+            <div className="space-y-2">
+              {projects.map((project) => {
+                const active = project.id === selectedProjectId;
+
+                return (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => onSelectProject(project.id)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                      active
+                        ? "border-sky-400/40 bg-sky-500/10 text-white"
+                        : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">{project.name}</p>
+                        <p className="mt-1 text-xs text-slate-500">{project.key}</p>
+                      </div>
+                      <span className="rounded-full bg-slate-900/70 px-2 py-1 text-[11px] text-slate-400">
+                        {threads.filter((thread) => thread.project_id === project.id).length}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="mt-6">
+            <h2 className="mb-3 text-sm font-semibold text-white">Recent Events</h2>
+            <div className="custom-scrollbar max-h-64 space-y-2 overflow-y-auto pr-1">
+              {recentEvents.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 px-4 py-5 text-sm text-slate-500">
+                  아직 수신된 이벤트가 없습니다.
+                </div>
+              ) : (
+                recentEvents.map((event) => (
+                  <div key={event.id} className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-white">{event.type}</p>
+                      <span className="text-[11px] text-slate-500">{formatRelativeTime(event.timestamp)}</span>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
+                      {event.summary || "브릿지 상태가 갱신되었습니다."}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </aside>
+
+        <main className="flex min-h-screen flex-1 flex-col">
+          <header className="border-b border-slate-800 bg-slate-950/70 px-4 py-5 backdrop-blur md:px-6 lg:px-8">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Project Board</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">{selectedProject?.name ?? "프로젝트 선택 필요"}</h2>
+                <p className="mt-2 text-sm text-slate-400">
+                  {status.app_server?.account?.email ?? "app-server 계정 정보 대기 중"} · 마지막 갱신 {formatRelativeTime(status.updated_at)}
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="relative block w-full sm:w-72">
+                  <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-500">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
+                  </span>
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder="thread 제목, 이벤트 검색"
+                    className="w-full rounded-2xl border border-slate-800 bg-slate-900/80 py-3 pl-11 pr-4 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={onOpenComposer}
+                  disabled={projects.length === 0}
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 4v16m8-8H4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                  이슈 등록
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Status</p>
+                <p className="mt-3 text-lg font-semibold text-white">
+                  {status.app_server?.initialized ? "Ready" : "Starting"}
+                </p>
+                <p className="mt-2 text-sm text-slate-400">계정 연결과 초기화 완료 여부</p>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Account</p>
+                <p className="mt-3 text-lg font-semibold text-white">
+                  {status.app_server?.account?.plan_type ?? "Unknown"}
+                </p>
+                <p className="mt-2 text-sm text-slate-400">app-server에 연결된 Codex 플랜</p>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Running</p>
+                <p className="mt-3 text-lg font-semibold text-white">
+                  {threads.filter((thread) => thread.status === "running").length}
+                </p>
+                <p className="mt-2 text-sm text-slate-400">현재 turn 실행 중인 thread 수</p>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Refresh</p>
+                <p className="mt-3 text-lg font-semibold text-white">
+                  {loadingState === "loading" ? "Syncing" : "Stable"}
+                </p>
+                <p className="mt-2 text-sm text-slate-400">Gateway snapshot과 SSE 이벤트 기준 상태</p>
+              </div>
             </div>
           </header>
 
-          <div className="flex-1 overflow-x-auto p-8 custom-scrollbar" data-purpose="kanban-container">
-            <div className="flex space-x-6 h-full min-w-max">
-              <section className="w-80 flex flex-col" data-purpose="kanban-column">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="flex items-center text-sm font-bold text-slate-400 uppercase tracking-widest">
-                    <span className="w-2 h-2 rounded-full bg-slate-400 mr-2" />
-                    To Do
-                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">3</span>
-                  </h3>
-                </div>
-                <div className="kanban-column space-y-4 rounded-xl">
-                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-orange-500/10 text-orange-500 uppercase tracking-tighter">
-                        High
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-500">OCTO-102</span>
-                    </div>
-                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
-                      Implement Vector Embedding Cache
-                    </h4>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center text-[10px] text-slate-500">
-                        <svg className="w-3 h-3 mr-1 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                        AI Suggested
+          <div className="flex flex-1 flex-col xl:flex-row">
+            <section className="min-w-0 flex-1 overflow-x-auto px-4 py-6 md:px-6 lg:px-8">
+              <div className="flex min-h-full gap-5 pb-3">
+                {columns.map((column) => (
+                  <div key={column.id} className="kanban-column w-[20rem] shrink-0 rounded-[1.75rem] border border-slate-800 bg-slate-950/60 p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-full ${column.accent === "slate" ? "bg-slate-400" : column.accent === "blue" ? "bg-sky-400" : column.accent === "violet" ? "bg-violet-400" : "bg-emerald-400"}`} />
+                          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-300">{column.label}</h3>
+                        </div>
+                        <p className="mt-2 text-xs text-slate-500">
+                          {column.id === "todo"
+                            ? "등록되었지만 아직 실행이 시작되지 않은 항목"
+                            : column.id === "running"
+                              ? "turn이 실행 중이거나 agent 응답이 들어오는 항목"
+                              : column.id === "review"
+                                ? "실패 또는 사용자 입력이 필요한 항목"
+                                : "완료된 thread"}
+                        </p>
                       </div>
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqMsP1Z0p-Wpi8wq8wijrIdV3jIRjnYCj-IAlY6Mlfea1bNgUBdPHeTbK2k3fLsUHqVSa5gIZZDlOHTUsgbGN3_8dbiuEF4oC5iM-xyVMQgg5EgGid_DEgtCTe_iiE5xale740sY1SOuKIogIdA_uW-PwvnZkFgek0UiIzj2_fwyQoyMIYCEqfoHqN2PUahXB-3ruXFtMTfgu3ebMQ230YJJTm_r3E3x1hZiu7uXAuoouWas-4nbJ5L0i9vW8_3Cn8yvSju7k8uJI"
-                        alt="Assignee"
-                        className="w-6 h-6 rounded-full border border-slate-700"
-                      />
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${column.countClassName}`}>
+                        {column.threads.length}
+                      </span>
                     </div>
-                  </div>
 
-                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">
-                        Med
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-500">OCTO-105</span>
-                    </div>
-                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
-                      Update Model API Endpoints
-                    </h4>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center text-[10px] text-slate-500">
-                        <svg className="w-3 h-3 mr-1 text-slate-600" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" />
-                        </svg>
-                        Manual
-                      </div>
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuC5TK9mccrSlCU_VyiHhq2W7xK8n-sRJuTa7lE3bf2_ASpcdKf7DvjdW6zvwtQo3nKC6ErT5-oZM4QccXhuvawvFimhNsIFLmIROhzmQbGupbuGVfwpZNyaMQBujxPK03_JmcpoJky6soemJrAUfkktgqTLkIA8RFU4qQxvyS_d8_i9vSNvO--Q8Zjsh8fNOsNmZpnROmM2KAJDnW9ofbaKF4GdlZWZmXUXx0ObxUKs_LTVwVptEk8lWIKg6wWPX6OOMHd2KRWkrzA"
-                        alt="Assignee"
-                        className="w-6 h-6 rounded-full border border-slate-700"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="w-80 flex flex-col" data-purpose="kanban-column">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="flex items-center text-sm font-bold text-octo-blue uppercase tracking-widest">
-                    <span className="w-2 h-2 rounded-full bg-octo-blue mr-2 animate-pulse" />
-                    In Progress
-                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">1</span>
-                  </h3>
-                </div>
-                <div className="kanban-column space-y-4">
-                  <div className="bg-octo-card p-4 rounded-xl border border-octo-blue/30 shadow-lg shadow-octo-blue/5 group">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-red-500/10 text-red-500 uppercase tracking-tighter">
-                        Critical
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-500">OCTO-98</span>
-                    </div>
-                    <h4 className="text-sm font-medium text-slate-200 mb-2">Refactor Tokenizer Middleware</h4>
-                    <div className="mb-4">
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span className="text-octo-blue font-semibold">AI Agent Working...</span>
-                        <span className="text-slate-500">65%</span>
-                      </div>
-                      <div className="w-full bg-slate-800 rounded-full h-1">
-                        <div className="bg-gradient-to-r from-octo-blue to-octo-purple h-1 rounded-full" style={{ width: "65%" }} />
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center text-[10px] text-octo-blue">
-                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path
-                            d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                    <div className="custom-scrollbar flex max-h-[calc(100vh-20rem)] flex-col gap-3 overflow-y-auto pr-1">
+                      {column.threads.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
+                          해당 상태의 thread가 없습니다.
+                        </div>
+                      ) : (
+                        column.threads.map((thread) => (
+                          <ThreadCard
+                            key={thread.id}
+                            thread={thread}
+                            selected={thread.id === selectedThreadId}
+                            onSelect={onSelectThread}
                           />
-                        </svg>
-                        Automated
-                      </div>
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuAIYk9yLvtWc6meRXLDf0_UUtL3AL1bBzXsn8g1_MswTvVPFIh0XYQoK9GUdb-x1HgTh2742_d3xM7t16SuplRoRncukbW2Rvcfh0xexauULN-Xvu9hvXJa_Yey5w7ny_XIIyNAENs0QAKBNxDtLAdnzUPRyj5_Az2VMR0lJHfNUPpCqePVb5hiQAVL-j4sHi9uzP8zaomwstqWjqPEMfnmjGjMlGgdnSGdSlR12qP4lEsXK-IeCIm4xrjIv1KX_D0vFmOgiPl6ISI"
-                        alt="Assignee"
-                        className="w-6 h-6 rounded-full border-2 border-octo-blue"
-                      />
+                        ))
+                      )}
                     </div>
                   </div>
-                </div>
-              </section>
+                ))}
+              </div>
+            </section>
 
-              <section className="w-80 flex flex-col" data-purpose="kanban-column">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="flex items-center text-sm font-bold text-octo-purple uppercase tracking-widest">
-                    <span className="w-2 h-2 rounded-full bg-octo-purple mr-2" />
-                    Review
-                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">2</span>
-                  </h3>
-                </div>
-                <div className="kanban-column space-y-4">
-                  <div className="bg-octo-card p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition-all cursor-pointer shadow-sm group">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-500/10 text-blue-500 uppercase tracking-tighter">
-                        Med
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-500">OCTO-92</span>
-                    </div>
-                    <h4 className="text-sm font-medium text-slate-200 mb-4 group-hover:text-octo-blue transition-colors">
-                      Setup CI/CD for Model Testing
-                    </h4>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center text-[10px] text-green-500">
-                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                        AI Verified
+            <aside className="border-t border-slate-800 bg-slate-950/90 px-4 py-6 xl:w-[22rem] xl:border-l xl:border-t-0">
+              <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/70 p-5">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Thread Detail</p>
+                {selectedThread ? (
+                  <div className="mt-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">{selectedThread.title}</h3>
+                        <p className="mt-2 font-mono text-xs text-slate-500">{selectedThread.id}</p>
                       </div>
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuA5ToSkhaTy6URHx2EdLZ8WYsHnWjwGrxdgzbCp9apU-hb2M3es-sRheZ3CbFnvskjHMAXzOEBAv7mYrtfZQuL1teMug7-TXSngzuPv_PUiOuNXnVs7kZvmEFRG1qnADAYhygErjM9_89OrqMzwgSDQYknm_ePQmndfd4sMN8sHthCHzWi_k76G2ii4z3MtSb2SR39CiNTaTu2eBWqrDVL1v2u4Vq8B2iJqonoe6F00nfCu3rdhf3mG6zZhMr_S8zxxvA2xEeQoi_Y"
-                        alt="Assignee"
-                        className="w-6 h-6 rounded-full border border-slate-700"
-                      />
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${getStatusMeta(selectedThread.status).chipClassName}`}>
+                        {getStatusMeta(selectedThread.status).label}
+                      </span>
                     </div>
-                  </div>
-                </div>
-              </section>
 
-              <section className="w-80 flex flex-col" data-purpose="kanban-column">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="flex items-center text-sm font-bold text-green-500 uppercase tracking-widest">
-                    <span className="w-2 h-2 rounded-full bg-green-500 mr-2" />
-                    Done
-                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-800 text-[10px]">12</span>
-                  </h3>
-                </div>
-                <div className="kanban-column space-y-4">
-                  <div className="bg-octo-card/50 p-4 rounded-xl border border-slate-800/50 opacity-60 hover:opacity-100 transition-all cursor-pointer group">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-700 text-slate-400 uppercase tracking-tighter line-through">
-                        Low
-                      </span>
-                      <span className="text-[10px] font-mono text-slate-600">OCTO-84</span>
-                    </div>
-                    <h4 className="text-sm font-medium text-slate-400 mb-4 group-hover:text-octo-blue transition-colors">
-                      Documentation Cleanup
-                    </h4>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center text-[10px] text-slate-600">
-                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M5 13l4 4L19 7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                        Completed
+                    <div className="mt-6 space-y-4 text-sm">
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                        <div className="flex items-center justify-between text-slate-400">
+                          <span>진행률</span>
+                          <span>{selectedThread.progress}%</span>
+                        </div>
+                        <div className="mt-3 h-2 rounded-full bg-slate-800">
+                          <div
+                            className="h-2 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
+                            style={{ width: `${selectedThread.progress}%` }}
+                          />
+                        </div>
                       </div>
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuC-KK_bnsh1yTN9GRs4Hr34PWBTZT58OLUb7trQ8YDjwIWVjNmEzozsxKr4ejog-nKTHUV9m5TXEbEr0Ft5-4NHtxr1M9miobEjUn4VotCOvQPzT2rhcrtIsn2I_3F8M_nFf_tE22UB17e6hesLBCJC0E1KsJse7_CmdPcWDN7wtnkwzvL_ofdVnpfIMwW6axvIlntx-7EAC3GHT6o1gWSPbFJUm8DUD8aELX_f11UqebHi-wnM0gP9i2QnOd9k8iQusAeNqcAIB74"
-                        alt="Assignee"
-                        className="w-6 h-6 rounded-full border border-slate-700 grayscale"
-                      />
+
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Project</p>
+                          <p className="mt-2 text-sm font-medium text-white">
+                            {projects.find((project) => project.id === selectedThread.project_id)?.name ?? "미지정"}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Last Event</p>
+                          <p className="mt-2 text-sm font-medium text-white">{selectedThread.last_event}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Created</p>
+                          <p className="mt-2 text-sm font-medium text-white">{formatDateTime(selectedThread.created_at)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Updated</p>
+                          <p className="mt-2 text-sm font-medium text-white">{formatDateTime(selectedThread.updated_at)}</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                        <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Last Message</p>
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">
+                          {selectedThread.last_message || "아직 agent 메시지가 수신되지 않았습니다."}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </section>
-            </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-4 py-8 text-sm leading-6 text-slate-500">
+                    좌측 보드에서 thread를 선택하면 상세 정보가 여기에 표시됩니다.
+                  </div>
+                )}
+              </div>
+            </aside>
           </div>
         </main>
       </div>
+
+      <IssueComposer
+        open={composerOpen}
+        busy={issueBusy}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onClose={onCloseComposer}
+        onSubmit={onSubmitIssue}
+      />
     </div>
   );
 }
 
 export default function App() {
-  const [screen, setScreen] = useState("login");
+  const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
+  const [loginState, setLoginState] = useState({ loading: false, error: "" });
+  const [status, setStatus] = useState({
+    app_server: {
+      connected: false,
+      initialized: false,
+      account: null,
+      last_error: null
+    },
+    updated_at: null
+  });
+  const [projects, setProjects] = useState([]);
+  const [threads, setThreads] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedThreadId, setSelectedThreadId] = useState("");
+  const [search, setSearch] = useState("");
+  const [recentEvents, setRecentEvents] = useState([]);
+  const [loadingState, setLoadingState] = useState("idle");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [issueBusy, setIssueBusy] = useState(false);
 
-  if (screen === "login") {
-    return <LoginPage onSuccess={() => setScreen("dashboard")} />;
+  async function loadDashboard(sessionArg) {
+    if (!sessionArg?.userId) {
+      return;
+    }
+
+    setLoadingState("loading");
+
+    try {
+      const [nextStatus, nextProjects, nextThreads] = await Promise.all([
+        apiRequest(`/api/bridge/status?user_id=${encodeURIComponent(sessionArg.userId)}`),
+        apiRequest(`/api/projects?user_id=${encodeURIComponent(sessionArg.userId)}`),
+        apiRequest(`/api/threads?user_id=${encodeURIComponent(sessionArg.userId)}`)
+      ]);
+
+      setStatus(nextStatus);
+      setProjects(nextProjects.projects ?? []);
+      setThreads(mergeThreads([], nextThreads.threads ?? []));
+      setSelectedProjectId((current) => current || nextProjects.projects?.[0]?.id || "");
+      setSelectedThreadId((current) => current || nextThreads.threads?.[0]?.id || "");
+      setLoadingState("ready");
+    } catch (error) {
+      setLoadingState("error");
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "dashboard.load.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
   }
 
-  return <MainPage />;
+  async function loadBootstrap(sessionArg) {
+    if (!sessionArg?.accessToken) {
+      return;
+    }
+
+    try {
+      await apiRequest("/api/auth/bootstrap", {
+        headers: {
+          Authorization: `Bearer ${sessionArg.accessToken}`
+        }
+      });
+    } catch {
+      // 일반 계정일 경우 bootstrap이 403일 수 있으므로 로그인 흐름은 유지합니다.
+    }
+  }
+
+  useEffect(() => {
+    if (!session?.userId) {
+      return;
+    }
+
+    void loadDashboard(session);
+    void loadBootstrap(session);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session?.userId) {
+      return undefined;
+    }
+
+    const eventSource = new EventSource(
+      `${API_BASE_URL}/api/events?user_id=${encodeURIComponent(session.userId)}`
+    );
+
+    const appendEvent = (type, summary) => {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type,
+          timestamp: new Date().toISOString(),
+          summary
+        },
+        ...current
+      ].slice(0, 20));
+    };
+
+    eventSource.addEventListener("snapshot", (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        setStatus(payload);
+      } catch {
+        // ignore malformed snapshot
+      }
+    });
+
+    eventSource.addEventListener("message", (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        const summary =
+          payload?.payload?.thread?.title ??
+          payload?.payload?.error ??
+          payload?.payload?.projects?.[0]?.name ??
+          payload?.payload?.threads?.[0]?.title ??
+          payload?.type;
+
+        appendEvent(payload.type, summary);
+
+        if (payload.type === "bridge.status.updated") {
+          setStatus(payload.payload);
+          return;
+        }
+
+        if (payload.type === "bridge.projects.updated") {
+          const nextProjects = payload.payload?.projects ?? [];
+          setProjects(nextProjects);
+          setSelectedProjectId((current) => current || nextProjects[0]?.id || "");
+          return;
+        }
+
+        if (payload.type === "bridge.threads.updated") {
+          const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
+          setThreads(nextThreads);
+          setSelectedThreadId((current) => current || nextThreads[0]?.id || "");
+          return;
+        }
+
+        if (payload.payload?.thread) {
+          setThreads((current) => upsertThread(current, payload.payload.thread));
+          setSelectedThreadId((current) => current || payload.payload.thread.id);
+        }
+      } catch {
+        // ignore malformed event payload
+      }
+    });
+
+    eventSource.addEventListener("error", () => {
+      appendEvent("sse.error", "실시간 이벤트 스트림이 재연결을 시도하고 있습니다.");
+    });
+
+    return () => {
+      eventSource.close();
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!selectedProjectId && projects.length > 0) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedThreadId && threads.length > 0) {
+      setSelectedThreadId(threads[0].id);
+      return;
+    }
+
+    if (selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId)) {
+      setSelectedThreadId(threads[0]?.id ?? "");
+    }
+  }, [selectedThreadId, threads]);
+
+  const handleLogin = async ({ loginId, password, rememberDevice }) => {
+    setLoginState({ loading: true, error: "" });
+
+    try {
+      const auth = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          loginId,
+          password
+        })
+      });
+
+      const nextSession = {
+        accessToken: auth.accessToken,
+        expiresAt: auth.expiresAt,
+        role: auth.role,
+        userId: auth.userId,
+        displayName: auth.displayName,
+        permissions: auth.permissions ?? [],
+        loginId
+      };
+
+      storeSession(nextSession, rememberDevice);
+      setSession(nextSession);
+      setLoginState({ loading: false, error: "" });
+    } catch (error) {
+      setLoginState({ loading: false, error: error.message });
+    }
+  };
+
+  const handleLogout = () => {
+    clearSessionStorage();
+    setSession(null);
+    setProjects([]);
+    setThreads([]);
+    setRecentEvents([]);
+    setSelectedProjectId("");
+    setSelectedThreadId("");
+    setSearch("");
+  };
+
+  const handleCreateIssue = async (payload) => {
+    if (!session?.userId) {
+      return;
+    }
+
+    setIssueBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/commands/ping?user_id=${encodeURIComponent(session.userId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }
+      );
+
+      if (response?.thread) {
+        setThreads((current) => upsertThread(current, response.thread));
+        setSelectedThreadId(response.thread.id);
+      }
+
+      setComposerOpen(false);
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.create.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setIssueBusy(false);
+    }
+  };
+
+  if (!session) {
+    return (
+      <LoginPage
+        initialLoginId=""
+        loading={loginState.loading}
+        error={loginState.error}
+        onSubmit={handleLogin}
+      />
+    );
+  }
+
+  return (
+    <MainPage
+      session={session}
+      status={status}
+      projects={projects}
+      threads={threads}
+      selectedProjectId={selectedProjectId}
+      selectedThreadId={selectedThreadId}
+      search={search}
+      recentEvents={recentEvents}
+      loadingState={loadingState}
+      issueBusy={issueBusy}
+      composerOpen={composerOpen}
+      onSearchChange={setSearch}
+      onSelectProject={setSelectedProjectId}
+      onSelectThread={setSelectedThreadId}
+      onOpenComposer={() => setComposerOpen(true)}
+      onCloseComposer={() => setComposerOpen(false)}
+      onSubmitIssue={handleCreateIssue}
+      onRefresh={() => void loadDashboard(session)}
+      onLogout={handleLogout}
+    />
+  );
 }
