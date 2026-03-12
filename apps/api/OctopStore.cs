@@ -93,7 +93,10 @@ public sealed class OctopStore : IAsyncDisposable
     return new JArray(
       bridges
         .OfType<JObject>()
-        .Where(bridge => string.Equals(bridge.Value<string>("user_id"), userId, StringComparison.Ordinal))
+        .Where(bridge => string.Equals(
+          bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
+          userId,
+          StringComparison.Ordinal))
         .OrderByDescending(bridge => DateTimeOffset.TryParse(bridge.Value<string>("last_seen_at"), out var seenAt) ? seenAt : DateTimeOffset.MinValue)
     );
   }
@@ -105,7 +108,7 @@ public sealed class OctopStore : IAsyncDisposable
     var projectIds = memberships
       .OfType<JObject>()
       .Where(item =>
-        string.Equals(item.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+        string.Equals(item.Value<string>("login_id") ?? item.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
         string.Equals(item.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal))
       .Select(item => item.Value<string>("project_id"))
       .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -138,7 +141,7 @@ public sealed class OctopStore : IAsyncDisposable
       threads
         .OfType<JObject>()
         .Where(thread =>
-          string.Equals(thread.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+          string.Equals(thread.Value<string>("login_id") ?? thread.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
           string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal))
         .Where(thread => string.IsNullOrWhiteSpace(projectId) || string.Equals(thread.Value<string>("project_id"), projectId, StringComparison.Ordinal))
         .OrderByDescending(thread => DateTimeOffset.TryParse(thread.Value<string>("updated_at"), out var updatedAt) ? updatedAt : DateTimeOffset.MinValue)
@@ -157,6 +160,7 @@ public sealed class OctopStore : IAsyncDisposable
     var membership = new JObject
     {
       ["id"] = $"{userId}:{projectId}",
+      ["login_id"] = userId,
       ["user_id"] = userId,
       ["project_id"] = projectId,
       ["bridge_id"] = bridgeId,

@@ -127,10 +127,10 @@ public sealed class ProjectionWorkerService : BackgroundService
 
   private async Task PersistEventAsync(RethinkConnection connection, JObject @event)
   {
-    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
     var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
     var type = @event.Value<string>("type") ?? "unknown";
-    @event["id"] = $"{userId}-{timestamp}-{type}".Replace(".", "_").Replace("/", "_").Replace(":", "_");
+    @event["id"] = $"{loginId}-{timestamp}-{type}".Replace(".", "_").Replace("/", "_").Replace(":", "_");
 
     await _r.Db(_rethinkDb)
       .Table(EventTable)
@@ -141,11 +141,12 @@ public sealed class ProjectionWorkerService : BackgroundService
 
   private async Task UpsertUserStateAsync(RethinkConnection connection, JObject @event)
   {
-    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
     var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
-    var current = await _r.Db(_rethinkDb).Table(UserTable).Get(userId).RunResultAsync<JObject?>(connection) ?? new JObject
+    var current = await _r.Db(_rethinkDb).Table(UserTable).Get(loginId).RunResultAsync<JObject?>(connection) ?? new JObject
     {
-      ["id"] = userId,
+      ["id"] = loginId,
+      ["login_id"] = loginId,
       ["projects"] = new JArray(),
       ["threads"] = new JArray(),
       ["last_event_type"] = string.Empty,
@@ -186,7 +187,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
     var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
     var existing = await _r.Db(_rethinkDb)
       .Table(BridgeNodeTable)
@@ -195,13 +196,15 @@ public sealed class ProjectionWorkerService : BackgroundService
       {
         ["id"] = bridgeId,
         ["bridge_id"] = bridgeId,
-        ["user_id"] = userId,
+        ["login_id"] = loginId,
+        ["user_id"] = loginId,
         ["device_name"] = @event.Value<string>("device_name") ?? bridgeId,
         ["status"] = "unknown",
         ["created_at"] = timestamp
       };
 
-    existing["user_id"] = userId;
+    existing["login_id"] = loginId;
+    existing["user_id"] = loginId;
     existing["device_name"] = @event.Value<string>("device_name") ?? existing.Value<string>("device_name") ?? bridgeId;
     existing["last_event_type"] = @event.Value<string>("type") ?? string.Empty;
     existing["last_seen_at"] = timestamp;
@@ -233,7 +236,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
     var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
     var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
 
@@ -248,7 +251,8 @@ public sealed class ProjectionWorkerService : BackgroundService
 
       token["bridge_id"] = bridgeId;
       token["updated_at"] = timestamp;
-      token["owner_user_id"] = userId;
+      token["owner_login_id"] = loginId;
+      token["owner_user_id"] = loginId;
 
       await _r.Db(_rethinkDb)
         .Table(ProjectTable)
@@ -258,8 +262,9 @@ public sealed class ProjectionWorkerService : BackgroundService
 
       var membership = new JObject
       {
-        ["id"] = $"{userId}:{projectId}",
-        ["user_id"] = userId,
+        ["id"] = $"{loginId}:{projectId}",
+        ["login_id"] = loginId,
+        ["user_id"] = loginId,
         ["project_id"] = projectId,
         ["bridge_id"] = bridgeId,
         ["role"] = "owner",
@@ -283,7 +288,10 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    thread["user_id"] = @event.Value<string>("user_id");
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+
+    thread["login_id"] = loginId;
+    thread["user_id"] = loginId;
     thread["bridge_id"] = @event.Value<string>("bridge_id");
     thread["last_event_type"] = @event.Value<string>("type");
     thread["projected_at"] = @event.Value<string>("timestamp");

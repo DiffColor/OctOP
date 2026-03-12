@@ -26,7 +26,9 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
 const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
-const BRIDGE_OWNER_USER_ID = sanitizeUserId(process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user");
+const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
+  process.env.OCTOP_BRIDGE_OWNER_LOGIN_ID ?? process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user"
+);
 
 dns.setDefaultResultOrder("ipv4first");
 
@@ -174,17 +176,18 @@ function upsertThreadState(threadId, patch) {
   return next;
 }
 
-async function publishEvent(userId, type, payload) {
-  const subjects = bridgeSubjects(userId, BRIDGE_ID);
+async function publishEvent(loginId, type, payload) {
+  const subjects = bridgeSubjects(loginId, BRIDGE_ID);
   const event = {
-    user_id: userId,
+    user_id: loginId,
+    login_id: loginId,
     bridge_id: BRIDGE_ID,
     device_name: DEVICE_NAME,
     type,
     payload,
     timestamp: now()
   };
-  ensureUserState(userId).updated_at = event.timestamp;
+  ensureUserState(loginId).updated_at = event.timestamp;
   nc.publish(subjects.events, sc.encode(JSON.stringify(event)));
   const threadId =
     payload?.thread?.id ?? payload?.threadId ?? payload?.thread_id ?? payload?.conversationId;
@@ -194,13 +197,13 @@ async function publishEvent(userId, type, payload) {
   }
 }
 
-async function publishSnapshots(userId) {
-  const state = ensureUserState(userId);
+async function publishSnapshots(loginId) {
+  const state = ensureUserState(loginId);
   state.updated_at = now();
 
-  await publishEvent(userId, "bridge.status.updated", await bridgeStatus(userId));
-  await publishEvent(userId, "bridge.projects.updated", { projects: state.projects });
-  await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+  await publishEvent(loginId, "bridge.status.updated", await bridgeStatus(loginId));
+  await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
+  await publishEvent(loginId, "bridge.threads.updated", { threads: listLocalThreads(loginId) });
 }
 
 function resolveOwnerFromParams(params = {}) {
@@ -772,10 +775,10 @@ async function subscribeRequests() {
 await subscribeRequests();
 
 setInterval(() => {
-  void publishSnapshots(BRIDGE_OWNER_USER_ID);
+  void publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 }, 30000).unref();
 
-await publishSnapshots(BRIDGE_OWNER_USER_ID);
+await publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 
 createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);

@@ -16,7 +16,7 @@ console.log(`- bridge: http://${env.OCTOP_BRIDGE_HOST}:${env.OCTOP_BRIDGE_PORT}`
 console.log(`- nats: ${env.OCTOP_NATS_URL}`);
 console.log(`- bridge-id: ${env.OCTOP_BRIDGE_ID}`);
 console.log(`- device: ${env.OCTOP_BRIDGE_DEVICE_NAME}`);
-console.log(`- owner-user: ${env.OCTOP_BRIDGE_OWNER_USER_ID}`);
+console.log(`- owner-login: ${env.OCTOP_BRIDGE_OWNER_LOGIN_ID}`);
 
 const appServerProcess = spawn(env.OCTOP_APP_SERVER_COMMAND, {
   cwd: workspaceRoot,

@@ -85,7 +85,10 @@ export function applyBridgeCliArgs(env, argv) {
   return {
     ...env,
     ...(args.deviceName ? { OCTOP_BRIDGE_DEVICE_NAME: args.deviceName } : {}),
-    ...(args.ownerUserId ? { OCTOP_BRIDGE_OWNER_USER_ID: args.ownerUserId } : {})
+    ...(args.ownerUserId ? {
+      OCTOP_BRIDGE_OWNER_LOGIN_ID: args.ownerUserId,
+      OCTOP_BRIDGE_OWNER_USER_ID: args.ownerUserId
+    } : {})
   };
 }
 
@@ -101,7 +104,14 @@ function applyBridgeIdentityDefaults(env) {
     ...env,
     OCTOP_BRIDGE_ID: bridgeId,
     OCTOP_BRIDGE_DEVICE_NAME: env.OCTOP_BRIDGE_DEVICE_NAME?.trim() || hostname,
-    OCTOP_BRIDGE_OWNER_USER_ID: env.OCTOP_BRIDGE_OWNER_USER_ID?.trim() || "local-user"
+    OCTOP_BRIDGE_OWNER_LOGIN_ID:
+      env.OCTOP_BRIDGE_OWNER_LOGIN_ID?.trim() ||
+      env.OCTOP_BRIDGE_OWNER_USER_ID?.trim() ||
+      "local-user",
+    OCTOP_BRIDGE_OWNER_USER_ID:
+      env.OCTOP_BRIDGE_OWNER_USER_ID?.trim() ||
+      env.OCTOP_BRIDGE_OWNER_LOGIN_ID?.trim() ||
+      "local-user"
   };
 }
 

@@ -105,11 +105,13 @@ app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactor
   {
     try
     {
+      var normalizedLoginId = BridgeSubjects.SanitizeUserId(loginId);
       await octopStore.UpsertUserAsync(new JObject
       {
-        ["id"] = BridgeSubjects.SanitizeUserId(userId),
-        ["user_id"] = BridgeSubjects.SanitizeUserId(userId),
-        ["login_id"] = loginId,
+        ["id"] = normalizedLoginId,
+        ["user_id"] = normalizedLoginId,
+        ["login_id"] = normalizedLoginId,
+        ["licensehub_user_id"] = BridgeSubjects.SanitizeUserId(userId),
         ["display_name"] = payload.Value<string>("displayName") ?? loginId,
         ["role"] = payload.Value<string>("role") ?? "viewer",
         ["is_active"] = payload.Value<bool?>("isActive") ?? true,
@@ -127,7 +129,7 @@ app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactor
 
 app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   cancellationToken.ThrowIfCancellationRequested();
   var bridges = await octopStore.ListBridgesForUserAsync(userId);
   return Results.Text(new JObject { ["bridges"] = bridges }.ToString(), "application/json; charset=utf-8");
@@ -135,7 +137,7 @@ app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore
 
 app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
   if (bridgeId is null)
@@ -149,7 +151,7 @@ app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStor
 
 app.MapGet("/api/threads", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
   var projectId = httpContext.Request.Query["project_id"].ToString();
 
@@ -164,7 +166,7 @@ app.MapGet("/api/threads", async (HttpContext httpContext, OctopStore octopStore
 
 app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
   if (bridgeId is null)
@@ -183,7 +185,7 @@ app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClien
 
 app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
   if (bridgeId is null)
@@ -228,7 +230,7 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
   httpContext.Response.Headers.CacheControl = "no-cache, no-transform";
   httpContext.Response.Headers.Connection = "keep-alive";
 
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
   if (bridgeId is null)
@@ -325,4 +327,16 @@ static async Task<string?> ResolveBridgeIdAsync(
   cancellationToken.ThrowIfCancellationRequested();
   var bridges = await octopStore.ListBridgesForUserAsync(userId);
   return bridges.OfType<JObject>().FirstOrDefault()?.Value<string>("bridge_id");
+}
+
+static string ResolveIdentityKey(HttpContext httpContext)
+{
+  var loginId = httpContext.Request.Query["login_id"].ToString();
+
+  if (!string.IsNullOrWhiteSpace(loginId))
+  {
+    return BridgeSubjects.SanitizeUserId(loginId);
+  }
+
+  return BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
 }

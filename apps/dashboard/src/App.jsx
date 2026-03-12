@@ -1135,12 +1135,12 @@ export default function App() {
   const [issueBusy, setIssueBusy] = useState(false);
 
   async function loadBridges(sessionArg) {
-    if (!sessionArg?.userId) {
+    if (!sessionArg?.loginId) {
       return;
     }
 
     const nextBridges = (await apiRequest(
-      `/api/bridges?user_id=${encodeURIComponent(sessionArg.userId)}`
+      `/api/bridges?login_id=${encodeURIComponent(sessionArg.loginId)}`
     )).bridges ?? [];
 
     setBridges(nextBridges);
@@ -1154,7 +1154,7 @@ export default function App() {
   }
 
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
-    if (!sessionArg?.userId || !bridgeId) {
+    if (!sessionArg?.loginId || !bridgeId) {
       setProjects([]);
       setThreads([]);
       setStatus({
@@ -1174,13 +1174,13 @@ export default function App() {
     try {
       const [nextStatus, nextProjects, nextThreads] = await Promise.all([
         apiRequest(
-          `/api/bridge/status?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+          `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         ),
         apiRequest(
-          `/api/projects?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+          `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         ),
         apiRequest(
-          `/api/threads?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+          `/api/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         )
       ]);
 
@@ -1211,7 +1211,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!session?.userId) {
+    if (!session?.loginId) {
       return;
     }
 
@@ -1219,12 +1219,12 @@ export default function App() {
   }, [session]);
 
   useEffect(() => {
-    if (!session?.userId || !selectedBridgeId) {
+    if (!session?.loginId || !selectedBridgeId) {
       return undefined;
     }
 
     const eventSource = new EventSource(
-      `${API_BASE_URL}/api/events?user_id=${encodeURIComponent(session.userId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+      `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
 
     const appendEvent = (type, summary) => {
@@ -1304,7 +1304,7 @@ export default function App() {
   }, [session, selectedBridgeId]);
 
   useEffect(() => {
-    if (!session?.userId) {
+    if (!session?.loginId) {
       return;
     }
 
@@ -1393,7 +1393,7 @@ export default function App() {
   };
 
   const handleCreateIssue = async (payload) => {
-    if (!session?.userId) {
+    if (!session?.loginId) {
       return;
     }
 
@@ -1401,7 +1401,7 @@ export default function App() {
 
     try {
       const response = await apiRequest(
-        `/api/commands/ping?user_id=${encodeURIComponent(session.userId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/commands/ping?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
