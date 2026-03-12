@@ -83,6 +83,43 @@ function mapThreadToColumn(thread) {
   return "queued";
 }
 
+function getProjectForThread(thread, projects) {
+  if (!projects.length) {
+    return null;
+  }
+
+  if (thread?.project_id) {
+    return projects.find((project) => project.id === thread.project_id) ?? projects[0];
+  }
+
+  return projects[0];
+}
+
+function getThreadPriority(thread) {
+  if (thread.status === "failed") {
+    return { label: "High", tone: "high" };
+  }
+
+  if (thread.status === "awaiting_input") {
+    return { label: "Review", tone: "review" };
+  }
+
+  if ((thread.progress ?? 0) >= 70) {
+    return { label: "Medium", tone: "medium" };
+  }
+
+  return { label: "Normal", tone: "normal" };
+}
+
+function getDoneRate(threads) {
+  if (!threads.length) {
+    return "0%";
+  }
+
+  const completedCount = threads.filter((thread) => thread.status === "completed").length;
+  return `${Math.round((completedCount / threads.length) * 100)}%`;
+}
+
 function buildTodoItems(thread) {
   const progress = Number(thread.progress ?? 0);
   const lastEvent = thread.last_event ?? "";
@@ -196,24 +233,30 @@ function StatusChip({ status }) {
 }
 
 function ThreadCard({ thread, onSelect, selected }) {
-  const todoItems = buildTodoItems(thread);
-  const completed = todoItems.filter((item) => item.done).length;
+  const priority = getThreadPriority(thread);
 
   return (
     <button
       type="button"
-      className={`thread-card ${selected ? "is-selected" : ""}`}
+      className={`thread-card thread-card--dense ${selected ? "is-selected" : ""}`}
       onClick={() => onSelect(thread.id)}
     >
       <div className="thread-card__header">
-        <StatusChip status={thread.status} />
+        <span className="thread-card__key">{thread.id.slice(0, 8)}</span>
         <span>{formatTime(thread.updated_at)}</span>
       </div>
       <strong>{thread.title}</strong>
       <p>{summarizeMessage(thread)}</p>
+      <div className="thread-card__meta">
+        <StatusChip status={thread.status} />
+        <span className={`priority-pill tone-${priority.tone}`}>{priority.label}</span>
+      </div>
+      <div className={`progress-bar tone-${STATUS_META[thread.status]?.progressTone ?? "cool"}`}>
+        <span style={{ width: `${Math.max(thread.progress ?? 0, 6)}%` }} />
+      </div>
       <div className="thread-card__footer">
         <span>{thread.progress}% synced</span>
-        <span>{completed}/4 checkpoints</span>
+        <span>{thread.last_event ?? "thread.synced"}</span>
       </div>
     </button>
   );
@@ -299,6 +342,66 @@ export default function App() {
 
     return events.filter((event) => resolveThreadEventId(event) === selectedThread.id).slice(0, 8);
   }, [events, selectedThread]);
+
+  const activeProject = useMemo(
+    () => getProjectForThread(selectedThread, projects) ?? projects[0] ?? null,
+    [projects, selectedThread]
+  );
+
+  const desktopMetrics = useMemo(() => {
+    const awaitingReview = threads.filter((thread) => thread.status === "awaiting_input").length;
+    const blocked = threads.filter((thread) => thread.status === "failed").length;
+    const active = threads.filter((thread) => thread.status === "running").length;
+
+    return [
+      { label: "Active Threads", value: active, tone: "blue" },
+      { label: "Needs Review", value: awaitingReview, tone: "amber" },
+      { label: "Blocked", value: blocked, tone: "red" },
+      { label: "Done Rate", value: getDoneRate(threads), tone: "green" }
+    ];
+  }, [threads]);
+
+  const desktopFilters = useMemo(() => {
+    return [
+      {
+        label: "User",
+        value: auth?.displayName ?? auth?.userId ?? "Unknown"
+      },
+      {
+        label: "Project",
+        value: activeProject?.name ?? "All Projects"
+      },
+      {
+        label: "Priority",
+        value: threads.some((thread) => thread.status === "failed") ? "Urgent" : "Normal"
+      },
+      {
+        label: "Stream",
+        value: streamState === "live" ? "Live" : "Reconnect"
+      }
+    ];
+  }, [activeProject?.name, auth?.displayName, auth?.userId, streamState, threads]);
+
+  const desktopSidebarFacts = useMemo(() => {
+    return [
+      {
+        label: "Bridge",
+        value: status?.bridge_mode ?? "-"
+      },
+      {
+        label: "App Server",
+        value: status?.app_server?.connected ? "Connected" : "Offline"
+      },
+      {
+        label: "NATS",
+        value: status?.nats?.connected ? "Live" : "Down"
+      },
+      {
+        label: "Operator",
+        value: status?.app_server?.account?.email ?? auth?.displayName ?? "-"
+      }
+    ];
+  }, [auth?.displayName, status?.app_server?.account?.email, status?.app_server?.connected, status?.bridge_mode, status?.nats?.connected]);
 
   const summaryCards = useMemo(() => {
     return [
@@ -774,14 +877,72 @@ export default function App() {
 
             <section className="desktop-board-view">
               <div className="desktop-layout">
+                <aside className="desktop-sidebar surface-card">
+                  <div className="surface-card__title desktop-sidebar__title">
+                    <div>
+                      <h2>Workspace Directory</h2>
+                      <span>{projects.length} repositories</span>
+                    </div>
+                    <span className="board-shell__meta">{threads.length} threads</span>
+                  </div>
+
+                  <div className="desktop-sidebar__section">
+                    <small className="desktop-sidebar__label">Projects</small>
+                    <ul className="project-directory">
+                      {projects.map((project) => {
+                        const isActive = project.id === activeProject?.id;
+
+                        return (
+                          <li key={project.id} className={isActive ? "is-active" : ""}>
+                            <strong>{project.name}</strong>
+                            <span>{project.description}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+
+                  <div className="desktop-sidebar__section">
+                    <small className="desktop-sidebar__label">Runtime</small>
+                    <dl className="desktop-sidebar__facts">
+                      {desktopSidebarFacts.map((item) => (
+                        <div key={item.label}>
+                          <dt>{item.label}</dt>
+                          <dd>{item.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </aside>
+
                 <div className="board-shell surface-card">
                   <div className="surface-card__title board-shell__title">
                     <div>
-                      <h2>Desktop Kanban</h2>
-                      <span>Linear-style thread board</span>
+                      <h2>Thread Operations Board</h2>
+                      <span>Stitch reference 기반의 실무형 desktop kanban</span>
                     </div>
                     <div className="board-shell__meta">
                       <span>{threads.length} total</span>
+                    </div>
+                  </div>
+
+                  <div className="desktop-toolbar">
+                    <div className="desktop-filter-row">
+                      {desktopFilters.map((filter) => (
+                        <button key={filter.label} type="button" className="filter-chip">
+                          <span>{filter.label}</span>
+                          <strong>{filter.value}</strong>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="desktop-metrics">
+                      {desktopMetrics.map((metric) => (
+                        <article key={metric.label} className={`desktop-metric tone-${metric.tone}`}>
+                          <small>{metric.label}</small>
+                          <strong>{metric.value}</strong>
+                        </article>
+                      ))}
                     </div>
                   </div>
 
@@ -825,20 +986,42 @@ export default function App() {
                     <>
                       <div className="detail-rail__header">
                         <div>
+                          <small className="detail-rail__eyebrow">
+                            {getProjectForThread(selectedThread, projects)?.name ?? "No Project"}
+                          </small>
                           <strong>{selectedThread.title}</strong>
                           <p>{summarizeMessage(selectedThread)}</p>
                         </div>
                         <StatusChip status={selectedThread.status} />
                       </div>
 
-                      <div className="detail-progress">
+                      <div className="detail-meta-grid">
+                        <div>
+                          <dt>Priority</dt>
+                          <dd>{getThreadPriority(selectedThread).label}</dd>
+                        </div>
+                        <div>
+                          <dt>Last Event</dt>
+                          <dd>{selectedThread.last_event ?? "-"}</dd>
+                        </div>
+                        <div>
+                          <dt>Owner</dt>
+                          <dd>{status?.app_server?.account?.email ?? auth.displayName}</dd>
+                        </div>
+                        <div>
+                          <dt>Created</dt>
+                          <dd>{formatDateTime(selectedThread.created_at)}</dd>
+                        </div>
+                      </div>
+
+                      <div className="detail-progress detail-section">
                         <div className="progress-bar tone-cool">
                           <span style={{ width: `${Math.max(selectedThread.progress ?? 0, 8)}%` }} />
                         </div>
                         <span>{selectedThread.progress}% complete</span>
                       </div>
 
-                      <ul className="detail-checklist">
+                      <ul className="detail-checklist detail-section">
                         {buildTodoItems(selectedThread).map((item) => (
                           <li key={item.id} className={item.done ? "is-done" : ""}>
                             <span className="todo-bullet" />
@@ -850,7 +1033,7 @@ export default function App() {
                         ))}
                       </ul>
 
-                      <div className="detail-events">
+                      <div className="detail-events detail-section">
                         <div className="surface-card__title">
                           <h3>최근 이벤트</h3>
                           <span>{selectedThreadEvents.length} items</span>
