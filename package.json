@@ -1,0 +1,18 @@
+{
+  "name": "octop",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace @octop/api",
+    "dev:dashboard": "npm run dev --workspace @octop/dashboard",
+    "dev:bridge": "npm run dev --workspace @octop/codex-adapter",
+    "dev:projector": "npm run dev --workspace @octop/projection-worker",
+    "build:dashboard": "npm run build --workspace @octop/dashboard"
+  }
+}
