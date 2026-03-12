@@ -188,7 +188,7 @@ async function publishSnapshots(userId) {
 
   await publishEvent(userId, "bridge.status.updated", await bridgeStatus(userId));
   await publishEvent(userId, "bridge.projects.updated", { projects: state.projects });
-  await publishEvent(userId, "bridge.threads.updated", { threads: await listThreads(userId) });
+  await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
 }
 
 function resolveOwnerFromParams(params = {}) {
@@ -410,7 +410,7 @@ class AppServerClient {
       method === "turn/completed" ||
       method === "item/agentMessage/delta"
     ) {
-      await publishEvent(owner, "bridge.threads.updated", { threads: await listThreads(owner) });
+      await publishEvent(owner, "bridge.threads.updated", { threads: listLocalThreads(owner) });
     }
   }
 
@@ -549,6 +549,16 @@ async function syncThreadListFromAppServer() {
   return response.result?.data ?? [];
 }
 
+function listLocalThreads(userId) {
+  const state = ensureUserState(userId);
+  const knownIds = [...state.threadIds];
+
+  return knownIds
+    .map((threadId) => threadStateById.get(threadId) ?? null)
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
 async function listThreads(userId) {
   const state = ensureUserState(userId);
   const knownIds = [...state.threadIds];
@@ -584,6 +594,60 @@ async function listThreads(userId) {
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
 }
 
+async function startTurnInBackground(userId, threadId, payload = {}) {
+  try {
+    const turnResponse = await appServer.request("turn/start", {
+      threadId,
+      cwd: process.cwd(),
+      approvalPolicy: "never",
+      input: [
+        {
+          type: "text",
+          text:
+            payload.prompt ??
+            '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
+        }
+      ]
+    });
+
+    const turn = turnResponse.result?.turn ?? null;
+    const current = threadStateById.get(threadId);
+
+    if (!turn?.id) {
+      return;
+    }
+
+    upsertThreadState(threadId, {
+      ...current,
+      status: "running",
+      progress: Math.max(current?.progress ?? 0, 20),
+      last_event: "turn.started",
+      turn_id: turn.id
+    });
+
+    await publishEvent(userId, "turn.started", {
+      threadId,
+      turn
+    });
+    await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+  } catch (error) {
+    const current = threadStateById.get(threadId);
+
+    upsertThreadState(threadId, {
+      ...current,
+      status: "failed",
+      last_event: "turn.start.failed",
+      last_message: error.message
+    });
+
+    await publishEvent(userId, "turn.start.failed", {
+      threadId,
+      error: error.message
+    });
+    await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+  }
+}
+
 async function startPingThread(userId, payload = {}) {
   const state = ensureUserState(userId);
   await appServer.ensureReady();
@@ -617,44 +681,14 @@ async function startPingThread(userId, payload = {}) {
   await publishEvent(userId, "thread.started", {
     thread: threadStateById.get(thread.id)
   });
-  await publishEvent(userId, "bridge.threads.updated", { threads: await listThreads(userId) });
+  await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
 
-  const turnResponse = await appServer.request("turn/start", {
-    threadId: thread.id,
-    cwd: process.cwd(),
-    approvalPolicy: "never",
-    input: [
-      {
-        type: "text",
-        text:
-          payload.prompt ??
-          '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
-      }
-    ]
-  });
-
-  const turn = turnResponse.result?.turn ?? null;
-  const current = threadStateById.get(thread.id);
-
-  if (turn?.id) {
-    upsertThreadState(thread.id, {
-      ...current,
-      status: "running",
-      progress: Math.max(current?.progress ?? 0, 20),
-      last_event: "turn.started",
-      turn_id: turn.id
-    });
-    await publishEvent(userId, "turn.started", {
-      threadId: thread.id,
-      turn
-    });
-    await publishEvent(userId, "bridge.threads.updated", { threads: await listThreads(userId) });
-  }
+  void startTurnInBackground(userId, thread.id, payload);
 
   return {
     accepted: true,
     thread: threadStateById.get(thread.id),
-    turn
+    turn: null
   };
 }
 
