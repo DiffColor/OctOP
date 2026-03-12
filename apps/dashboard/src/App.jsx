@@ -705,8 +705,9 @@ function MainPage({
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
-      <div className="flex min-h-screen flex-col lg:flex-row">
-        <aside className="flex border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:flex-col lg:border-b-0 lg:border-r lg:px-5">
+      <div className="flex min-h-screen flex-col">
+        <div className="flex flex-1 flex-col lg:flex-row">
+          <aside className="border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:border-b-0 lg:border-r lg:px-5">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
               <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -719,7 +720,7 @@ function MainPage({
             </div>
           </div>
 
-          <div className="mt-6 flex-1">
+          <div className="mt-6">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
@@ -734,7 +735,7 @@ function MainPage({
               </button>
             </div>
 
-            <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-13rem)]">
+            <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
               {projectTree.map((project) => {
                 const active = project.id === selectedProjectId;
 
@@ -817,54 +818,9 @@ function MainPage({
               })}
             </div>
           </div>
+          </aside>
 
-          <footer className="mt-5 rounded-2xl border border-slate-800 bg-slate-900/65 px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {session.loginId} · {session.role || "viewer"}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] ${
-                    status.app_server?.connected
-                      ? "bg-emerald-500/10 text-emerald-300"
-                      : "bg-rose-500/10 text-rose-300"
-                  }`}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"
-                    }`}
-                  />
-                  {status.app_server?.connected ? "Bridge OK" : "Bridge Down"}
-                </span>
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
-                >
-                  로그아웃
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
-                Projects {projects.length}
-              </span>
-              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
-                Threads {threads.length}
-              </span>
-              <span className="rounded-full bg-slate-950/70 px-2.5 py-1">
-                {status.app_server?.account?.plan_type ?? "Unknown"}
-              </span>
-            </div>
-          </footer>
-        </aside>
-
-        <main className="flex min-h-screen flex-1 flex-col">
+          <main className="flex min-h-screen flex-1 flex-col">
           <header className="border-b border-slate-800 bg-slate-950/70 px-4 py-5 backdrop-blur md:px-6 lg:px-8">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
@@ -1043,7 +999,51 @@ function MainPage({
               </div>
             </aside>
           </div>
-        </main>
+          </main>
+        </div>
+
+        <footer className="border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
+          <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-slate-200">{session.displayName || session.loginId}</span>
+              <span className="text-slate-600">/</span>
+              <span>{session.loginId}</span>
+              <span className="text-slate-600">/</span>
+              <span>{session.role || "viewer"}</span>
+              <span className="text-slate-600">/</span>
+              <span>{status.app_server?.account?.plan_type ?? "Unknown"}</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
+                  status.app_server?.connected
+                    ? "bg-emerald-500/10 text-emerald-300"
+                    : "bg-rose-500/10 text-rose-300"
+                }`}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"
+                  }`}
+                />
+                {status.app_server?.connected ? "Bridge OK" : "Bridge Down"}
+              </span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">Projects {projects.length}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">Threads {threads.length}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
+                {loadingState === "loading" ? "동기화 중" : `마지막 갱신 ${formatRelativeTime(status.updated_at)}`}
+              </span>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="rounded-xl border border-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+              >
+                로그아웃
+              </button>
+            </div>
+          </div>
+        </footer>
       </div>
 
       <IssueComposer
