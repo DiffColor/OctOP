@@ -2,8 +2,13 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
+import os from "node:os";
 import { connect, StringCodec } from "nats";
-import { bridgeSubjects, sanitizeUserId } from "../../../packages/domain/src/index.js";
+import {
+  bridgeSubjects,
+  sanitizeBridgeId,
+  sanitizeUserId
+} from "../../../packages/domain/src/index.js";
 
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
@@ -19,6 +24,9 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
+const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
+const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
+const BRIDGE_OWNER_USER_ID = sanitizeUserId(process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user");
 
 dns.setDefaultResultOrder("ipv4first");
 
@@ -79,10 +87,11 @@ function ensureUserState(userId) {
 
   if (!users.has(normalized)) {
     const project = {
-      id: `${normalized}-project-1`,
+      id: `${BRIDGE_ID}-${normalized}-project-1`,
       key: normalized.toUpperCase().replace(/-/g, "_"),
       name: `${normalized} project`,
       description: "OctOP bridge와 app-server 연결 점검용 기본 프로젝트",
+      bridge_id: BRIDGE_ID,
       created_at: now()
     };
 
@@ -125,6 +134,7 @@ function normalizeThreadRecord(thread, fallback = {}) {
 
   return {
     id: thread.id,
+    bridge_id: fallback.bridge_id ?? current.bridge_id ?? BRIDGE_ID,
     project_id: fallback.project_id ?? current.project_id ?? fallback.projectId ?? null,
     title:
       fallback.title ??
@@ -165,9 +175,11 @@ function upsertThreadState(threadId, patch) {
 }
 
 async function publishEvent(userId, type, payload) {
-  const subjects = bridgeSubjects(userId);
+  const subjects = bridgeSubjects(userId, BRIDGE_ID);
   const event = {
     user_id: userId,
+    bridge_id: BRIDGE_ID,
+    device_name: DEVICE_NAME,
     type,
     payload,
     timestamp: now()
@@ -525,6 +537,8 @@ async function bridgeStatus(userId) {
 
   return {
     bridge_mode: BRIDGE_MODE,
+    bridge_id: BRIDGE_ID,
+    device_name: DEVICE_NAME,
     app_server: {
       mode: APP_SERVER_MODE,
       connected: appServer.connected,
@@ -702,9 +716,15 @@ async function respond(message, payload) {
 
 async function subscribeRequests() {
   const patterns = [
-    { subject: "octop.user.*.bridge.status.get", handler: (userId) => bridgeStatus(userId) },
-    { subject: "octop.user.*.bridge.projects.get", handler: (userId) => ({ projects: listProjectState(userId) }) },
-    { subject: "octop.user.*.bridge.threads.get", handler: async (userId) => ({ threads: await listThreads(userId) }) }
+    { subject: "octop.user.*.bridge.*.status.get", handler: (userId) => bridgeStatus(userId) },
+    {
+      subject: "octop.user.*.bridge.*.projects.get",
+      handler: (userId) => ({ projects: listProjectState(userId) })
+    },
+    {
+      subject: "octop.user.*.bridge.*.threads.get",
+      handler: async (userId) => ({ threads: await listThreads(userId) })
+    }
   ];
 
   for (const entry of patterns) {
@@ -713,6 +733,11 @@ async function subscribeRequests() {
     (async () => {
       for await (const message of subscription) {
         const userId = sanitizeUserId(message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
         try {
           await respond(message, await entry.handler(userId));
         } catch (error) {
@@ -722,13 +747,19 @@ async function subscribeRequests() {
     })();
   }
 
-  const pingSubscription = nc.subscribe("octop.user.*.bridge.command.ping");
+  const pingSubscription = nc.subscribe("octop.user.*.bridge.*.command.ping");
 
   (async () => {
     for await (const message of pingSubscription) {
       try {
       const body = parseJson(message.data);
       const userId = sanitizeUserId(body.user_id ?? message.subject.split(".")[2]);
+      const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+      if (bridgeId !== BRIDGE_ID) {
+        continue;
+      }
+
       const result = await startPingThread(userId, body);
         await respond(message, result);
       } catch (error) {
@@ -739,6 +770,12 @@ async function subscribeRequests() {
 }
 
 await subscribeRequests();
+
+setInterval(() => {
+  void publishSnapshots(BRIDGE_OWNER_USER_ID);
+}, 30000).unref();
+
+await publishSnapshots(BRIDGE_OWNER_USER_ID);
 
 createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);

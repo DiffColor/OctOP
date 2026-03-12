@@ -10,6 +10,10 @@ namespace OctOP.ProjectionWorker;
 
 public sealed class ProjectionWorkerService : BackgroundService
 {
+  private const string OctopUserTable = "users";
+  private const string BridgeNodeTable = "bridge_nodes";
+  private const string ProjectTable = "projects";
+  private const string ProjectMemberTable = "project_members";
   private const string UserTable = "bridge_user_state";
   private const string ThreadTable = "thread_projection";
   private const string EventTable = "event_log";
@@ -51,7 +55,7 @@ public sealed class ProjectionWorkerService : BackgroundService
 
     await EnsureStorageAsync(connection);
 
-    using var subscription = nats.SubscribeAsync("octop.user.*.events");
+    using var subscription = nats.SubscribeAsync("octop.user.*.bridge.*.events");
     subscription.MessageHandler += (_, args) =>
     {
       var payload = Encoding.UTF8.GetString(args.Message.Data ?? []);
@@ -87,20 +91,13 @@ public sealed class ProjectionWorkerService : BackgroundService
 
     var tables = await _r.Db(_rethinkDb).TableList().RunResultAsync<List<string>>(connection);
 
-    if (!tables.Contains(UserTable))
-    {
-      await _r.Db(_rethinkDb).TableCreate(UserTable).RunResultAsync<object>(connection);
-    }
-
-    if (!tables.Contains(ThreadTable))
-    {
-      await _r.Db(_rethinkDb).TableCreate(ThreadTable).RunResultAsync<object>(connection);
-    }
-
-    if (!tables.Contains(EventTable))
-    {
-      await _r.Db(_rethinkDb).TableCreate(EventTable).RunResultAsync<object>(connection);
-    }
+    await EnsureTableAsync(connection, tables, OctopUserTable);
+    await EnsureTableAsync(connection, tables, BridgeNodeTable);
+    await EnsureTableAsync(connection, tables, ProjectTable);
+    await EnsureTableAsync(connection, tables, ProjectMemberTable);
+    await EnsureTableAsync(connection, tables, UserTable);
+    await EnsureTableAsync(connection, tables, ThreadTable);
+    await EnsureTableAsync(connection, tables, EventTable);
   }
 
   private async Task HandleEventAsync(RethinkConnection connection, string payload, CancellationToken stoppingToken)
@@ -109,12 +106,22 @@ public sealed class ProjectionWorkerService : BackgroundService
     {
       var @event = JObject.Parse(payload);
       await PersistEventAsync(connection, @event);
+      await UpsertBridgeNodeAsync(connection, @event);
+      await UpsertProjectsAsync(connection, @event);
       await UpsertUserStateAsync(connection, @event);
       await UpsertThreadProjectionAsync(connection, @event);
     }
     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
     {
       _logger.LogError(exception, "Projection worker failed to persist event payload");
+    }
+  }
+
+  private async Task EnsureTableAsync(RethinkConnection connection, IReadOnlyCollection<string> tables, string tableName)
+  {
+    if (!tables.Contains(tableName))
+    {
+      await _r.Db(_rethinkDb).TableCreate(tableName).RunResultAsync<object>(connection);
     }
   }
 
@@ -170,6 +177,103 @@ public sealed class ProjectionWorkerService : BackgroundService
       .RunResultAsync<object>(connection);
   }
 
+  private async Task UpsertBridgeNodeAsync(RethinkConnection connection, JObject @event)
+  {
+    var bridgeId = @event.Value<string>("bridge_id");
+
+    if (string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return;
+    }
+
+    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+    var existing = await _r.Db(_rethinkDb)
+      .Table(BridgeNodeTable)
+      .Get(bridgeId)
+      .RunResultAsync<JObject?>(connection) ?? new JObject
+      {
+        ["id"] = bridgeId,
+        ["bridge_id"] = bridgeId,
+        ["user_id"] = userId,
+        ["device_name"] = @event.Value<string>("device_name") ?? bridgeId,
+        ["status"] = "unknown",
+        ["created_at"] = timestamp
+      };
+
+    existing["user_id"] = userId;
+    existing["device_name"] = @event.Value<string>("device_name") ?? existing.Value<string>("device_name") ?? bridgeId;
+    existing["last_event_type"] = @event.Value<string>("type") ?? string.Empty;
+    existing["last_seen_at"] = timestamp;
+
+    if ((string?)@event["type"] == "bridge.status.updated")
+    {
+      existing["status"] = "online";
+      existing["runtime"] = @event["payload"];
+    }
+
+    await _r.Db(_rethinkDb)
+      .Table(BridgeNodeTable)
+      .Insert(existing)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  private async Task UpsertProjectsAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "bridge.projects.updated")
+    {
+      return;
+    }
+
+    var projects = @event["payload"]?["projects"] as JArray;
+
+    if (projects is null || projects.Count == 0)
+    {
+      return;
+    }
+
+    var userId = @event.Value<string>("user_id") ?? "unknown-user";
+    var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
+    var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+
+    foreach (var token in projects.OfType<JObject>())
+    {
+      var projectId = token.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(projectId))
+      {
+        continue;
+      }
+
+      token["bridge_id"] = bridgeId;
+      token["updated_at"] = timestamp;
+      token["owner_user_id"] = userId;
+
+      await _r.Db(_rethinkDb)
+        .Table(ProjectTable)
+        .Insert(token)
+        .OptArg("conflict", "update")
+        .RunResultAsync<object>(connection);
+
+      var membership = new JObject
+      {
+        ["id"] = $"{userId}:{projectId}",
+        ["user_id"] = userId,
+        ["project_id"] = projectId,
+        ["bridge_id"] = bridgeId,
+        ["role"] = "owner",
+        ["updated_at"] = timestamp
+      };
+
+      await _r.Db(_rethinkDb)
+        .Table(ProjectMemberTable)
+        .Insert(membership)
+        .OptArg("conflict", "replace")
+        .RunResultAsync<object>(connection);
+    }
+  }
+
   private async Task UpsertThreadProjectionAsync(RethinkConnection connection, JObject @event)
   {
     var thread = @event["payload"]?["thread"] as JObject;
@@ -180,6 +284,7 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
 
     thread["user_id"] = @event.Value<string>("user_id");
+    thread["bridge_id"] = @event.Value<string>("bridge_id");
     thread["last_event_type"] = @event.Value<string>("type");
     thread["projected_at"] = @event.Value<string>("timestamp");
 

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
+using Newtonsoft.Json.Linq;
 using OctOP.Gateway;
 using OctOP.ServerShared;
 
@@ -28,10 +29,12 @@ builder.Services.AddCors(options =>
 });
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton(new BridgeNatsClient(natsUrl));
+builder.Services.AddSingleton<OctopStore>();
 
 var app = builder.Build();
-
 app.UseCors();
+
+await app.Services.GetRequiredService<OctopStore>().EnsureStorageAsync();
 
 app.MapGet("/health", () =>
 {
@@ -42,61 +45,136 @@ app.MapGet("/health", () =>
   });
 });
 
-app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactory httpClientFactory, CancellationToken cancellationToken) =>
+app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactory httpClientFactory, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
 
-  return await ProxyJsonAsync(
-    httpClientFactory.CreateClient(),
-    $"{licenseHubApiBaseUrl}/api/auth/login",
-    HttpMethod.Post,
-    new JsonObject
+  using var request = new HttpRequestMessage(HttpMethod.Post, $"{licenseHubApiBaseUrl}/api/auth/login")
+  {
+    Content = new StringContent(
+      new JsonObject
+      {
+        ["loginId"] = body?["loginId"]?.GetValue<string>(),
+        ["password"] = body?["password"]?.GetValue<string>()
+      }.ToJsonString(),
+      Encoding.UTF8,
+      "application/json")
+  };
+
+  using var response = await httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+  var content = await response.Content.ReadAsStringAsync(cancellationToken);
+  var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/json; charset=utf-8";
+
+  if (!response.IsSuccessStatusCode)
+  {
+    return Results.Text(content, contentType, statusCode: (int)response.StatusCode);
+  }
+
+  var payload = JObject.Parse(content);
+  var userId = payload.Value<string>("userId");
+  var loginId = body?["loginId"]?.GetValue<string>() ?? string.Empty;
+
+  if (!string.IsNullOrWhiteSpace(userId))
+  {
+    await octopStore.UpsertUserAsync(new JObject
     {
-      ["loginId"] = body?["loginId"]?.GetValue<string>(),
-      ["password"] = body?["password"]?.GetValue<string>()
-    },
-    null,
-    cancellationToken
-  );
+      ["id"] = BridgeSubjects.SanitizeUserId(userId),
+      ["user_id"] = BridgeSubjects.SanitizeUserId(userId),
+      ["login_id"] = loginId,
+      ["display_name"] = payload.Value<string>("displayName") ?? loginId,
+      ["role"] = payload.Value<string>("role") ?? "viewer",
+      ["is_active"] = payload.Value<bool?>("isActive") ?? true,
+      ["last_login_at"] = DateTimeOffset.UtcNow.ToString("O")
+    });
+  }
+
+  return Results.Text(content, contentType, statusCode: StatusCodes.Status200OK);
 });
 
-app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
+app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
-  var subjects = BridgeSubjects.ForUser(userId);
-  var payload = await bridgeNatsClient.RequestAsync(subjects.StatusGet, new { user_id = userId }, cancellationToken);
+  cancellationToken.ThrowIfCancellationRequested();
+  var bridges = await octopStore.ListBridgesForUserAsync(userId);
+  return Results.Text(new JObject { ["bridges"] = bridges }.ToString(), "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"projects\":[]}", "application/json; charset=utf-8");
+  }
+
+  var projects = await octopStore.ListProjectsForUserAsync(userId, bridgeId);
+  return Results.Text(new JObject { ["projects"] = projects }.ToString(), "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/threads", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+  var projectId = httpContext.Request.Query["project_id"].ToString();
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"threads\":[]}", "application/json; charset=utf-8");
+  }
+
+  var threads = await octopStore.ListThreadsAsync(userId, bridgeId, projectId);
+  return Results.Text(new JObject { ["threads"] = threads }.ToString(), "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{}", "application/json; charset=utf-8");
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.StatusGet,
+    new { user_id = userId, bridge_id = bridgeId },
+    cancellationToken);
+
   return Results.Text(payload?.ToJsonString() ?? "{}", "application/json; charset=utf-8");
 });
 
-app.MapGet("/api/projects", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
+app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
-  var subjects = BridgeSubjects.ForUser(userId);
-  var payload = await bridgeNatsClient.RequestAsync(subjects.ProjectsGet, new { user_id = userId }, cancellationToken);
-  return Results.Text(payload?.ToJsonString() ?? "{\"projects\":[]}", "application/json; charset=utf-8");
-});
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
-app.MapGet("/api/threads", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
-{
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
-  var subjects = BridgeSubjects.ForUser(userId);
-  var payload = await bridgeNatsClient.RequestAsync(subjects.ThreadsGet, new { user_id = userId }, cancellationToken);
-  return Results.Text(payload?.ToJsonString() ?? "{\"threads\":[]}", "application/json; charset=utf-8");
-});
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+  }
 
-app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
-{
-  var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
-  var subjects = BridgeSubjects.ForUser(userId);
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var projectId = body?["project_id"]?.GetValue<string>();
+
+  if (!string.IsNullOrWhiteSpace(projectId))
+  {
+    await octopStore.EnsureProjectMembershipAsync(userId, bridgeId, projectId);
+  }
+
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.PingStart,
     new
     {
       user_id = userId,
+      bridge_id = bridgeId,
       title = body?["title"]?.GetValue<string>(),
       prompt = body?["prompt"]?.GetValue<string>(),
-      project_id = body?["project_id"]?.GetValue<string>()
+      project_id = projectId
     },
     cancellationToken
   );
@@ -109,7 +187,7 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
   );
 });
 
-app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, CancellationToken cancellationToken) =>
+app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
   httpContext.Response.Headers.ContentType = "text/event-stream; charset=utf-8";
@@ -117,7 +195,16 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
   httpContext.Response.Headers.Connection = "keep-alive";
 
   var userId = BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
-  var subjects = BridgeSubjects.ForUser(userId);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    await httpContext.Response.WriteAsync("event: error\ndata: {\"message\":\"bridge not found\"}\n\n", cancellationToken);
+    await httpContext.Response.Body.FlushAsync(cancellationToken);
+    return;
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var writeLock = new SemaphoreSlim(1, 1);
 
   async Task WriteEventAsync(string name, string payload)
@@ -140,11 +227,18 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
     _ = Task.Run(() => WriteEventAsync("message", payload), CancellationToken.None);
   });
 
-  await WriteEventAsync("ready", JsonSerializer.Serialize(new Dictionary<string, string> { ["user_id"] = userId }));
+  await WriteEventAsync("ready", JsonSerializer.Serialize(new Dictionary<string, string>
+  {
+    ["user_id"] = userId,
+    ["bridge_id"] = bridgeId
+  }));
 
   try
   {
-    var snapshot = await bridgeNatsClient.RequestAsync(subjects.StatusGet, new { user_id = userId }, cancellationToken);
+    var snapshot = await bridgeNatsClient.RequestAsync(
+      subjects.StatusGet,
+      new { user_id = userId, bridge_id = bridgeId },
+      cancellationToken);
 
     if (snapshot is not null)
     {
@@ -156,7 +250,8 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
     await WriteEventAsync("error", JsonSerializer.Serialize(new Dictionary<string, object?>
     {
       ["message"] = exception.Message,
-      ["user_id"] = userId
+      ["user_id"] = userId,
+      ["bridge_id"] = bridgeId
     }));
   }
 
@@ -166,9 +261,10 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
   {
     while (await timer.WaitForNextTickAsync(cancellationToken))
     {
-      await WriteEventAsync("heartbeat", JsonSerializer.Serialize(new Dictionary<string, long>
+      await WriteEventAsync("heartbeat", JsonSerializer.Serialize(new Dictionary<string, object?>
       {
-        ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        ["bridge_id"] = bridgeId
       }));
     }
   }
@@ -179,29 +275,20 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
 
 app.Run();
 
-static async Task<IResult> ProxyJsonAsync(
-  HttpClient httpClient,
-  string url,
-  HttpMethod method,
-  JsonNode? body,
-  string? authorization,
+static async Task<string?> ResolveBridgeIdAsync(
+  HttpContext httpContext,
+  OctopStore octopStore,
+  string userId,
   CancellationToken cancellationToken)
 {
-  using var request = new HttpRequestMessage(method, url);
+  var requested = BridgeSubjects.SanitizeBridgeId(httpContext.Request.Query["bridge_id"].ToString());
 
-  if (!string.IsNullOrWhiteSpace(authorization))
+  if (!string.IsNullOrWhiteSpace(httpContext.Request.Query["bridge_id"]))
   {
-    request.Headers.TryAddWithoutValidation("Authorization", authorization);
+    return requested;
   }
 
-  if (body is not null)
-  {
-    request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-  }
-
-  using var response = await httpClient.SendAsync(request, cancellationToken);
-  var content = await response.Content.ReadAsStringAsync(cancellationToken);
-  var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/json; charset=utf-8";
-
-  return Results.Text(content, contentType, statusCode: (int)response.StatusCode);
+  cancellationToken.ThrowIfCancellationRequested();
+  var bridges = await octopStore.ListBridgesForUserAsync(userId);
+  return bridges.OfType<JObject>().FirstOrDefault()?.Value<string>("bridge_id");
 }

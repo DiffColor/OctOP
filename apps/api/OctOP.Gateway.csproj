@@ -8,5 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../../packages/server-shared/OctOP.ServerShared.csproj" />
     <PackageReference Include="NATS.Client" Version="1.1.8" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="RethinkDb.Driver" Version="2.3.150" />
   </ItemGroup>
 </Project>

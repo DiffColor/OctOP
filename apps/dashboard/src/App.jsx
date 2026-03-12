@@ -276,6 +276,18 @@ function summarizeProjects(projects) {
   return `${projects[0].name} 외 ${projects.length - 1}개 프로젝트`;
 }
 
+function summarizeBridges(bridges) {
+  if (bridges.length === 0) {
+    return "연결된 bridge가 없습니다.";
+  }
+
+  if (bridges.length === 1) {
+    return `${bridges[0].device_name ?? bridges[0].bridge_id} 1대 연결`;
+  }
+
+  return `${bridges[0].device_name ?? bridges[0].bridge_id} 외 ${bridges.length - 1}대 연결`;
+}
+
 function summarizeEvent(event) {
   return (
     event?.summary ??
@@ -644,9 +656,11 @@ function ThreadCard({ thread, selected, onSelect }) {
 
 function MainPage({
   session,
+  bridges,
   status,
   projects,
   threads,
+  selectedBridgeId,
   selectedProjectId,
   selectedThreadId,
   search,
@@ -655,6 +669,7 @@ function MainPage({
   issueBusy,
   composerOpen,
   onSearchChange,
+  onSelectBridge,
   onSelectProject,
   onSelectThread,
   onOpenComposer,
@@ -663,6 +678,8 @@ function MainPage({
   onRefresh,
   onLogout
 }) {
+  const selectedBridge =
+    bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const projectScopedThreads = threads.filter((thread) => {
@@ -723,8 +740,8 @@ function MainPage({
           <div className="mt-6">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
-                <h2 className="mt-2 text-lg font-semibold text-white">{summarizeProjects(projects)}</h2>
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">My Bridges</p>
+                <h2 className="mt-2 text-lg font-semibold text-white">{summarizeBridges(bridges)}</h2>
               </div>
               <button
                 type="button"
@@ -736,6 +753,59 @@ function MainPage({
             </div>
 
             <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
+              <section className="space-y-2">
+                {bridges.length === 0 ? (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-800 bg-slate-900/30 px-4 py-5 text-sm text-slate-500">
+                    현재 로그인 사용자에 연결된 bridge가 없습니다.
+                  </div>
+                ) : (
+                  bridges.map((bridge) => {
+                    const active = bridge.bridge_id === selectedBridgeId;
+
+                    return (
+                      <button
+                        key={bridge.bridge_id}
+                        type="button"
+                        onClick={() => onSelectBridge(bridge.bridge_id)}
+                        className={`w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${
+                          active
+                            ? "border-emerald-400/40 bg-emerald-500/10"
+                            : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
+                              {bridge.device_name ?? bridge.bridge_id}
+                            </p>
+                            <p className="mt-1 font-mono text-[11px] text-slate-500">
+                              {bridge.bridge_id}
+                            </p>
+                          </div>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] ${
+                              bridge.status === "online"
+                                ? "bg-emerald-500/10 text-emerald-300"
+                                : "bg-rose-500/10 text-rose-300"
+                            }`}
+                          >
+                            {bridge.status === "online" ? "online" : bridge.status ?? "unknown"}
+                          </span>
+                        </div>
+                        <p className="mt-3 text-xs text-slate-500">
+                          마지막 확인 {formatRelativeTime(bridge.last_seen_at)}
+                        </p>
+                      </button>
+                    );
+                  })
+                )}
+              </section>
+
+              <section className="pt-4">
+                <div className="mb-3">
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
+                  <h3 className="mt-2 text-base font-semibold text-white">{summarizeProjects(projects)}</h3>
+                </div>
               {projectTree.map((project) => {
                 const active = project.id === selectedProjectId;
 
@@ -816,6 +886,7 @@ function MainPage({
                   </div>
                 );
               })}
+              </section>
             </div>
           </div>
           </aside>
@@ -827,7 +898,7 @@ function MainPage({
                 <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Project Board</p>
                 <h2 className="mt-2 text-2xl font-semibold text-white">{selectedProject?.name ?? "프로젝트 선택 필요"}</h2>
                 <p className="mt-2 text-sm text-slate-400">
-                  선택한 프로젝트의 thread만 칸반에 표시됩니다. 마지막 갱신 {formatRelativeTime(status.updated_at)}
+                  {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 선택 필요"} · 선택한 프로젝트의 thread만 칸반에 표시됩니다. 마지막 갱신 {formatRelativeTime(status.updated_at)}
                 </p>
               </div>
 
@@ -1011,6 +1082,8 @@ function MainPage({
               <span className="text-slate-600">/</span>
               <span>{session.role || "viewer"}</span>
               <span className="text-slate-600">/</span>
+              <span>{selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "No Bridge"}</span>
+              <span className="text-slate-600">/</span>
               <span>{status.app_server?.account?.plan_type ?? "Unknown"}</span>
             </div>
 
@@ -1061,6 +1134,7 @@ function MainPage({
 export default function App() {
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
+  const [bridges, setBridges] = useState([]);
   const [status, setStatus] = useState({
     app_server: {
       connected: false,
@@ -1072,6 +1146,7 @@ export default function App() {
   });
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
+  const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [search, setSearch] = useState("");
@@ -1080,8 +1155,38 @@ export default function App() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
 
-  async function loadDashboard(sessionArg) {
+  async function loadBridges(sessionArg) {
     if (!sessionArg?.userId) {
+      return;
+    }
+
+    const nextBridges = (await apiRequest(
+      `/api/bridges?user_id=${encodeURIComponent(sessionArg.userId)}`
+    )).bridges ?? [];
+
+    setBridges(nextBridges);
+    setSelectedBridgeId((current) => {
+      if (current && nextBridges.some((bridge) => bridge.bridge_id === current)) {
+        return current;
+      }
+
+      return nextBridges[0]?.bridge_id ?? "";
+    });
+  }
+
+  async function loadBridgeWorkspace(sessionArg, bridgeId) {
+    if (!sessionArg?.userId || !bridgeId) {
+      setProjects([]);
+      setThreads([]);
+      setStatus({
+        app_server: {
+          connected: false,
+          initialized: false,
+          account: null,
+          last_error: null
+        },
+        updated_at: null
+      });
       return;
     }
 
@@ -1089,15 +1194,27 @@ export default function App() {
 
     try {
       const [nextStatus, nextProjects, nextThreads] = await Promise.all([
-        apiRequest(`/api/bridge/status?user_id=${encodeURIComponent(sessionArg.userId)}`),
-        apiRequest(`/api/projects?user_id=${encodeURIComponent(sessionArg.userId)}`),
-        apiRequest(`/api/threads?user_id=${encodeURIComponent(sessionArg.userId)}`)
+        apiRequest(
+          `/api/bridge/status?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+        ),
+        apiRequest(
+          `/api/projects?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+        ),
+        apiRequest(
+          `/api/threads?user_id=${encodeURIComponent(sessionArg.userId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+        )
       ]);
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
       setThreads(mergeThreads([], nextThreads.threads ?? []));
-      setSelectedProjectId((current) => current || nextProjects.projects?.[0]?.id || "");
+      setSelectedProjectId((current) => {
+        if (current && nextProjects.projects?.some((project) => project.id === current)) {
+          return current;
+        }
+
+        return nextProjects.projects?.[0]?.id || "";
+      });
       setSelectedThreadId((current) => current || nextThreads.threads?.[0]?.id || "");
       setLoadingState("ready");
     } catch (error) {
@@ -1119,16 +1236,16 @@ export default function App() {
       return;
     }
 
-    void loadDashboard(session);
+    void loadBridges(session);
   }, [session]);
 
   useEffect(() => {
-    if (!session?.userId) {
+    if (!session?.userId || !selectedBridgeId) {
       return undefined;
     }
 
     const eventSource = new EventSource(
-      `${API_BASE_URL}/api/events?user_id=${encodeURIComponent(session.userId)}`
+      `${API_BASE_URL}/api/events?user_id=${encodeURIComponent(session.userId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
 
     const appendEvent = (type, summary) => {
@@ -1172,7 +1289,13 @@ export default function App() {
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
           setProjects(nextProjects);
-          setSelectedProjectId((current) => current || nextProjects[0]?.id || "");
+          setSelectedProjectId((current) => {
+            if (current && nextProjects.some((project) => project.id === current)) {
+              return current;
+            }
+
+            return nextProjects[0]?.id || "";
+          });
           return;
         }
 
@@ -1199,7 +1322,20 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [session]);
+  }, [session, selectedBridgeId]);
+
+  useEffect(() => {
+    if (!session?.userId) {
+      return;
+    }
+
+    void loadBridgeWorkspace(session, selectedBridgeId);
+  }, [session, selectedBridgeId]);
+
+  useEffect(() => {
+    setSelectedProjectId("");
+    setSelectedThreadId("");
+  }, [selectedBridgeId]);
 
   useEffect(() => {
     if (!selectedProjectId && projects.length > 0) {
@@ -1268,6 +1404,7 @@ export default function App() {
   const handleLogout = () => {
     clearSessionStorage();
     setSession(null);
+    setBridges([]);
     setProjects([]);
     setThreads([]);
     setRecentEvents([]);
@@ -1285,7 +1422,7 @@ export default function App() {
 
     try {
       const response = await apiRequest(
-        `/api/commands/ping?user_id=${encodeURIComponent(session.userId)}`,
+        `/api/commands/ping?user_id=${encodeURIComponent(session.userId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
@@ -1327,9 +1464,11 @@ export default function App() {
   return (
     <MainPage
       session={session}
+      bridges={bridges}
       status={status}
       projects={projects}
       threads={threads}
+      selectedBridgeId={selectedBridgeId}
       selectedProjectId={selectedProjectId}
       selectedThreadId={selectedThreadId}
       search={search}
@@ -1338,12 +1477,13 @@ export default function App() {
       issueBusy={issueBusy}
       composerOpen={composerOpen}
       onSearchChange={setSearch}
+      onSelectBridge={setSelectedBridgeId}
       onSelectProject={setSelectedProjectId}
       onSelectThread={setSelectedThreadId}
       onOpenComposer={() => setComposerOpen(true)}
       onCloseComposer={() => setComposerOpen(false)}
       onSubmitIssue={handleCreateIssue}
-      onRefresh={() => void loadDashboard(session)}
+      onRefresh={() => void loadBridges(session)}
       onLogout={handleLogout}
     />
   );
