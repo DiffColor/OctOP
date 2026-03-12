@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { dirname, resolve } from "node:path";
 import { connect, StringCodec } from "nats";
 import {
   bridgeSubjects,
@@ -29,6 +31,8 @@ const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
   process.env.OCTOP_BRIDGE_OWNER_LOGIN_ID ?? process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user"
 );
+const BRIDGE_STORAGE_DIR = resolve(os.homedir(), ".octop");
+const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 
 dns.setDefaultResultOrder("ipv4first");
 
@@ -88,23 +92,111 @@ function ensureUserState(userId) {
   const normalized = sanitizeUserId(userId);
 
   if (!users.has(normalized)) {
-    const project = {
-      id: `${BRIDGE_ID}-${normalized}-project-1`,
-      key: normalized.toUpperCase().replace(/-/g, "_"),
-      name: `${normalized} project`,
-      description: "OctOP bridge와 app-server 연결 점검용 기본 프로젝트",
-      bridge_id: BRIDGE_ID,
-      created_at: now()
-    };
-
     users.set(normalized, {
-      projects: [project],
+      projects: loadProjectsForUser(normalized),
       threadIds: new Set(),
       updated_at: now()
     });
   }
 
   return users.get(normalized);
+}
+
+function loadProjectsForUser(loginId) {
+  const persisted = readProjectStorage();
+  const stored = persisted[loginId];
+
+  if (Array.isArray(stored) && stored.length > 0) {
+    return stored.map((project) => normalizeProject(loginId, project));
+  }
+
+  const project = buildDefaultProject(loginId);
+  persisted[loginId] = [project];
+  writeProjectStorage(persisted);
+  return [project];
+}
+
+function buildDefaultProject(loginId) {
+  return normalizeProject(loginId, {
+    id: `${BRIDGE_ID}-${loginId}-project-1`,
+    key: loginId.toUpperCase().replace(/-/g, "_"),
+    name: `${loginId} project`,
+    description: "OctOP bridge와 app-server 연결 점검용 기본 프로젝트"
+  });
+}
+
+function normalizeProject(loginId, project = {}) {
+  const sanitizedLoginId = sanitizeUserId(loginId);
+  const fallbackId = `${BRIDGE_ID}-${sanitizedLoginId}-${randomUUID().slice(0, 8)}`;
+  const fallbackName = `${sanitizedLoginId} project`;
+
+  return {
+    id: sanitizeBridgeId(project.id ?? fallbackId),
+    key: String(project.key ?? fallbackName).trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
+    name: String(project.name ?? fallbackName).trim() || fallbackName,
+    description: String(project.description ?? "").trim(),
+    bridge_id: BRIDGE_ID,
+    created_at: project.created_at ?? now(),
+    updated_at: project.updated_at ?? now()
+  };
+}
+
+function readProjectStorage() {
+  if (!existsSync(PROJECT_STATE_PATH)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(PROJECT_STATE_PATH, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeProjectStorage(payload) {
+  mkdirSync(dirname(PROJECT_STATE_PATH), { recursive: true });
+  writeFileSync(PROJECT_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function persistUserProjects(loginId, projects) {
+  const storage = readProjectStorage();
+  storage[loginId] = projects;
+  writeProjectStorage(storage);
+}
+
+async function createProject(loginId, payload = {}) {
+  const state = ensureUserState(loginId);
+  const name = String(payload.name ?? "").trim();
+
+  if (!name) {
+    throw new Error("프로젝트 이름이 필요합니다.");
+  }
+
+  const project = normalizeProject(loginId, {
+    id: payload.id ?? `${BRIDGE_ID}-${sanitizeUserId(loginId)}-${randomUUID().slice(0, 8)}`,
+    key: payload.key ?? name,
+    name,
+    description: payload.description ?? ""
+  });
+
+  const keyExists = state.projects.some((item) => item.key === project.key);
+  const nameExists = state.projects.some((item) => item.name === project.name);
+
+  if (keyExists || nameExists) {
+    throw new Error("같은 이름 또는 key의 프로젝트가 이미 있습니다.");
+  }
+
+  state.projects = [project, ...state.projects];
+  state.updated_at = now();
+  persistUserProjects(loginId, state.projects);
+  await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
+
+  return {
+    accepted: true,
+    project,
+    projects: state.projects
+  };
 }
 
 function listProjectState(userId) {
@@ -750,6 +842,27 @@ async function subscribeRequests() {
     })();
   }
 
+  const projectCreateSubscription = nc.subscribe("octop.user.*.bridge.*.project.create");
+
+  (async () => {
+    for await (const message of projectCreateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.login_id ?? body.user_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await createProject(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const pingSubscription = nc.subscribe("octop.user.*.bridge.*.command.ping");
 
   (async () => {
@@ -798,6 +911,16 @@ createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/projects") {
     return sendJson(response, 200, { projects: listProjectState(userId) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/projects") {
+    try {
+      const body = await readJsonBody(request);
+      const payload = await createProject(userId, body);
+      return sendJson(response, 201, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
   }
 
   if (request.method === "GET" && url.pathname === "/api/threads") {

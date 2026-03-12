@@ -613,6 +613,123 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
   );
 }
 
+function ProjectComposer({ open, busy, onClose, onSubmit }) {
+  const [name, setName] = useState("");
+  const [key, setKey] = useState("");
+  const [description, setDescription] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setKey("");
+      setDescription("");
+    }
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+
+    if (!name.trim()) {
+      return;
+    }
+
+    await onSubmit({
+      name: name.trim(),
+      key: key.trim(),
+      description: description.trim()
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Project</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">새 프로젝트 등록</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">
+              선택한 bridge 아래에서 이슈를 분리 관리할 프로젝트를 생성합니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            닫기
+          </button>
+        </div>
+
+        <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
+              프로젝트 이름
+            </label>
+            <input
+              id="project-name"
+              type="text"
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="예: LicenseHub 운영 자동화"
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
+              프로젝트 Key
+            </label>
+            <input
+              id="project-key"
+              type="text"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+              placeholder="비워두면 이름 기준으로 자동 생성"
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
+              설명
+            </label>
+            <textarea
+              id="project-description"
+              rows="4"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? "등록 중..." : "프로젝트 등록"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ThreadCard({ thread, selected, onSelect }) {
   const status = getStatusMeta(thread.status);
 
@@ -666,14 +783,19 @@ function MainPage({
   search,
   recentEvents,
   loadingState,
+  projectBusy,
   issueBusy,
+  projectComposerOpen,
   composerOpen,
   onSearchChange,
   onSelectBridge,
   onSelectProject,
   onSelectThread,
+  onOpenProjectComposer,
   onOpenComposer,
+  onCloseProjectComposer,
   onCloseComposer,
+  onSubmitProject,
   onSubmitIssue,
   onRefresh,
   onLogout
@@ -743,13 +865,23 @@ function MainPage({
                   <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
                   <h2 className="mt-2 text-lg font-semibold text-white">{summarizeProjects(projects)}</h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={onRefresh}
-                  className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
-                >
-                  새로고침
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onOpenProjectComposer}
+                    disabled={!selectedBridge}
+                    className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs text-sky-300 transition hover:border-sky-400/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    프로젝트 등록
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onRefresh}
+                    className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
+                  >
+                    새로고침
+                  </button>
+                </div>
               </div>
 
               <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
@@ -1106,6 +1238,12 @@ function MainPage({
         onClose={onCloseComposer}
         onSubmit={onSubmitIssue}
       />
+      <ProjectComposer
+        open={projectComposerOpen}
+        busy={projectBusy}
+        onClose={onCloseProjectComposer}
+        onSubmit={onSubmitProject}
+      />
     </div>
   );
 }
@@ -1131,12 +1269,14 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [recentEvents, setRecentEvents] = useState([]);
   const [loadingState, setLoadingState] = useState("idle");
+  const [projectComposerOpen, setProjectComposerOpen] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
-      return;
+      return [];
     }
 
     const nextBridges = (await apiRequest(
@@ -1151,6 +1291,8 @@ export default function App() {
 
       return nextBridges[0]?.bridge_id ?? "";
     });
+
+    return nextBridges;
   }
 
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
@@ -1429,6 +1571,67 @@ export default function App() {
     }
   };
 
+  const handleCreateProject = async (payload) => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    setProjectBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/projects?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }
+      );
+
+      const nextProjects = response?.projects ?? null;
+      const createdProject = response?.project ?? null;
+
+      if (Array.isArray(nextProjects)) {
+        setProjects(nextProjects);
+      } else if (createdProject?.id) {
+        setProjects((current) => {
+          const exists = current.some((project) => project.id === createdProject.id);
+          return exists ? current : [createdProject, ...current];
+        });
+      }
+
+      if (createdProject?.id) {
+        setSelectedProjectId(createdProject.id);
+      }
+
+      setProjectComposerOpen(false);
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "project.create.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!session?.loginId) {
+      return;
+    }
+
+    const nextBridges = await loadBridges(session);
+    const targetBridgeId = selectedBridgeId || nextBridges[0]?.bridge_id;
+
+    if (targetBridgeId) {
+      await loadBridgeWorkspace(session, targetBridgeId);
+    }
+  };
+
   if (!session) {
     return (
       <LoginPage
@@ -1453,16 +1656,21 @@ export default function App() {
       search={search}
       recentEvents={recentEvents}
       loadingState={loadingState}
+      projectBusy={projectBusy}
       issueBusy={issueBusy}
+      projectComposerOpen={projectComposerOpen}
       composerOpen={composerOpen}
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={setSelectedProjectId}
       onSelectThread={setSelectedThreadId}
+      onOpenProjectComposer={() => setProjectComposerOpen(true)}
       onOpenComposer={() => setComposerOpen(true)}
+      onCloseProjectComposer={() => setProjectComposerOpen(false)}
       onCloseComposer={() => setComposerOpen(false)}
+      onSubmitProject={handleCreateProject}
       onSubmitIssue={handleCreateIssue}
-      onRefresh={() => void loadBridges(session)}
+      onRefresh={() => void handleRefresh()}
       onLogout={handleLogout}
     />
   );

@@ -4,6 +4,7 @@ public sealed record BridgeSubjectSet(
   string BridgeId,
   string StatusGet,
   string ProjectsGet,
+  string ProjectCreate,
   string ThreadsGet,
   string PingStart,
   string Events
@@ -43,6 +44,7 @@ public static class BridgeSubjects
       BridgeId: bid,
       StatusGet: $"{@base}.status.get",
       ProjectsGet: $"{@base}.projects.get",
+      ProjectCreate: $"{@base}.project.create",
       ThreadsGet: $"{@base}.threads.get",
       PingStart: $"{@base}.command.ping",
       Events: $"octop.user.{uid}.bridge.{bid}.events"
