@@ -606,7 +606,7 @@ async function startPingThread(userId, payload = {}) {
   upsertThreadState(
     thread.id,
     normalizeThreadRecord(thread, {
-      title: payload.prompt ?? "OctOP bridge ping",
+      title: payload.title ?? payload.prompt ?? "OctOP bridge ping",
       project_id: payload.project_id ?? state.projects[0]?.id ?? null,
       progress: 5,
       status: "queued",
@@ -693,9 +693,9 @@ async function subscribeRequests() {
   (async () => {
     for await (const message of pingSubscription) {
       try {
-        const body = parseJson(message.data);
-        const userId = sanitizeUserId(body.user_id ?? message.subject.split(".")[2]);
-        const result = await startPingThread(userId, body);
+      const body = parseJson(message.data);
+      const userId = sanitizeUserId(body.user_id ?? message.subject.split(".")[2]);
+      const result = await startPingThread(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });

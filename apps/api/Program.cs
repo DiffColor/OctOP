@@ -116,6 +116,7 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
     new
     {
       user_id = userId,
+      title = body?["title"]?.GetValue<string>(),
       prompt = body?["prompt"]?.GetValue<string>(),
       project_id = body?["project_id"]?.GetValue<string>()
     },

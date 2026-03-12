@@ -40,6 +40,7 @@ body {
 body,
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -50,6 +51,7 @@ button {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid rgba(138, 158, 197, 0.32);
@@ -64,6 +66,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   outline: none;
   border-color: rgba(37, 99, 235, 0.45);
@@ -690,6 +693,14 @@ textarea {
   color: var(--text-muted);
 }
 
+.thread-card__project {
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .thread-card__meta {
   display: flex;
   align-items: center;
@@ -816,6 +827,155 @@ textarea {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 360px;
   gap: 18px;
+}
+
+.ide-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.ide-sidebar,
+.ide-board-panel {
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  box-shadow: var(--shadow-lg);
+}
+
+.ide-sidebar {
+  min-height: 760px;
+  padding: 18px;
+  color: #d9e4ff;
+  background:
+    linear-gradient(180deg, rgba(12, 20, 35, 0.96), rgba(18, 28, 47, 0.96)),
+    #111827;
+}
+
+.ide-board-panel {
+  min-height: 760px;
+}
+
+.ide-sidebar__workspace,
+.ide-sidebar__brand,
+.ide-nav-item,
+.ide-thread-item__meta,
+.ide-board-panel__actions,
+.issue-form__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ide-sidebar__workspace {
+  margin-bottom: 20px;
+}
+
+.ide-sidebar .brand-mark {
+  width: 42px;
+  height: 42px;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.ide-sidebar__brand small,
+.ide-thread-item span,
+.ide-inspector p,
+.ide-sidebar .desktop-sidebar__label {
+  color: rgba(191, 219, 254, 0.72);
+}
+
+.ide-sidebar__brand strong {
+  display: block;
+  margin-top: 4px;
+  color: #eff6ff;
+  font-family: "Fira Code", monospace;
+}
+
+.ide-sidebar__group {
+  display: grid;
+  gap: 12px;
+}
+
+.ide-sidebar__group + .ide-sidebar__group {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.ide-nav-list,
+.ide-thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.ide-nav-item,
+.ide-thread-item {
+  width: 100%;
+  text-align: left;
+  border-radius: 18px;
+  padding: 12px 14px;
+  color: #dbeafe;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(30, 41, 59, 0.68);
+}
+
+.ide-nav-item.is-active,
+.ide-thread-item.is-selected {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(30, 64, 175, 0.26);
+}
+
+.ide-nav-item span,
+.ide-thread-item strong,
+.ide-inspector strong {
+  color: #f8fafc;
+}
+
+.ide-nav-item strong {
+  font-family: "Fira Code", monospace;
+  font-size: 12px;
+}
+
+.ide-thread-item {
+  display: grid;
+  gap: 8px;
+}
+
+.ide-thread-item strong {
+  font-size: 14px;
+}
+
+.ide-thread-item span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ide-thread-item .status-chip {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.ide-thread-item__meta small {
+  color: rgba(191, 219, 254, 0.72);
+}
+
+.ide-inspector {
+  padding: 16px;
+  border-radius: 22px;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.ide-inspector__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .desktop-sidebar {
@@ -957,6 +1117,10 @@ textarea {
   text-align: left;
 }
 
+.ide-board-panel__actions {
+  flex-wrap: wrap;
+}
+
 .filter-chip span {
   color: var(--text-muted);
   font-size: 11px;
@@ -1072,6 +1236,33 @@ textarea {
   gap: 10px;
 }
 
+.issue-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(10px);
+  z-index: 40;
+}
+
+.issue-modal {
+  width: min(100%, 640px);
+  background: var(--surface-strong);
+}
+
+.issue-form {
+  display: grid;
+  gap: 16px;
+}
+
+.issue-form label {
+  display: grid;
+  gap: 8px;
+  font-weight: 600;
+}
+
 .event-list {
   display: grid;
   gap: 10px;
@@ -1103,6 +1294,7 @@ textarea {
   .login-layout,
   .workspace-hero,
   .workspace-panels,
+  .ide-layout,
   .desktop-layout {
     grid-template-columns: 1fr;
   }
@@ -1138,6 +1330,11 @@ textarea {
 
   .workspace-panels {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-hero,
+  .summary-strip {
+    display: none;
   }
 }
 

@@ -226,13 +226,28 @@ function IconInstall() {
   );
 }
 
+function IconPlus() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 5v14M5 12h14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function StatusChip({ status }) {
   const meta = STATUS_META[status] ?? STATUS_META.queued;
 
   return <span className={`status-chip tone-${meta.tone}`}>{meta.label}</span>;
 }
 
-function ThreadCard({ thread, onSelect, selected }) {
+function ThreadCard({ thread, onSelect, selected, projectName }) {
   const priority = getThreadPriority(thread);
 
   return (
@@ -245,6 +260,7 @@ function ThreadCard({ thread, onSelect, selected }) {
         <span className="thread-card__key">{thread.id.slice(0, 8)}</span>
         <span>{formatTime(thread.updated_at)}</span>
       </div>
+      <span className="thread-card__project">{projectName ?? "Unassigned"}</span>
       <strong>{thread.title}</strong>
       <p>{summarizeMessage(thread)}</p>
       <div className="thread-card__meta">
@@ -314,6 +330,12 @@ export default function App() {
   const [installState, setInstallState] = useState("available");
   const [streamState, setStreamState] = useState("idle");
   const [isOnline, setIsOnline] = useState(() => window.navigator.onLine);
+  const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
+  const [issueTitle, setIssueTitle] = useState("");
+  const [issuePrompt, setIssuePrompt] = useState("");
+  const [issueProjectId, setIssueProjectId] = useState("");
+  const [issueSubmitting, setIssueSubmitting] = useState(false);
+  const [issueError, setIssueError] = useState("");
 
   const userId = auth?.userId ?? "";
 
@@ -402,6 +424,8 @@ export default function App() {
       }
     ];
   }, [auth?.displayName, status?.app_server?.account?.email, status?.app_server?.connected, status?.bridge_mode, status?.nats?.connected]);
+
+  const sidebarThreads = useMemo(() => threads.slice(0, 7), [threads]);
 
   const summaryCards = useMemo(() => {
     return [
@@ -518,6 +542,53 @@ export default function App() {
     });
   }
 
+  async function handleIssueSubmit(event) {
+    event.preventDefault();
+
+    const normalizedTitle = issueTitle.trim();
+    const normalizedPrompt = issuePrompt.trim();
+    const projectId = issueProjectId || projects[0]?.id || "";
+
+    if (!userId) {
+      return;
+    }
+
+    if (!normalizedTitle || !normalizedPrompt) {
+      setIssueError("이슈 제목과 설명을 모두 입력해 주세요.");
+      return;
+    }
+
+    setIssueSubmitting(true);
+    setIssueError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/commands/ping?user_id=${encodeURIComponent(userId)}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          title: normalizedTitle,
+          prompt: normalizedPrompt,
+          project_id: projectId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("이슈 등록 요청이 실패했습니다.");
+      }
+
+      setIsIssueModalOpen(false);
+      setIssueTitle("");
+      setIssuePrompt("");
+      await loadSnapshot();
+    } catch (error) {
+      setIssueError(error.message);
+    } finally {
+      setIssueSubmitting(false);
+    }
+  }
+
   async function handleInstall() {
     if (!installPrompt) {
       return;
@@ -555,6 +626,17 @@ export default function App() {
       setSelectedThreadId(nextSelected);
     }
   }, [selectedThreadId, threads]);
+
+  useEffect(() => {
+    if (!projects.length) {
+      setIssueProjectId("");
+      return;
+    }
+
+    if (!issueProjectId || !projects.some((project) => project.id === issueProjectId)) {
+      setIssueProjectId(projects[0].id);
+    }
+  }, [issueProjectId, projects]);
 
   useEffect(() => {
     function handleOnline() {
@@ -876,33 +958,87 @@ export default function App() {
             </section>
 
             <section className="desktop-board-view">
-              <div className="desktop-layout">
-                <aside className="desktop-sidebar surface-card">
-                  <div className="surface-card__title desktop-sidebar__title">
-                    <div>
-                      <h2>Workspace Directory</h2>
-                      <span>{projects.length} repositories</span>
+              <div className="ide-layout">
+                <aside className="ide-sidebar">
+                  <div className="ide-sidebar__workspace">
+                    <div className="ide-sidebar__brand">
+                      <span className="brand-mark">
+                        <IconBoard />
+                      </span>
+                      <div>
+                        <small>Workspace</small>
+                        <strong>{activeProject?.name ?? "No Project"}</strong>
+                      </div>
                     </div>
-                    <span className="board-shell__meta">{threads.length} threads</span>
+                    <span className="board-shell__meta">{threads.length} issues</span>
                   </div>
 
-                  <div className="desktop-sidebar__section">
-                    <small className="desktop-sidebar__label">Projects</small>
-                    <ul className="project-directory">
-                      {projects.map((project) => {
-                        const isActive = project.id === activeProject?.id;
+                  <div className="ide-sidebar__group">
+                    <small className="desktop-sidebar__label">Explorer</small>
+                    <div className="ide-nav-list">
+                      <button type="button" className="ide-nav-item is-active">
+                        <span>Threads</span>
+                        <strong>{threads.length}</strong>
+                      </button>
+                      <button type="button" className="ide-nav-item">
+                        <span>Projects</span>
+                        <strong>{projects.length}</strong>
+                      </button>
+                      <button type="button" className="ide-nav-item">
+                        <span>Runtime</span>
+                        <strong>{status?.nats?.connected ? "Live" : "Down"}</strong>
+                      </button>
+                    </div>
+                  </div>
 
-                        return (
-                          <li key={project.id} className={isActive ? "is-active" : ""}>
-                            <strong>{project.name}</strong>
-                            <span>{project.description}</span>
-                          </li>
-                        );
-                      })}
+                  <div className="ide-sidebar__group">
+                    <small className="desktop-sidebar__label">Recent Threads</small>
+                    <ul className="ide-thread-list">
+                      {sidebarThreads.map((thread) => (
+                        <li key={thread.id}>
+                          <button
+                            type="button"
+                            className={`ide-thread-item ${thread.id === selectedThread?.id ? "is-selected" : ""}`}
+                            onClick={() => setSelectedThreadId(thread.id)}
+                          >
+                            <strong>{thread.title}</strong>
+                            <span>{getProjectForThread(thread, projects)?.name ?? "Unassigned"}</span>
+                            <div className="ide-thread-item__meta">
+                              <StatusChip status={thread.status} />
+                              <small>{formatTime(thread.updated_at)}</small>
+                            </div>
+                          </button>
+                        </li>
+                      ))}
                     </ul>
                   </div>
 
-                  <div className="desktop-sidebar__section">
+                  {selectedThread ? (
+                    <div className="ide-sidebar__group ide-inspector">
+                      <div className="ide-inspector__header">
+                        <small className="desktop-sidebar__label">Selection</small>
+                        <StatusChip status={selectedThread.status} />
+                      </div>
+                      <strong>{selectedThread.title}</strong>
+                      <p>{summarizeMessage(selectedThread)}</p>
+                      <div className="progress-bar tone-cool">
+                        <span style={{ width: `${Math.max(selectedThread.progress ?? 0, 8)}%` }} />
+                      </div>
+                      <ul className="detail-checklist">
+                        {buildTodoItems(selectedThread).map((item) => (
+                          <li key={item.id} className={item.done ? "is-done" : ""}>
+                            <span className="todo-bullet" />
+                            <div>
+                              <strong>{item.label}</strong>
+                              <small>{item.hint}</small>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <div className="ide-sidebar__group">
                     <small className="desktop-sidebar__label">Runtime</small>
                     <dl className="desktop-sidebar__facts">
                       {desktopSidebarFacts.map((item) => (
@@ -915,14 +1051,40 @@ export default function App() {
                   </div>
                 </aside>
 
-                <div className="board-shell surface-card">
+                <div className="ide-board-panel surface-card">
                   <div className="surface-card__title board-shell__title">
                     <div>
-                      <h2>Thread Operations Board</h2>
-                      <span>Stitch reference 기반의 실무형 desktop kanban</span>
+                      <h2>Issue Board</h2>
+                      <span>Codex IDE 스타일의 좌측 탐색 패널과 thread 칸반</span>
                     </div>
-                    <div className="board-shell__meta">
-                      <span>{threads.length} total</span>
+                    <div className="ide-board-panel__actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => {
+                          setIssueError("");
+                          setIssueTitle("");
+                          setIssuePrompt("");
+                          setIssueProjectId(activeProject?.id ?? projects[0]?.id ?? "");
+                          setIsIssueModalOpen(true);
+                        }}
+                      >
+                        <IconPlus />
+                        <span>이슈 등록</span>
+                      </button>
+                      <button type="button" className="ghost-button" onClick={loadSnapshot} disabled={loading}>
+                        새로고침
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => {
+                          setAuth(null);
+                          setPassword("");
+                        }}
+                      >
+                        로그아웃
+                      </button>
                     </div>
                   </div>
 
@@ -965,6 +1127,7 @@ export default function App() {
                                 thread={thread}
                                 selected={thread.id === selectedThread?.id}
                                 onSelect={setSelectedThreadId}
+                                projectName={getProjectForThread(thread, projects)?.name}
                               />
                             ))
                           ) : (
@@ -975,92 +1138,66 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-
-                <aside className="detail-rail surface-card">
-                  <div className="surface-card__title">
-                    <h2>Thread Detail</h2>
-                    <span>{selectedThread ? formatDateTime(selectedThread.updated_at) : "-"}</span>
-                  </div>
-
-                  {selectedThread ? (
-                    <>
-                      <div className="detail-rail__header">
-                        <div>
-                          <small className="detail-rail__eyebrow">
-                            {getProjectForThread(selectedThread, projects)?.name ?? "No Project"}
-                          </small>
-                          <strong>{selectedThread.title}</strong>
-                          <p>{summarizeMessage(selectedThread)}</p>
-                        </div>
-                        <StatusChip status={selectedThread.status} />
-                      </div>
-
-                      <div className="detail-meta-grid">
-                        <div>
-                          <dt>Priority</dt>
-                          <dd>{getThreadPriority(selectedThread).label}</dd>
-                        </div>
-                        <div>
-                          <dt>Last Event</dt>
-                          <dd>{selectedThread.last_event ?? "-"}</dd>
-                        </div>
-                        <div>
-                          <dt>Owner</dt>
-                          <dd>{status?.app_server?.account?.email ?? auth.displayName}</dd>
-                        </div>
-                        <div>
-                          <dt>Created</dt>
-                          <dd>{formatDateTime(selectedThread.created_at)}</dd>
-                        </div>
-                      </div>
-
-                      <div className="detail-progress detail-section">
-                        <div className="progress-bar tone-cool">
-                          <span style={{ width: `${Math.max(selectedThread.progress ?? 0, 8)}%` }} />
-                        </div>
-                        <span>{selectedThread.progress}% complete</span>
-                      </div>
-
-                      <ul className="detail-checklist detail-section">
-                        {buildTodoItems(selectedThread).map((item) => (
-                          <li key={item.id} className={item.done ? "is-done" : ""}>
-                            <span className="todo-bullet" />
-                            <div>
-                              <strong>{item.label}</strong>
-                              <small>{item.hint}</small>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-
-                      <div className="detail-events detail-section">
-                        <div className="surface-card__title">
-                          <h3>최근 이벤트</h3>
-                          <span>{selectedThreadEvents.length} items</span>
-                        </div>
-                        <ul className="event-list">
-                          {selectedThreadEvents.length ? (
-                            selectedThreadEvents.map((event, index) => (
-                              <li key={`${event.type}-${index}`}>
-                                <strong>{event.type}</strong>
-                                <span>{formatDateTime(event.timestamp)}</span>
-                              </li>
-                            ))
-                          ) : (
-                            <li className="empty-state">선택한 thread의 이벤트가 아직 없습니다.</li>
-                          )}
-                        </ul>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="empty-state">상세 보기를 위한 thread를 선택해 주세요.</div>
-                  )}
-                </aside>
               </div>
             </section>
           </section>
         </main>
       )}
+
+      {isIssueModalOpen ? (
+        <div className="issue-modal-backdrop" role="presentation" onClick={() => setIsIssueModalOpen(false)}>
+          <div className="issue-modal surface-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="surface-card__title">
+              <div>
+                <h2>새 이슈 등록</h2>
+                <span>등록 즉시 thread를 생성하고 칸반에 추가합니다.</span>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setIsIssueModalOpen(false)}>
+                닫기
+              </button>
+            </div>
+
+            <form className="issue-form" onSubmit={handleIssueSubmit}>
+              <label>
+                이슈 제목
+                <input value={issueTitle} onChange={(event) => setIssueTitle(event.target.value)} placeholder="예: dashboard 로그인 CORS 점검" />
+              </label>
+
+              <label>
+                프로젝트
+                <select value={issueProjectId} onChange={(event) => setIssueProjectId(event.target.value)}>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                이슈 설명
+                <textarea
+                  rows="5"
+                  value={issuePrompt}
+                  onChange={(event) => setIssuePrompt(event.target.value)}
+                  placeholder="작업 목적, 기대 결과, 제약 조건을 적어 주세요."
+                />
+              </label>
+
+              {issueError ? <p className="error-text">{issueError}</p> : null}
+
+              <div className="issue-form__actions">
+                <button type="button" className="ghost-button" onClick={() => setIsIssueModalOpen(false)}>
+                  취소
+                </button>
+                <button type="submit" className="primary-button" disabled={issueSubmitting}>
+                  {issueSubmitting ? "등록 중..." : "이슈 등록"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
