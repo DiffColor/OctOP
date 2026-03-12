@@ -43,9 +43,11 @@
 - macOS/Linux 직접 실행: `./scripts/run-app-server.sh`
 - Windows 직접 실행: `scripts\\run-app-server.cmd`
 - Bridge 간편 실행: `npm run bridge:start`
+- Bridge 입력 실행: `npm run bridge:start:prompt`
 - macOS/Linux 직접 실행: `./scripts/run-bridge.sh`
 - Windows 직접 실행: `scripts\\run-bridge.cmd`
 - App Server + Bridge 동시 실행: `npm run local-agent:start`
+- App Server + Bridge 입력 실행: `npm run local-agent:start:prompt`
 - macOS/Linux 직접 실행: `./scripts/run-local-agent.sh`
 - Windows 직접 실행: `scripts\\run-local-agent.cmd`
 - Gateway(.NET 10): `npm run dev:api`
@@ -54,6 +56,7 @@
 브릿지 런처 동작:
 - `.env.local` -> `.env` 순서로 환경변수를 읽습니다.
 - 파일에 값이 없으면 NATS, bridge 포트, app-server listen 주소 기본값을 채웁니다.
+- TTY 실행에서는 bridge ID, 표시 이름, owner userId를 실행 시점에 입력받을 수 있습니다.
 - 브릿지 프로세스를 띄우고, 필요하면 bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
 
 app-server 런처 동작:
@@ -63,4 +66,5 @@ app-server 런처 동작:
 
 합본 런처 동작:
 - app-server를 먼저 띄우고, bridge는 외부 app-server에 붙는 모드로 실행합니다.
+- `--prompt` 실행 시 bridge ID, 표시 이름, owner userId를 먼저 입력받습니다.
 - 따라서 app-server 중복 실행 없이 두 프로세스를 한 번에 올릴 수 있습니다.
