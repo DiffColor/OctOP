@@ -2543,6 +2543,8 @@ export default function App() {
   const [pwaUpdateVisible, setPwaUpdateVisible] = useState(false);
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
   const pendingUpdateActivatorRef = useRef(null);
+  const threadLoadRequestIdRef = useRef(0);
+  const selectedThreadIdRef = useRef("");
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
@@ -2554,11 +2556,18 @@ export default function App() {
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
 
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThreadId;
+  }, [selectedThreadId]);
+
   const loadThreadMessages = useCallback(
     async (threadId, { force = false, version = null } = {}) => {
       if (!session?.loginId || !selectedBridgeId || !threadId) {
         return;
       }
+
+      const requestId = threadLoadRequestIdRef.current + 1;
+      threadLoadRequestIdRef.current = requestId;
 
       setThreadDetails((current) => {
         const currentEntry = current[threadId];
@@ -2606,6 +2615,10 @@ export default function App() {
           details.at(-1)?.thread ??
           threads.find((thread) => thread.id === threadId) ??
           null;
+
+        if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+          return;
+        }
 
         setThreadDetails((current) => ({
           ...current,
@@ -3120,6 +3133,8 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    threadLoadRequestIdRef.current += 1;
+
     setSelectedProjectId("");
     setSelectedThreadId("");
     setDraftThreadProjectId("");
@@ -3128,6 +3143,10 @@ export default function App() {
     setSelectedWorkspacePath("");
     setActiveView("inbox");
   }, [selectedBridgeId]);
+
+  useEffect(() => {
+    threadLoadRequestIdRef.current += 1;
+  }, [selectedThreadId]);
 
   useEffect(() => {
     if (!selectedProjectId && projects.length > 0) {
