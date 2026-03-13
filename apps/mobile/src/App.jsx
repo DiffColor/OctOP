@@ -372,17 +372,25 @@ function summarizeMessageContent(content, limit = 160) {
   return `${normalized.slice(0, safeLimit)}...`;
 }
 
-function BottomSheet({ open, title, description, onClose, children }) {
+function BottomSheet({ open, title, description, onClose, children, variant = "bottom" }) {
   if (!open) {
     return null;
   }
 
+  const isCenterDialog = variant === "center";
+  const containerClassName = isCenterDialog
+    ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/78 px-4 py-6 backdrop-blur-sm"
+    : "fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 px-4 pb-4 pt-10 backdrop-blur-sm";
+  const panelClassName = isCenterDialog
+    ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-telegram-soft"
+    : "sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft";
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 px-4 pb-4 pt-10 backdrop-blur-sm">
+    <div className={containerClassName}>
       <button type="button" aria-label="닫기" className="absolute inset-0" onClick={onClose} />
-      <section className="sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft">
+      <section className={panelClassName}>
         <div className="border-b border-white/10 bg-white/5 px-5 py-4">
-          <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />
+          {isCenterDialog ? null : <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />}
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold text-white">{title}</h2>
@@ -578,44 +586,41 @@ function UtilitySheet({
       title="워크스페이스 설정"
       description="bridge 연결과 프로젝트 관리 동작을 여기서 처리합니다."
       onClose={onClose}
+      variant="center"
     >
-      <div className="space-y-5 px-5 py-5">
-        <section className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
+      <div className="px-5 py-5">
+        <section className="border-b border-white/10 pb-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-telegram-500/20 text-base font-semibold text-white">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
               {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
             </div>
-            <div className="min-w-0">
-              <p className="truncate font-semibold text-white">{session.displayName || session.loginId}</p>
-              <p className="truncate text-sm text-slate-400">{session.loginId}</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
+              <p className="truncate text-xs text-slate-400">{session.loginId}</p>
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Bridge {bridges.length}</span>
-            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Project {projects.length}</span>
-            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Thread {threads.length}</span>
+          <div className="mt-3 flex items-center gap-4 text-[11px] text-slate-500">
+            <span>Bridge {bridges.length}</span>
+            <span>Project {projects.length}</span>
+            <span>Thread {threads.length}</span>
           </div>
         </section>
 
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
+        <section className="py-4">
+          <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold text-white">연결 bridge</p>
             <span
-              className={`rounded-full px-2.5 py-1 text-[11px] ${
-                status.app_server?.connected
-                  ? "bg-emerald-400/20 text-emerald-100"
-                  : "bg-rose-400/20 text-rose-100"
+              className={`text-[11px] ${
+                status.app_server?.connected ? "text-emerald-200" : "text-rose-200"
               }`}
             >
               {status.app_server?.connected ? "연결됨" : "미연결"}
             </span>
           </div>
 
-          <div className="space-y-2">
+          <div className="divide-y divide-white/10 rounded-[1.25rem] border border-white/10">
             {bridges.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-white/10 px-4 py-4 text-sm text-slate-400">
-                연결된 bridge가 없습니다.
-              </div>
+              <div className="px-4 py-4 text-sm text-slate-400">연결된 bridge가 없습니다.</div>
             ) : (
               bridges.map((bridge) => {
                 const active = bridge.bridge_id === selectedBridgeId;
@@ -628,20 +633,19 @@ function UtilitySheet({
                       onSelectBridge(bridge.bridge_id);
                       onClose();
                     }}
-                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                      active
-                        ? "border-telegram-300/50 bg-telegram-500/15"
-                        : "border-white/10 bg-white/5 hover:bg-white/10"
+                    className={`w-full px-4 py-3 text-left transition ${
+                      active ? "bg-telegram-500/10" : "bg-transparent hover:bg-white/[0.03]"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate font-medium text-white">{bridge.device_name ?? bridge.bridge_id}</p>
-                        <p className="truncate text-xs text-slate-400">{bridge.bridge_id}</p>
+                        <p className="truncate text-sm font-medium text-white">{bridge.device_name ?? bridge.bridge_id}</p>
+                        <p className="truncate text-[11px] text-slate-500">{bridge.bridge_id}</p>
                       </div>
-                      <span className="rounded-full bg-slate-900/70 px-2 py-1 text-[10px] text-slate-300">
-                        {formatRelativeTime(bridge.last_seen_at)}
-                      </span>
+                      <div className="shrink-0 text-right">
+                        <p className="text-[11px] text-slate-400">{formatRelativeTime(bridge.last_seen_at)}</p>
+                        {active ? <p className="mt-0.5 text-[10px] text-telegram-200">선택됨</p> : null}
+                      </div>
                     </div>
                   </button>
                 );
@@ -650,14 +654,14 @@ function UtilitySheet({
           </div>
         </section>
 
-        <section className="grid grid-cols-2 gap-3">
+        <section className="flex gap-2 border-t border-white/10 pt-4">
           <button
             type="button"
             onClick={() => {
               onClose();
               onRefresh();
             }}
-            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/10"
+            className="flex-1 rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/5"
           >
             새로고침
           </button>
@@ -667,7 +671,7 @@ function UtilitySheet({
               onClose();
               onOpenProjectComposer();
             }}
-            className="rounded-2xl bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400"
+            className="flex-1 rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400"
           >
             프로젝트 등록
           </button>
@@ -676,7 +680,7 @@ function UtilitySheet({
         <button
           type="button"
           onClick={onLogout}
-          className="w-full rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20"
+          className="mt-4 w-full rounded-full border border-rose-400/20 px-4 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/10"
         >
           로그아웃
         </button>
@@ -736,7 +740,7 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleSubmit}>
       <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1 rounded-[1.4rem] bg-white/6 px-4 py-3">
+        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-white/[0.03] px-4 py-3">
           <div className="mb-1 text-[11px] text-slate-500">
             {selectedProject ? `${selectedProject.name} · 프롬프트` : "프로젝트를 선택해 주세요"}
           </div>
@@ -823,6 +827,7 @@ function ProjectComposerSheet({
       title="새 프로젝트 등록"
       description="bridge가 노출한 폴더를 선택해 모바일에서도 바로 관리할 수 있게 만듭니다."
       onClose={onClose}
+      variant="center"
     >
       <form className="space-y-5 px-5 py-5" onSubmit={handleSubmit}>
         <div className="space-y-2">
@@ -833,7 +838,7 @@ function ProjectComposerSheet({
 
           <div className="flex gap-2 overflow-x-auto pb-1">
             {roots.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-white/10 px-4 py-3 text-sm text-slate-400">
+              <div className="rounded-[1.1rem] border border-dashed border-white/10 px-4 py-3 text-sm text-slate-400">
                 탐색 가능한 root가 없습니다.
               </div>
             ) : (
@@ -842,7 +847,7 @@ function ProjectComposerSheet({
                   key={root.path}
                   type="button"
                   onClick={() => void onBrowseRoot(root.path)}
-                  className={`shrink-0 rounded-2xl border px-4 py-3 text-left transition ${
+                  className={`shrink-0 rounded-[1.1rem] border px-4 py-3 text-left transition ${
                     folderState.path === root.path || selectedWorkspacePath === root.path
                       ? "border-telegram-300/50 bg-telegram-500/15"
                       : "border-white/10 bg-white/5 hover:bg-white/10"
@@ -856,7 +861,7 @@ function ProjectComposerSheet({
           </div>
         </div>
 
-        <section className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
+        <section className="border border-white/10 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Path</p>
@@ -866,7 +871,7 @@ function ProjectComposerSheet({
               type="button"
               disabled={!folderState.parent_path}
               onClick={() => void onBrowseFolder(folderState.parent_path)}
-              className="rounded-full border border-white/10 bg-slate-950/60 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
             >
               상위
             </button>
@@ -876,12 +881,12 @@ function ProjectComposerSheet({
             type="button"
             disabled={!folderState.path}
             onClick={() => onSelectWorkspace(folderState.path)}
-            className="mt-4 w-full rounded-2xl border border-telegram-300/30 bg-telegram-500/10 px-4 py-3 text-sm font-medium text-telegram-50 transition hover:bg-telegram-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-4 w-full rounded-full border border-telegram-300/30 bg-telegram-500/10 px-4 py-2.5 text-sm font-medium text-telegram-50 transition hover:bg-telegram-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             현재 경로를 workspace로 선택
           </button>
 
-          <div className="telegram-scroll mt-4 max-h-64 space-y-2 overflow-y-auto">
+          <div className="telegram-scroll mt-4 max-h-64 overflow-y-auto rounded-[1rem] border border-white/10">
             {folderState.entries?.length ? (
               folderState.entries.map((entry) => {
                 const active = selectedWorkspacePath === entry.path;
@@ -889,8 +894,8 @@ function ProjectComposerSheet({
                 return (
                   <div
                     key={entry.path}
-                    className={`rounded-2xl border px-4 py-3 ${
-                      active ? "border-telegram-300/50 bg-telegram-500/15" : "border-white/10 bg-slate-950/45"
+                    className={`border-b border-white/10 px-4 py-3 last:border-b-0 ${
+                      active ? "bg-telegram-500/10" : "bg-transparent"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -905,7 +910,7 @@ function ProjectComposerSheet({
                       <button
                         type="button"
                         onClick={() => onSelectWorkspace(entry.path)}
-                        className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:bg-white/10"
+                        className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:bg-white/5"
                       >
                         선택
                       </button>
@@ -914,14 +919,14 @@ function ProjectComposerSheet({
                 );
               })
             ) : (
-              <div className="rounded-2xl border border-dashed border-white/10 px-4 py-4 text-sm text-slate-400">
+              <div className="px-4 py-4 text-sm text-slate-400">
                 하위 폴더가 없습니다.
               </div>
             )}
           </div>
         </section>
 
-        <div className="rounded-[1.5rem] border border-white/10 bg-white/5 p-4">
+        <div className="border border-white/10 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Selected Workspace</p>
           <p className="mt-2 break-all text-sm text-white">
             {selectedWorkspacePath || "아직 선택된 경로가 없습니다."}
@@ -939,7 +944,7 @@ function ProjectComposerSheet({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="예: OctOP 모바일 운영"
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
 
@@ -953,7 +958,7 @@ function ProjectComposerSheet({
             value={key}
             onChange={(event) => setKey(event.target.value)}
             placeholder="비워두면 서버에서 자동 생성됩니다."
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
 
@@ -967,7 +972,7 @@ function ProjectComposerSheet({
             value={description}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="프로젝트 목적과 작업 범위를 적어 주세요."
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
 
@@ -975,14 +980,14 @@ function ProjectComposerSheet({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/10"
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
           >
             취소
           </button>
           <button
             type="submit"
             disabled={busy || !selectedWorkspacePath}
-            className="rounded-2xl bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? "등록 중..." : "프로젝트 등록"}
           </button>
@@ -1006,7 +1011,7 @@ function ThreadListItem({ thread, projectName, active, onOpen }) {
       }`}
     >
       <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/12 text-sm font-semibold text-white">
           {thread.title.slice(0, 1).toUpperCase()}
         </div>
 
@@ -1022,13 +1027,11 @@ function ThreadListItem({ thread, projectName, active, onOpen }) {
           <p className="thread-preview mt-1.5 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
 
           <div className="mt-2 flex items-center gap-2">
-            <span className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] ${status.chipClassName}`}>
+            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
               <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
               {status.label}
             </span>
-            <span className="text-[11px] text-slate-500">
-              {thread.progress}%
-            </span>
+            <span className="text-[11px] text-slate-500">{thread.progress}%</span>
           </div>
         </div>
       </div>
@@ -1206,9 +1209,9 @@ function ThreadDetail({
               meta={formatRelativeTime(message.timestamp)}
             >
               {message.replyTo ? (
-                <div className="mb-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">프롬프트</p>
-                  <p className="mt-1 text-sm leading-5 text-white/90">{summarizeMessageContent(message.replyTo.content)}</p>
+                <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
+                  <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
                 </div>
               ) : null}
               <p className="whitespace-pre-wrap text-sm leading-6">
@@ -1229,30 +1232,14 @@ function ThreadDetail({
             </div>
           ) : null}
 
-          <MessageBubble
-            align="left"
-            tone={
-              thread.status === "failed"
-                ? "danger"
-                : thread.status === "completed"
-                  ? "success"
-                  : thread.status === "awaiting_input"
-                    ? "warn"
-                    : "brand"
-            }
-            title={status.label}
-            meta={formatRelativeTime(thread.updated_at)}
-          >
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3 text-sm">
-                <span>진행률</span>
-                <span className="font-semibold">{thread.progress}%</span>
-              </div>
-              <div className="h-2 rounded-full bg-slate-900/15">
-                <div className="h-2 rounded-full bg-current" style={{ width: `${thread.progress}%` }} />
-              </div>
+          <div className="flex justify-center">
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
+              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+              <span>{status.label}</span>
+              <span className="text-slate-500">{thread.progress}%</span>
+              <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
             </div>
-          </MessageBubble>
+          </div>
         </div>
       </div>
 
