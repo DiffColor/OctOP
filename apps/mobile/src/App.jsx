@@ -2060,6 +2060,24 @@ function MainPage({
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const draftProject = projects.find((project) => project.id === draftThreadProjectId) ?? null;
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const resolvedThread =
+    selectedThread ??
+    threadDetail?.thread ??
+    (selectedThreadId
+      ? {
+          id: selectedThreadId,
+          title: "새 채팅창",
+          project_id: selectedProjectId || draftThreadProjectId || null,
+          status: "running",
+          progress: 10,
+          last_event: "turn.starting",
+          last_message: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          source: "appServer",
+          turn_id: null
+        }
+      : null);
   const filteredThreads = useMemo(() => {
     return threads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
@@ -2079,24 +2097,24 @@ function MainPage({
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
 
-  if (activeView === "thread" && (selectedThread || draftProject)) {
+  if (activeView === "thread" && (resolvedThread || draftProject || selectedThreadId)) {
     const threadProject =
-      projects.find((project) => project.id === selectedThread?.project_id) ??
+      projects.find((project) => project.id === resolvedThread?.project_id) ??
       draftProject ??
       selectedProject;
 
     return (
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <ThreadDetail
-          thread={selectedThread}
+          thread={resolvedThread}
           project={threadProject}
-          messages={selectedThread ? threadDetailMessages : []}
+          messages={resolvedThread ? threadDetailMessages : []}
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
-          onRefreshMessages={selectedThread ? onRefreshThreadDetail : null}
+          onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
           onSubmitPrompt={(payload) => {
-            if (selectedThread?.id) {
-              return onAppendThreadMessage(selectedThread.id, payload.prompt);
+            if (resolvedThread?.id) {
+              return onAppendThreadMessage(resolvedThread.id, payload.prompt);
             }
 
             return onCreateThread(payload, { stayOnThread: true });
@@ -2105,7 +2123,7 @@ function MainPage({
           onBack={onBackToInbox}
           messageFilter={threadMessageFilter}
           onChangeMessageFilter={onChangeThreadMessageFilter}
-          isDraft={!selectedThread}
+          isDraft={!selectedThread && !threadDetail?.thread}
         />
       </div>
     );
