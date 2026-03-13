@@ -365,7 +365,7 @@ function getThreadPreview(thread) {
     return thread.last_message;
   }
 
-  return `${getStatusMeta(thread.status).label} · 진행률 ${thread.progress}%`;
+  return `${getStatusMeta(thread.status).label} 상태입니다.`;
 }
 
 function createThreadTitleFromPrompt(prompt) {
@@ -1109,28 +1109,33 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
   );
 }
 
-function ThreadListItem({ thread, projectName, active, onOpen, onRename, onDelete }) {
+function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
   const status = getStatusMeta(thread.status);
   const startXRef = useRef(null);
+  const baseOffsetRef = useRef(0);
+  const pointerIdRef = useRef(null);
   const offsetRef = useRef(0);
   const movedRef = useRef(false);
-  const ACTION_WIDTH = 128;
+  const ACTION_WIDTH = 88;
   const [offset, setOffset] = useState(0);
 
   const setRevealOffset = useCallback((nextOffset) => {
-    const clamped = Math.max(-ACTION_WIDTH, Math.min(0, nextOffset));
+    const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
     offsetRef.current = clamped;
     setOffset(clamped);
   }, []);
 
   const handlePointerDown = useCallback((event) => {
     startXRef.current = event.clientX;
+    baseOffsetRef.current = offsetRef.current;
+    pointerIdRef.current = event.pointerId;
     movedRef.current = false;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback(
     (event) => {
-      if (startXRef.current === null) {
+      if (startXRef.current === null || (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)) {
         return;
       }
 
@@ -1140,44 +1145,53 @@ function ThreadListItem({ thread, projectName, active, onOpen, onRename, onDelet
         movedRef.current = true;
       }
 
-      setRevealOffset(delta < 0 ? delta : 0);
+      setRevealOffset(baseOffsetRef.current + delta);
     },
     [setRevealOffset]
   );
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((event) => {
     if (startXRef.current === null) {
       return;
     }
 
-    setRevealOffset(offsetRef.current <= -56 ? -ACTION_WIDTH : 0);
+    if (offsetRef.current <= -56) {
+      setRevealOffset(-ACTION_WIDTH);
+    } else if (offsetRef.current >= 56) {
+      setRevealOffset(ACTION_WIDTH);
+    } else {
+      setRevealOffset(0);
+    }
+
     startXRef.current = null;
+    baseOffsetRef.current = 0;
+    pointerIdRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
   }, [setRevealOffset]);
 
   return (
     <div className="relative overflow-hidden border-b border-white/8">
-      <div className="absolute inset-y-0 right-0 flex w-32 items-stretch">
-        <button
-          type="button"
-          onClick={() => {
-            setRevealOffset(0);
-            onRename(thread);
-          }}
-          className="flex-1 bg-slate-800 text-[12px] font-semibold text-white"
-        >
-          편집
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setRevealOffset(0);
-            onDelete(thread);
-          }}
-          className="flex-1 bg-rose-500 text-[12px] font-semibold text-white"
-        >
-          삭제
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => {
+          setRevealOffset(0);
+          onDelete(thread);
+        }}
+        className="absolute inset-y-0 left-0 flex w-24 items-center justify-center bg-rose-500 text-[12px] font-semibold text-white"
+      >
+        삭제
+      </button>
+
+      <button
+        type="button"
+        onClick={() => {
+          setRevealOffset(0);
+          onRename(thread);
+        }}
+        className="absolute inset-y-0 right-0 flex w-24 items-center justify-center bg-slate-800 text-[12px] font-semibold text-white"
+      >
+        편집
+      </button>
 
       <button
         type="button"
@@ -1191,7 +1205,7 @@ function ThreadListItem({ thread, projectName, active, onOpen, onRename, onDelet
             return;
           }
 
-          if (offsetRef.current < 0) {
+          if (offsetRef.current !== 0) {
             setRevealOffset(0);
             return;
           }
@@ -1203,29 +1217,19 @@ function ThreadListItem({ thread, projectName, active, onOpen, onRename, onDelet
         }`}
         style={{ transform: `translateX(${offset}px)` }}
       >
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/12 text-sm font-semibold text-white">
-            {thread.title.slice(0, 1).toUpperCase()}
+        <div className="min-w-0">
+          <div className="flex items-center justify-between gap-3">
+            <p className="thread-title min-w-0 flex-1 truncate text-sm font-semibold text-white">{thread.title}</p>
+            <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
           </div>
 
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="thread-title text-sm font-semibold text-white">{thread.title}</p>
-                <p className="mt-0.5 text-xs text-slate-400">{projectName || "프로젝트 미지정"}</p>
-              </div>
-              <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
-            </div>
+          <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
 
-            <p className="thread-preview mt-1.5 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
-
-            <div className="mt-2 flex items-center gap-2">
-              <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
-                <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-                {status.label}
-              </span>
-              <span className="text-[11px] text-slate-500">{thread.progress}%</span>
-            </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
+              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+              {status.label}
+            </span>
           </div>
         </div>
       </button>
@@ -1916,7 +1920,6 @@ function MainPage({
                   key={thread.id}
                   thread={thread}
                   active={thread.id === selectedThreadId}
-                  projectName={projects.find((project) => project.id === thread.project_id)?.name}
                   onOpen={onSelectThread}
                   onRename={(targetThread) => setThreadBeingEdited(targetThread)}
                   onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
