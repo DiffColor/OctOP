@@ -59,6 +59,7 @@ export function bridgeSubjects(userId, bridgeId = "local-bridge") {
     statusGet: `${base}.status.get`,
     projectsGet: `${base}.projects.get`,
     projectCreate: `${base}.project.create`,
+    projectUpdate: `${base}.project.update`,
     projectDelete: `${base}.project.delete`,
     workspaceRootsGet: `${base}.workspace.roots.get`,
     folderListGet: `${base}.folder.list.get`,

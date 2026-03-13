@@ -49,7 +49,7 @@ app.Use(async (httpContext, next) =>
   if (!string.IsNullOrWhiteSpace(origin) && allowedOriginSet.Contains(origin))
   {
     httpContext.Response.Headers.AccessControlAllowOrigin = origin;
-    httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,DELETE,OPTIONS";
+    httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,PATCH,DELETE,OPTIONS";
     httpContext.Response.Headers.AccessControlAllowHeaders = "content-type,authorization";
     httpContext.Response.Headers.Append("Vary", "Origin");
   }
@@ -248,6 +248,47 @@ app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient br
     payload?.ToJsonString() ?? "{}",
     "application/json; charset=utf-8",
     statusCode: accepted ? StatusCodes.Status201Created : StatusCodes.Status400BadRequest
+  );
+});
+
+app.MapPatch("/api/projects/{projectId}", async (
+  string projectId,
+  HttpContext httpContext,
+  BridgeNatsClient bridgeNatsClient,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"accepted\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ProjectUpdate,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId,
+      project_id = projectId,
+      name = body?["name"]?.GetValue<string>()
+    },
+    cancellationToken
+  );
+
+  var accepted = payload?["accepted"]?.GetValue<bool?>() ?? false;
+  return Results.Text(
+    payload?.ToJsonString() ?? "{}",
+    "application/json; charset=utf-8",
+    statusCode: accepted ? StatusCodes.Status200OK : StatusCodes.Status400BadRequest
   );
 });
 

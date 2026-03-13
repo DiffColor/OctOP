@@ -651,6 +651,53 @@ async function createProject(loginId, payload = {}) {
   };
 }
 
+async function updateProject(loginId, payload = {}) {
+  const state = ensureUserState(loginId);
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+  const name = String(payload.name ?? "").trim();
+
+  if (!projectId) {
+    throw new Error("변경할 프로젝트 id가 필요합니다.");
+  }
+
+  if (!name) {
+    throw new Error("프로젝트 이름이 필요합니다.");
+  }
+
+  const projectIndex = state.projects.findIndex((item) => item.id === projectId);
+
+  if (projectIndex === -1) {
+    throw new Error("프로젝트를 찾을 수 없습니다.");
+  }
+
+  const duplicateName = state.projects.some(
+    (item, index) => index !== projectIndex && item.name.trim().toLowerCase() === name.toLowerCase()
+  );
+
+  if (duplicateName) {
+    throw new Error("같은 이름의 프로젝트가 이미 있습니다.");
+  }
+
+  const currentProject = state.projects[projectIndex];
+  const updatedProject = {
+    ...currentProject,
+    name,
+    updated_at: now()
+  };
+
+  state.projects = state.projects.map((project) => (project.id === projectId ? updatedProject : project));
+  state.updated_at = now();
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
+  await publishEvent(loginId, "project.updated", { project: updatedProject, project_id: projectId });
+  await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
+
+  return {
+    accepted: true,
+    project: updatedProject,
+    projects: state.projects
+  };
+}
+
 function resolveWorkspaceFromPayload(loginId, payload = {}) {
   if (payload.workspace_path) {
     return resolve(String(payload.workspace_path));
@@ -1776,6 +1823,27 @@ async function subscribeRequests() {
     }
   })();
 
+  const projectUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.update");
+
+  (async () => {
+    for await (const message of projectUpdateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.login_id ?? body.user_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await updateProject(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const folderListSubscription = nc.subscribe("octop.user.*.bridge.*.folder.list.get");
 
   (async () => {
@@ -1957,6 +2025,20 @@ createServer(async (request, response) => {
       const projectId = url.pathname.split("/").at(-1);
       const payload = await deleteProject(userId, { project_id: projectId });
       return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "PATCH" && url.pathname.startsWith("/api/projects/")) {
+    try {
+      const projectId = url.pathname.split("/").at(-1);
+      const payload = await readJsonBody(request);
+      const result = await updateProject(userId, {
+        ...payload,
+        project_id: projectId
+      });
+      return sendJson(response, 200, result);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });
     }

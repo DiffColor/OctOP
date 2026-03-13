@@ -1544,6 +1544,7 @@ function MainPage({
   onOpenCompletedThread,
   onDeleteThread,
   onDeleteProject,
+  onRenameProject,
   onDragQueueThread,
   onOpenProjectComposer,
   onOpenComposer,
@@ -1559,6 +1560,8 @@ function MainPage({
   onCloseDetail
 }) {
   const copy = getCopy(language);
+  const [editingProjectId, setEditingProjectId] = useState("");
+  const [editingProjectName, setEditingProjectName] = useState("");
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1603,6 +1606,31 @@ function MainPage({
   const prepSelectedCount = filteredThreads.filter(
     (thread) => selectedThreadIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
+
+  const beginProjectRename = (project) => {
+    setEditingProjectId(project.id);
+    setEditingProjectName(project.name);
+  };
+
+  const cancelProjectRename = () => {
+    setEditingProjectId("");
+    setEditingProjectName("");
+  };
+
+  const submitProjectRename = async (project) => {
+    const nextName = editingProjectName.trim();
+
+    if (!nextName || nextName === project.name) {
+      cancelProjectRename();
+      return;
+    }
+
+    const accepted = await onRenameProject(project.id, nextName);
+
+    if (accepted) {
+      cancelProjectRename();
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -1653,13 +1681,36 @@ function MainPage({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <button
-                            type="button"
-                            onClick={() => onSelectProject(project.id)}
-                            className="min-w-0 flex-1 text-left"
-                          >
-                            <OverflowRevealText value={project.name} className="text-sm font-medium" />
-                          </button>
+                          {editingProjectId === project.id ? (
+                            <input
+                              type="text"
+                              autoFocus
+                              value={editingProjectName}
+                              onChange={(event) => setEditingProjectName(event.target.value)}
+                              onBlur={() => void submitProjectRename(project)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  void submitProjectRename(project);
+                                }
+
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelProjectRename();
+                                }
+                              }}
+                              className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onSelectProject(project.id)}
+                              onDoubleClick={() => beginProjectRename(project)}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <OverflowRevealText value={project.name} className="text-sm font-medium" />
+                            </button>
+                          )}
                           <div className="flex items-center gap-2">
                             <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
                               {projectThreads.length}
@@ -2767,6 +2818,45 @@ export default function App() {
     }
   };
 
+  const handleRenameProject = async (projectId, name) => {
+    if (!session?.loginId || !selectedBridgeId || !projectId) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/projects/${encodeURIComponent(projectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name
+          })
+        }
+      );
+
+      if (Array.isArray(response?.projects)) {
+        setProjects(response.projects);
+      } else if (response?.project?.id) {
+        setProjects((current) =>
+          current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))
+        );
+      }
+
+      return true;
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "project.rename.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+      return false;
+    }
+  };
+
   const handleRefresh = async () => {
     if (!session?.loginId) {
       return;
@@ -2855,6 +2945,7 @@ export default function App() {
       onOpenCompletedThread={(threadId) => void handleOpenCompletedThread(threadId)}
       onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
+      onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
       onDragQueueThread={handleDragQueueThread}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
