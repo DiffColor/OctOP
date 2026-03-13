@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -173,57 +173,14 @@ function shortenPath(value) {
   return `...${normalized.slice(-45)}`;
 }
 
-function OverflowRevealText({ value, className = "", mono = false }) {
+function OverflowRevealText({ value, className = "", mono = false, truncateAt = "end" }) {
   const text = value ? String(value) : "-";
-  const containerRef = useRef(null);
-  const trackRef = useRef(null);
-  const [overflowDistance, setOverflowDistance] = useState(0);
-
-  useEffect(() => {
-    const measure = () => {
-      const containerWidth = containerRef.current?.clientWidth ?? 0;
-      const contentWidth = trackRef.current?.scrollWidth ?? 0;
-      setOverflowDistance(Math.max(0, contentWidth - containerWidth));
-    };
-
-    measure();
-
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => {
-            measure();
-          })
-        : null;
-
-    if (resizeObserver) {
-      if (containerRef.current) {
-        resizeObserver.observe(containerRef.current);
-      }
-
-      if (trackRef.current) {
-        resizeObserver.observe(trackRef.current);
-      }
-    }
-
-    window.addEventListener("resize", measure);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [text]);
-
-  const hasOverflow = overflowDistance > 4;
-
   return (
     <span
-      ref={containerRef}
-      className={`overflow-reveal ${hasOverflow ? "is-overflow" : ""} ${className}`.trim()}
-      style={hasOverflow ? { "--overflow-distance": `${overflowDistance}px` } : undefined}
+      className={`overflow-reveal overflow-reveal--${truncateAt} ${className}`.trim()}
       title={text}
     >
-      {hasOverflow ? <span className="overflow-reveal__ellipsis">...</span> : null}
-      <span ref={trackRef} className={`overflow-reveal__track ${mono ? "font-mono" : ""}`.trim()}>
+      <span className={`overflow-reveal__track ${mono ? "font-mono" : ""}`.trim()}>
         {text}
       </span>
     </span>
@@ -816,7 +773,12 @@ function ProjectComposer({
               </svg>
               <OverflowRevealText value={entry.name} className="text-sm font-medium text-white" />
             </div>
-            <OverflowRevealText value={entry.path} className="mt-1 text-[11px] text-slate-500" mono />
+              <OverflowRevealText
+                value={entry.path}
+                className="mt-1 text-[11px] text-slate-500"
+                mono
+                truncateAt="start"
+              />
           </button>
 
           <div className="flex shrink-0 flex-wrap items-center gap-1">

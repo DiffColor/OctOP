@@ -98,44 +98,28 @@ code,
 }
 
 .overflow-reveal {
-  --overflow-bg: rgba(15, 23, 42, 0.96);
-  position: relative;
   display: block;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .overflow-reveal__track {
-  display: inline-block;
-  min-width: max-content;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.overflow-reveal.is-overflow .overflow-reveal__track {
-  transform: translateX(calc(var(--overflow-distance, 0px) * -1));
-  will-change: transform;
+.overflow-reveal--start {
+  direction: rtl;
+  text-align: left;
 }
 
-.overflow-reveal__ellipsis {
-  position: absolute;
-  inset: 0 auto 0 0;
-  z-index: 1;
-  padding-right: 0.35rem;
-  background: linear-gradient(to right, var(--overflow-bg) 0 70%, transparent 100%);
-}
-
-.overflow-reveal.is-overflow:hover .overflow-reveal__track {
-  animation: overflow-reveal-scroll 6s linear infinite alternate;
-}
-
-@keyframes overflow-reveal-scroll {
-  from {
-    transform: translateX(calc(var(--overflow-distance, 0px) * -1));
-  }
-
-  to {
-    transform: translateX(0);
-  }
+.overflow-reveal--start .overflow-reveal__track {
+  direction: rtl;
+  text-align: left;
 }
 
 @media (max-width: 1279px) {
