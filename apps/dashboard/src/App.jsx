@@ -2045,6 +2045,36 @@ function MainPage({
               </div>
               <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
                 <span className="truncate text-lg font-bold tracking-tight text-white">OctOP</span>
+              </div>
+            </div>
+
+            <div className="flex flex-1 flex-col px-3 pb-3">
+              <div className="mb-3 px-2">
+                <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.bridge}</p>
+                <select
+                  value={selectedBridgeId}
+                  onChange={(event) => onSelectBridge(event.target.value)}
+                  className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                >
+                  {bridges.length === 0 ? (
+                    <option value="">{copy.board.noBridgeOption}</option>
+                  ) : (
+                    bridges.map((bridge) => (
+                      <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                        {bridge.device_name ?? bridge.bridge_id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                <div className="flex items-center gap-2">
+                  <span>{copy.board.sidebarEyebrow}</span>
+                  <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] normal-case tracking-normal text-slate-400">
+                    {projects.length}
+                  </span>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
@@ -2063,15 +2093,6 @@ function MainPage({
                     {copy.board.addThread}
                   </button>
                 </div>
-              </div>
-            </div>
-
-            <div className="flex flex-1 flex-col px-3 pb-3">
-              <div className="mb-2 flex items-center justify-between px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
-                <span>{copy.board.sidebarEyebrow}</span>
-                <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] normal-case tracking-normal text-slate-400">
-                  {projects.length}
-                </span>
               </div>
 
               <div className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-auto px-1">
@@ -2206,22 +2227,6 @@ function MainPage({
                     className="w-64 rounded-lg border-transparent bg-slate-800 py-2 pl-10 pr-4 text-sm text-slate-300 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                   />
                 </div>
-
-                <select
-                  value={selectedBridgeId}
-                  onChange={(event) => onSelectBridge(event.target.value)}
-                  className="hidden rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400 md:block"
-                >
-                  {bridges.length === 0 ? (
-                    <option value="">{copy.board.noBridgeOption}</option>
-                  ) : (
-                    bridges.map((bridge) => (
-                      <option key={bridge.bridge_id} value={bridge.bridge_id}>
-                        {bridge.device_name ?? bridge.bridge_id}
-                      </option>
-                    ))
-                  )}
-                </select>
 
                 <button
                   type="button"
