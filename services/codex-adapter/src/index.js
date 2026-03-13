@@ -152,21 +152,23 @@ function ensureUserState(userId) {
   const normalized = sanitizeUserId(userId);
 
   if (!users.has(normalized)) {
+    const projectEntry = loadProjectEntry(normalized);
     const restoredThreads = loadThreadsForUser(normalized);
     users.set(normalized, {
-      projects: loadProjectsForUser(normalized),
+      projects: loadProjectsForUser(normalized, projectEntry),
+      deletedWorkspacePaths: projectEntry.deletedWorkspacePaths,
       threadIds: restoredThreads,
       updated_at: now()
     });
   }
 
   const state = users.get(normalized);
-  const discoveredProjects = discoverProjectsForUser(normalized);
+  const discoveredProjects = discoverProjectsForUser(normalized, state.deletedWorkspacePaths);
   const mergedProjects = mergeProjects(state.projects, discoveredProjects);
 
   if (hasProjectSetChanged(state.projects, mergedProjects)) {
     state.projects = mergedProjects;
-    persistUserProjects(normalized, state.projects);
+    persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
   }
 
   return state;
@@ -282,22 +284,52 @@ function persistThreadById(threadId) {
   persistThreadsForUser(owner);
 }
 
-function loadProjectsForUser(loginId) {
+function loadProjectEntry(loginId) {
   const persisted = readProjectStorage();
   const stored = persisted[loginId];
-  const discoveredProjects = discoverProjectsForUser(loginId);
 
-  if (Array.isArray(stored) && stored.length > 0) {
+  if (Array.isArray(stored)) {
+    return {
+      projects: stored,
+      deletedWorkspacePaths: []
+    };
+  }
+
+  if (stored && typeof stored === "object") {
+    return {
+      projects: Array.isArray(stored.projects) ? stored.projects : [],
+      deletedWorkspacePaths: Array.isArray(stored.deleted_workspace_paths)
+        ? stored.deleted_workspace_paths.map((value) => resolve(String(value)))
+        : []
+    };
+  }
+
+  return {
+    projects: [],
+    deletedWorkspacePaths: []
+  };
+}
+
+function loadProjectsForUser(loginId, projectEntry = loadProjectEntry(loginId)) {
+  const persisted = readProjectStorage();
+  const storedProjects = projectEntry.projects;
+  const discoveredProjects = discoverProjectsForUser(loginId, projectEntry.deletedWorkspacePaths);
+
+  if (Array.isArray(storedProjects) && storedProjects.length > 0) {
     return mergeProjects(
-      stored.map((project) => normalizeProject(loginId, project)),
+      storedProjects.map((project) => normalizeProject(loginId, project)),
       discoveredProjects
     );
   }
 
   const project = discoveredProjects[0] ?? buildDefaultProject(loginId);
-  persisted[loginId] = mergeProjects([project], discoveredProjects);
+  persisted[loginId] = {
+    projects: mergeProjects([project], discoveredProjects),
+    deleted_workspace_paths: projectEntry.deletedWorkspacePaths,
+    updated_at: now()
+  };
   writeProjectStorage(persisted);
-  return persisted[loginId];
+  return persisted[loginId].projects;
 }
 
 function buildDefaultProject(loginId) {
@@ -446,13 +478,21 @@ function hasSolutionFile(path) {
   }
 }
 
-function discoverProjectsForUser(loginId) {
+function discoverProjectsForUser(loginId, deletedWorkspacePaths = []) {
+  const blockedPaths = new Set(
+    deletedWorkspacePaths
+      .map((value) => resolve(String(value)))
+  );
   const discovered = [];
 
   for (const root of WORKSPACE_ROOTS) {
     const candidates = [root, ...safeListDirectories(root)];
 
     for (const candidate of candidates) {
+      if (blockedPaths.has(candidate)) {
+        continue;
+      }
+
       if (!canUseAsWorkspace(candidate)) {
         continue;
       }
@@ -553,9 +593,13 @@ function writeProjectStorage(payload) {
   writeFileSync(PROJECT_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
 }
 
-function persistUserProjects(loginId, projects) {
+function persistUserProjects(loginId, projects, deletedWorkspacePaths = []) {
   const storage = readProjectStorage();
-  storage[loginId] = projects;
+  storage[loginId] = {
+    projects,
+    deleted_workspace_paths: [...new Set(deletedWorkspacePaths.map((value) => resolve(String(value))))],
+    updated_at: now()
+  };
   writeProjectStorage(storage);
 }
 
@@ -595,8 +639,9 @@ async function createProject(loginId, payload = {}) {
   }
 
   state.projects = [project, ...state.projects];
+  state.deletedWorkspacePaths = state.deletedWorkspacePaths.filter((value) => value !== project.workspace_path);
   state.updated_at = now();
-  persistUserProjects(loginId, state.projects);
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
 
   return {
@@ -1604,8 +1649,11 @@ async function deleteProject(userId, payload = {}) {
   }
 
   state.projects = state.projects.filter((item) => item.id !== projectId);
+  if (project.workspace_path) {
+    state.deletedWorkspacePaths = [...new Set([...state.deletedWorkspacePaths, project.workspace_path])];
+  }
   state.updated_at = now();
-  persistUserProjects(normalized, state.projects);
+  persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
   refreshQueuePositions(normalized);
 
   await publishEvent(normalized, "project.deleted", { project_id: projectId });
