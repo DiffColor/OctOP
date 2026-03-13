@@ -1111,13 +1111,16 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
 
 function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
   const status = getStatusMeta(thread.status);
-  const startXRef = useRef(null);
+  const startPointRef = useRef(null);
   const baseOffsetRef = useRef(0);
   const pointerIdRef = useRef(null);
+  const swipeAxisRef = useRef(null);
   const offsetRef = useRef(0);
   const movedRef = useRef(false);
-  const ACTION_WIDTH = 88;
+  const ACTION_WIDTH = 92;
+  const SNAP_THRESHOLD = 42;
   const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
 
   const setRevealOffset = useCallback((nextOffset) => {
     const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
@@ -1126,48 +1129,82 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
   }, []);
 
   const handlePointerDown = useCallback((event) => {
-    startXRef.current = event.clientX;
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
+
+    startPointRef.current = { x: event.clientX, y: event.clientY };
     baseOffsetRef.current = offsetRef.current;
     pointerIdRef.current = event.pointerId;
+    swipeAxisRef.current = null;
     movedRef.current = false;
+    setDragging(false);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback(
     (event) => {
-      if (startXRef.current === null || (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)) {
+      if (
+        startPointRef.current === null ||
+        (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)
+      ) {
         return;
       }
 
-      const delta = event.clientX - startXRef.current;
+      const deltaX = event.clientX - startPointRef.current.x;
+      const deltaY = event.clientY - startPointRef.current.y;
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
 
-      if (Math.abs(delta) > 6) {
+      if (swipeAxisRef.current === null) {
+        if (absX < 6 && absY < 6) {
+          return;
+        }
+
+        swipeAxisRef.current = absX > absY ? "x" : "y";
+      }
+
+      if (swipeAxisRef.current !== "x") {
+        return;
+      }
+
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+
+      if (absX > 6) {
         movedRef.current = true;
       }
 
-      setRevealOffset(baseOffsetRef.current + delta);
+      setDragging(true);
+      setRevealOffset(baseOffsetRef.current + deltaX);
     },
     [setRevealOffset]
   );
 
   const handlePointerUp = useCallback((event) => {
-    if (startXRef.current === null) {
+    if (startPointRef.current === null) {
       return;
     }
 
-    if (offsetRef.current <= -56) {
+    if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
       setRevealOffset(-ACTION_WIDTH);
-    } else if (offsetRef.current >= 56) {
+    } else if (swipeAxisRef.current === "x" && offsetRef.current >= SNAP_THRESHOLD) {
       setRevealOffset(ACTION_WIDTH);
-    } else {
+    } else if (swipeAxisRef.current === "x") {
       setRevealOffset(0);
     }
 
-    startXRef.current = null;
+    startPointRef.current = null;
     baseOffsetRef.current = 0;
     pointerIdRef.current = null;
+    swipeAxisRef.current = null;
+    setDragging(false);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }, [setRevealOffset]);
+
+  const showDeleteAction = offset > 0;
+  const showRenameAction = offset < 0;
 
   return (
     <div className="relative overflow-hidden border-b border-white/8">
@@ -1177,7 +1214,9 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
           setRevealOffset(0);
           onDelete(thread);
         }}
-        className="absolute inset-y-0 left-0 flex w-24 items-center justify-center bg-rose-500 text-[12px] font-semibold text-white"
+        className={`absolute inset-y-0 left-0 flex w-[92px] items-center justify-center bg-rose-500 text-[12px] font-semibold text-white transition-opacity duration-150 ${
+          showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
       >
         삭제
       </button>
@@ -1188,7 +1227,9 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
           setRevealOffset(0);
           onRename(thread);
         }}
-        className="absolute inset-y-0 right-0 flex w-24 items-center justify-center bg-slate-800 text-[12px] font-semibold text-white"
+        className={`absolute inset-y-0 right-0 flex w-[92px] items-center justify-center bg-slate-800 text-[12px] font-semibold text-white transition-opacity duration-150 ${
+          showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
       >
         편집
       </button>
@@ -1212,12 +1253,22 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
 
           onOpen(thread.id);
         }}
-        className={`relative w-full px-1 py-3 text-left transition ${
-          active ? "bg-white/[0.04]" : "bg-transparent hover:bg-white/[0.03]"
-        }`}
-        style={{ transform: `translateX(${offset}px)` }}
+        className={`relative w-full px-3 py-3 text-left ${
+          dragging ? "" : "transition-transform duration-180 ease-out"
+        } ${active ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
+        style={{
+          transform: `translate3d(${offset}px, 0, 0)`,
+          touchAction: "pan-y",
+          willChange: "transform"
+        }}
       >
-        <div className="min-w-0">
+        <div
+          className={`min-w-0 rounded-2xl border px-3 py-3 ${
+            active
+              ? "border-white/12 bg-white/[0.03]"
+              : "border-transparent bg-transparent"
+          }`}
+        >
           <div className="flex items-center justify-between gap-3">
             <p className="thread-title min-w-0 flex-1 truncate text-sm font-semibold text-white">{thread.title}</p>
             <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
