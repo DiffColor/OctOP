@@ -95,13 +95,16 @@ code,
   height: calc(100dvh - 64px - 46px - 42px);
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-gutter: auto;
+  scrollbar-gutter: stable both-edges;
   scrollbar-width: auto;
   scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
 }
 
 .octop-board-page::-webkit-scrollbar {
+  -webkit-appearance: none;
+  display: block;
   height: 10px;
+  max-height: 10px;
 }
 
 .octop-board-page::-webkit-scrollbar-track {
