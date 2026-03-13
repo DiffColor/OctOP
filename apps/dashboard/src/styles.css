@@ -112,8 +112,25 @@ code,
 }
 
 .octop-board-shell--force {
-  overflow-x: scroll;
+  overflow-x: scroll !important;
   scrollbar-gutter: stable both-edges;
+}
+
+.octop-board-shell--force::-webkit-scrollbar {
+  -webkit-appearance: none;
+  display: block;
+  height: 12px;
+  max-height: 12px;
+}
+
+.octop-board-shell--force::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.98);
+}
+
+.octop-board-shell--force::-webkit-scrollbar-thumb {
+  background: #64748b;
+  border-radius: 999px;
+  border: 2px solid rgba(15, 23, 42, 0.98);
 }
 
 .octop-board-shell-inner {
