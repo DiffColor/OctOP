@@ -1805,6 +1805,8 @@ function MainPage({
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [forceBoardScrollbar, setForceBoardScrollbar] = useState(false);
   const languageMenuRef = useRef(null);
+  const boardShellRef = useRef(null);
+  const boardInnerRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1874,6 +1876,49 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const shell = boardShellRef.current;
+    const inner = boardInnerRef.current;
+
+    if (!shell || !inner) {
+      return undefined;
+    }
+
+    const logBoardMetrics = () => {
+      const payload = {
+        forceBoardScrollbar,
+        shellClientWidth: shell.clientWidth,
+        shellScrollWidth: shell.scrollWidth,
+        shellOffsetWidth: shell.offsetWidth,
+        innerClientWidth: inner.clientWidth,
+        innerScrollWidth: inner.scrollWidth,
+        innerOffsetWidth: inner.offsetWidth,
+        hasHorizontalOverflow: shell.scrollWidth > shell.clientWidth
+      };
+
+      console.info("[OctOP board]", payload);
+    };
+
+    logBoardMetrics();
+
+    const resizeObserver = new ResizeObserver(() => {
+      window.requestAnimationFrame(logBoardMetrics);
+    });
+
+    resizeObserver.observe(shell);
+    resizeObserver.observe(inner);
+    window.addEventListener("resize", logBoardMetrics);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", logBoardMetrics);
+    };
+  }, [columns.length, filteredIssues.length, forceBoardScrollbar, selectedProjectThreadId, sidebarWidth]);
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -2250,11 +2295,15 @@ function MainPage({
             </div>
 
             <div
+              ref={boardShellRef}
               className={`octop-board-shell flex-1 min-h-0 overflow-y-hidden ${
                 forceBoardScrollbar ? "octop-board-shell--force" : ""
               }`}
             >
-              <div className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
+              <div
+                ref={boardInnerRef}
+                className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12"
+              >
                 {columns.map((column) => (
                   <section
                     key={column.id}
