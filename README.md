@@ -64,6 +64,8 @@
 - Dashboard의 프로젝트 등록 모달은 bridge가 노출한 허용 루트만 원격으로 탐색할 수 있으며, 선택한 폴더를 프로젝트 workspace로 등록합니다.
 - 실행 인자로 `-id`, `-name`을 넘기면 각각 owner loginId, 표시 이름으로 환경값보다 우선 적용됩니다.
 - 브릿지 프로세스를 띄우고, 필요하면 bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
+- Codex 실행 권한은 `OCTOP_CODEX_APPROVAL_POLICY`, `OCTOP_CODEX_SANDBOX`로 제어합니다.
+- `git push` 같은 외부 동작이 필요하면 bridge 쪽 approval/sandbox를 더 완화하고, 별도로 로컬 Git 인증도 준비되어 있어야 합니다.
 
 app-server 런처 동작:
 - `.env.local` -> `.env` 순서로 환경변수를 읽습니다.

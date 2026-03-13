@@ -28,6 +28,8 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
+const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
+const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
 const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
 const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
@@ -1341,8 +1343,8 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
   await appServer.ensureReady();
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: "never",
-    sandbox: "workspace-write",
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandbox: CODEX_SANDBOX,
     model: "gpt-5-codex",
     personality: "pragmatic"
   });
@@ -1416,7 +1418,7 @@ async function startIssueTurn(userId, threadId, issueId) {
     const turnResponse = await appServer.request("turn/start", {
       threadId: codexThreadId,
       cwd,
-      approvalPolicy: "never",
+      approvalPolicy: CODEX_APPROVAL_POLICY,
       input: [
         {
           type: "text",
@@ -2745,7 +2747,7 @@ async function startThreadTurn(userId, threadId) {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
       cwd,
-      approvalPolicy: "never",
+      approvalPolicy: CODEX_APPROVAL_POLICY,
       input: [
         {
           type: "text",
@@ -2823,8 +2825,8 @@ async function createQueuedIssue(userId, payload = {}) {
 
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: "never",
-    sandbox: "workspace-write",
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandbox: CODEX_SANDBOX,
     model: "gpt-5-codex",
     personality: "pragmatic"
   });
