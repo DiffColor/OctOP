@@ -1,4 +1,4 @@
-const CACHE_NAME = "octop-dashboard-v2";
+const CACHE_NAME = "octop-dashboard-v3";
 const APP_SHELL = ["/manifest.webmanifest", "/icon-192.svg", "/icon-512.svg"];
 
 self.addEventListener("install", (event) => {
@@ -64,6 +64,11 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (!isSameOrigin) {
+    return;
+  }
+
+  if (requestUrl.pathname.startsWith("/assets/")) {
+    event.respondWith(fetch(event.request));
     return;
   }
 
