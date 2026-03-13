@@ -1875,7 +1875,6 @@ export default function App() {
       const currentProjectWorkspace =
         projects.find((project) => project.id === selectedProjectId)?.workspace_path ?? "";
       const preferredPath =
-        selectedWorkspacePath ||
         currentProjectWorkspace ||
         roots[0]?.path ||
         "";
@@ -1883,7 +1882,7 @@ export default function App() {
       setSelectedWorkspacePath((current) => current || preferredPath);
       await browseWorkspacePath(preferredPath, selectedBridgeId);
     })();
-  }, [projectComposerOpen, projects, selectedBridgeId, selectedProjectId, selectedWorkspacePath, session]);
+  }, [projectComposerOpen, projects, selectedBridgeId, selectedProjectId, session]);
 
   useEffect(() => {
     if (
