@@ -345,6 +345,8 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
+    PreserveTerminalStatus(existing, thread);
+
     await _r.Db(_rethinkDb)
       .Table(ThreadTable)
       .Insert(thread)
@@ -372,5 +374,33 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
 
     return incomingTime >= existingTime;
+  }
+
+  private static void PreserveTerminalStatus(JObject? existing, JObject incoming)
+  {
+    if (existing is null)
+    {
+      return;
+    }
+
+    var existingStatus = existing.Value<string>("status");
+    var incomingStatus = incoming.Value<string>("status");
+
+    if (!IsTerminalStatus(existingStatus) || IsTerminalStatus(incomingStatus))
+    {
+      return;
+    }
+
+    incoming["status"] = existingStatus;
+    incoming["progress"] = existing["progress"] ?? 100;
+    incoming["last_event"] = existing["last_event"] ?? incoming["last_event"];
+    incoming["last_event_type"] = existing["last_event_type"] ?? incoming["last_event_type"];
+    incoming["updated_at"] = existing["updated_at"] ?? incoming["updated_at"];
+  }
+
+  private static bool IsTerminalStatus(string? status)
+  {
+    return string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase);
   }
 }

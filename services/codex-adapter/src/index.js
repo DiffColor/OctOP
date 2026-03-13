@@ -581,18 +581,34 @@ function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
     return currentStatus;
   }
 
+  let nextStatus;
+
   switch (rawStatus.type) {
     case "active":
-      return "running";
+      nextStatus = "running";
+      break;
     case "idle":
-      return currentStatus === "completed" ? "completed" : "idle";
+      nextStatus = "idle";
+      break;
     case "waitingForInput":
-      return "awaiting_input";
+      nextStatus = "awaiting_input";
+      break;
     case "error":
-      return "failed";
+      nextStatus = "failed";
+      break;
     default:
-      return rawStatus.type ?? currentStatus;
+      nextStatus = rawStatus.type ?? currentStatus;
+      break;
   }
+
+  if (
+    ["completed", "failed"].includes(currentStatus) &&
+    !["completed", "failed"].includes(nextStatus)
+  ) {
+    return currentStatus;
+  }
+
+  return nextStatus;
 }
 
 function normalizeThreadRecord(thread, fallback = {}) {
