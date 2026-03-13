@@ -956,12 +956,27 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
   const copy = getCopy(language);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const promptInputRef = useRef(null);
 
   useEffect(() => {
     if (!open) {
       setTitle("");
       setPrompt("");
     }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      promptInputRef.current?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
   }, [open]);
 
   if (!open) {
@@ -1025,6 +1040,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
               {copy.issueComposer.prompt}
             </label>
             <textarea
+              ref={promptInputRef}
               id="issue-prompt"
               rows="5"
               value={prompt}
