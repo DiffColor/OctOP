@@ -2157,16 +2157,13 @@ function MainPage({
               <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
                 <div className="flex items-center gap-2">
                   <span>{copy.board.sidebarEyebrow}</span>
-                  <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] normal-case tracking-normal text-slate-400">
-                    {projects.length}
-                  </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={onOpenProjectComposer}
                     disabled={!selectedBridge}
-                    className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {copy.board.addProject}
                   </button>
@@ -2174,7 +2171,7 @@ function MainPage({
                     type="button"
                     onClick={onCreateThread}
                     disabled={!selectedProject}
-                    className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {copy.board.addThread}
                   </button>
@@ -2559,6 +2556,19 @@ function MainPage({
         <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
+                  status.app_server?.connected ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
+                {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
+              </span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.projectsChip(projects.length)}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(projectThreads.length)}</span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <div className="relative mr-2" ref={languageMenuRef}>
                 {languageMenuOpen ? (
                   <div className="absolute bottom-full left-0 mb-2 min-w-[9rem] rounded-xl border border-slate-800 bg-slate-950/98 p-1.5 shadow-2xl shadow-slate-950/60">
@@ -2597,24 +2607,15 @@ function MainPage({
                   </svg>
                 </button>
               </div>
-              <span className="font-medium text-slate-200">{session.displayName || session.loginId}</span>
-              <span className="text-slate-600">/</span>
-              <span>{session.loginId}</span>
+              {session.displayName && session.displayName !== session.loginId ? (
+                <>
+                  <span className="font-medium text-slate-200">{session.displayName}</span>
+                  <span className="text-slate-600">/</span>
+                </>
+              ) : null}
+              <span className="font-medium text-slate-200">{session.loginId}</span>
               <span className="text-slate-600">/</span>
               <OverflowRevealText value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge} className="max-w-[18rem]" />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
-                  status.app_server?.connected ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"
-                }`}
-              >
-                <span className={`h-2 w-2 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
-                {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
-              </span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.projectsChip(projects.length)}</span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(projectThreads.length)}</span>
               <button
                 type="button"
                 onClick={onLogout}
