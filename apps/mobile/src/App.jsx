@@ -1556,6 +1556,7 @@ function ThreadDetail({
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const scrollRef = useRef(null);
+  const scrollAnchorRef = useRef(null);
   const [viewMode, setViewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -1695,11 +1696,22 @@ function ThreadDetail({
   }, [chatTimeline, messageFilter]);
 
   useLayoutEffect(() => {
-    if (!scrollRef.current || viewMode !== "chat") {
+    if (viewMode !== "chat") {
       return;
     }
 
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollAnchorRef.current) {
+        scrollAnchorRef.current.scrollIntoView({ block: "end" });
+        return;
+      }
+
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
@@ -1908,6 +1920,7 @@ function ThreadDetail({
               </div>
             </div>
           ) : null}
+          <div ref={scrollAnchorRef} />
         </div>
       </div>
 
