@@ -796,25 +796,19 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
 function ProjectComposerSheet({
   open,
   busy,
-  roots,
   folderState,
   folderLoading,
   selectedWorkspacePath,
-  onBrowseRoot,
   onBrowseFolder,
   onSelectWorkspace,
   onClose,
   onSubmit
 }) {
   const [name, setName] = useState("");
-  const [key, setKey] = useState("");
-  const [description, setDescription] = useState("");
 
   useEffect(() => {
     if (!open) {
       setName("");
-      setKey("");
-      setDescription("");
       return;
     }
 
@@ -832,8 +826,6 @@ function ProjectComposerSheet({
 
     await onSubmit({
       name: name.trim(),
-      key: key.trim(),
-      description: description.trim(),
       workspace_path: selectedWorkspacePath
     });
   };
@@ -847,92 +839,48 @@ function ProjectComposerSheet({
       variant="center"
     >
       <form className="space-y-5 px-5 py-5" onSubmit={handleSubmit}>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-white">Workspace Root</p>
+        <section className="border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-white">워크스페이스 선택</p>
             {folderLoading ? <span className="text-xs text-slate-400">불러오는 중...</span> : null}
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {roots.length === 0 ? (
-              <div className="rounded-[1.1rem] border border-dashed border-white/10 px-4 py-3 text-sm text-slate-400">
-                탐색 가능한 root가 없습니다.
-              </div>
-            ) : (
-              roots.map((root) => (
-                <button
-                  key={root.path}
-                  type="button"
-                  onClick={() => void onBrowseRoot(root.path)}
-                  className={`shrink-0 rounded-[1.1rem] border px-4 py-3 text-left transition ${
-                    folderState.path === root.path || selectedWorkspacePath === root.path
-                      ? "border-telegram-300/50 bg-telegram-500/15"
-                      : "border-white/10 bg-white/5 hover:bg-white/10"
-                  }`}
-                >
-                  <p className="text-sm font-medium text-white">{root.name}</p>
-                  <p className="mt-1 text-[11px] text-slate-400">{shortenPath(root.path)}</p>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        <section className="border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Path</p>
-              <p className="mt-2 break-all text-sm text-white">{folderState.path || "경로를 선택해 주세요."}</p>
-            </div>
-            <button
-              type="button"
-              disabled={!folderState.parent_path}
-              onClick={() => void onBrowseFolder(folderState.parent_path)}
-              className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              상위
-            </button>
+          <div className="mt-4 rounded-[1rem] border border-white/10 bg-black/10 px-3 py-2 text-[11px] text-slate-400">
+            한 번 클릭하면 선택되고, 더블 클릭하면 폴더 내부로 들어갑니다.
           </div>
 
-          <button
-            type="button"
-            disabled={!folderState.path}
-            onClick={() => onSelectWorkspace(folderState.path)}
-            className="mt-4 w-full rounded-full border border-telegram-300/30 bg-telegram-500/10 px-4 py-2.5 text-sm font-medium text-telegram-50 transition hover:bg-telegram-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            현재 경로를 workspace로 선택
-          </button>
+          <div className="telegram-scroll mt-3 max-h-72 overflow-y-auto rounded-[1rem] border border-white/10">
+            {folderState.parent_path ? (
+              <button
+                type="button"
+                onClick={() => onSelectWorkspace(folderState.parent_path)}
+                onDoubleClick={() => void onBrowseFolder(folderState.parent_path)}
+                className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left transition ${
+                  selectedWorkspacePath === folderState.parent_path
+                    ? "bg-telegram-500/10"
+                    : "bg-transparent hover:bg-white/[0.03]"
+                }`}
+              >
+                <span className="text-sm font-medium text-white">..</span>
+              </button>
+            ) : null}
 
-          <div className="telegram-scroll mt-4 max-h-64 overflow-y-auto rounded-[1rem] border border-white/10">
             {folderState.entries?.length ? (
               folderState.entries.map((entry) => {
                 const active = selectedWorkspacePath === entry.path;
 
                 return (
-                  <div
+                  <button
                     key={entry.path}
-                    className={`border-b border-white/10 px-4 py-3 last:border-b-0 ${
-                      active ? "bg-telegram-500/10" : "bg-transparent"
+                    type="button"
+                    onClick={() => onSelectWorkspace(entry.path)}
+                    onDoubleClick={() => void onBrowseFolder(entry.path)}
+                    className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left last:border-b-0 transition ${
+                      active ? "bg-telegram-500/10" : "bg-transparent hover:bg-white/[0.03]"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <button
-                        type="button"
-                        onClick={() => void onBrowseFolder(entry.path)}
-                        className="min-w-0 flex-1 text-left"
-                      >
-                        <p className="truncate text-sm font-medium text-white">{entry.name}</p>
-                        <p className="mt-1 truncate text-[11px] text-slate-400">{entry.path}</p>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onSelectWorkspace(entry.path)}
-                        className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:bg-white/5"
-                      >
-                        선택
-                      </button>
-                    </div>
-                  </div>
+                    <span className="text-sm font-medium text-white">{entry.name}</span>
+                  </button>
                 );
               })
             ) : (
@@ -961,34 +909,6 @@ function ProjectComposerSheet({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="예: OctOP 모바일 운영"
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
-            프로젝트 Key
-          </label>
-          <input
-            id="project-key"
-            type="text"
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            placeholder="비워두면 서버에서 자동 생성됩니다."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
-            설명
-          </label>
-          <textarea
-            id="project-description"
-            rows="4"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="프로젝트 목적과 작업 범위를 적어 주세요."
             className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
