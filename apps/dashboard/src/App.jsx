@@ -1846,7 +1846,13 @@ export default function App() {
 
         if (payload.type === "bridge.threads.updated") {
           const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
-          setThreads(nextThreads);
+          setThreads((current) => {
+            if (nextThreads.length === 0 && current.length > 0) {
+              return current;
+            }
+
+            return nextThreads;
+          });
           setSelectedThreadId((current) => current || nextThreads[0]?.id || "");
           return;
         }

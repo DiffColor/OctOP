@@ -33,6 +33,7 @@ const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
 );
 const BRIDGE_STORAGE_DIR = resolve(os.homedir(), ".octop");
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
+const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 
 dns.setDefaultResultOrder("ipv4first");
@@ -112,9 +113,10 @@ function ensureUserState(userId) {
   const normalized = sanitizeUserId(userId);
 
   if (!users.has(normalized)) {
+    const restoredThreads = loadThreadsForUser(normalized);
     users.set(normalized, {
       projects: loadProjectsForUser(normalized),
-      threadIds: new Set(),
+      threadIds: restoredThreads,
       updated_at: now()
     });
   }
@@ -129,6 +131,94 @@ function ensureUserState(userId) {
   }
 
   return state;
+}
+
+function readThreadStorage() {
+  if (!existsSync(THREAD_STATE_PATH)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(THREAD_STATE_PATH, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeThreadStorage(payload) {
+  mkdirSync(dirname(THREAD_STATE_PATH), { recursive: true });
+  writeFileSync(THREAD_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function loadThreadsForUser(loginId) {
+  const storage = readThreadStorage();
+  const stored = storage[loginId];
+
+  if (!stored || !Array.isArray(stored.thread_ids)) {
+    return new Set();
+  }
+
+  const threadIds = new Set();
+
+  for (const threadId of stored.thread_ids) {
+    if (!threadId) {
+      continue;
+    }
+
+    const thread = stored.threads?.[threadId];
+
+    if (thread) {
+      threadStateById.set(threadId, thread);
+      threadOwners.set(threadId, loginId);
+      threadIds.add(threadId);
+    }
+
+    const messages = stored.messages?.[threadId];
+
+    if (Array.isArray(messages) && messages.length > 0) {
+      threadMessagesById.set(threadId, messages);
+    }
+  }
+
+  return threadIds;
+}
+
+function persistThreadsForUser(loginId) {
+  const normalized = sanitizeUserId(loginId);
+  const state = users.get(normalized);
+
+  if (!state) {
+    return;
+  }
+
+  const storage = readThreadStorage();
+  const threadIds = [...state.threadIds].filter((threadId) => threadStateById.has(threadId));
+
+  storage[normalized] = {
+    thread_ids: threadIds,
+    threads: Object.fromEntries(
+      threadIds.map((threadId) => [threadId, threadStateById.get(threadId)])
+    ),
+    messages: Object.fromEntries(
+      threadIds
+        .filter((threadId) => threadMessagesById.has(threadId))
+        .map((threadId) => [threadId, threadMessagesById.get(threadId)])
+    ),
+    updated_at: now()
+  };
+
+  writeThreadStorage(storage);
+}
+
+function persistThreadById(threadId) {
+  const owner = threadOwners.get(threadId);
+
+  if (!owner) {
+    return;
+  }
+
+  persistThreadsForUser(owner);
 }
 
 function loadProjectsForUser(loginId) {
@@ -551,6 +641,7 @@ function upsertThreadState(threadId, patch) {
   };
 
   threadStateById.set(threadId, next);
+  persistThreadById(threadId);
   return next;
 }
 
@@ -590,6 +681,7 @@ function pushThreadMessage(threadId, message) {
     timestamp: now(),
     ...message
   });
+  persistThreadById(threadId);
   return messages;
 }
 
@@ -600,6 +692,7 @@ function appendAssistantDelta(threadId, delta = "") {
   if (lastMessage?.role === "assistant") {
     lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
     lastMessage.timestamp = now();
+    persistThreadById(threadId);
     return;
   }
 
@@ -610,6 +703,7 @@ function appendAssistantDelta(threadId, delta = "") {
     content: String(delta ?? ""),
     timestamp: now()
   });
+  persistThreadById(threadId);
 }
 
 function listThreadMessages(threadId) {
