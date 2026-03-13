@@ -96,14 +96,6 @@ function clearSessionStorage() {
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
-function createId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return `octop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
 function formatDateTime(value) {
   if (!value) {
     return "-";
@@ -296,24 +288,24 @@ function upsertThread(currentThreads, thread) {
   return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
 }
 
-function summarizeEvent(event) {
-  return (
-    event?.summary ??
-    event?.payload?.thread?.title ??
-    event?.payload?.error ??
-    event?.payload?.projects?.[0]?.name ??
-    event?.payload?.threads?.[0]?.title ??
-    event?.type ??
-    "브릿지 상태가 갱신되었습니다."
-  );
-}
-
 function getThreadPreview(thread) {
   if (thread.last_message) {
     return thread.last_message;
   }
 
-  return `${getStatusMeta(thread.status).label} · ${thread.last_event}`;
+  return `${getStatusMeta(thread.status).label} · 진행률 ${thread.progress}%`;
+}
+
+function createThreadTitleFromPrompt(prompt) {
+  const normalized = String(prompt ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized.length <= 34 ? normalized : `${normalized.slice(0, 34)}...`;
 }
 
 function BottomSheet({ open, title, description, onClose, children }) {
@@ -495,20 +487,10 @@ function UtilitySheet({
               <p className="truncate text-sm text-slate-400">{session.loginId}</p>
             </div>
           </div>
-
-          <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
-            <div className="rounded-2xl bg-slate-900/80 px-3 py-3 text-slate-300">
-              <div className="text-lg font-semibold text-white">{bridges.length}</div>
-              Bridge
-            </div>
-            <div className="rounded-2xl bg-slate-900/80 px-3 py-3 text-slate-300">
-              <div className="text-lg font-semibold text-white">{projects.length}</div>
-              Project
-            </div>
-            <div className="rounded-2xl bg-slate-900/80 px-3 py-3 text-slate-300">
-              <div className="text-lg font-semibold text-white">{threads.length}</div>
-              Thread
-            </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Bridge {bridges.length}</span>
+            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Project {projects.length}</span>
+            <span className="rounded-full bg-slate-900/80 px-3 py-1.5">Thread {threads.length}</span>
           </div>
         </section>
 
@@ -618,13 +600,16 @@ function IssueComposerSheet({ open, busy, projects, selectedProjectId, onClose, 
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!title.trim() || !projectId) {
+    const normalizedPrompt = prompt.trim();
+    const normalizedTitle = title.trim() || createThreadTitleFromPrompt(normalizedPrompt);
+
+    if (!normalizedPrompt || !normalizedTitle || !projectId) {
       return;
     }
 
     await onSubmit({
-      title: title.trim(),
-      prompt: prompt.trim(),
+      title: normalizedTitle,
+      prompt: normalizedPrompt,
       project_id: projectId
     });
   };
@@ -644,10 +629,9 @@ function IssueComposerSheet({ open, busy, projects, selectedProjectId, onClose, 
           <input
             id="issue-title"
             type="text"
-            required
             value={title}
             onChange={(event) => setTitle(event.target.value)}
-            placeholder="예: 모바일 앱 실시간 상태 점검"
+            placeholder="비워두면 프롬프트 앞부분으로 자동 생성됩니다."
             className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
@@ -672,14 +656,14 @@ function IssueComposerSheet({ open, busy, projects, selectedProjectId, onClose, 
 
         <div>
           <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-prompt">
-            작업 설명
+            프롬프트
           </label>
           <textarea
             id="issue-prompt"
             rows="5"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder="필요한 작업 내용이나 확인 포인트를 입력해 주세요."
+            placeholder="수행할 작업을 입력해 주세요. 제목은 비워두셔도 됩니다."
             className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
@@ -932,34 +916,34 @@ function ThreadListItem({ thread, projectName, active, onOpen }) {
     <button
       type="button"
       onClick={() => onOpen(thread.id)}
-      className={`w-full rounded-[1.6rem] border p-4 text-left transition ${
+      className={`w-full border-b border-white/8 px-1 py-3 text-left transition ${
         active
-          ? "border-telegram-300/50 bg-telegram-500/15 shadow-telegram-card"
-          : "border-white/8 bg-white/5 hover:bg-white/10"
+          ? "bg-white/[0.04]"
+          : "bg-transparent hover:bg-white/[0.03]"
       }`}
     >
       <div className="flex items-start gap-3">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
           {thread.title.slice(0, 1).toUpperCase()}
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="thread-title text-sm font-semibold text-white">{thread.title}</p>
-              <p className="mt-1 text-xs text-slate-400">{projectName || "프로젝트 미지정"}</p>
+              <p className="mt-0.5 text-xs text-slate-400">{projectName || "프로젝트 미지정"}</p>
             </div>
             <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
           </div>
 
-          <p className="thread-preview mt-3 text-sm leading-6 text-slate-300">{getThreadPreview(thread)}</p>
+          <p className="thread-preview mt-1.5 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="mt-2 flex items-center gap-2">
             <span className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] ${status.chipClassName}`}>
               <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
               {status.label}
             </span>
-            <span className="rounded-full bg-slate-950/60 px-2.5 py-1 text-[11px] text-slate-300">
+            <span className="text-[11px] text-slate-500">
               {thread.progress}%
             </span>
           </div>
@@ -984,7 +968,7 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
 
   return (
     <div className={`message-enter flex ${wrapperClassName}`}>
-      <article className={`max-w-[86%] rounded-[1.6rem] px-4 py-3 shadow-telegram-card ${bubbleClassName}`}>
+      <article className={`max-w-[86%] rounded-[1.35rem] px-4 py-3 ${bubbleClassName}`}>
         {title ? <p className="text-xs font-semibold uppercase tracking-[0.16em] opacity-70">{title}</p> : null}
         <div className={title ? "mt-2" : ""}>{children}</div>
         {meta ? <p className="mt-3 text-right text-[11px] opacity-60">{meta}</p> : null}
@@ -993,9 +977,8 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
   );
 }
 
-function ThreadDetail({ thread, project, recentEvents, onBack, onOpenComposer }) {
+function ThreadDetail({ thread, project, onBack, onOpenComposer }) {
   const status = getStatusMeta(thread.status);
-  const activity = recentEvents.slice(0, 4);
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -1013,7 +996,11 @@ function ThreadDetail({ thread, project, recentEvents, onBack, onOpenComposer })
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{thread.title}</p>
-            <p className="truncate text-xs text-slate-400">{project?.name ?? "프로젝트 미지정"}</p>
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+              <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
+              <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} />
+              <span>{status.label}</span>
+            </div>
           </div>
 
           <button
@@ -1037,11 +1024,11 @@ function ThreadDetail({ thread, project, recentEvents, onBack, onOpenComposer })
           <MessageBubble title="Thread" meta={formatRelativeTime(thread.updated_at)} tone="light">
             <p className="text-sm font-semibold">{thread.title}</p>
             <p className="mt-2 text-sm leading-6 opacity-80">
-              {thread.last_message || "아직 작업 메시지가 기록되지 않았습니다. 실시간 이벤트가 도착하면 여기에 이어집니다."}
+              {thread.last_message || "아직 작업 메시지가 기록되지 않았습니다."}
             </p>
           </MessageBubble>
 
-          <MessageBubble align="right" tone={thread.status === "failed" ? "danger" : thread.status === "completed" ? "success" : thread.status === "awaiting_input" ? "warn" : "brand"} title={status.label} meta={`이벤트 ${thread.last_event}`}>
+          <MessageBubble align="right" tone={thread.status === "failed" ? "danger" : thread.status === "completed" ? "success" : thread.status === "awaiting_input" ? "warn" : "brand"} title={status.label} meta={formatRelativeTime(thread.updated_at)}>
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <span>진행률</span>
@@ -1052,25 +1039,6 @@ function ThreadDetail({ thread, project, recentEvents, onBack, onOpenComposer })
               </div>
             </div>
           </MessageBubble>
-
-          <MessageBubble title="Workspace" meta={project?.workspace_path ? shortenPath(project.workspace_path) : "경로 없음"}>
-            <div className="space-y-2 text-sm leading-6">
-              <p>프로젝트: {project?.name ?? "미지정"}</p>
-              <p>Thread ID: {thread.id}</p>
-              {thread.turn_id ? <p>Turn ID: {thread.turn_id}</p> : null}
-            </div>
-          </MessageBubble>
-
-          {activity.map((event) => (
-            <MessageBubble
-              key={event.id}
-              title={event.type}
-              meta={formatRelativeTime(event.timestamp)}
-              tone="light"
-            >
-              <p className="text-sm leading-6">{event.summary}</p>
-            </MessageBubble>
-          ))}
         </div>
       </div>
     </div>
@@ -1091,7 +1059,6 @@ function MainPage({
   selectedProjectId,
   selectedThreadId,
   search,
-  recentEvents,
   loadingState,
   projectBusy,
   issueBusy,
@@ -1128,7 +1095,6 @@ function MainPage({
       const matchesSearch =
         !searchKeyword ||
         thread.title.toLowerCase().includes(searchKeyword) ||
-        thread.last_event.toLowerCase().includes(searchKeyword) ||
         thread.last_message.toLowerCase().includes(searchKeyword);
 
       return matchesProject && matchesSearch;
@@ -1147,7 +1113,6 @@ function MainPage({
         <ThreadDetail
           thread={selectedThread}
           project={threadProject}
-          recentEvents={recentEvents}
           onBack={onBackToInbox}
           onOpenComposer={onOpenComposer}
         />
@@ -1166,15 +1131,12 @@ function MainPage({
   return (
     <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
-        <header className="relative overflow-hidden px-4 pb-5 pt-4">
-          <div className="absolute inset-x-4 top-0 -z-10 h-56 rounded-[2rem] bg-gradient-to-br from-telegram-500 via-telegram-600 to-telegram-800 shadow-telegram-soft" />
-          <div className="absolute right-6 top-6 -z-10 h-24 w-24 rounded-full bg-white/10 blur-2xl" />
-
+        <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/88 px-4 py-3 backdrop-blur">
           <div className="flex items-center justify-between gap-3">
             <button
               type="button"
               onClick={onOpenUtility}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
@@ -1182,65 +1144,52 @@ function MainPage({
             </button>
 
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm text-telegram-50/75">{session.displayName || session.loginId}</p>
-              <h1 className="truncate font-display text-2xl font-bold text-white">OctOP Pocket</h1>
-            </div>
-
-            <span
-              className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${
-                status.app_server?.connected
-                  ? "bg-emerald-400/20 text-emerald-50"
-                  : "bg-rose-400/20 text-rose-50"
-              }`}
-            >
-              {status.app_server?.connected ? "Bridge OK" : "Bridge Down"}
-            </span>
-          </div>
-
-          <div className="mt-5 rounded-[1.6rem] bg-slate-950/20 p-4 backdrop-blur">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.28em] text-telegram-50/55">Connected Bridge</p>
-                <p className="mt-2 text-lg font-semibold text-white">{bridgeLabel}</p>
-                <p className="mt-1 text-sm text-telegram-50/70">
-                  {status.app_server?.account?.plan_type ?? "Unknown Plan"} · {formatRelativeTime(status.updated_at)}
-                </p>
+              <h1 className="truncate text-base font-semibold text-white">OctOP Pocket</h1>
+              <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+                <span className="truncate">{bridgeLabel}</span>
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
+                  }`}
+                />
+                <span>{status.app_server?.connected ? "연결됨" : "미연결"}</span>
               </div>
-
-              <button
-                type="button"
-                onClick={onRefresh}
-                className="rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
-              >
-                새로고침
-              </button>
             </div>
+
+            <button
+              type="button"
+              onClick={onOpenComposer}
+              disabled={projects.length === 0}
+              className="rounded-full bg-telegram-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              새 이슈
+            </button>
           </div>
         </header>
 
-        <main className="flex-1 px-4 pb-28">
-          <div className="rounded-[1.6rem] border border-white/8 bg-white/5 p-3 shadow-telegram-card">
-            <div className="flex items-center gap-3 rounded-[1.2rem] bg-slate-950/50 px-3 py-3">
-              <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <main className="flex-1 px-4 pb-24 pt-2">
+          <div className="border-b border-white/10 pb-3">
+            <div className="flex items-center gap-3 px-1 py-2">
+              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
               <input
                 type="text"
                 value={search}
                 onChange={(event) => onSearchChange(event.target.value)}
-                placeholder="thread, event, 메시지 검색"
+                placeholder="검색"
                 className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
               />
             </div>
 
-            <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
               <button
                 type="button"
                 onClick={() => onSelectProject("")}
-                className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition ${
+                className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
                   !selectedProjectId
                     ? "bg-white text-slate-900"
-                    : "bg-slate-950/60 text-slate-300 hover:bg-slate-900"
+                    : "bg-transparent text-slate-400 hover:text-white"
                 }`}
               >
                 전체
@@ -1250,10 +1199,10 @@ function MainPage({
                   key={project.id}
                   type="button"
                   onClick={() => onSelectProject(project.id)}
-                  className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition ${
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
                     project.id === selectedProjectId
                       ? "bg-white text-slate-900"
-                      : "bg-slate-950/60 text-slate-300 hover:bg-slate-900"
+                      : "bg-transparent text-slate-400 hover:text-white"
                   }`}
                 >
                   {project.name}
@@ -1262,9 +1211,9 @@ function MainPage({
             </div>
           </div>
 
-          <section className="mt-5 space-y-3">
+          <section className="mt-1">
             {filteredThreads.length === 0 ? (
-              <div className="rounded-[1.8rem] border border-dashed border-white/10 bg-white/5 px-5 py-8 text-center text-sm leading-7 text-slate-400">
+              <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
                 {loadingState === "loading"
                   ? "데이터를 동기화하고 있습니다."
                   : "조건에 맞는 thread가 없습니다. 새 이슈를 보내서 작업을 시작해 주세요."}
@@ -1281,47 +1230,15 @@ function MainPage({
               ))
             )}
           </section>
-
-          <section className="mt-6 rounded-[1.8rem] border border-white/8 bg-white/5 p-4 shadow-telegram-card">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-white">실시간 Activity</p>
-                <p className="mt-1 text-xs text-slate-400">SSE 이벤트와 bridge 상태가 여기에 쌓입니다.</p>
-              </div>
-              <span className="rounded-full bg-slate-950/60 px-3 py-1 text-[11px] text-slate-300">
-                {recentEvents.length} items
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-2">
-              {recentEvents.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/10 px-4 py-4 text-sm text-slate-400">
-                  아직 받은 이벤트가 없습니다.
-                </div>
-              ) : (
-                recentEvents.slice(0, 5).map((event) => (
-                  <div key={event.id} className="rounded-2xl bg-slate-950/55 px-4 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-xs uppercase tracking-[0.14em] text-slate-500">{event.type}</p>
-                        <p className="mt-1 text-sm leading-6 text-slate-200">{event.summary}</p>
-                      </div>
-                      <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(event.timestamp)}</span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
         </main>
 
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)]">
-          <div className="pointer-events-auto flex w-full items-center gap-3 rounded-[1.8rem] border border-white/10 bg-slate-950/90 p-3 shadow-telegram-soft backdrop-blur">
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+          <div className="pointer-events-auto flex w-full items-center gap-3 px-1 py-1">
             <button
               type="button"
               onClick={onOpenComposer}
               disabled={projects.length === 0}
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M12 5v14m7-7H5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
@@ -1333,9 +1250,16 @@ function MainPage({
                 {selectedProject?.name ?? "프로젝트를 선택하거나 새로 등록해 주세요"}
               </p>
               <p className="truncate text-xs text-slate-400">
-                새 issue를 보내면 해당 프로젝트의 thread가 실시간으로 추가됩니다.
+                프롬프트를 보내면 바로 thread가 생성됩니다.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="rounded-full px-3 py-2 text-[11px] font-medium text-slate-300 transition hover:bg-white/5 hover:text-white"
+            >
+              새로고침
+            </button>
           </div>
         </div>
       </div>
@@ -1402,7 +1326,6 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [search, setSearch] = useState("");
-  const [recentEvents, setRecentEvents] = useState([]);
   const [loadingState, setLoadingState] = useState("idle");
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
@@ -1477,15 +1400,6 @@ export default function App() {
       setLoadingState("ready");
     } catch (error) {
       setLoadingState("error");
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "mobile.load.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
     }
   }
 
@@ -1549,18 +1463,6 @@ export default function App() {
       `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
 
-    const appendEvent = (type, summary) => {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type,
-          timestamp: new Date().toISOString(),
-          summary
-        },
-        ...current
-      ].slice(0, 20));
-    };
-
     eventSource.addEventListener("snapshot", (event) => {
       try {
         const payload = JSON.parse(event.data);
@@ -1573,7 +1475,6 @@ export default function App() {
     eventSource.addEventListener("message", (event) => {
       try {
         const payload = JSON.parse(event.data);
-        appendEvent(payload.type, summarizeEvent(payload));
 
         if (payload.type === "bridge.status.updated") {
           setStatus(payload.payload);
@@ -1607,10 +1508,6 @@ export default function App() {
       } catch {
         // ignore malformed event payload
       }
-    });
-
-    eventSource.addEventListener("error", () => {
-      appendEvent("sse.error", "실시간 이벤트 스트림이 재연결을 시도하고 있습니다.");
     });
 
     return () => {
@@ -1652,7 +1549,6 @@ export default function App() {
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
-    setRecentEvents([]);
     setActiveView("inbox");
   }, [selectedBridgeId]);
 
@@ -1729,7 +1625,6 @@ export default function App() {
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
-    setRecentEvents([]);
     setSelectedProjectId("");
     setSelectedThreadId("");
     setSearch("");
@@ -1763,15 +1658,9 @@ export default function App() {
       setComposerOpen(false);
       setActiveView("inbox");
     } catch (error) {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "issue.create.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
     } finally {
       setIssueBusy(false);
     }
@@ -1812,15 +1701,9 @@ export default function App() {
       setSelectedWorkspacePath("");
       setProjectComposerOpen(false);
     } catch (error) {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "project.create.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
     } finally {
       setProjectBusy(false);
     }
@@ -1904,7 +1787,6 @@ export default function App() {
       selectedProjectId={selectedProjectId}
       selectedThreadId={selectedThreadId}
       search={search}
-      recentEvents={recentEvents}
       loadingState={loadingState}
       utilityOpen={utilityOpen}
       projectBusy={projectBusy}
