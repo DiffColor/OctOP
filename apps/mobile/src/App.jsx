@@ -254,6 +254,61 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function getRealtimeProgressText(entity) {
+  const status = entity?.status ?? "queued";
+  const lastEvent = entity?.last_event ?? "";
+
+  if (status === "awaiting_input") {
+    return "입력 대기 중";
+  }
+
+  if (status === "failed") {
+    return "실패 확인 필요";
+  }
+
+  if (status === "completed") {
+    return "완료됨";
+  }
+
+  if (lastEvent === "turn.starting") {
+    return "Codex 실행 요청 중";
+  }
+
+  if (lastEvent === "turn.started") {
+    return "작업 시작됨";
+  }
+
+  if (lastEvent === "turn.plan.updated") {
+    return "계획 수립 중";
+  }
+
+  if (lastEvent === "turn.diff.updated") {
+    return "변경 적용 중";
+  }
+
+  if (lastEvent === "item.agentMessage.delta") {
+    return "응답 생성 중";
+  }
+
+  if (lastEvent === "turn.completed") {
+    return "마무리 정리 중";
+  }
+
+  if (status === "running") {
+    return "실행 중";
+  }
+
+  if (status === "queued") {
+    return "대기열에서 대기 중";
+  }
+
+  if (status === "idle") {
+    return "다음 작업 대기 중";
+  }
+
+  return "상태 동기화 중";
+}
+
 function parseResponseBody(response, text) {
   if (!text) {
     return {};
@@ -380,6 +435,15 @@ function buildLiveThreadPatch(event, currentThread = null) {
         status: "running",
         progress: Math.max(currentThread?.progress ?? 0, 20),
         last_event: "turn.started",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.starting":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 10),
+        last_event: "turn.starting",
         updated_at: new Date().toISOString()
       };
     case "turn.plan.updated":
@@ -527,7 +591,7 @@ function getThreadPreview(thread) {
     return thread.last_message;
   }
 
-  return `${getStatusMeta(thread.status).label} 상태입니다.`;
+  return getRealtimeProgressText(thread);
 }
 
 function createThreadTitleFromPrompt(prompt) {
@@ -1912,6 +1976,13 @@ function ThreadDetail({
               </div>
             </div>
           ) : null}
+          {thread ? (
+            <div className="flex justify-center">
+              <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
+                {getRealtimeProgressText(thread)}
+              </div>
+            </div>
+          ) : null}
           <div ref={scrollAnchorRef} />
         </div>
       </div>
@@ -2870,13 +2941,62 @@ export default function App() {
         }
       );
       const issueId = createdIssue?.issue?.id;
+      const optimisticTimestamp = new Date().toISOString();
+      const optimisticThread = createdThread?.thread
+        ? {
+            ...createdThread.thread,
+            status: "running",
+            progress: 10,
+            last_event: "turn.starting",
+            updated_at: optimisticTimestamp
+          }
+        : null;
+      const optimisticIssue = createdIssue?.issue
+        ? {
+            ...createdIssue.issue,
+            status: "running",
+            progress: 10,
+            last_event: "turn.starting",
+            updated_at: optimisticTimestamp
+          }
+        : null;
+      const optimisticMessages = optimisticIssue
+        ? [
+            {
+              id: createId(),
+              role: "user",
+              kind: "prompt",
+              content: optimisticIssue.prompt ?? payload.prompt ?? "",
+              timestamp: optimisticTimestamp,
+              issue_id: optimisticIssue.id,
+              issue_title: optimisticIssue.title ?? payload.title ?? "",
+              issue_status: optimisticIssue.status
+            }
+          ]
+        : [];
 
       const stayOnThread = Boolean(options?.stayOnThread);
 
       if (threadId) {
-        setThreads((current) => upsertThread(current, createdThread.thread));
+        if (optimisticThread) {
+          setThreads((current) => upsertThread(current, optimisticThread));
+          setThreadDetails((current) => ({
+            ...current,
+            [threadId]: {
+              ...(current[threadId] ?? {}),
+              thread: optimisticThread,
+              issues: optimisticIssue ? [optimisticIssue] : current[threadId]?.issues ?? [],
+              messages: optimisticMessages,
+              loading: false,
+              error: ""
+            }
+          }));
+        } else {
+          setThreads((current) => upsertThread(current, createdThread.thread));
+        }
         setSelectedThreadId(threadId);
         setDraftThreadProjectId("");
+        setThreadMessageFilter("all");
 
         if (issueId) {
           await apiRequest(
@@ -2892,9 +3012,8 @@ export default function App() {
       }
 
       if (stayOnThread && threadId) {
-        setThreadMessageFilter("all");
         setActiveView("thread");
-        await loadThreadMessages(threadId, { force: true });
+        void loadThreadMessages(threadId, { force: true });
       } else {
         setActiveView("inbox");
       }
@@ -2925,6 +3044,72 @@ export default function App() {
         }
       );
       const issueId = createdIssue?.issue?.id;
+      const optimisticTimestamp = new Date().toISOString();
+      const optimisticIssue = createdIssue?.issue
+        ? {
+            ...createdIssue.issue,
+            status: "running",
+            progress: 10,
+            last_event: "turn.starting",
+            updated_at: optimisticTimestamp
+          }
+        : null;
+
+      setThreads((current) => {
+        const currentThread = current.find((thread) => thread.id === threadId);
+
+        if (!currentThread) {
+          return current;
+        }
+
+        return upsertThread(current, {
+          ...currentThread,
+          status: "running",
+          progress: Math.max(currentThread.progress ?? 0, 10),
+          last_event: "turn.starting",
+          updated_at: optimisticTimestamp
+        });
+      });
+      setThreadDetails((current) => {
+        const currentEntry = current[threadId] ?? {};
+        const nextMessages = [
+          ...(currentEntry.messages ?? []),
+          {
+            id: createId(),
+            role: "user",
+            kind: "prompt",
+            content: prompt,
+            timestamp: optimisticTimestamp,
+            issue_id: optimisticIssue?.id ?? null,
+            issue_title: optimisticIssue?.title ?? createThreadTitleFromPrompt(prompt),
+            issue_status: optimisticIssue?.status ?? "running"
+          }
+        ];
+
+        return {
+          ...current,
+          [threadId]: {
+            ...currentEntry,
+            thread: currentEntry.thread
+              ? {
+                  ...currentEntry.thread,
+                  status: "running",
+                  progress: Math.max(currentEntry.thread.progress ?? 0, 10),
+                  last_event: "turn.starting",
+                  updated_at: optimisticTimestamp
+                }
+              : currentEntry.thread,
+            issues: optimisticIssue
+              ? [...(currentEntry.issues ?? []).filter((issue) => issue.id !== optimisticIssue.id), optimisticIssue]
+              : currentEntry.issues ?? [],
+            messages: nextMessages,
+            loading: false,
+            error: ""
+          }
+        };
+      });
+      setThreadMessageFilter("all");
+      setActiveView("thread");
 
       if (issueId) {
         await apiRequest(
@@ -2935,17 +3120,7 @@ export default function App() {
           }
         );
       }
-
-      if (createdIssue?.issue?.thread_id) {
-        const matchingThread = threads.find((thread) => thread.id === createdIssue.issue.thread_id);
-        if (matchingThread) {
-          setThreads((current) => upsertThread(current, matchingThread));
-        }
-      }
-
-      await loadThreadMessages(threadId, { force: true });
-      setThreadMessageFilter("all");
-      setActiveView("thread");
+      void loadThreadMessages(threadId, { force: true });
       return true;
     } catch (error) {
       if (typeof window !== "undefined") {

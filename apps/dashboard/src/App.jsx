@@ -591,6 +591,66 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function getRealtimeProgressText(entity, language) {
+  const isKorean = language === "ko";
+  const status = entity?.status ?? "queued";
+  const lastEvent = entity?.last_event ?? "";
+
+  if (status === "awaiting_input") {
+    return isKorean ? "입력 대기 중" : "Waiting for input";
+  }
+
+  if (status === "failed") {
+    return isKorean ? "실패 확인 필요" : "Needs attention";
+  }
+
+  if (status === "completed") {
+    return isKorean ? "완료됨" : "Completed";
+  }
+
+  if (lastEvent === "turn.starting") {
+    return isKorean ? "Codex 실행 요청 중" : "Sending to Codex";
+  }
+
+  if (lastEvent === "turn.started") {
+    return isKorean ? "작업 시작됨" : "Task started";
+  }
+
+  if (lastEvent === "turn.plan.updated") {
+    return isKorean ? "계획 수립 중" : "Planning next steps";
+  }
+
+  if (lastEvent === "turn.diff.updated") {
+    return isKorean ? "변경 적용 중" : "Applying edits";
+  }
+
+  if (lastEvent === "item.agentMessage.delta") {
+    return isKorean ? "응답 생성 중" : "Streaming response";
+  }
+
+  if (lastEvent === "turn.completed") {
+    return isKorean ? "마무리 정리 중" : "Wrapping up";
+  }
+
+  if (status === "running") {
+    return isKorean ? "실행 중" : "Running";
+  }
+
+  if (status === "queued") {
+    return isKorean ? "대기열에서 대기 중" : "Waiting in queue";
+  }
+
+  if (status === "staged") {
+    return isKorean ? "준비 단계" : "Ready to queue";
+  }
+
+  if (status === "idle") {
+    return isKorean ? "다음 작업 대기 중" : "Waiting for next task";
+  }
+
+  return isKorean ? "상태 동기화 중" : "Syncing status";
+}
+
 function parseResponseBody(response, text) {
   if (!text) {
     return {};
@@ -812,7 +872,7 @@ function buildMessagePreview(thread, language) {
   const copy = getCopy(language);
   const prompt = String(thread.prompt ?? "").trim();
   const lastMessage = String(thread.last_message ?? "").trim();
-  return lastMessage || prompt || copy.fallback.noPrompt;
+  return lastMessage || getRealtimeProgressText(thread, language) || prompt || copy.fallback.noPrompt;
 }
 
 function getThreadTitle(thread, language) {
@@ -892,6 +952,15 @@ function buildLiveThreadPatch(event, currentThread = null) {
         last_event: "turn.started",
         updated_at: new Date().toISOString()
       };
+    case "turn.starting":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 10),
+        last_event: "turn.starting",
+        updated_at: new Date().toISOString()
+      };
     case "turn.plan.updated":
       return {
         id: threadId,
@@ -950,6 +1019,16 @@ function buildLiveIssuePatch(event, currentIssue = null) {
         status: "running",
         progress: Math.max(currentIssue?.progress ?? 0, 20),
         last_event: "turn.started",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.starting":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: "running",
+        progress: Math.max(currentIssue?.progress ?? 0, 10),
+        last_event: "turn.starting",
         updated_at: new Date().toISOString()
       };
     case "turn.plan.updated":
@@ -2051,6 +2130,7 @@ function TodoThreadCard({
   onDrop
 }) {
   const copy = getCopy(language);
+  const progressText = getRealtimeProgressText(thread, language);
   return (
     <div
       draggable
@@ -2094,6 +2174,8 @@ function TodoThreadCard({
       <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
         <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
+        <span className="truncate">{progressText}</span>
+        <span className="text-slate-700">•</span>
         <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{copy.board.queue}</span>
       </div>
     </div>
@@ -2135,6 +2217,7 @@ function getColumnDotClassName(columnId) {
 function ThreadCard({ language, thread, selected, onSelect }) {
   const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
+  const progressText = getRealtimeProgressText(thread, language);
 
   return (
     <button
@@ -2162,7 +2245,7 @@ function ThreadCard({ language, thread, selected, onSelect }) {
       <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
         <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
-        <span className="font-mono">{thread.id.slice(0, 8)}</span>
+        <span className="truncate">{progressText}</span>
       </div>
     </button>
   );

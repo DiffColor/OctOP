@@ -1413,6 +1413,25 @@ async function startIssueTurn(userId, threadId, issueId) {
     reconcileAttempts: 0,
     lastReconciledAt: null
   });
+  updateIssueCard(issueId, {
+    status: "running",
+    progress: Math.max(issue.progress ?? 0, 10),
+    last_event: "turn.starting"
+  });
+  updateProjectThreadSnapshot(threadId);
+  await publishEvent(userId, "turn.starting", {
+    thread_id: threadId,
+    issue_id: issueId
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
+    project_id: thread.project_id,
+    threads: listProjectThreads(userId, thread.project_id)
+  });
 
   try {
     const turnResponse = await appServer.request("turn/start", {
