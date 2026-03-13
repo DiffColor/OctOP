@@ -15,7 +15,9 @@ import {
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
-const NATS_URL = process.env.OCTOP_NATS_URL ?? "nats://127.0.0.1:4222";
+const NATS_URL = process.env.OCTOP_NATS_URL ?? "nats://ilysrv.ddns.net:4222";
+const NATS_CONNECT_TIMEOUT_MS = Number(process.env.OCTOP_NATS_CONNECT_TIMEOUT_MS ?? 5000);
+const NATS_RETRY_DELAY_MS = Number(process.env.OCTOP_NATS_RETRY_DELAY_MS ?? 2000);
 const BRIDGE_MODE = process.env.OCTOP_BRIDGE_MODE ?? "app-server";
 const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
@@ -39,7 +41,7 @@ const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 dns.setDefaultResultOrder("ipv4first");
 
 const sc = StringCodec();
-const nc = await connect({ servers: NATS_URL });
+const nc = await connectToNats();
 
 const users = new Map();
 const threadOwners = new Map();
@@ -50,6 +52,43 @@ const pendingStartQueues = new Map();
 
 function now() {
   return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function connectToNats() {
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+
+    try {
+      console.log(`[bridge] NATS 연결 시도 ${attempt}: ${NATS_URL}`);
+      const connection = await connect({
+        servers: NATS_URL,
+        timeout: NATS_CONNECT_TIMEOUT_MS
+      });
+
+      void connection.closed().then((error) => {
+        if (error) {
+          console.error(`[bridge] NATS 연결 종료: ${error.message}`);
+          return;
+        }
+
+        console.warn("[bridge] NATS 연결이 종료되었습니다.");
+      });
+
+      console.log("[bridge] NATS 연결 성공");
+      return connection;
+    } catch (error) {
+      console.error(
+        `[bridge] NATS 연결 실패 (${attempt}회): ${error.message}. ${Math.round(NATS_RETRY_DELAY_MS / 1000)}초 후 재시도합니다.`
+      );
+      await sleep(NATS_RETRY_DELAY_MS);
+    }
+  }
 }
 
 function createIssueTitle(payload = {}) {
