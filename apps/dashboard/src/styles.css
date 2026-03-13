@@ -88,7 +88,7 @@ code,
   border: 2px solid rgba(15, 23, 42, 0.65);
 }
 
-.octop-board-shell {
+.octop-board-page {
   padding: 0;
   min-height: 0;
   min-height: calc(100dvh - 64px - 46px - 42px);
@@ -100,47 +100,48 @@ code,
   scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
 }
 
-.octop-board-shell::-webkit-scrollbar {
+.octop-board-page::-webkit-scrollbar {
   height: 10px;
 }
 
-.octop-board-shell::-webkit-scrollbar-track {
+.octop-board-page::-webkit-scrollbar-track {
   background: rgba(15, 23, 42, 0.92);
 }
 
-.octop-board-shell::-webkit-scrollbar-thumb {
+.octop-board-page::-webkit-scrollbar-thumb {
   background: #475569;
   border-radius: 999px;
 }
 
-.octop-board-shell--force {
+.octop-board-page--force {
   overflow-x: scroll !important;
   scrollbar-gutter: stable both-edges;
 }
 
-.octop-board-shell--force::-webkit-scrollbar {
+.octop-board-page--force::-webkit-scrollbar {
   -webkit-appearance: none;
   display: block;
   height: 12px;
   max-height: 12px;
 }
 
-.octop-board-shell--force::-webkit-scrollbar-track {
+.octop-board-page--force::-webkit-scrollbar-track {
   background: rgba(15, 23, 42, 0.98);
 }
 
-.octop-board-shell--force::-webkit-scrollbar-thumb {
+.octop-board-page--force::-webkit-scrollbar-thumb {
   background: #64748b;
   border-radius: 999px;
   border: 2px solid rgba(15, 23, 42, 0.98);
 }
 
-.octop-board-shell-inner {
+.octop-board-frame,
+.octop-board-columns {
   min-height: 100%;
 }
 
 @media (max-width: 767px) {
-  .octop-board-shell {
+  .octop-board-page {
     min-height: calc(100dvh - 64px - 46px - 42px - 164px);
     height: calc(100dvh - 64px - 46px - 42px - 164px);
   }

@@ -1805,8 +1805,6 @@ function MainPage({
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [forceBoardScrollbar, setForceBoardScrollbar] = useState(false);
   const languageMenuRef = useRef(null);
-  const boardShellRef = useRef(null);
-  const boardInnerRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -2253,16 +2251,15 @@ function MainPage({
             </div>
 
             <div
-              ref={boardShellRef}
-              className={`octop-board-shell flex-1 min-h-0 overflow-y-hidden ${
-                forceBoardScrollbar ? "octop-board-shell--force" : ""
+              className={`octop-board-page flex-1 min-h-0 ${
+                forceBoardScrollbar ? "octop-board-page--force" : ""
               }`}
             >
-              <div
-                ref={boardInnerRef}
-                className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12"
+              <section
+                className="octop-board-frame flex h-full min-h-0"
                 style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
               >
+                <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -2361,8 +2358,10 @@ function MainPage({
                     </div>
                   </section>
                 ))}
+                </div>
+              </section>
               </div>
-            </div>
+            
           </main>
         </div>
 
