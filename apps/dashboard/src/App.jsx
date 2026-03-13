@@ -455,44 +455,6 @@ function formatDateTime(value, language) {
 
 function formatRelativeTime(value, language) {
   const copy = getCopy(language);
-  const orderedPrepIssueIds = useMemo(() => {
-    const prepIssues = issues
-      .filter((thread) => getStatusMeta(thread.status).column === "prep")
-      .sort((left, right) => {
-        const leftHasOrder = Number.isFinite(left.prep_position);
-        const rightHasOrder = Number.isFinite(right.prep_position);
-
-        if (leftHasOrder && rightHasOrder && left.prep_position !== right.prep_position) {
-          return left.prep_position - right.prep_position;
-        }
-
-        if (leftHasOrder && !rightHasOrder) {
-          return -1;
-        }
-
-        if (!leftHasOrder && rightHasOrder) {
-          return 1;
-        }
-
-        return Date.parse(right.updated_at) - Date.parse(left.updated_at);
-      })
-      .map((thread) => thread.id);
-
-    if (prepIssueOrderIds.length === 0) {
-      return prepIssues;
-    }
-
-    const normalized = prepIssueOrderIds.filter((threadId) => prepIssues.includes(threadId));
-    const trailing = prepIssues.filter((threadId) => !normalized.includes(threadId));
-    return [...normalized, ...trailing];
-  }, [issues, prepIssueOrderIds]);
-  const editingIssue = useMemo(() => {
-    if (!issueEditorOpen || !editingIssueId) {
-      return null;
-    }
-
-    return issues.find((issue) => issue.id === editingIssueId) ?? null;
-  }, [issueEditorOpen, editingIssueId, issues]);
 
   if (!value) {
     return copy.fallback.justNow;
@@ -3336,6 +3298,44 @@ export default function App() {
     messages: []
   });
   const copy = getCopy(language);
+  const orderedPrepIssueIds = useMemo(() => {
+    const prepIssues = issues
+      .filter((issue) => getStatusMeta(issue.status).column === "prep")
+      .sort((left, right) => {
+        const leftHasOrder = Number.isFinite(left.prep_position);
+        const rightHasOrder = Number.isFinite(right.prep_position);
+
+        if (leftHasOrder && rightHasOrder && left.prep_position !== right.prep_position) {
+          return left.prep_position - right.prep_position;
+        }
+
+        if (leftHasOrder && !rightHasOrder) {
+          return -1;
+        }
+
+        if (!leftHasOrder && rightHasOrder) {
+          return 1;
+        }
+
+        return Date.parse(right.updated_at) - Date.parse(left.updated_at);
+      })
+      .map((issue) => issue.id);
+
+    if (prepIssueOrderIds.length === 0) {
+      return prepIssues;
+    }
+
+    const normalized = prepIssueOrderIds.filter((issueId) => prepIssues.includes(issueId));
+    const trailing = prepIssues.filter((issueId) => !normalized.includes(issueId));
+    return [...normalized, ...trailing];
+  }, [issues, prepIssueOrderIds]);
+  const editingIssue = useMemo(() => {
+    if (!issueEditorOpen || !editingIssueId) {
+      return null;
+    }
+
+    return issues.find((issue) => issue.id === editingIssueId) ?? null;
+  }, [issueEditorOpen, editingIssueId, issues]);
 
   const updateStatusCounts = useCallback((nextCounts) => {
     setStatus((current) => ({
