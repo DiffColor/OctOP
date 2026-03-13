@@ -53,7 +53,11 @@ const issueCardsById = new Map();
 const issueMessagesById = new Map();
 const threadIssueIdsById = new Map();
 const activeIssueByThreadId = new Map();
+const runningIssueMetaByThreadId = new Map();
 const codexThreadToThreadId = new Map();
+
+const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
+const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
 
 function now() {
   return new Date().toISOString();
@@ -504,6 +508,7 @@ function normalizeIssueCard(issue = {}) {
     last_event: String(issue.last_event ?? "issue.created").trim(),
     last_message: String(issue.last_message ?? "").trim(),
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
+    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
     created_at: issue.created_at ?? now(),
     updated_at: issue.updated_at ?? now(),
     source: issue.source ?? "bridge"
@@ -523,6 +528,26 @@ function setThreadIssueIds(threadId, issueIds) {
   persistThreadById(threadId);
 }
 
+function getPrepIssueIds(threadId) {
+  return getThreadIssueIds(threadId).filter((issueId) => {
+    const issue = issueCardsById.get(issueId);
+    return issue && issue.status === "staged";
+  });
+}
+
+function getNextPrepPosition(threadId) {
+  const stagedIssues = getPrepIssueIds(threadId)
+    .map((issueId) => issueCardsById.get(issueId))
+    .filter((issue) => Number.isFinite(issue?.prep_position));
+
+  if (stagedIssues.length === 0) {
+    return 1;
+  }
+
+  const minPosition = Math.min(...stagedIssues.map((issue) => issue.prep_position));
+  return Number.isFinite(minPosition) ? minPosition - 1 : 1;
+}
+
 function ensurePendingQueue(threadId) {
   const normalized = sanitizeBridgeId(threadId);
 
@@ -531,6 +556,28 @@ function ensurePendingQueue(threadId) {
   }
 
   return pendingStartQueues.get(normalized);
+}
+
+function markRunningIssueActivity(threadId, patch = {}) {
+  const current = runningIssueMetaByThreadId.get(threadId) ?? {
+    startedAt: now(),
+    lastActivityAt: now(),
+    lastReconciledAt: null,
+    reconcileAttempts: 0
+  };
+  const next = {
+    ...current,
+    ...patch,
+    lastActivityAt: patch.lastActivityAt ?? now()
+  };
+
+  runningIssueMetaByThreadId.set(threadId, next);
+  return next;
+}
+
+function clearRunningIssueTracking(threadId) {
+  activeIssueByThreadId.delete(threadId);
+  runningIssueMetaByThreadId.delete(threadId);
 }
 
 function ensureIssueMessages(issueId) {
@@ -667,11 +714,28 @@ function listThreadIssues(threadId) {
     .map((issueId) => issueCardsById.get(issueId))
     .filter(Boolean)
     .sort((left, right) => {
-      const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
-      const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+      if (left.status === "staged" && right.status === "staged") {
+        const leftHasOrder = Number.isFinite(left.prep_position);
+        const rightHasOrder = Number.isFinite(right.prep_position);
 
-      if (left.status === "queued" && right.status === "queued" && leftOrder !== rightOrder) {
-        return leftOrder - rightOrder;
+        if (leftHasOrder && rightHasOrder && left.prep_position !== right.prep_position) {
+          return left.prep_position - right.prep_position;
+        }
+
+        if (leftHasOrder && !rightHasOrder) {
+          return -1;
+        }
+
+        if (!leftHasOrder && rightHasOrder) {
+          return 1;
+        }
+      }
+
+      const leftQueueOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+      const rightQueueOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+
+      if (left.status === "queued" && right.status === "queued" && leftQueueOrder !== rightQueueOrder) {
+        return leftQueueOrder - rightQueueOrder;
       }
 
       return Date.parse(right.updated_at) - Date.parse(left.updated_at);
@@ -1149,7 +1213,7 @@ async function deleteProjectThread(userId, payload = {}) {
 
   threadIssueIdsById.delete(threadId);
   pendingStartQueues.delete(threadId);
-  activeIssueByThreadId.delete(threadId);
+  clearRunningIssueTracking(threadId);
 
   const codexThreadId = current.codex_thread_id;
   if (codexThreadId) {
@@ -1229,6 +1293,7 @@ async function createThreadIssue(userId, payload = {}) {
     title: createIssueTitle(payload),
     prompt,
     status: "staged",
+    prep_position: getNextPrepPosition(threadId),
     progress: 0,
     last_event: "issue.created",
     last_message: ""
@@ -1340,6 +1405,12 @@ async function startIssueTurn(userId, threadId, issueId) {
   const codexThreadId = await ensureCodexThreadForProjectThread(userId, threadId);
   const cwd = resolveProjectWorkspace(userId, thread.project_id);
   activeIssueByThreadId.set(threadId, issueId);
+  markRunningIssueActivity(threadId, {
+    startedAt: now(),
+    lastActivityAt: now(),
+    reconcileAttempts: 0,
+    lastReconciledAt: null
+  });
 
   try {
     const turnResponse = await appServer.request("turn/start", {
@@ -1376,7 +1447,7 @@ async function startIssueTurn(userId, threadId, issueId) {
       threads: listProjectThreads(userId, thread.project_id)
     });
   } catch (error) {
-    activeIssueByThreadId.delete(threadId);
+    clearRunningIssueTracking(threadId);
     updateIssueCard(issueId, {
       status: "failed",
       progress: 0,
@@ -1460,7 +1531,8 @@ async function startThreadIssues(userId, payload = {}) {
     updateIssueCard(issueId, {
       status: "queued",
       progress: 10,
-      last_event: "issue.queued"
+      last_event: "issue.queued",
+      prep_position: null
     });
   }
 
@@ -1494,6 +1566,12 @@ async function startThreadIssues(userId, payload = {}) {
 }
 
 async function reorderThreadIssues(userId, payload = {}) {
+  const stage = String(payload.stage ?? "").trim().toLowerCase();
+
+  if (stage === "prep" || stage === "staged") {
+    return reorderPrepIssues(userId, payload);
+  }
+
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const issueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids.map((value) => String(value)) : [];
 
@@ -1509,6 +1587,62 @@ async function reorderThreadIssues(userId, payload = {}) {
   await publishEvent(userId, "thread.issues.reordered", {
     thread_id: threadId,
     issue_ids: ensurePendingQueue(threadId)
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+
+  return {
+    accepted: true,
+    issues: listThreadIssues(threadId)
+  };
+}
+
+async function reorderPrepIssues(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const issueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids.map((value) => String(value)) : [];
+
+  if (!threadId) {
+    throw new Error("정렬할 thread가 필요합니다.");
+  }
+
+  const stagedIds = getPrepIssueIds(threadId);
+
+  if (stagedIds.length === 0) {
+    return {
+      accepted: true,
+      issues: listThreadIssues(threadId)
+    };
+  }
+
+  const reordered = issueIds.filter((issueId) => stagedIds.includes(issueId));
+
+  if (reordered.length === 0) {
+    return {
+      accepted: true,
+      issues: listThreadIssues(threadId)
+    };
+  }
+
+  const finalOrder = [...reordered, ...stagedIds.filter((issueId) => !reordered.includes(issueId))];
+  finalOrder.forEach((issueId, index) => {
+    updateIssueCard(issueId, {
+      prep_position: index + 1
+    });
+  });
+
+  const stagedSet = new Set(finalOrder);
+  const iterator = finalOrder[Symbol.iterator]();
+  const nextIssueIds = getThreadIssueIds(threadId).map((issueId) =>
+    stagedSet.has(issueId) ? iterator.next().value ?? issueId : issueId
+  );
+  setThreadIssueIds(threadId, nextIssueIds);
+
+  await publishEvent(userId, "thread.issues.reordered", {
+    thread_id: threadId,
+    issue_ids: finalOrder,
+    stage: "prep"
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
@@ -1572,6 +1706,82 @@ async function deleteThreadIssue(userId, payload = {}) {
   return {
     accepted: true,
     issues: listThreadIssues(issue.thread_id)
+  };
+}
+
+async function updateThreadIssue(userId, payload = {}) {
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+  const prompt = String(payload.prompt ?? "").trim();
+  const title = String(payload.title ?? "").trim();
+
+  if (!issueId) {
+    throw new Error("수정할 이슈 id가 필요합니다.");
+  }
+
+  if (!prompt) {
+    throw new Error("프롬프트를 입력해 주세요.");
+  }
+
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  const thread = threadStateById.get(issue.thread_id);
+
+  if (!thread || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+    throw new Error("이슈를 수정할 수 없습니다.");
+  }
+
+  if (issue.status !== "staged") {
+    throw new Error("준비 중인 이슈만 수정할 수 있습니다.");
+  }
+
+  const next = updateIssueCard(issueId, {
+    title: title || issue.title,
+    prompt,
+    last_event: "issue.updated",
+    last_message: "",
+    updated_at: now()
+  });
+
+  const messages = ensureIssueMessages(issueId);
+  const promptIndex = messages.findIndex((message) => message?.kind === "prompt");
+
+  if (promptIndex >= 0) {
+    messages[promptIndex] = {
+      ...messages[promptIndex],
+      content: prompt,
+      timestamp: now()
+    };
+  } else {
+    pushIssueMessage(issueId, {
+      role: "user",
+      kind: "prompt",
+      content: prompt
+    });
+  }
+
+  updateProjectThreadSnapshot(thread.id);
+  await publishEvent(userId, "issue.updated", {
+    issue: next,
+    thread_id: thread.id
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: thread.id,
+    issues: listThreadIssues(thread.id)
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
+    project_id: thread.project_id,
+    threads: listProjectThreads(userId, thread.project_id)
+  });
+
+  return {
+    accepted: true,
+    issue: next,
+    issues: listThreadIssues(thread.id)
   };
 }
 
@@ -1991,6 +2201,19 @@ class AppServerClient {
     const threadId = codexThreadId ? codexThreadToThreadId.get(codexThreadId) ?? null : null;
 
     if (threadId) {
+      if (
+        method === "thread/started" ||
+        method === "thread/status/changed" ||
+        method === "turn/started" ||
+        method === "turn/plan/updated" ||
+        method === "turn/diff/updated" ||
+        method === "item/agentMessage/delta"
+      ) {
+        markRunningIssueActivity(threadId, {
+          reconcileAttempts: 0
+        });
+      }
+
       const eventPatch = buildThreadPatch(method, params);
 
       if (eventPatch) {
@@ -2057,7 +2280,7 @@ class AppServerClient {
         ["idle", "error"].includes(params.status?.type ?? ""))
     ) {
       if (threadId) {
-        activeIssueByThreadId.delete(threadId);
+        clearRunningIssueTracking(threadId);
         void processIssueQueue(owner, threadId);
       }
     }
@@ -2320,6 +2543,138 @@ async function bridgeStatus(userId) {
 async function syncThreadListFromAppServer() {
   const response = await appServer.request("thread/list", { limit: THREAD_LIST_LIMIT });
   return response.result?.data ?? [];
+}
+
+function inferReconciledTerminalStatus(issue) {
+  const hasOutput = Boolean(String(issue?.last_message ?? "").trim());
+  const hasMeaningfulProgress = Number(issue?.progress ?? 0) >= 45;
+  const hasExecutionTrail = [
+    "turn.plan.updated",
+    "turn.diff.updated",
+    "item.agentMessage.delta",
+    "turn.completed"
+  ].includes(issue?.last_event ?? "");
+
+  return hasOutput || hasMeaningfulProgress || hasExecutionTrail ? "completed" : "failed";
+}
+
+async function publishThreadState(userId, threadId) {
+  const projectId = threadStateById.get(threadId)?.project_id ?? "";
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: projectId ? "project" : "all",
+    project_id: projectId,
+    threads: listProjectThreads(userId, projectId)
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+}
+
+async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
+  const activeIssueId = activeIssueByThreadId.get(threadId);
+  const meta = runningIssueMetaByThreadId.get(threadId);
+  const thread = threadStateById.get(threadId);
+
+  if (!activeIssueId || !meta || !thread) {
+    return;
+  }
+
+  const lastActivityAt = Date.parse(meta.lastActivityAt ?? 0);
+
+  if (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt < RUNNING_ISSUE_STALE_MS) {
+    return;
+  }
+
+  const issue = issueCardsById.get(activeIssueId);
+
+  if (!issue) {
+    clearRunningIssueTracking(threadId);
+    return;
+  }
+
+  const remoteThread = thread.codex_thread_id ? remoteThreadsByCodexId.get(thread.codex_thread_id) ?? null : null;
+  const reconciledStatus = remoteThread
+    ? normalizeThreadStatus(remoteThread.status, thread.status ?? issue.status ?? "running")
+    : null;
+
+  markRunningIssueActivity(threadId, {
+    lastReconciledAt: now(),
+    reconcileAttempts: Number(meta.reconcileAttempts ?? 0) + 1,
+    lastActivityAt: meta.lastActivityAt
+  });
+
+  if (!reconciledStatus || reconciledStatus === "running") {
+    return;
+  }
+
+  if (reconciledStatus === "awaiting_input") {
+    updateIssueCard(activeIssueId, {
+      status: "awaiting_input",
+      last_event: "watchdog.awaiting_input"
+    });
+    updateProjectThreadSnapshot(threadId);
+    persistThreadById(threadId);
+    await publishThreadState(userId, threadId);
+    return;
+  }
+
+  if (reconciledStatus === "failed") {
+    updateIssueCard(activeIssueId, {
+      status: "failed",
+      progress: 0,
+      last_event: "watchdog.failed",
+      last_message: issue.last_message || "Codex 실행 상태를 재확인하는 중 실패로 판정되었습니다."
+    });
+    clearRunningIssueTracking(threadId);
+    updateProjectThreadSnapshot(threadId);
+    persistThreadById(threadId);
+    await publishThreadState(userId, threadId);
+    void processIssueQueue(userId, threadId);
+    return;
+  }
+
+  if (reconciledStatus === "idle" || reconciledStatus === "completed") {
+    const terminalStatus = reconciledStatus === "completed" ? "completed" : inferReconciledTerminalStatus(issue);
+    updateIssueCard(activeIssueId, {
+      status: terminalStatus,
+      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
+      last_event: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed"
+    });
+    clearRunningIssueTracking(threadId);
+    updateProjectThreadSnapshot(threadId);
+    persistThreadById(threadId);
+    await publishThreadState(userId, threadId);
+    void processIssueQueue(userId, threadId);
+  }
+}
+
+async function reconcileRunningIssues() {
+  if (activeIssueByThreadId.size === 0) {
+    return;
+  }
+
+  let remoteThreads = [];
+
+  try {
+    await appServer.ensureReady();
+    remoteThreads = await syncThreadListFromAppServer();
+  } catch (error) {
+    appServer.lastError = error.message;
+    return;
+  }
+
+  const remoteThreadsByCodexId = new Map(remoteThreads.map((thread) => [thread.id, thread]));
+
+  for (const [threadId] of activeIssueByThreadId.entries()) {
+    const owner = threadOwners.get(threadId);
+
+    if (!owner) {
+      continue;
+    }
+
+    await reconcileRunningIssue(owner, threadId, remoteThreadsByCodexId);
+  }
 }
 
 function listLocalThreads(userId) {
@@ -2650,7 +3005,7 @@ async function deleteProject(userId, payload = {}) {
 
     threadIssueIdsById.delete(threadId);
     pendingStartQueues.delete(threadId);
-    activeIssueByThreadId.delete(threadId);
+    clearRunningIssueTracking(threadId);
     deleteThreadState(normalized, threadId);
   }
 
@@ -2911,6 +3266,27 @@ async function subscribeRequests() {
     }
   })();
 
+  const threadIssueUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.update");
+
+  (async () => {
+    for await (const message of threadIssueUpdateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await updateThreadIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const threadIssueDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.delete");
 
   (async () => {
@@ -3016,6 +3392,10 @@ await subscribeRequests();
 setInterval(() => {
   void publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 }, 30000).unref();
+
+setInterval(() => {
+  void reconcileRunningIssues();
+}, RUNNING_ISSUE_WATCHDOG_INTERVAL_MS).unref();
 
 await publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 
