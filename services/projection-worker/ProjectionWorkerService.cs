@@ -16,6 +16,8 @@ public sealed class ProjectionWorkerService : BackgroundService
   private const string ProjectMemberTable = "project_members";
   private const string UserTable = "bridge_user_state";
   private const string ThreadTable = "thread_projection";
+  private const string ProjectThreadTable = "project_threads";
+  private const string ThreadIssueCardTable = "thread_issue_cards";
   private const string EventTable = "event_log";
 
   private readonly ILogger<ProjectionWorkerService> _logger;
@@ -97,6 +99,8 @@ public sealed class ProjectionWorkerService : BackgroundService
     await EnsureTableAsync(connection, tables, ProjectMemberTable);
     await EnsureTableAsync(connection, tables, UserTable);
     await EnsureTableAsync(connection, tables, ThreadTable);
+    await EnsureTableAsync(connection, tables, ProjectThreadTable);
+    await EnsureTableAsync(connection, tables, ThreadIssueCardTable);
     await EnsureTableAsync(connection, tables, EventTable);
   }
 
@@ -109,7 +113,8 @@ public sealed class ProjectionWorkerService : BackgroundService
       await UpsertBridgeNodeAsync(connection, @event);
       await UpsertProjectsAsync(connection, @event);
       await UpsertUserStateAsync(connection, @event);
-      await UpsertThreadProjectionAsync(connection, @event);
+      await UpsertProjectThreadsAsync(connection, @event);
+      await UpsertIssueCardsAsync(connection, @event);
     }
     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
     {
@@ -166,7 +171,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       current["projects"] = @event["payload"]?["projects"] ?? new JArray();
     }
 
-    if ((string?)@event["type"] == "bridge.threads.updated")
+    if ((string?)@event["type"] == "bridge.projectThreads.updated")
     {
       current["threads"] = @event["payload"]?["threads"] ?? new JArray();
     }
@@ -286,14 +291,14 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
   }
 
-  private async Task UpsertThreadProjectionAsync(RethinkConnection connection, JObject @event)
+  private async Task UpsertProjectThreadsAsync(RethinkConnection connection, JObject @event)
   {
     var thread = @event["payload"]?["thread"] as JObject;
-
     var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
     var bridgeId = @event.Value<string>("bridge_id");
     var eventType = @event.Value<string>("type");
     var projectedAt = @event.Value<string>("timestamp");
+    var projectId = @event["payload"]?["project_id"]?.Value<string>();
 
     if (thread?["id"] is not null)
     {
@@ -302,10 +307,11 @@ public sealed class ProjectionWorkerService : BackgroundService
       thread["bridge_id"] = bridgeId;
       thread["last_event_type"] = eventType;
       thread["projected_at"] = projectedAt;
-      await UpsertThreadDocumentAsync(connection, thread, projectedAt);
+      await UpsertThreadDocumentAsync(connection, ProjectThreadTable, thread, projectedAt);
+      await UpsertThreadDocumentAsync(connection, ThreadTable, new JObject(thread), projectedAt);
     }
 
-    if (eventType != "bridge.threads.updated")
+    if (eventType != "bridge.projectThreads.updated")
     {
       return;
     }
@@ -318,7 +324,8 @@ public sealed class ProjectionWorkerService : BackgroundService
         .Cast<string>(),
       StringComparer.Ordinal);
 
-    await DeleteMissingThreadsAsync(connection, loginId, bridgeId, threadIds);
+    await DeleteMissingThreadsAsync(connection, ProjectThreadTable, loginId, bridgeId, projectId, threadIds);
+    await DeleteMissingThreadsAsync(connection, ThreadTable, loginId, bridgeId, projectId, threadIds);
 
     if (threads is null)
     {
@@ -337,11 +344,62 @@ public sealed class ProjectionWorkerService : BackgroundService
       item["bridge_id"] = bridgeId;
       item["last_event_type"] = eventType;
       item["projected_at"] = projectedAt;
-      await UpsertThreadDocumentAsync(connection, item, projectedAt);
+      await UpsertThreadDocumentAsync(connection, ProjectThreadTable, item, projectedAt);
+      await UpsertThreadDocumentAsync(connection, ThreadTable, new JObject(item), projectedAt);
     }
   }
 
-  private async Task UpsertThreadDocumentAsync(RethinkConnection connection, JObject thread, string? projectedAt)
+  private async Task UpsertIssueCardsAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "bridge.threadIssues.updated")
+    {
+      return;
+    }
+
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var projectedAt = @event.Value<string>("timestamp");
+    var threadId = @event["payload"]?["thread_id"]?.Value<string>();
+    var issues = @event["payload"]?["issues"] as JArray;
+    var issueIds = new HashSet<string>(
+      (issues ?? []).OfType<JObject>()
+        .Select(item => item.Value<string>("id"))
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>(),
+      StringComparer.Ordinal);
+
+    await DeleteMissingIssueCardsAsync(connection, loginId, bridgeId, threadId, issueIds);
+
+    if (issues is null)
+    {
+      return;
+    }
+
+    foreach (var item in issues.OfType<JObject>())
+    {
+      var issueId = item.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(issueId))
+      {
+        continue;
+      }
+
+      item["login_id"] = loginId;
+      item["user_id"] = loginId;
+      item["bridge_id"] = bridgeId;
+      item["thread_id"] = item.Value<string>("thread_id") ?? threadId;
+      item["last_event_type"] = @event.Value<string>("type");
+      item["projected_at"] = projectedAt;
+
+      await _r.Db(_rethinkDb)
+        .Table(ThreadIssueCardTable)
+        .Insert(item)
+        .OptArg("conflict", "replace")
+        .RunResultAsync<object>(connection);
+    }
+  }
+
+  private async Task UpsertThreadDocumentAsync(RethinkConnection connection, string tableName, JObject thread, string? projectedAt)
   {
     var threadId = thread.Value<string>("id");
 
@@ -351,7 +409,7 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
 
     var existing = await _r.Db(_rethinkDb)
-      .Table(ThreadTable)
+      .Table(tableName)
       .Get(threadId)
       .RunResultAsync<JObject?>(connection);
 
@@ -363,7 +421,7 @@ public sealed class ProjectionWorkerService : BackgroundService
     PreserveTerminalStatus(existing, thread);
 
     await _r.Db(_rethinkDb)
-      .Table(ThreadTable)
+      .Table(tableName)
       .Insert(thread)
       .OptArg("conflict", "replace")
       .RunResultAsync<object>(connection);
@@ -469,8 +527,10 @@ public sealed class ProjectionWorkerService : BackgroundService
 
   private async Task DeleteMissingThreadsAsync(
     RethinkConnection connection,
+    string tableName,
     string? loginId,
     string? bridgeId,
+    string? projectId,
     HashSet<string> activeThreadIds)
   {
     if (string.IsNullOrWhiteSpace(loginId) || string.IsNullOrWhiteSpace(bridgeId))
@@ -478,7 +538,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var existingThreads = await _r.Db(_rethinkDb).Table(ThreadTable).RunResultAsync<JArray>(connection);
+    var existingThreads = await _r.Db(_rethinkDb).Table(tableName).RunResultAsync<JArray>(connection);
 
     foreach (var thread in existingThreads.OfType<JObject>())
     {
@@ -492,9 +552,44 @@ public sealed class ProjectionWorkerService : BackgroundService
       if (
         string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
         string.Equals(thread.Value<string>("login_id") ?? thread.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        (string.IsNullOrWhiteSpace(projectId) || string.Equals(thread.Value<string>("project_id"), projectId, StringComparison.Ordinal)) &&
         !activeThreadIds.Contains(threadId))
       {
-        await _r.Db(_rethinkDb).Table(ThreadTable).Get(threadId).Delete().RunResultAsync<object>(connection);
+        await _r.Db(_rethinkDb).Table(tableName).Get(threadId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+  }
+
+  private async Task DeleteMissingIssueCardsAsync(
+    RethinkConnection connection,
+    string? loginId,
+    string? bridgeId,
+    string? threadId,
+    HashSet<string> activeIssueIds)
+  {
+    if (string.IsNullOrWhiteSpace(loginId) || string.IsNullOrWhiteSpace(bridgeId) || string.IsNullOrWhiteSpace(threadId))
+    {
+      return;
+    }
+
+    var existingIssues = await _r.Db(_rethinkDb).Table(ThreadIssueCardTable).RunResultAsync<JArray>(connection);
+
+    foreach (var issue in existingIssues.OfType<JObject>())
+    {
+      var issueId = issue.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(issueId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(issue.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(issue.Value<string>("login_id") ?? issue.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        string.Equals(issue.Value<string>("thread_id"), threadId, StringComparison.Ordinal) &&
+        !activeIssueIds.Contains(issueId))
+      {
+        await _r.Db(_rethinkDb).Table(ThreadIssueCardTable).Get(issueId).Delete().RunResultAsync<object>(connection);
       }
     }
   }

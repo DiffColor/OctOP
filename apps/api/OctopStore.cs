@@ -11,6 +11,8 @@ public sealed class OctopStore : IAsyncDisposable
   private const string ProjectTable = "projects";
   private const string ProjectMemberTable = "project_members";
   private const string ThreadTable = "thread_projection";
+  private const string ProjectThreadTable = "project_threads";
+  private const string ThreadIssueCardTable = "thread_issue_cards";
 
   private readonly string _host;
   private readonly int _port;
@@ -67,6 +69,8 @@ public sealed class OctopStore : IAsyncDisposable
       await EnsureTableAsync(connection, tables, ProjectTable);
       await EnsureTableAsync(connection, tables, ProjectMemberTable);
       await EnsureTableAsync(connection, tables, ThreadTable);
+      await EnsureTableAsync(connection, tables, ProjectThreadTable);
+      await EnsureTableAsync(connection, tables, ThreadIssueCardTable);
       _storageEnsured = true;
     }
     finally

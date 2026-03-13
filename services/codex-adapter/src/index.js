@@ -3214,8 +3214,22 @@ createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/api/commands/ping") {
     try {
       const body = await readJsonBody(request);
-      const payload = await createQueuedIssue(userId, body);
-      return sendJson(response, 202, payload);
+      const projectId = String(body.project_id ?? ensureUserState(userId).projects[0]?.id ?? "").trim();
+      const threadId = ensureDefaultProjectThread(userId, projectId, "Main");
+      const created = await createThreadIssue(userId, {
+        ...body,
+        thread_id: threadId,
+        project_id: projectId
+      });
+      const started = await startThreadIssues(userId, {
+        thread_id: threadId,
+        issue_ids: [created.issue.id]
+      });
+      return sendJson(response, 202, {
+        accepted: true,
+        issue: created.issue,
+        issues: started.issues
+      });
     } catch (error) {
       return sendJson(response, 400, { error: error.message });
     }

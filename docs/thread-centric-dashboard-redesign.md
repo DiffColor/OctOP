@@ -355,7 +355,7 @@ OctOP를 `프로젝트 > thread > 이슈 카드` 구조로 재설계합니다.
 역할:
 
 - thread 이름 변경
-- `bridge.threads.updated` 발행
+- `bridge.projectThreads.updated` 발행
 
 ### 5. `deleteThread(userId, payload)`
 
@@ -374,7 +374,7 @@ OctOP를 `프로젝트 > thread > 이슈 카드` 구조로 재설계합니다.
 - `projects`
 - `project_threads`
 - `thread_issue_cards`
-- `thread_activity_feed`
+- `event_log`
 
 조회 기준:
 
@@ -493,67 +493,74 @@ OctOP를 `프로젝트 > thread > 이슈 카드` 구조로 재설계합니다.
 
 ### 데이터 모델
 
-- [ ] `project_threads` 테이블 정의
-- [ ] `thread_issue_cards` 테이블 정의
-- [ ] project-thread-card 관계가 명확히 저장되는지 확인
+- [x] `project_threads` 테이블 정의
+- [x] `thread_issue_cards` 테이블 정의
+- [x] project-thread-card 관계가 명확히 저장되는지 확인
 
 ### bridge / adapter
 
-- [ ] 프로젝트별 thread 조회 함수 추가
-- [ ] thread 생성 함수 추가
-- [ ] thread 이름 변경 함수 추가
-- [ ] thread 삭제 함수 추가
-- [ ] 기존 thread에 카드 추가 함수 구현
-- [ ] 카드 실행 시 기존 `threadId`에 `turn/start`가 들어가는지 확인
-- [ ] `thread.start`가 이슈 생성 시 다시 호출되지 않도록 차단
+- [x] 프로젝트별 thread 조회 함수 추가
+- [x] thread 생성 함수 추가
+- [x] thread 이름 변경 함수 추가
+- [x] thread 삭제 함수 추가
+- [x] 기존 thread에 카드 추가 함수 구현
+- [x] 카드 실행 시 기존 `threadId`에 `turn/start`가 들어가는지 확인
+- [x] `thread.start`가 이슈 생성 시 다시 호출되지 않도록 차단
+- [x] 로컬 bridge HTTP `ping` 경로도 thread 중심 경로로 정렬
 
 ### gateway
 
-- [ ] 프로젝트 하위 thread 조회 API 추가
-- [ ] thread create API 추가
-- [ ] thread rename API 추가
-- [ ] thread delete API 추가
-- [ ] thread 하위 issue list API 추가
-- [ ] thread 하위 issue create API 추가
+- [x] 프로젝트 하위 thread 조회 API 추가
+- [x] thread create API 추가
+- [x] thread rename API 추가
+- [x] thread delete API 추가
+- [x] thread 하위 issue list API 추가
+- [x] thread 하위 issue create API 추가
 
 ### projection / DB
 
-- [ ] `project_threads` projection 반영
-- [ ] `thread_issue_cards` projection 반영
-- [ ] `selectedThreadId` 기준 조회 API 준비
-- [ ] 새로고침 후 thread/card 상태 복원 확인
+- [x] `project_threads` projection 반영
+- [x] `thread_issue_cards` projection 반영
+- [x] `selectedThreadId` 기준 조회 API 준비
+- [x] 새로고침 후 thread/card 상태 복원 확인
+- [x] 새 이벤트명 `bridge.projectThreads.updated`, `bridge.threadIssues.updated` 기준으로 projection 정렬
 
 ### desktop dashboard
 
-- [ ] 좌측 프로젝트 아이콘 추가
-- [ ] 좌측 thread 아이콘 추가
-- [ ] 선택된 프로젝트 아래에 thread 목록 렌더링
-- [ ] thread 클릭 시 우측 칸반이 해당 thread로 바뀌는지 확인
-- [ ] 프로젝트와 thread의 시각적 계층이 명확한지 확인
-- [ ] thread 우클릭 메뉴 구현
-- [ ] `Rename` 동작 구현
-- [ ] `Delete` 동작 구현
-- [ ] 새 이슈 등록 시 현재 thread에 추가되는지 확인
-- [ ] 프로젝트만 선택되고 thread가 없을 때 이슈 등록 차단 또는 안내 처리
+- [x] 좌측 프로젝트 아이콘 추가
+- [x] 좌측 thread 아이콘 추가
+- [x] 선택된 프로젝트 아래에 thread 목록 렌더링
+- [x] thread 클릭 시 우측 칸반이 해당 thread로 바뀌는지 확인
+- [x] 프로젝트와 thread의 시각적 계층이 명확한지 확인
+- [x] thread 우클릭 메뉴 구현
+- [x] `Rename` 동작 구현
+- [x] `Delete` 동작 구현
+- [x] 새 이슈 등록 시 현재 thread에 추가되는지 확인
+- [x] 프로젝트만 선택되고 thread가 없을 때 이슈 등록 차단 또는 안내 처리
 
 ### 실행 로직
 
-- [ ] Preparation -> To Do -> Running 순차 실행이 thread 기준으로 동작하는지 확인
-- [ ] 같은 thread에 여러 카드가 누적 실행되는지 확인
-- [ ] 새 이슈 등록 후 새 thread가 생기지 않는지 확인
-- [ ] thread 삭제 시 실행 중 작업 차단 규칙 확인
+- [x] Preparation -> To Do -> Running 순차 실행이 thread 기준으로 동작하는지 확인
+- [x] 같은 thread에 여러 카드가 누적 실행되는지 확인
+- [x] 새 이슈 등록 후 새 thread가 생기지 않는지 확인
+- [x] thread 삭제 시 실행 중 작업 차단 규칙 확인
 
 ### UX 검증
 
-- [ ] 프로젝트 선택
-- [ ] thread 생성
-- [ ] thread 선택
-- [ ] 해당 thread 칸반 렌더링 확인
-- [ ] 이슈 등록
-- [ ] 같은 thread에 이어서 실행
-- [ ] thread rename
-- [ ] thread delete
-- [ ] 새로고침 후 프로젝트/thread/card 복원
+- [x] 프로젝트 선택
+- [x] thread 생성
+- [x] thread 선택
+- [x] 해당 thread 칸반 렌더링 확인
+- [x] 이슈 등록
+- [x] 같은 thread에 이어서 실행
+- [x] thread rename
+- [x] thread delete
+- [x] 새로고침 후 프로젝트/thread/card 복원
+
+### 추가 보완 기록
+
+- [x] 전체 thread 스냅샷 수신 시 대시보드 thread 목록이 중복되지 않도록 보정
+- [x] thread 목록/issue 목록의 라이브 이벤트와 초기 로드 기준을 동일한 thread 중심 모델로 정렬
 
 ---
 

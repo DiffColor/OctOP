@@ -157,6 +157,7 @@ const COPY = {
       sidebarEyebrow: "Projects",
       projectsCount: (count) => `${count} projects`,
       addProject: "Add",
+      addThread: "Add Thread",
       noProjects: "No projects.",
       queuedCount: (count) => `Queued ${count}`,
       searchPlaceholder: "Search issues",
@@ -179,6 +180,9 @@ const COPY = {
       prep: "Preparation",
       queue: "Queue",
       delete: "Delete",
+      rename: "Rename",
+      thread: "Thread",
+      newThread: "New Thread",
       logout: "Sign out",
       bridgeOk: "Bridge OK",
       bridgeDown: "Bridge Down",
@@ -284,6 +288,7 @@ const COPY = {
       sidebarEyebrow: "프로젝트",
       projectsCount: (count) => `${count}개 프로젝트`,
       addProject: "추가",
+      addThread: "쓰레드 추가",
       noProjects: "프로젝트가 없습니다.",
       queuedCount: (count) => `대기 ${count}`,
       searchPlaceholder: "이슈 검색",
@@ -306,11 +311,14 @@ const COPY = {
       prep: "준비",
       queue: "대기열",
       delete: "삭제",
+      rename: "이름 변경",
+      thread: "쓰레드",
+      newThread: "새 쓰레드",
       logout: "로그아웃",
       bridgeOk: "브릿지 연결",
       bridgeDown: "브릿지 끊김",
       projectsChip: (count) => `프로젝트 ${count}`,
-      threadsChip: (count) => `이슈 ${count}`,
+      threadsChip: (count) => `쓰레드 ${count}`,
       deleteProjectConfirm: "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다."
     },
     footer: {
@@ -553,14 +561,14 @@ async function apiRequest(path, options = {}) {
   return payload;
 }
 
-function normalizeThread(thread, fallbackProjectId = null) {
+function normalizeProjectThread(thread, fallbackProjectId = null) {
   if (!thread?.id) {
     return null;
   }
 
   return {
     id: thread.id,
-    title: thread.title ?? thread.name ?? "",
+    name: thread.name ?? thread.title ?? "",
     project_id: thread.project_id ?? fallbackProjectId,
     status: thread.status ?? "queued",
     progress: clampProgress(thread.progress),
@@ -570,16 +578,19 @@ function normalizeThread(thread, fallbackProjectId = null) {
     updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
     source: thread.source ?? "appServer",
     turn_id: thread.turn_id ?? null,
-    prompt: thread.prompt ?? "",
-    queue_position: Number.isFinite(Number(thread.queue_position)) ? Number(thread.queue_position) : null
+    prompt: "",
+    queue_position: null,
+    issue_count: Number.isFinite(Number(thread.issue_count)) ? Number(thread.issue_count) : 0,
+    queued_count: Number.isFinite(Number(thread.queued_count)) ? Number(thread.queued_count) : 0,
+    codex_thread_id: thread.codex_thread_id ?? null
   };
 }
 
-function mergeThreads(currentThreads, nextThreads) {
+function mergeProjectThreads(currentThreads, nextThreads) {
   const nextById = new Map();
 
   for (const thread of nextThreads) {
-    const normalized = normalizeThread(thread);
+    const normalized = normalizeProjectThread(thread);
 
     if (normalized) {
       nextById.set(normalized.id, normalized);
@@ -591,14 +602,86 @@ function mergeThreads(currentThreads, nextThreads) {
   );
 }
 
-function upsertThread(currentThreads, thread) {
-  const normalized = normalizeThread(thread);
+function replaceProjectThreadsForProject(currentThreads, nextThreads, projectId = "") {
+  const normalizedThreads = mergeProjectThreads([], nextThreads);
+
+  if (!projectId) {
+    return normalizedThreads;
+  }
+
+  return mergeProjectThreads(
+    currentThreads.filter((thread) => thread.project_id !== projectId),
+    normalizedThreads
+  );
+}
+
+function upsertProjectThread(currentThreads, thread) {
+  const normalized = normalizeProjectThread(thread);
 
   if (!normalized) {
     return currentThreads;
   }
 
   const next = [...currentThreads];
+  const index = next.findIndex((item) => item.id === normalized.id);
+
+  if (index === -1) {
+    next.unshift(normalized);
+  } else {
+    next[index] = {
+      ...next[index],
+      ...normalized
+    };
+  }
+
+  return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function normalizeIssue(issue, fallbackThreadId = null) {
+  if (!issue?.id) {
+    return null;
+  }
+
+  return {
+    id: issue.id,
+    thread_id: issue.thread_id ?? fallbackThreadId,
+    project_id: issue.project_id ?? null,
+    title: issue.title ?? "",
+    status: issue.status ?? "staged",
+    progress: clampProgress(issue.progress),
+    last_event: issue.last_event ?? "issue.created",
+    last_message: issue.last_message ?? "",
+    created_at: issue.created_at ?? new Date().toISOString(),
+    updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
+    prompt: issue.prompt ?? "",
+    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null
+  };
+}
+
+function mergeIssues(currentIssues, nextIssues) {
+  const nextById = new Map();
+
+  for (const issue of nextIssues) {
+    const normalized = normalizeIssue(issue);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
+
+  return [...nextById.values()].sort(
+    (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+  );
+}
+
+function upsertIssue(currentIssues, issue) {
+  const normalized = normalizeIssue(issue);
+
+  if (!normalized) {
+    return currentIssues;
+  }
+
+  const next = [...currentIssues];
   const index = next.findIndex((item) => item.id === normalized.id);
 
   if (index === -1) {
@@ -639,7 +722,11 @@ function buildMessagePreview(thread, language) {
 }
 
 function getThreadTitle(thread, language) {
-  return String(thread?.title ?? "").trim() || getCopy(language).fallback.untitledIssue;
+  return String(thread?.name ?? thread?.title ?? "").trim() || getCopy(language).fallback.untitledIssue;
+}
+
+function getIssueTitle(issue, language) {
+  return String(issue?.title ?? "").trim() || getCopy(language).fallback.untitledIssue;
 }
 
 function summarizeProjects(projects, language) {
@@ -675,7 +762,7 @@ function summarizeEvent(event, language) {
     event?.payload?.thread?.title ??
     event?.payload?.error ??
     event?.payload?.projects?.[0]?.name ??
-    event?.payload?.threads?.[0]?.title ??
+    event?.payload?.threads?.[0]?.name ??
     event?.type ??
     copy.fallback.bridgeUpdated
   );
@@ -809,19 +896,10 @@ function LoginPage({ language, initialLoginId, loading, error, onSubmit }) {
   );
 }
 
-function IssueComposer({ language, open, busy, projects, selectedProjectId, onClose, onSubmit }) {
+function IssueComposer({ language, open, busy, selectedProject, selectedThread, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [projectId, setProjectId] = useState(selectedProjectId ?? projects[0]?.id ?? "");
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    setProjectId(selectedProjectId ?? projects[0]?.id ?? "");
-  }, [open, projects, selectedProjectId]);
 
   useEffect(() => {
     if (!open) {
@@ -837,14 +915,13 @@ function IssueComposer({ language, open, busy, projects, selectedProjectId, onCl
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!prompt.trim() || !projectId) {
+    if (!prompt.trim() || !selectedThread?.id) {
       return;
     }
 
     await onSubmit({
       title: title.trim(),
-      prompt: prompt.trim(),
-      project_id: projectId
+      prompt: prompt.trim()
     });
   };
 
@@ -881,22 +958,10 @@ function IssueComposer({ language, open, busy, projects, selectedProjectId, onCl
             />
           </div>
 
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-project">
-              {copy.issueComposer.project}
-            </label>
-            <select
-              id="issue-project"
-              value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
-              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            >
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</p>
+            <p className="mt-2 text-sm font-medium text-white">{selectedProject?.name ?? copy.fallback.noSelection}</p>
+            <p className="mt-1 text-xs text-slate-500">{selectedThread?.name ?? copy.fallback.noBridge}</p>
           </div>
 
           <div>
@@ -1243,6 +1308,106 @@ function ProjectComposer({
   );
 }
 
+function ThreadContextMenu({ language, menuState, onRename, onDelete, onClose }) {
+  const copy = getCopy(language);
+
+  if (!menuState.open) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="close thread menu"
+        className="fixed inset-0 z-40 cursor-default"
+        onClick={onClose}
+      />
+      <div
+        className="fixed z-50 min-w-[10rem] overflow-hidden rounded-xl border border-slate-800 bg-slate-950/98 p-1.5 shadow-2xl shadow-slate-950/60"
+        style={{ left: menuState.x, top: menuState.y }}
+      >
+        <button
+          type="button"
+          onClick={onRename}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-slate-800"
+        >
+          {copy.board.rename}
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-rose-300 transition hover:bg-rose-500/10"
+        >
+          {copy.board.delete}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function SidebarThreadItem({
+  language,
+  thread,
+  active,
+  editing,
+  editingName,
+  onSelect,
+  onBeginRename,
+  onChangeRename,
+  onSubmitRename,
+  onCancelRename,
+  onContextMenu
+}) {
+  return (
+    <div
+      onContextMenu={(event) => onContextMenu(event, thread)}
+      className={`group ml-7 flex items-center gap-2 rounded-md px-2 py-2 transition ${
+        active ? "bg-sky-500/10 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+      }`}
+    >
+      <svg className="h-4 w-4 shrink-0 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path d="M8 10h8M8 14h5m6 6H5a2 2 0 01-2-2V8a2 2 0 012-2h3l2-2h4l2 2h3a2 2 0 012 2v10a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      </svg>
+      {editing ? (
+        <input
+          type="text"
+          autoFocus
+          value={editingName}
+          onChange={(event) => onChangeRename(event.target.value)}
+          onBlur={() => void onSubmitRename(thread)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void onSubmitRename(thread);
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancelRename();
+            }
+          }}
+          className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm text-white outline-none ring-1 ring-sky-400/20"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => onSelect(thread.id)}
+          onDoubleClick={() => onBeginRename(thread)}
+          className="min-w-0 flex-1 text-left"
+        >
+          <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium" />
+          <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+            <span>{thread.issue_count ?? 0}</span>
+            <span className="text-slate-700">•</span>
+            <span>{formatRelativeTime(thread.updated_at, language)}</span>
+          </div>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ThreadDetailModal({ language, open, loading, thread, messages, onClose }) {
   const copy = getCopy(language);
   if (!open) {
@@ -1341,7 +1506,7 @@ function PrepThreadCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-              <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium text-slate-100" />
+              <OverflowRevealText value={getIssueTitle(thread, language)} className="text-sm font-medium text-slate-100" />
               <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
             </button>
             <button
@@ -1393,7 +1558,7 @@ function TodoThreadCard({
     >
       <div className="flex items-start justify-between gap-3">
         <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-          <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium text-slate-100" />
+          <OverflowRevealText value={getIssueTitle(thread, language)} className="text-sm font-medium text-slate-100" />
           <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
         </button>
         <div className="flex shrink-0 items-center gap-2">
@@ -1475,7 +1640,7 @@ function ThreadCard({ language, thread, selected, onSelect }) {
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
-      <OverflowRevealText value={getThreadTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
+      <OverflowRevealText value={getIssueTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
       <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
       <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
@@ -1505,7 +1670,7 @@ function CompletedThreadCard({ language, thread, selected, onSelect, onOpen }) {
     >
       <div className="flex items-center gap-3">
         <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-        <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
+        <OverflowRevealText value={getIssueTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
         <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">{copy.status.completed}</span>
         <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at, language)}</span>
       </div>
@@ -1520,16 +1685,18 @@ function MainPage({
   bridges,
   status,
   projects,
-  threads,
+  projectThreads,
+  issues,
   workspaceRoots,
   folderState,
   folderLoading,
   selectedWorkspacePath,
   selectedBridgeId,
   selectedProjectId,
-  selectedThreadId,
-  selectedThreadIds,
-  queueOrderIds,
+  selectedProjectThreadId,
+  selectedIssueId,
+  selectedIssueIds,
+  issueQueueOrderIds,
   detailState,
   search,
   loadingState,
@@ -1538,18 +1705,25 @@ function MainPage({
   startBusy,
   projectComposerOpen,
   composerOpen,
+  threadMenuState,
   onSearchChange,
   onSelectBridge,
   onSelectProject,
-  onSelectThread,
-  onToggleThreadSelection,
-  onStartSelectedThreads,
-  onOpenCompletedThread,
-  onDeleteThread,
+  onSelectProjectThread,
+  onSelectIssue,
+  onToggleIssueSelection,
+  onStartSelectedIssues,
+  onOpenCompletedIssue,
+  onDeleteIssue,
   onDeleteProject,
   onRenameProject,
-  onDragQueueThread,
-  onDragPrepThreads,
+  onCreateThread,
+  onRenameThread,
+  onDeleteThread,
+  onOpenThreadMenu,
+  onCloseThreadMenu,
+  onDragQueueIssue,
+  onDragPrepIssues,
   onOpenProjectComposer,
   onOpenComposer,
   onCloseProjectComposer,
@@ -1570,9 +1744,11 @@ function MainPage({
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
-  const projectScopedThreads = threads.filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId);
+  const scopedProjectThreads = projectThreads.filter(
+    (thread) => !selectedProjectId || thread.project_id === selectedProjectId
+  );
   const keyword = search.trim().toLowerCase();
-  const filteredThreads = projectScopedThreads.filter((thread) => {
+  const filteredIssues = issues.filter((thread) => {
     return (
       !keyword ||
       thread.title.toLowerCase().includes(keyword) ||
@@ -1580,16 +1756,15 @@ function MainPage({
       String(thread.last_message ?? "").toLowerCase().includes(keyword)
     );
   });
-  const selectedThread =
-    filteredThreads.find((thread) => thread.id === selectedThreadId) ??
-    projectScopedThreads.find((thread) => thread.id === selectedThreadId) ??
+  const selectedProjectThread =
+    scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
     null;
 
   const columns = COLUMN_ORDER.map((column) => {
-    const columnThreads = filteredThreads.filter((thread) => getStatusMeta(thread.status).column === column.id);
+    const columnThreads = filteredIssues.filter((thread) => getStatusMeta(thread.status).column === column.id);
 
     if (column.id === "todo") {
-      const orderedIds = queueOrderIds.filter((threadId) => columnThreads.some((thread) => thread.id === threadId));
+      const orderedIds = issueQueueOrderIds.filter((threadId) => columnThreads.some((thread) => thread.id === threadId));
       const trailingIds = columnThreads
         .map((thread) => thread.id)
         .filter((threadId) => !orderedIds.includes(threadId));
@@ -1607,9 +1782,11 @@ function MainPage({
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
   }).filter((column) => column.id !== "review" || column.threads.length > 0);
-  const prepSelectedCount = filteredThreads.filter(
-    (thread) => selectedThreadIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
+  const prepSelectedCount = filteredIssues.filter(
+    (thread) => selectedIssueIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
+  const [editingThreadId, setEditingThreadId] = useState("");
+  const [editingThreadName, setEditingThreadName] = useState("");
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -1633,6 +1810,31 @@ function MainPage({
 
     if (accepted) {
       cancelProjectRename();
+    }
+  };
+
+  const beginThreadRename = (thread) => {
+    setEditingThreadId(thread.id);
+    setEditingThreadName(thread.name);
+  };
+
+  const cancelThreadRename = () => {
+    setEditingThreadId("");
+    setEditingThreadName("");
+  };
+
+  const submitThreadRename = async (thread) => {
+    const nextName = editingThreadName.trim();
+
+    if (!nextName || nextName === thread.name) {
+      cancelThreadRename();
+      return;
+    }
+
+    const accepted = await onRenameThread(thread.id, nextName);
+
+    if (accepted) {
+      cancelThreadRename();
     }
   };
 
@@ -1664,6 +1866,14 @@ function MainPage({
                 >
                   {copy.board.addProject}
                 </button>
+                <button
+                  type="button"
+                  onClick={onCreateThread}
+                  disabled={!selectedProject}
+                  className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {copy.board.addThread}
+                </button>
               </div>
 
               <div className="custom-scrollbar max-h-[calc(100vh-15rem)] space-y-1 overflow-y-auto px-2">
@@ -1672,19 +1882,24 @@ function MainPage({
                 ) : (
                   projects.map((project) => {
                     const active = project.id === selectedProjectId;
-                    const projectThreads = threads.filter((thread) => thread.project_id === project.id);
-                    const queuedCount = projectThreads.filter(
-                      (thread) => getStatusMeta(thread.status).column === "todo"
-                    ).length;
+                    const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
+                    const queuedCount = sidebarThreads.reduce(
+                      (sum, thread) => sum + (thread.queued_count ?? 0),
+                      0
+                    );
 
                     return (
-                      <div
-                        key={project.id}
-                        className={`w-full rounded-md px-3 py-3 transition ${
-                          active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
+                      <div key={project.id} className="rounded-md px-1 py-1">
+                        <div
+                          className={`w-full rounded-md px-3 py-3 transition ${
+                            active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 flex-1 items-center gap-2">
+                              <svg className="h-4 w-4 shrink-0 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                              </svg>
                           {editingProjectId === project.id ? (
                             <input
                               type="text"
@@ -1715,9 +1930,10 @@ function MainPage({
                               <OverflowRevealText value={project.name} className="text-sm font-medium" />
                             </button>
                           )}
+                            </div>
                           <div className="flex items-center gap-2">
                             <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
-                              {projectThreads.length}
+                              {sidebarThreads.length}
                             </span>
                             <button
                               type="button"
@@ -1736,6 +1952,27 @@ function MainPage({
                           <span className="text-slate-700">•</span>
                           <span>{copy.board.queuedCount(queuedCount)}</span>
                         </div>
+                        {active ? (
+                          <div className="mt-2 space-y-1">
+                            {sidebarThreads.map((thread) => (
+                              <SidebarThreadItem
+                                key={thread.id}
+                                language={language}
+                                thread={thread}
+                                active={thread.id === selectedProjectThreadId}
+                                editing={editingThreadId === thread.id}
+                                editingName={editingThreadName}
+                                onSelect={onSelectProjectThread}
+                                onBeginRename={beginThreadRename}
+                                onChangeRename={setEditingThreadName}
+                                onSubmitRename={submitThreadRename}
+                                onCancelRename={cancelThreadRename}
+                                onContextMenu={onOpenThreadMenu}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                       </div>
                     );
                   })
@@ -1751,6 +1988,8 @@ function MainPage({
                   <span className="text-slate-500">{copy.board.project}</span>
                   <span className="text-slate-700">/</span>
                   <OverflowRevealText value={selectedProject?.name ?? copy.fallback.noSelection} className="font-medium text-white" />
+                  <span className="text-slate-700">/</span>
+                  <OverflowRevealText value={selectedProjectThread?.name ?? copy.fallback.noSelection} className="font-medium text-sky-200" />
                 </div>
                 <OverflowRevealText
                   value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge}
@@ -1800,7 +2039,7 @@ function MainPage({
 
                 <button
                   type="button"
-                  onClick={onStartSelectedThreads}
+                  onClick={onStartSelectedIssues}
                   disabled={prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -1810,7 +2049,7 @@ function MainPage({
                 <button
                   type="button"
                   onClick={onOpenComposer}
-                  disabled={projects.length === 0}
+                  disabled={!selectedProjectThread}
                   className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {copy.board.newIssue}
@@ -1856,12 +2095,30 @@ function MainPage({
                     )}
                   </select>
                 </label>
+                <label className="block">
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.thread}</span>
+                  <select
+                    value={selectedProjectThreadId}
+                    onChange={(event) => onSelectProjectThread(event.target.value)}
+                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                  >
+                    {scopedProjectThreads.length === 0 ? (
+                      <option value="">{copy.board.noProjectOption}</option>
+                    ) : (
+                      scopedProjectThreads.map((thread) => (
+                        <option key={thread.id} value={thread.id}>
+                          {thread.name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
               </div>
             </div>
 
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-xs text-slate-500 md:px-8">
               <div className="flex items-center gap-3">
-                <span>{selectedProject ? copy.board.issueCount(projectScopedThreads.length) : copy.board.selectProject}</span>
+                <span>{selectedProjectThread ? copy.board.issueCount(filteredIssues.length) : copy.board.selectProject}</span>
                 <span className="text-slate-700">•</span>
                 <span>{copy.board.prepHint}</span>
               </div>
@@ -1917,12 +2174,12 @@ function MainPage({
                                 key={thread.id}
                                 language={language}
                                 thread={thread}
-                                selected={selectedThreadIds.includes(thread.id)}
-                                active={thread.id === selectedThreadId}
-                                onSelect={onSelectThread}
-                                onToggle={onToggleThreadSelection}
-                                onDelete={onDeleteThread}
-                                onDragStart={onDragPrepThreads.start}
+                                selected={selectedIssueIds.includes(thread.id)}
+                                active={thread.id === selectedIssueId}
+                                onSelect={onSelectIssue}
+                                onToggle={onToggleIssueSelection}
+                                onDelete={onDeleteIssue}
+                                onDragStart={onDragPrepIssues.start}
                               />
                             );
                           }
@@ -1933,12 +2190,12 @@ function MainPage({
                                 key={thread.id}
                                 language={language}
                                 thread={thread}
-                                active={thread.id === selectedThreadId}
-                                onSelect={onSelectThread}
-                                onDelete={onDeleteThread}
-                                onDragStart={onDragQueueThread.start}
-                                onDragOver={onDragQueueThread.over}
-                                onDrop={onDragQueueThread.drop}
+                                active={thread.id === selectedIssueId}
+                                onSelect={onSelectIssue}
+                                onDelete={onDeleteIssue}
+                                onDragStart={onDragQueueIssue.start}
+                                onDragOver={onDragQueueIssue.over}
+                                onDrop={onDragQueueIssue.drop}
                               />
                             );
                           }
@@ -1949,9 +2206,9 @@ function MainPage({
                                 key={thread.id}
                                 language={language}
                                 thread={thread}
-                                selected={thread.id === selectedThreadId}
-                                onSelect={onSelectThread}
-                                onOpen={onOpenCompletedThread}
+                                selected={thread.id === selectedIssueId}
+                                onSelect={onSelectIssue}
+                                onOpen={onOpenCompletedIssue}
                               />
                             );
                           }
@@ -1961,8 +2218,8 @@ function MainPage({
                               key={thread.id}
                               language={language}
                               thread={thread}
-                              selected={thread.id === selectedThreadId}
-                              onSelect={onSelectThread}
+                              selected={thread.id === selectedIssueId}
+                              onSelect={onSelectIssue}
                             />
                           );
                         })
@@ -2008,10 +2265,7 @@ function MainPage({
               <span className="text-slate-600">/</span>
               <span>{session.loginId}</span>
               <span className="text-slate-600">/</span>
-              <OverflowRevealText
-                value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge}
-                className="max-w-[18rem]"
-              />
+              <OverflowRevealText value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge} className="max-w-[18rem]" />
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -2024,7 +2278,7 @@ function MainPage({
                 {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
               </span>
               <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.projectsChip(projects.length)}</span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(threads.length)}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(projectThreads.length)}</span>
               <button
                 type="button"
                 onClick={onLogout}
@@ -2041,8 +2295,8 @@ function MainPage({
         language={language}
         open={composerOpen}
         busy={issueBusy}
-        projects={projects}
-        selectedProjectId={selectedProjectId}
+        selectedProject={selectedProject}
+        selectedThread={selectedProjectThread}
         onClose={onCloseComposer}
         onSubmit={onSubmitIssue}
       />
@@ -2068,6 +2322,23 @@ function MainPage({
         messages={detailState.messages}
         onClose={onCloseDetail}
       />
+      <ThreadContextMenu
+        language={language}
+        menuState={threadMenuState}
+        onRename={() => {
+          onCloseThreadMenu();
+          if (threadMenuState.thread) {
+            beginThreadRename(threadMenuState.thread);
+          }
+        }}
+        onDelete={() => {
+          onCloseThreadMenu();
+          if (threadMenuState.thread) {
+            void onDeleteThread(threadMenuState.thread.id);
+          }
+        }}
+        onClose={onCloseThreadMenu}
+      />
     </div>
   );
 }
@@ -2087,18 +2358,26 @@ export default function App() {
     updated_at: null
   });
   const [projects, setProjects] = useState([]);
-  const [threads, setThreads] = useState([]);
+  const [projectThreads, setProjectThreads] = useState([]);
+  const [issues, setIssues] = useState([]);
   const [workspaceRoots, setWorkspaceRoots] = useState([]);
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
   const [folderLoading, setFolderLoading] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
-  const [selectedThreadId, setSelectedThreadId] = useState("");
-  const [selectedThreadIds, setSelectedThreadIds] = useState([]);
-  const [queueOrderIds, setQueueOrderIds] = useState([]);
-  const [draggingThreadId, setDraggingThreadId] = useState("");
-  const [draggingPrepThreadIds, setDraggingPrepThreadIds] = useState([]);
+  const [selectedProjectThreadId, setSelectedProjectThreadId] = useState("");
+  const [selectedIssueId, setSelectedIssueId] = useState("");
+  const [selectedIssueIds, setSelectedIssueIds] = useState([]);
+  const [issueQueueOrderIds, setIssueQueueOrderIds] = useState([]);
+  const [draggingIssueId, setDraggingIssueId] = useState("");
+  const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
+  const [threadMenuState, setThreadMenuState] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+    thread: null
+  });
   const [detailState, setDetailState] = useState({
     open: false,
     loading: false,
@@ -2143,7 +2422,8 @@ export default function App() {
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
       setProjects([]);
-      setThreads([]);
+      setProjectThreads([]);
+      setIssues([]);
       setStatus({
         app_server: {
           connected: false,
@@ -2159,21 +2439,15 @@ export default function App() {
     setLoadingState("loading");
 
     try {
-      const [nextStatus, nextProjects, nextThreads] = await Promise.all([
+      const [nextStatus, nextProjects] = await Promise.all([
         apiRequest(
           `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         ),
-        apiRequest(
-          `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        ),
-        apiRequest(
-          `/api/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        )
+        apiRequest(`/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`)
       ]);
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
-      setThreads(mergeThreads([], nextThreads.threads ?? []));
       setSelectedProjectId((current) => {
         if (current && nextProjects.projects?.some((project) => project.id === current)) {
           return current;
@@ -2181,7 +2455,8 @@ export default function App() {
 
         return nextProjects.projects?.[0]?.id || "";
       });
-      setSelectedThreadId((current) => current || nextThreads.threads?.[0]?.id || "");
+      setProjectThreads([]);
+      setIssues([]);
       setLoadingState("ready");
     } catch (error) {
       setLoadingState("error");
@@ -2195,6 +2470,34 @@ export default function App() {
         ...current
       ].slice(0, 20));
     }
+  }
+
+  async function loadProjectThreads(sessionArg, bridgeId, projectId) {
+    if (!sessionArg?.loginId || !bridgeId || !projectId) {
+      setProjectThreads([]);
+      return [];
+    }
+
+    const payload = await apiRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+    const nextThreads = mergeProjectThreads([], payload?.threads ?? []);
+    setProjectThreads((current) => replaceProjectThreadsForProject(current, nextThreads, projectId));
+    return nextThreads;
+  }
+
+  async function loadThreadIssues(sessionArg, bridgeId, threadId) {
+    if (!sessionArg?.loginId || !bridgeId || !threadId) {
+      setIssues([]);
+      return [];
+    }
+
+    const payload = await apiRequest(
+      `/api/threads/${encodeURIComponent(threadId)}/issues?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+    const nextIssues = mergeIssues([], payload?.issues ?? []);
+    setIssues(nextIssues);
+    return nextIssues;
   }
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
@@ -2285,7 +2588,8 @@ export default function App() {
           payload?.payload?.thread?.title ??
           payload?.payload?.error ??
           payload?.payload?.projects?.[0]?.name ??
-          payload?.payload?.threads?.[0]?.title ??
+          payload?.payload?.threads?.[0]?.name ??
+          payload?.payload?.issues?.[0]?.title ??
           payload?.type;
 
         appendEvent(payload.type, summary);
@@ -2308,22 +2612,39 @@ export default function App() {
           return;
         }
 
-        if (payload.type === "bridge.threads.updated") {
-          const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
-          setThreads((current) => {
-            if (nextThreads.length === 0 && current.length > 0) {
+        if (payload.type === "bridge.projectThreads.updated") {
+          const nextThreads = mergeProjectThreads([], payload.payload?.threads ?? []);
+          const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? "";
+          setProjectThreads((current) => replaceProjectThreadsForProject(current, nextThreads, projectId));
+          setSelectedProjectThreadId((current) => {
+            if (current && nextThreads.some((thread) => thread.id === current)) {
               return current;
             }
 
-            return nextThreads;
+            return nextThreads[0]?.id || "";
           });
-          setSelectedThreadId((current) => current || nextThreads[0]?.id || "");
+          return;
+        }
+
+        if (payload.type === "bridge.threadIssues.updated") {
+          const targetThreadId = payload.payload?.thread_id ?? "";
+
+          if (targetThreadId && targetThreadId !== selectedProjectThreadId) {
+            return;
+          }
+
+          const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
+          setIssues(nextIssues);
           return;
         }
 
         if (payload.payload?.thread) {
-          setThreads((current) => upsertThread(current, payload.payload.thread));
-          setSelectedThreadId((current) => current || payload.payload.thread.id);
+          setProjectThreads((current) => upsertProjectThread(current, payload.payload.thread));
+          return;
+        }
+
+        if (payload.payload?.issue) {
+          setIssues((current) => upsertIssue(current, payload.payload.issue));
         }
       } catch {
         // ignore malformed event payload
@@ -2337,7 +2658,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, session, selectedBridgeId]);
+  }, [copy.alerts.sseReconnect, session, selectedBridgeId, selectedProjectThreadId]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -2369,19 +2690,28 @@ export default function App() {
 
   useEffect(() => {
     setSelectedProjectId("");
-    setSelectedThreadId("");
-    setSelectedThreadIds([]);
-    setQueueOrderIds([]);
-    setDraggingThreadId("");
-    setDraggingPrepThreadIds([]);
+    setSelectedProjectThreadId("");
+    setSelectedIssueId("");
+    setSelectedIssueIds([]);
+    setIssueQueueOrderIds([]);
+    setDraggingIssueId("");
+    setDraggingPrepIssueIds([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
+    setProjectThreads([]);
+    setIssues([]);
     setDetailState({
       open: false,
       loading: false,
       thread: null,
       messages: []
+    });
+    setThreadMenuState({
+      open: false,
+      x: 0,
+      y: 0,
+      thread: null
     });
   }, [selectedBridgeId]);
 
@@ -2392,18 +2722,41 @@ export default function App() {
   }, [projects, selectedProjectId]);
 
   useEffect(() => {
-    if (!selectedThreadId && threads.length > 0) {
-      setSelectedThreadId(threads[0].id);
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      setProjectThreads([]);
+      setSelectedProjectThreadId("");
       return;
     }
 
-    if (selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId)) {
-      setSelectedThreadId(threads[0]?.id ?? "");
-    }
-  }, [selectedThreadId, threads]);
+    void loadProjectThreads(session, selectedBridgeId, selectedProjectId);
+  }, [session, selectedBridgeId, selectedProjectId]);
 
   useEffect(() => {
-    const todoIds = threads
+    const scopedThreads = projectThreads.filter(
+      (thread) => !selectedProjectId || thread.project_id === selectedProjectId
+    );
+
+    if (!selectedProjectId) {
+      setSelectedProjectThreadId("");
+      return;
+    }
+
+    if (!selectedProjectThreadId || !scopedThreads.some((thread) => thread.id === selectedProjectThreadId)) {
+      setSelectedProjectThreadId(scopedThreads[0]?.id ?? "");
+    }
+  }, [selectedProjectId, selectedProjectThreadId, projectThreads]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+      setIssues([]);
+      return;
+    }
+
+    void loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
+  }, [session, selectedBridgeId, selectedProjectThreadId]);
+
+  useEffect(() => {
+    const todoIds = issues
       .filter((thread) => getStatusMeta(thread.status).column === "todo")
       .sort((left, right) => {
         const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
@@ -2417,48 +2770,33 @@ export default function App() {
       })
       .map((thread) => thread.id);
 
-    setQueueOrderIds((current) => {
+    setIssueQueueOrderIds((current) => {
       const preserved = current.filter((threadId) => todoIds.includes(threadId));
       const appended = todoIds.filter((threadId) => !preserved.includes(threadId));
       return [...preserved, ...appended];
     });
-    setSelectedThreadIds((current) => current.filter((threadId) => threads.some((thread) => thread.id === threadId)));
-  }, [threads]);
+    setSelectedIssueIds((current) => current.filter((threadId) => issues.some((thread) => thread.id === threadId)));
+  }, [issues]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (!selectedProjectThreadId) {
+      setSelectedIssueIds([]);
+      setSelectedIssueId("");
       return;
     }
 
-    const projectThreads = threads.filter((thread) => thread.project_id === selectedProjectId);
-
-    if (projectThreads.length === 0) {
-      setSelectedThreadId("");
-      return;
-    }
-
-    if (!projectThreads.some((thread) => thread.id === selectedThreadId)) {
-      setSelectedThreadId(projectThreads[0].id);
-    }
-  }, [selectedProjectId, selectedThreadId, threads]);
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setSelectedThreadIds([]);
-      return;
-    }
-
-    setSelectedThreadIds((current) =>
+    setSelectedIssueIds((current) =>
       current.filter((threadId) =>
-        threads.some(
+        issues.some(
           (thread) =>
             thread.id === threadId &&
-            thread.project_id === selectedProjectId &&
+            thread.thread_id === selectedProjectThreadId &&
             getStatusMeta(thread.status).column === "prep"
         )
       )
     );
-  }, [selectedProjectId, threads]);
+    setSelectedIssueId((current) => (current && issues.some((issue) => issue.id === current) ? current : ""));
+  }, [selectedProjectThreadId, issues]);
 
   const handleLogin = async ({ loginId, password, rememberDevice }) => {
     setLoginState({ loading: true, error: "" });
@@ -2495,27 +2833,35 @@ export default function App() {
     setSession(null);
     setBridges([]);
     setProjects([]);
-    setThreads([]);
+    setProjectThreads([]);
+    setIssues([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
     setRecentEvents([]);
     setSelectedProjectId("");
-    setSelectedThreadId("");
-    setSelectedThreadIds([]);
-    setQueueOrderIds([]);
-    setDraggingThreadId("");
+    setSelectedProjectThreadId("");
+    setSelectedIssueId("");
+    setSelectedIssueIds([]);
+    setIssueQueueOrderIds([]);
+    setDraggingIssueId("");
     setDetailState({
       open: false,
       loading: false,
       thread: null,
       messages: []
     });
+    setThreadMenuState({
+      open: false,
+      x: 0,
+      y: 0,
+      thread: null
+    });
     setSearch("");
   };
 
   const handleCreateIssue = async (payload) => {
-    if (!session?.loginId) {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
       return;
     }
 
@@ -2523,16 +2869,15 @@ export default function App() {
 
     try {
       const response = await apiRequest(
-        `/api/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
         }
       );
 
-      if (response?.thread) {
-        setThreads((current) => upsertThread(current, response.thread));
-        setSelectedThreadId(response.thread.id);
+      if (response?.issue) {
+        setIssues((current) => upsertIssue(current, response.issue));
       }
 
       setComposerOpen(false);
@@ -2551,28 +2896,29 @@ export default function App() {
     }
   };
 
-  const handleToggleThreadSelection = (threadId) => {
-    const thread = threads.find((item) => item.id === threadId);
+  const handleToggleIssueSelection = (threadId) => {
+    const thread = issues.find((item) => item.id === threadId);
 
     if (!thread || getStatusMeta(thread.status).column !== "prep") {
       return;
     }
 
-    setSelectedThreadIds((current) =>
+    setSelectedIssueIds((current) =>
       current.includes(threadId) ? current.filter((item) => item !== threadId) : [...current, threadId]
     );
   };
 
-  const handleStartSelectedThreads = async () => {
-    await movePrepThreadsToTodo(selectedThreadIds);
+  const handleStartSelectedIssues = async () => {
+    await movePrepIssuesToTodo(selectedIssueIds);
   };
 
-  const handleOpenCompletedThread = async (threadId) => {
+  const handleOpenCompletedIssue = async (threadId) => {
     if (!session?.loginId || !selectedBridgeId || !threadId) {
       return;
     }
 
-    const thread = threads.find((item) => item.id === threadId) ?? null;
+    const thread = issues.find((item) => item.id === threadId) ?? null;
+    setSelectedIssueId(threadId);
     setDetailState({
       open: true,
       loading: true,
@@ -2582,12 +2928,12 @@ export default function App() {
 
     try {
       const payload = await apiRequest(
-        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        `/api/issues/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
       );
       setDetailState({
         open: true,
         loading: false,
-        thread: payload.thread ?? thread,
+        thread: payload.issue ?? thread,
         messages: payload.messages ?? []
       });
     } catch (error) {
@@ -2607,56 +2953,50 @@ export default function App() {
     }
   };
 
-  const handleDragQueueThread = {
+  const handleDragQueueIssue = {
     start: (threadId) => {
-      setDraggingThreadId(threadId);
-      setDraggingPrepThreadIds([]);
-      setSelectedThreadId(threadId);
+      setDraggingIssueId(threadId);
+      setDraggingPrepIssueIds([]);
     },
     over: () => {},
     drop: (targetId) => {
-      if (draggingPrepThreadIds.length > 0) {
-        void movePrepThreadsToTodo(draggingPrepThreadIds, targetId);
+      if (draggingPrepIssueIds.length > 0) {
+        void movePrepIssuesToTodo(draggingPrepIssueIds, targetId);
         return;
       }
 
-      const nextOrder = reorderIds(queueOrderIds, draggingThreadId, targetId);
-      setQueueOrderIds(nextOrder);
-      setDraggingThreadId("");
+      const nextOrder = reorderIds(issueQueueOrderIds, draggingIssueId, targetId);
+      setIssueQueueOrderIds(nextOrder);
+      setDraggingIssueId("");
 
-      if (!session?.loginId || !selectedBridgeId) {
+      if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
         return;
       }
 
-      const projectQueueIds = nextOrder.filter((threadId) => {
-        const thread = threads.find((item) => item.id === threadId);
-        return (
-          thread &&
-          thread.project_id === selectedProjectId &&
-          getStatusMeta(thread.status).column === "todo"
-        );
-      });
+      const projectQueueIds = nextOrder.filter((threadId) =>
+        issues.some((item) => item.id === threadId && item.thread_id === selectedProjectThreadId)
+      );
 
       void (async () => {
         try {
           const response = await apiRequest(
-            `/api/threads/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
             {
               method: "POST",
               body: JSON.stringify({
-                thread_ids: projectQueueIds
+                issue_ids: projectQueueIds
               })
             }
           );
 
-          if (Array.isArray(response?.threads)) {
-            setThreads(mergeThreads([], response.threads));
+          if (Array.isArray(response?.issues)) {
+            setIssues(mergeIssues([], response.issues));
           }
         } catch (error) {
           setRecentEvents((current) => [
             {
               id: createId(),
-              type: "threads.reorder.failed",
+              type: "issues.reorder.failed",
               timestamp: new Date().toISOString(),
               summary: error.message
             },
@@ -2667,22 +3007,22 @@ export default function App() {
     }
   };
 
-  const movePrepThreadsToTodo = async (threadIds, targetId = "") => {
-    if (!session?.loginId || !selectedBridgeId) {
+  const movePrepIssuesToTodo = async (threadIds, targetId = "") => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
       return;
     }
 
     const queuedThreadIds = threadIds.filter((threadId) => {
-      const thread = threads.find((item) => item.id === threadId);
+      const thread = issues.find((item) => item.id === threadId);
       return (
         thread &&
-        thread.project_id === selectedProjectId &&
+        thread.thread_id === selectedProjectThreadId &&
         getStatusMeta(thread.status).column === "prep"
       );
     });
 
     if (queuedThreadIds.length === 0) {
-      setDraggingPrepThreadIds([]);
+      setDraggingPrepIssueIds([]);
       return;
     }
 
@@ -2690,26 +3030,25 @@ export default function App() {
 
     try {
       const response = await apiRequest(
-        `/api/threads/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify({
-            thread_ids: queuedThreadIds
+            issue_ids: queuedThreadIds
           })
         }
       );
 
-      const nextThreads = Array.isArray(response?.threads) ? mergeThreads([], response.threads) : [];
+      const nextThreads = Array.isArray(response?.issues) ? mergeIssues([], response.issues) : [];
 
       if (nextThreads.length > 0) {
-        setThreads(nextThreads);
+        setIssues(nextThreads);
       }
 
       if (targetId && nextThreads.length > 0) {
         const visibleTodoIds = nextThreads
           .filter(
-            (thread) =>
-              thread.project_id === selectedProjectId && getStatusMeta(thread.status).column === "todo"
+            (thread) => thread.thread_id === selectedProjectThreadId && getStatusMeta(thread.status).column === "todo"
           )
           .sort((left, right) => {
             const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
@@ -2731,31 +3070,31 @@ export default function App() {
 
           if (targetIndex >= 0) {
             reorderedIds.splice(targetIndex, 0, ...insertedIds);
-            setQueueOrderIds(reorderedIds);
+            setIssueQueueOrderIds(reorderedIds);
 
             const reorderResponse = await apiRequest(
-              `/api/threads/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+              `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
               {
                 method: "POST",
                 body: JSON.stringify({
-                  thread_ids: reorderedIds
+                  issue_ids: reorderedIds
                 })
               }
             );
 
-            if (Array.isArray(reorderResponse?.threads)) {
-              setThreads(mergeThreads([], reorderResponse.threads));
+            if (Array.isArray(reorderResponse?.issues)) {
+              setIssues(mergeIssues([], reorderResponse.issues));
             }
           }
         }
       }
 
-      setSelectedThreadIds((current) => current.filter((threadId) => !queuedThreadIds.includes(threadId)));
+      setSelectedIssueIds((current) => current.filter((threadId) => !queuedThreadIds.includes(threadId)));
     } catch (error) {
       setRecentEvents((current) => [
         {
           id: createId(),
-          type: "threads.start.failed",
+          type: "issues.start.failed",
           timestamp: new Date().toISOString(),
           summary: error.message
         },
@@ -2763,27 +3102,26 @@ export default function App() {
       ].slice(0, 20));
     } finally {
       setStartBusy(false);
-      setDraggingPrepThreadIds([]);
+      setDraggingPrepIssueIds([]);
     }
   };
 
-  const handleDragPrepThreads = {
+  const handleDragPrepIssues = {
     start: (threadId) => {
-      const currentPrepIds = selectedThreadIds.filter((selectedId) => {
-        const thread = threads.find((item) => item.id === selectedId);
+      const currentPrepIds = selectedIssueIds.filter((selectedId) => {
+        const thread = issues.find((item) => item.id === selectedId);
         return (
           thread &&
-          thread.project_id === selectedProjectId &&
+          thread.thread_id === selectedProjectThreadId &&
           getStatusMeta(thread.status).column === "prep"
         );
       });
       const draggedIds = currentPrepIds.includes(threadId) ? currentPrepIds : [threadId];
-      setDraggingThreadId("");
-      setDraggingPrepThreadIds(draggedIds);
-      setSelectedThreadId(threadId);
+      setDraggingIssueId("");
+      setDraggingPrepIssueIds(draggedIds);
     },
     drop: (targetId = "") => {
-      void movePrepThreadsToTodo(draggingPrepThreadIds, targetId);
+      void movePrepIssuesToTodo(draggingPrepIssueIds, targetId);
     }
   };
 
@@ -2850,14 +3188,15 @@ export default function App() {
       );
 
       if (Array.isArray(response?.threads)) {
-        setThreads(mergeThreads([], response.threads));
+        setProjectThreads(mergeProjectThreads([], response.threads));
       } else {
-        setThreads((current) => current.filter((thread) => thread.id !== threadId));
+        setProjectThreads((current) => current.filter((thread) => thread.id !== threadId));
       }
 
-      setSelectedThreadIds((current) => current.filter((item) => item !== threadId));
-      setQueueOrderIds((current) => current.filter((item) => item !== threadId));
-      setSelectedThreadId((current) => (current === threadId ? "" : current));
+      if (selectedProjectThreadId === threadId) {
+        setIssues([]);
+        setSelectedProjectThreadId("");
+      }
     } catch (error) {
       setRecentEvents((current) => [
         {
@@ -2895,18 +3234,18 @@ export default function App() {
       }
 
       if (Array.isArray(response?.threads)) {
-        setThreads(mergeThreads([], response.threads));
+        setProjectThreads(mergeProjectThreads([], response.threads));
       } else {
-        setThreads((current) => current.filter((thread) => thread.project_id !== projectId));
+        setProjectThreads((current) => current.filter((thread) => thread.project_id !== projectId));
       }
 
       setSelectedProjectId((current) => (current === projectId ? "" : current));
-      setSelectedThreadIds((current) =>
-        current.filter((threadId) => threads.find((thread) => thread.id === threadId)?.project_id !== projectId)
-      );
-      setQueueOrderIds((current) =>
-        current.filter((threadId) => threads.find((thread) => thread.id === threadId)?.project_id !== projectId)
-      );
+      setSelectedIssueIds([]);
+      setIssueQueueOrderIds([]);
+      if (selectedProjectId === projectId) {
+        setSelectedProjectThreadId("");
+        setIssues([]);
+      }
     } catch (error) {
       setRecentEvents((current) => [
         {
@@ -2956,6 +3295,116 @@ export default function App() {
         ...current
       ].slice(0, 20));
       return false;
+    }
+  };
+
+  const handleRenameThread = async (threadId, name) => {
+    if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ name })
+        }
+      );
+
+      if (Array.isArray(response?.threads)) {
+        setProjectThreads(mergeProjectThreads([], response.threads));
+      } else if (response?.thread?.id) {
+        setProjectThreads((current) => upsertProjectThread(current, response.thread));
+      }
+
+      return true;
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "thread.rename.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+      return false;
+    }
+  };
+
+  const handleCreateThread = async () => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/projects/${encodeURIComponent(selectedProjectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: copy.board.newThread
+          })
+        }
+      );
+
+      if (Array.isArray(response?.threads)) {
+        setProjectThreads((current) => {
+          const preserved = current.filter((thread) => thread.project_id !== selectedProjectId);
+          return [...preserved, ...mergeProjectThreads([], response.threads)];
+        });
+      }
+
+      if (response?.thread?.id) {
+        setProjectThreads((current) => upsertProjectThread(current, response.thread));
+        setSelectedProjectThreadId(response.thread.id);
+      }
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "thread.create.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
+  };
+
+  const handleDeleteIssue = async (issueId) => {
+    if (!session?.loginId || !selectedBridgeId || !issueId) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      if (Array.isArray(response?.issues)) {
+        setIssues(mergeIssues([], response.issues));
+      } else {
+        setIssues((current) => current.filter((issue) => issue.id !== issueId));
+      }
+
+      setSelectedIssueIds((current) => current.filter((item) => item !== issueId));
+      setIssueQueueOrderIds((current) => current.filter((item) => item !== issueId));
+      setSelectedIssueId((current) => (current === issueId ? "" : current));
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.delete.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
     }
   };
 
@@ -3019,37 +3468,61 @@ export default function App() {
       bridges={bridges}
       status={status}
       projects={projects}
-      threads={threads}
+      projectThreads={projectThreads}
+      issues={issues}
       workspaceRoots={workspaceRoots}
       folderState={folderState}
       folderLoading={folderLoading}
       selectedWorkspacePath={selectedWorkspacePath}
       selectedBridgeId={selectedBridgeId}
       selectedProjectId={selectedProjectId}
-      selectedThreadId={selectedThreadId}
+      selectedProjectThreadId={selectedProjectThreadId}
+      selectedIssueId={selectedIssueId}
       search={search}
       recentEvents={recentEvents}
-      queueOrderIds={queueOrderIds}
+      issueQueueOrderIds={issueQueueOrderIds}
       loadingState={loadingState}
       projectBusy={projectBusy}
       issueBusy={issueBusy}
       startBusy={startBusy}
       projectComposerOpen={projectComposerOpen}
       composerOpen={composerOpen}
+      threadMenuState={threadMenuState}
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={setSelectedProjectId}
-      onSelectThread={setSelectedThreadId}
-      selectedThreadIds={selectedThreadIds}
+      onSelectProjectThread={setSelectedProjectThreadId}
+      onSelectIssue={setSelectedIssueId}
+      selectedIssueIds={selectedIssueIds}
       detailState={detailState}
-      onToggleThreadSelection={handleToggleThreadSelection}
-      onStartSelectedThreads={() => void handleStartSelectedThreads()}
-      onOpenCompletedThread={(threadId) => void handleOpenCompletedThread(threadId)}
-      onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
+      onToggleIssueSelection={handleToggleIssueSelection}
+      onStartSelectedIssues={() => void handleStartSelectedIssues()}
+      onOpenCompletedIssue={(threadId) => void handleOpenCompletedIssue(threadId)}
+      onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
-      onDragQueueThread={handleDragQueueThread}
-      onDragPrepThreads={handleDragPrepThreads}
+      onCreateThread={() => void handleCreateThread()}
+      onRenameThread={(threadId, name) => handleRenameThread(threadId, name)}
+      onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
+      onOpenThreadMenu={(event, thread) => {
+        event.preventDefault();
+        setThreadMenuState({
+          open: true,
+          x: event.clientX,
+          y: event.clientY,
+          thread
+        });
+      }}
+      onCloseThreadMenu={() =>
+        setThreadMenuState({
+          open: false,
+          x: 0,
+          y: 0,
+          thread: null
+        })
+      }
+      onDragQueueIssue={handleDragQueueIssue}
+      onDragPrepIssues={handleDragPrepIssues}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}
