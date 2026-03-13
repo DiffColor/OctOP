@@ -2194,9 +2194,13 @@ function MainPage({
     [onDeleteProject]
   );
   const handleProjectChipPointerDown = useCallback(
-    (project) => {
-      if (!onDeleteProject || typeof window === "undefined") {
+    (event, project) => {
+      if (!onDeleteProject || typeof window === "undefined" || !project) {
         return;
+      }
+
+      if (event?.pointerType === "touch" || event?.pointerType === "pen") {
+        event.preventDefault();
       }
 
       projectLongPressTriggeredRef.current = false;
@@ -2332,11 +2336,12 @@ function MainPage({
                   key={project.id}
                   type="button"
                   onClick={() => handleProjectChipClick(project.id)}
-                  onPointerDown={() => handleProjectChipPointerDown(project)}
+                  onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
                   onPointerUp={handleProjectChipPointerCancel}
                   onPointerLeave={handleProjectChipPointerCancel}
                   onPointerCancel={handleProjectChipPointerCancel}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
+                  onContextMenu={(event) => event.preventDefault()}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
                     project.id === selectedProjectId
                       ? "bg-white text-slate-900"
                       : "bg-transparent text-slate-400 hover:text-white"
