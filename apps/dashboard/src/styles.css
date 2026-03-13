@@ -123,6 +123,9 @@ code,
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.98);
   padding: 0;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
 }
 
 .octop-board-scrollbar-thumb {
@@ -133,35 +136,16 @@ code,
   height: 10px;
   border-radius: 999px;
   background: #64748b;
+  cursor: grab;
+  will-change: transform;
 }
 
-.octop-board-page--force {
-  overflow-x: scroll !important;
-  scrollbar-gutter: stable both-edges;
+.octop-board-scrollbar-track--dragging {
+  cursor: grabbing;
 }
 
-.octop-board-page--force::-webkit-scrollbar {
-  -webkit-appearance: none;
-  display: block;
-  height: 12px;
-  max-height: 12px;
-}
-
-.octop-board-page--force::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.98);
-}
-
-.octop-board-page--force::-webkit-scrollbar-thumb {
-  background: #64748b;
-  border-radius: 999px;
-  border: 2px solid rgba(15, 23, 42, 0.98);
-}
-
-.octop-board-scrollbar--force .octop-board-scrollbar-track {
-  background: rgba(15, 23, 42, 1);
-}
-
-.octop-board-scrollbar--force .octop-board-scrollbar-thumb {
+.octop-board-scrollbar-thumb--dragging {
+  cursor: grabbing;
   background: #94a3b8;
 }
 

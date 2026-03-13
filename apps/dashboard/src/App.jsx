@@ -162,7 +162,6 @@ const COPY = {
       noProjects: "No projects.",
       queuedCount: (count) => `Queued ${count}`,
       searchPlaceholder: "Search issues",
-      forceScrollbar: "Force Scrollbar",
       refresh: "Refresh",
       newIssue: "New Issue",
       noBridgeOption: "No connected bridge",
@@ -294,7 +293,6 @@ const COPY = {
       noProjects: "프로젝트가 없습니다.",
       queuedCount: (count) => `대기 ${count}`,
       searchPlaceholder: "이슈 검색",
-      forceScrollbar: "스크롤 고정",
       refresh: "새로고침",
       newIssue: "새 이슈",
       noBridgeOption: "연결된 브릿지 없음",
@@ -1803,8 +1801,8 @@ function MainPage({
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
-  const [forceBoardScrollbar, setForceBoardScrollbar] = useState(false);
   const [boardScrollbarVisible, setBoardScrollbarVisible] = useState(false);
+  const [boardScrollbarDragging, setBoardScrollbarDragging] = useState(false);
   const [boardScrollState, setBoardScrollState] = useState({
     clientWidth: 0,
     scrollWidth: 0,
@@ -1813,6 +1811,11 @@ function MainPage({
   const languageMenuRef = useRef(null);
   const boardScrollRef = useRef(null);
   const boardScrollbarTrackRef = useRef(null);
+  const boardScrollbarDragRef = useRef({
+    active: false,
+    pointerId: null,
+    pointerOffsetX: 0
+  });
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1948,21 +1951,99 @@ function MainPage({
     ? (boardScrollState.scrollLeft / scrollbarMaxScrollLeft) * scrollbarThumbMaxOffset
     : 0;
 
-  const handleBoardScrollbarPointerDown = (event) => {
+  const updateBoardScrollFromPointer = (clientX, pointerOffsetX = 0) => {
     const scrollNode = boardScrollRef.current;
     const trackNode = boardScrollbarTrackRef.current;
 
     if (!scrollNode || !trackNode) {
-      return;
+      return false;
     }
 
     const rect = trackNode.getBoundingClientRect();
-    const pointerX = event.clientX - rect.left;
-    const boundedX = Math.max(0, Math.min(rect.width, pointerX));
+    const pointerX = clientX - rect.left - pointerOffsetX;
+    const boundedX = Math.max(0, Math.min(scrollbarThumbMaxOffset, pointerX));
     const maxScrollLeft = Math.max(scrollNode.scrollWidth - scrollNode.clientWidth, 0);
-    const nextScrollLeft = rect.width > 0 ? (boundedX / rect.width) * maxScrollLeft : 0;
+    const nextScrollLeft = scrollbarThumbMaxOffset > 0 ? (boundedX / scrollbarThumbMaxOffset) * maxScrollLeft : 0;
 
     scrollNode.scrollLeft = nextScrollLeft;
+    return true;
+  };
+
+  const stopBoardScrollbarDrag = (pointerId, releaseTarget = null) => {
+    if (!boardScrollbarDragRef.current.active) {
+      return;
+    }
+
+    if (releaseTarget && typeof releaseTarget.releasePointerCapture === "function" && pointerId !== null) {
+      try {
+        releaseTarget.releasePointerCapture(pointerId);
+      } catch {
+        // ignore failed capture release
+      }
+    }
+
+    boardScrollbarDragRef.current = {
+      active: false,
+      pointerId: null,
+      pointerOffsetX: 0
+    };
+    setBoardScrollbarDragging(false);
+  };
+
+  const handleBoardScrollbarPointerDown = (event) => {
+    const trackNode = boardScrollbarTrackRef.current;
+
+    if (!trackNode) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const thumbNode = event.target.closest(".octop-board-scrollbar-thumb");
+    const thumbRect = thumbNode?.getBoundingClientRect?.();
+    const pointerOffsetX = thumbRect ? event.clientX - thumbRect.left : scrollbarThumbWidth / 2;
+
+    boardScrollbarDragRef.current = {
+      active: true,
+      pointerId: event.pointerId,
+      pointerOffsetX
+    };
+    setBoardScrollbarDragging(true);
+
+    if (typeof trackNode.setPointerCapture === "function") {
+      try {
+        trackNode.setPointerCapture(event.pointerId);
+      } catch {
+        // ignore failed capture request
+      }
+    }
+
+    updateBoardScrollFromPointer(event.clientX, pointerOffsetX);
+  };
+
+  const handleBoardScrollbarPointerMove = (event) => {
+    if (!boardScrollbarDragRef.current.active || boardScrollbarDragRef.current.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    updateBoardScrollFromPointer(event.clientX, boardScrollbarDragRef.current.pointerOffsetX);
+  };
+
+  const handleBoardScrollbarPointerUp = (event) => {
+    if (boardScrollbarDragRef.current.pointerId !== event.pointerId) {
+      return;
+    }
+
+    stopBoardScrollbarDrag(event.pointerId, event.currentTarget);
+  };
+
+  const handleBoardScrollbarPointerCancel = (event) => {
+    if (boardScrollbarDragRef.current.pointerId !== event.pointerId) {
+      return;
+    }
+
+    stopBoardScrollbarDrag(event.pointerId, event.currentTarget);
   };
 
   const beginProjectRename = (project) => {
@@ -2239,18 +2320,6 @@ function MainPage({
 
                 <button
                   type="button"
-                  onClick={() => setForceBoardScrollbar((current) => !current)}
-                  className={`hidden rounded-lg border px-3 py-2 text-sm font-medium transition md:inline-flex ${
-                    forceBoardScrollbar
-                      ? "border-sky-400/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15"
-                      : "border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
-                  }`}
-                >
-                  {copy.board.forceScrollbar}
-                </button>
-
-                <button
-                  type="button"
                   onClick={onStartSelectedIssues}
                   disabled={prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2342,6 +2411,7 @@ function MainPage({
             <div className="octop-board-page flex flex-1 min-h-0 flex-col">
               <div
                 ref={boardScrollRef}
+                id="octop-board-scroll-region"
                 className="octop-board-scroll h-full min-h-0 flex-1"
               >
                 <section
@@ -2451,26 +2521,34 @@ function MainPage({
                 </section>
               </div>
               {boardScrollbarVisible ? (
-                <div
-                  className={`octop-board-scrollbar custom-scrollbar ${
-                    forceBoardScrollbar ? "octop-board-scrollbar--force" : ""
-                  }`}
-                >
-                  <button
+                <div className="octop-board-scrollbar custom-scrollbar">
+                  <div
                     ref={boardScrollbarTrackRef}
-                    type="button"
                     onPointerDown={handleBoardScrollbarPointerDown}
-                    className="octop-board-scrollbar-track"
+                    onPointerMove={handleBoardScrollbarPointerMove}
+                    onPointerUp={handleBoardScrollbarPointerUp}
+                    onPointerCancel={handleBoardScrollbarPointerCancel}
+                    className={`octop-board-scrollbar-track ${
+                      boardScrollbarDragging ? "octop-board-scrollbar-track--dragging" : ""
+                    }`}
+                    role="scrollbar"
+                    aria-controls="octop-board-scroll-region"
                     aria-label="가로 스크롤 이동"
+                    aria-valuemin={0}
+                    aria-valuemax={Math.max(boardScrollState.scrollWidth - boardScrollState.clientWidth, 0)}
+                    aria-valuenow={Math.round(boardScrollState.scrollLeft)}
+                    tabIndex={0}
                   >
                     <span
-                      className="octop-board-scrollbar-thumb"
+                      className={`octop-board-scrollbar-thumb ${
+                        boardScrollbarDragging ? "octop-board-scrollbar-thumb--dragging" : ""
+                      }`}
                       style={{
                         width: `${scrollbarThumbWidth}px`,
                         transform: `translateX(${scrollbarThumbOffset}px)`
                       }}
                     />
-                  </button>
+                  </div>
                 </div>
               ) : null}
             </div>
