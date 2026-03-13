@@ -69,6 +69,7 @@ const THREAD_CONTENT_FILTERS = [
 ];
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 
@@ -1639,14 +1640,11 @@ function ThreadDetail({
   const status = thread ? getStatusMeta(thread.status) : null;
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
+  const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
-  const userInteractingRef = useRef(false);
-  const userInteractionTimeoutRef = useRef(null);
-  const [isUserInteracting, setIsUserInteracting] = useState(false);
-  const manualScrollLockRef = useRef(false);
-  const userScrolledAwayRef = useRef(false);
   const autoScrollingRef = useRef(false);
+  const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [viewMode, setViewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -1793,68 +1791,22 @@ function ThreadDetail({
     }
 
     const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
-    const nearBottom = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-    const shouldPin = nearBottom && !userInteractingRef.current && !manualScrollLockRef.current;
+    const shouldPin = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
 
     if (shouldPin !== pinnedToLatestRef.current) {
       pinnedToLatestRef.current = shouldPin;
       setIsPinnedToLatest(shouldPin);
     }
   }, []);
-  const clearUserInteractionTimeout = useCallback(() => {
-    if (userInteractionTimeoutRef.current) {
-      clearTimeout(userInteractionTimeoutRef.current);
-      userInteractionTimeoutRef.current = null;
-    }
-  }, []);
-  const setUserInteractingState = useCallback((nextValue) => {
-    if (userInteractingRef.current === nextValue) {
-      return;
-    }
-
-    userInteractingRef.current = nextValue;
-    setIsUserInteracting(nextValue);
-  }, []);
-  const beginUserInteraction = useCallback(() => {
-    clearUserInteractionTimeout();
-    setUserInteractingState(true);
-    manualScrollLockRef.current = true;
-    recomputePinnedState();
-  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
-  const endUserInteraction = useCallback(() => {
-    clearUserInteractionTimeout();
-    setUserInteractingState(false);
-
-    if (!userScrolledAwayRef.current && manualScrollLockRef.current) {
-      manualScrollLockRef.current = false;
-    }
-
-    recomputePinnedState();
-  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
-  const scheduleUserInteractionEnd = useCallback(() => {
-    clearUserInteractionTimeout();
-
-    userInteractionTimeoutRef.current = setTimeout(() => {
-      userInteractionTimeoutRef.current = null;
-      setUserInteractingState(false);
-      if (!userScrolledAwayRef.current && manualScrollLockRef.current) {
-        manualScrollLockRef.current = false;
-      }
-      recomputePinnedState();
-    }, 350);
-  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
 
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
-    userInteractingRef.current = false;
-    setIsUserInteracting(false);
-    manualScrollLockRef.current = false;
-    userScrolledAwayRef.current = false;
     autoScrollingRef.current = false;
-    clearUserInteractionTimeout();
+    previousScrollTopRef.current = 0;
+    setShowHeaderMenus(true);
     recomputePinnedState();
-  }, [clearUserInteractionTimeout, recomputePinnedState, thread?.id, viewMode]);
+  }, [recomputePinnedState, thread?.id, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat") {
@@ -1878,15 +1830,18 @@ function ThreadDetail({
         const node = scrollRef.current;
 
         if (node && !autoScrollingRef.current) {
-          const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
+          const nextScrollTop = Math.max(0, node.scrollTop);
+          const delta = nextScrollTop - previousScrollTopRef.current;
 
-          if (distanceFromBottom > CHAT_AUTO_SCROLL_THRESHOLD_PX) {
-            userScrolledAwayRef.current = true;
-            manualScrollLockRef.current = true;
-          } else if (userScrolledAwayRef.current && !userInteractingRef.current) {
-            userScrolledAwayRef.current = false;
-            manualScrollLockRef.current = false;
+          if (nextScrollTop <= 8) {
+            setShowHeaderMenus(true);
+          } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
+            setShowHeaderMenus(false);
+          } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
+            setShowHeaderMenus(true);
           }
+
+          previousScrollTopRef.current = nextScrollTop;
         }
 
         recomputePinnedState();
@@ -1894,40 +1849,19 @@ function ThreadDetail({
     };
 
     recomputePinnedState();
-    const handlePointerDown = () => {
-      beginUserInteraction();
-    };
-    const handlePointerUp = () => {
-      endUserInteraction();
-    };
-    const handleWheel = () => {
-      beginUserInteraction();
-      scheduleUserInteractionEnd();
-    };
-
     scrollNode.addEventListener("scroll", handleScroll, { passive: true });
-    scrollNode.addEventListener("pointerdown", handlePointerDown, { passive: true });
-    scrollNode.addEventListener("pointerup", handlePointerUp, { passive: true });
-    scrollNode.addEventListener("pointercancel", handlePointerUp, { passive: true });
-    scrollNode.addEventListener("pointerleave", handlePointerUp, { passive: true });
-    scrollNode.addEventListener("wheel", handleWheel, { passive: true });
 
     return () => {
       scrollNode.removeEventListener("scroll", handleScroll);
-      scrollNode.removeEventListener("pointerdown", handlePointerDown);
-      scrollNode.removeEventListener("pointerup", handlePointerUp);
-      scrollNode.removeEventListener("pointercancel", handlePointerUp);
-      scrollNode.removeEventListener("pointerleave", handlePointerUp);
-      scrollNode.removeEventListener("wheel", handleWheel);
 
       if (rafId) {
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [beginUserInteraction, endUserInteraction, recomputePinnedState, scheduleUserInteractionEnd, viewMode]);
+  }, [recomputePinnedState, viewMode]);
 
   useLayoutEffect(() => {
-    if (viewMode !== "chat" || !isPinnedToLatest || isUserInteracting) {
+    if (viewMode !== "chat" || !isPinnedToLatest) {
       return;
     }
 
@@ -1954,7 +1888,7 @@ function ThreadDetail({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, isUserInteracting, messagesLoading, recomputePinnedState, thread?.id, viewMode, visibleChatTimeline]);
+  }, [isPinnedToLatest, messagesLoading, recomputePinnedState, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
@@ -1990,7 +1924,7 @@ function ThreadDetail({
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/85 px-4 py-3 backdrop-blur">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -2031,16 +1965,12 @@ function ThreadDetail({
             )}
           </button>
         </div>
-      </header>
 
-      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
-          <div className="flex justify-center">
-            <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
-              {formatDateTime(threadTimestamp)}
-            </span>
-          </div>
-
+        <div
+          className={`overflow-hidden transition-all duration-200 ease-out ${
+            showHeaderMenus ? "mt-3 max-h-32 opacity-100" : "max-h-0 opacity-0"
+          }`}
+        >
           <div className="flex gap-2 overflow-x-auto pb-1">
             {THREAD_CONTENT_FILTERS.map((filter) => (
               <button
@@ -2058,7 +1988,7 @@ function ThreadDetail({
             ))}
           </div>
 
-          <div className="flex justify-center">
+          <div className="mt-2 flex justify-center">
             <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1 text-[12px] font-semibold text-slate-400">
               <button
                 type="button"
@@ -2079,6 +2009,16 @@ function ThreadDetail({
                 타임라인
               </button>
             </div>
+          </div>
+        </div>
+      </header>
+
+      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
+          <div className="flex justify-center">
+            <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
+              {formatDateTime(threadTimestamp)}
+            </span>
           </div>
 
           {messagesError ? (
@@ -2173,7 +2113,7 @@ function ThreadDetail({
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2">
         <div className="mx-auto w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
