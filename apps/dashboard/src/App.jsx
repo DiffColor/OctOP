@@ -138,6 +138,8 @@ const COPY = {
       workspacePath: "Workspace Path",
       name: "Project name",
       namePlaceholder: "Auto-filled from the selected folder",
+      description: "Project description",
+      descriptionPlaceholder: "Describe the project scope briefly.",
       cancel: "Cancel",
       submit: "Create project",
       submitting: "Creating..."
@@ -263,6 +265,8 @@ const COPY = {
       workspacePath: "워크스페이스 경로",
       name: "프로젝트 이름",
       namePlaceholder: "선택한 폴더명으로 자동 입력됩니다",
+      description: "프로젝트 설명",
+      descriptionPlaceholder: "프로젝트 목적과 관리 범위를 간단히 적어 주세요.",
       cancel: "취소",
       submit: "프로젝트 등록",
       submitting: "등록 중..."
@@ -926,12 +930,14 @@ function ProjectComposer({
 }) {
   const copy = getCopy(language);
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [treeState, setTreeState] = useState({});
   const [expandedPaths, setExpandedPaths] = useState({});
 
   useEffect(() => {
     if (!open) {
       setName("");
+      setDescription("");
       setTreeState({});
       setExpandedPaths({});
     }
@@ -1094,7 +1100,7 @@ function ProjectComposer({
     await onSubmit({
       name: name.trim(),
       key: "",
-      description: "",
+      description: description.trim(),
       workspace_path: selectedWorkspacePath
     });
   };
@@ -1115,7 +1121,7 @@ function ProjectComposer({
           </button>
         </div>
 
-        <form className="mt-5 grid gap-0 xl:grid-cols-[minmax(0,1.35fr)_340px]" onSubmit={handleSubmit}>
+        <form className="mt-5 grid gap-0 xl:grid-cols-2" onSubmit={handleSubmit}>
           <div className="min-w-0 border-b border-slate-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
             <div className="flex items-center justify-between gap-3 pb-3">
               <div>
@@ -1162,9 +1168,9 @@ function ProjectComposer({
             </div>
           </div>
 
-          <div className="space-y-4 pt-4 xl:pl-5 xl:pt-0">
+          <div className="min-w-0 space-y-4 pt-4 xl:pl-5 xl:pt-0">
             <div className="grid gap-4">
-              <div>
+              <div className="min-w-0">
                 <p className="mb-2 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
                   {copy.projectComposer.workspacePath}
                 </p>
@@ -1176,19 +1182,33 @@ function ProjectComposer({
                 />
               </div>
 
-              <div>
-              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
-                {copy.projectComposer.name}
-              </label>
-              <input
-                id="project-name"
-                type="text"
-                required
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder={copy.projectComposer.namePlaceholder}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-              />
+              <div className="min-w-0">
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
+                  {copy.projectComposer.name}
+                </label>
+                <input
+                  id="project-name"
+                  type="text"
+                  required
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={copy.projectComposer.namePlaceholder}
+                  className="w-full min-w-0 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                />
+              </div>
+
+              <div className="min-w-0">
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
+                  {copy.projectComposer.description}
+                </label>
+                <textarea
+                  id="project-description"
+                  rows="6"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  placeholder={copy.projectComposer.descriptionPlaceholder}
+                  className="w-full min-w-0 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                />
               </div>
             </div>
 
