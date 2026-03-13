@@ -2235,7 +2235,7 @@ function MainPage({
             </div>
 
             <div
-              className="custom-scrollbar board-scrollbar min-h-0 flex-1 overflow-x-scroll overflow-y-hidden p-4 pb-2 md:p-8 md:pb-3"
+              className="board-scrollbar min-h-0 flex-1 overflow-x-scroll overflow-y-hidden p-4 pb-2 md:p-8 md:pb-3"
               style={{ scrollbarGutter: "stable both-edges" }}
             >
               <div className="flex h-full min-w-max space-x-6 pr-4">
