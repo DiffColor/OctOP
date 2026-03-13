@@ -1801,7 +1801,10 @@ function MainPage({
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [boardHasOverflow, setBoardHasOverflow] = useState(false);
   const languageMenuRef = useRef(null);
+  const boardShellRef = useRef(null);
+  const boardInnerRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1871,6 +1874,39 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const shell = boardShellRef.current;
+    const inner = boardInnerRef.current;
+
+    if (!shell || !inner) {
+      return undefined;
+    }
+
+    const syncBoardOverflow = () => {
+      const next = inner.scrollWidth > shell.clientWidth + 1 || shell.scrollWidth > shell.clientWidth + 1;
+      setBoardHasOverflow((current) => (current === next ? current : next));
+    };
+
+    syncBoardOverflow();
+
+    const resizeObserver = new ResizeObserver(() => {
+      window.requestAnimationFrame(syncBoardOverflow);
+    });
+
+    resizeObserver.observe(shell);
+    resizeObserver.observe(inner);
+    window.addEventListener("resize", syncBoardOverflow);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", syncBoardOverflow);
+    };
+  }, [columns.length, filteredIssues.length, selectedProjectThreadId, sidebarWidth]);
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -2235,10 +2271,15 @@ function MainPage({
             </div>
 
             <div
-              className="board-scrollbar octop-board-shell flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
-              style={{ scrollbarGutter: "auto" }}
+              ref={boardShellRef}
+              className={`board-scrollbar octop-board-shell flex-1 min-h-0 overflow-y-hidden ${
+                boardHasOverflow ? "overflow-x-scroll" : "overflow-x-hidden"
+              }`}
             >
-              <div className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
+              <div
+                ref={boardInnerRef}
+                className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12"
+              >
                 {columns.map((column) => (
                   <section
                     key={column.id}
