@@ -1911,7 +1911,7 @@ function ThreadDetail({
         </div>
       </div>
 
-      <div className="border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
