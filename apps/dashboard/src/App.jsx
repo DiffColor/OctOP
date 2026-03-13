@@ -478,6 +478,27 @@ function getPathLabel(value) {
   return segments.at(-1) ?? normalized;
 }
 
+function getRelativeWorkspacePath(value, roots) {
+  if (!value) {
+    return "-";
+  }
+
+  const normalized = String(value).replace(/\\/g, "/").replace(/\/+$/, "");
+  const matchedRoot = roots.find((root) => {
+    const rootPath = String(root.path ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+    return normalized === rootPath || normalized.startsWith(`${rootPath}/`);
+  });
+
+  if (!matchedRoot?.path) {
+    return getPathLabel(normalized) || "-";
+  }
+
+  const rootPath = String(matchedRoot.path).replace(/\\/g, "/").replace(/\/+$/, "");
+  const relative = normalized.slice(rootPath.length).replace(/^\/+/, "");
+
+  return relative ? `${matchedRoot.name}/${relative}` : matchedRoot.name;
+}
+
 function clampProgress(value) {
   const numeric = Number(value);
 
@@ -1140,30 +1161,15 @@ function ProjectComposer({
                   {copy.projectComposer.noRoots}
                 </div>
               ) : (
-                <>
-                  {folderState.parent_path ? (
-                    <button
-                      type="button"
-                      onClick={() => onBrowseFolder(folderState.parent_path)}
-                      className="flex w-full items-center gap-2 rounded-xl border border-slate-800 px-3 py-2.5 text-left text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
-                    >
-                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-800 text-slate-400">
-                        ..
-                      </span>
-                      <span>{copy.projectComposer.parentFolder}</span>
-                    </button>
-                  ) : null}
-
-                  {roots.map((root) =>
-                    renderTreeNode({
-                      name: root.name,
-                      path: root.path,
-                      is_workspace: root.is_workspace,
-                      is_registered: root.is_registered,
-                      project_id: root.project_id
-                    })
-                  )}
-                </>
+                roots.map((root) =>
+                  renderTreeNode({
+                    name: root.name,
+                    path: root.path,
+                    is_workspace: root.is_workspace,
+                    is_registered: root.is_registered,
+                    project_id: root.project_id
+                  })
+                )
               )}
             </div>
           </div>
@@ -1176,7 +1182,7 @@ function ProjectComposer({
                   {copy.projectComposer.workspacePath}
                 </p>
                 <OverflowRevealText
-                  value={selectedWorkspacePath || "-"}
+                  value={getRelativeWorkspacePath(selectedWorkspacePath, roots)}
                   className="rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-sm text-slate-300"
                   mono
                   truncateAt="end"
