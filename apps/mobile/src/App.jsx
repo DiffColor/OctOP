@@ -221,7 +221,7 @@ function getRelativeWorkspacePath(value, roots = []) {
   }
 
   const relativePath = normalizedValue.slice(matchingRoot.length).replace(/^\/+/, "");
-  const rootLabel = getDisplayPathFromStartFolder(matchingRoot);
+  const rootLabel = getPathLabel(matchingRoot);
 
   return relativePath ? `${rootLabel}/${relativePath}` : rootLabel;
 }
