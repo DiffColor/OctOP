@@ -166,6 +166,16 @@ function shortenPath(value) {
   return `...${normalized.slice(-45)}`;
 }
 
+function getPathLabel(value) {
+  if (!value) {
+    return "";
+  }
+
+  const normalized = String(value).replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.at(-1) ?? normalized;
+}
+
 function clampProgress(value) {
   const numeric = Number(value);
 
@@ -643,18 +653,175 @@ function ProjectComposer({
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
+  const [treeState, setTreeState] = useState({});
+  const [expandedPaths, setExpandedPaths] = useState({});
 
   useEffect(() => {
     if (!open) {
       setName("");
       setKey("");
       setDescription("");
+      setTreeState({});
+      setExpandedPaths({});
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (folderState?.path) {
+      setTreeState((current) => ({
+        ...current,
+        [folderState.path]: {
+          parent_path: folderState.parent_path ?? null,
+          entries: folderState.entries ?? []
+        }
+      }));
+      setExpandedPaths((current) => ({
+        ...current,
+        [folderState.path]: true
+      }));
+    }
+  }, [open, folderState]);
+
+  useEffect(() => {
+    if (!open || !selectedWorkspacePath) {
+      return;
+    }
+
+    if (!name.trim()) {
+      setName(getPathLabel(selectedWorkspacePath));
+    }
+  }, [open, selectedWorkspacePath]);
 
   if (!open) {
     return null;
   }
+
+  const loadBranch = async (path) => {
+    const payload = await onBrowseFolder(path);
+
+    if (!payload) {
+      return null;
+    }
+
+    setTreeState((current) => ({
+      ...current,
+      [path]: {
+        parent_path: payload.parent_path ?? null,
+        entries: payload.entries ?? []
+      }
+    }));
+
+    return payload;
+  };
+
+  const togglePath = async (path) => {
+    const nextExpanded = !expandedPaths[path];
+
+    setExpandedPaths((current) => ({
+      ...current,
+      [path]: nextExpanded
+    }));
+
+    if (nextExpanded && !treeState[path]) {
+      await loadBranch(path);
+    }
+  };
+
+  const handleSelectPath = (path) => {
+    onSelectWorkspace(path);
+
+    if (!name.trim()) {
+      setName(getPathLabel(path));
+    }
+  };
+
+  const renderTreeNode = (entry, depth = 0) => {
+    const branch = treeState[entry.path];
+    const expanded = Boolean(expandedPaths[entry.path]);
+    const selected = selectedWorkspacePath === entry.path;
+    const hasLoadedChildren = Boolean(branch);
+    const children = branch?.entries ?? [];
+
+    return (
+      <div key={entry.path} className="space-y-1">
+        <div
+          className={`group flex items-center gap-2 rounded-2xl border px-3 py-2.5 transition ${
+            selected
+              ? "border-sky-400/40 bg-sky-500/10"
+              : "border-slate-800/80 bg-slate-900/30 hover:border-slate-700"
+          }`}
+          style={{ marginLeft: `${depth * 12}px` }}
+        >
+          <button
+            type="button"
+            onClick={() => void togglePath(entry.path)}
+            className="flex h-7 w-7 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/70 text-slate-400 transition hover:border-slate-700 hover:text-white"
+            aria-label={expanded ? "폴더 접기" : "폴더 펼치기"}
+          >
+            <svg
+              className={`h-3.5 w-3.5 transition ${expanded ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSelectPath(entry.path)}
+            className="min-w-0 flex-1 text-left"
+          >
+            <div className="flex items-center gap-2">
+              <svg className="h-4 w-4 shrink-0 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+              </svg>
+              <span className="truncate text-sm font-medium text-white">{entry.name}</span>
+            </div>
+            <p className="mt-1 truncate text-[11px] text-slate-500">{entry.path}</p>
+          </button>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-1">
+            {entry.is_workspace ? (
+              <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] text-sky-300">
+                workspace
+              </span>
+            ) : null}
+            {entry.is_registered ? (
+              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">
+                등록됨
+              </span>
+            ) : null}
+            {selected ? (
+              <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] text-white">
+                선택됨
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {expanded && hasLoadedChildren ? (
+          children.length === 0 ? (
+            <div
+              className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/20 px-3 py-3 text-[11px] text-slate-500"
+              style={{ marginLeft: `${(depth + 1) * 12 + 36}px` }}
+            >
+              하위 폴더가 없습니다.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {children.map((child) => renderTreeNode(child, depth + 1))}
+            </div>
+          )
+        ) : null}
+      </div>
+    );
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -673,13 +840,13 @@ function ProjectComposer({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+      <div className="w-full max-w-6xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Project</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">새 프로젝트 등록</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              bridge가 허용한 로컬 폴더를 탐색해서 실제 workspace 경로를 선택한 뒤 프로젝트를 등록합니다.
+              로컬 bridge가 노출한 허용 폴더를 트리로 탐색하고, 선택한 workspace에 프로젝트를 연결합니다.
             </p>
           </div>
           <button
@@ -691,205 +858,168 @@ function ProjectComposer({
           </button>
         </div>
 
-        <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
-          <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Workspace Roots</p>
-                    <p className="mt-2 text-sm font-medium text-white">브라우즈 시작 위치</p>
+        <form className="mt-6 grid gap-5 xl:grid-cols-[1.15fr_0.85fr]" onSubmit={handleSubmit}>
+          <div className="rounded-[1.75rem] border border-slate-800 bg-slate-950/70 p-4">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Folder Tree</p>
+                <p className="mt-2 text-sm font-medium text-white">프로젝트 위치 선택</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {folderLoading ? (
+                  <span className="text-[11px] text-slate-500">폴더 불러오는 중</span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onBrowseFolder(folderState.parent_path)}
+                  disabled={!folderState.parent_path}
+                  className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  상위
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[0.34fr_0.66fr]">
+              <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/30 p-3">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
+                  Roots
+                </p>
+                {roots.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
+                    bridge가 노출한 workspace root가 없습니다.
                   </div>
-                  {folderLoading ? (
-                    <span className="text-[11px] text-slate-500">불러오는 중</span>
-                  ) : null}
-                </div>
-                <div className="mt-4 space-y-2">
-                  {roots.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                      bridge가 노출한 workspace root가 없습니다.
-                    </div>
-                  ) : (
-                    roots.map((root) => (
+                ) : (
+                  roots.map((root) => {
+                    const active = folderState.path === root.path || selectedWorkspacePath === root.path;
+
+                    return (
                       <button
                         key={root.path}
                         type="button"
-                        onClick={() => onBrowseRoot(root.path)}
+                        onClick={() => {
+                          onBrowseRoot(root.path);
+                          void togglePath(root.path);
+                        }}
                         className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
-                          folderState.path === root.path
+                          active
                             ? "border-sky-400/40 bg-sky-500/10"
                             : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-white">{root.name}</p>
-                            <p className="mt-1 truncate text-[11px] text-slate-500">{root.path}</p>
-                          </div>
-                          {root.is_registered ? (
-                            <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">
-                              등록됨
-                            </span>
-                          ) : null}
-                        </div>
+                        <p className="truncate text-sm font-medium text-white">{root.name}</p>
+                        <p className="mt-1 truncate text-[11px] text-slate-500">{root.path}</p>
                       </button>
-                    ))
-                  )}
-                </div>
+                    );
+                  })
+                )}
               </div>
-            </div>
 
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Folder Browser</p>
-                    <p className="mt-2 truncate text-sm font-medium text-white">{folderState.path || "경로 선택 필요"}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onBrowseFolder(folderState.parent_path)}
-                      disabled={!folderState.parent_path}
-                      className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      상위
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onSelectWorkspace(folderState.path)}
-                      disabled={!folderState.path}
-                      className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
-                        selectedWorkspacePath === folderState.path
-                          ? "bg-emerald-500/20 text-emerald-300"
-                          : "border border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
-                      }`}
-                    >
-                      현재 폴더 선택
-                    </button>
-                  </div>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-3">
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">
+                  현재 위치: <span className="font-mono text-slate-200">{shortenPath(folderState.path)}</span>
+                </div>
+                <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">
+                  선택 경로: <span className="font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/50 px-3 py-3 text-xs text-slate-400">
-                  선택된 경로: <span className="font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
-                </div>
-
-                <div className="custom-scrollbar mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
-                  {folderState.entries.length === 0 ? (
+                <div className="custom-scrollbar mt-4 max-h-[28rem] space-y-1 overflow-y-auto pr-1">
+                  {roots.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                      하위 폴더가 없습니다.
+                      탐색 가능한 root가 없습니다.
                     </div>
                   ) : (
-                    folderState.entries.map((entry) => {
-                      const isSelected = selectedWorkspacePath === entry.path;
-
-                      return (
-                        <div
-                          key={entry.path}
-                          className={`rounded-2xl border px-3 py-3 transition ${
-                            isSelected
-                              ? "border-emerald-400/40 bg-emerald-500/10"
-                              : "border-slate-800 bg-slate-900/40"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <button
-                              type="button"
-                              onClick={() => onBrowseFolder(entry.path)}
-                              className="min-w-0 flex-1 text-left"
-                            >
-                              <p className="truncate text-sm font-medium text-white">{entry.name}</p>
-                              <p className="mt-1 truncate text-[11px] text-slate-500">{entry.path}</p>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onSelectWorkspace(entry.path)}
-                              className={`rounded-xl px-3 py-1.5 text-[11px] font-medium transition ${
-                                isSelected
-                                  ? "bg-emerald-500 text-slate-950"
-                                  : "border border-slate-700 text-slate-300 hover:border-slate-600 hover:text-white"
-                              }`}
-                            >
-                              선택
-                            </button>
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2 text-[10px]">
-                            <span className={`rounded-full px-2 py-1 ${entry.is_workspace ? "bg-sky-500/10 text-sky-300" : "bg-slate-800 text-slate-400"}`}>
-                              {entry.is_workspace ? "workspace" : "folder"}
-                            </span>
-                            {entry.is_registered ? (
-                              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-300">
-                                등록된 프로젝트
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })
+                    roots.map((root) =>
+                      renderTreeNode({
+                        name: root.name,
+                        path: root.path,
+                        is_workspace: root.is_workspace,
+                        is_registered: root.is_registered,
+                        project_id: root.project_id
+                      })
+                    )
                   )}
                 </div>
               </div>
             </div>
           </div>
 
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
-              프로젝트 이름
-            </label>
-            <input
-              id="project-name"
-              type="text"
-              required
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="예: LicenseHub 운영 자동화"
-              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            />
-          </div>
+          <div className="space-y-4 rounded-[1.75rem] border border-slate-800 bg-slate-950/70 p-5">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Project Meta</p>
+              <h3 className="mt-2 text-lg font-semibold text-white">프로젝트 정보</h3>
+            </div>
 
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
-              프로젝트 Key
-            </label>
-            <input
-              id="project-key"
-              type="text"
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-              placeholder="비워두면 이름 기준으로 자동 생성"
-              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            />
-          </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Workspace Path</p>
+              <p className="mt-2 break-all font-mono text-sm text-slate-200">
+                {selectedWorkspacePath || "왼쪽 트리에서 폴더를 선택해 주세요."}
+              </p>
+            </div>
 
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
-              설명
-            </label>
-            <textarea
-              id="project-description"
-              rows="4"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
-              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            />
-          </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
+                프로젝트 이름
+              </label>
+              <input
+                id="project-name"
+                type="text"
+                required
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="예: LicenseHub 운영 자동화"
+                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+              />
+            </div>
 
-          <div className="flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
-            >
-              취소
-            </button>
-            <button
-              type="submit"
-              disabled={busy || !selectedWorkspacePath}
-              className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? "등록 중..." : "프로젝트 등록"}
-            </button>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
+                프로젝트 Key
+              </label>
+              <input
+                id="project-key"
+                type="text"
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+                placeholder="비워두면 이름 기준으로 자동 생성"
+                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
+                설명
+              </label>
+              <textarea
+                id="project-description"
+                rows="5"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
+                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+              />
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/30 px-4 py-3 text-xs leading-6 text-slate-400">
+              선택한 폴더가 실제 Codex 실행의 작업 디렉터리로 사용됩니다.
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !selectedWorkspacePath}
+                className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? "등록 중..." : "프로젝트 등록"}
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -1553,7 +1683,7 @@ export default function App() {
 
   async function browseWorkspacePath(path, bridgeIdArg = selectedBridgeId) {
     if (!session?.loginId || !bridgeIdArg) {
-      return;
+      return null;
     }
 
     setFolderLoading(true);
@@ -1574,6 +1704,7 @@ export default function App() {
         parent_path: payload?.parent_path ?? null,
         entries: payload?.entries ?? []
       });
+      return payload;
     } finally {
       setFolderLoading(false);
     }
@@ -1953,8 +2084,8 @@ export default function App() {
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}
       onCloseComposer={() => setComposerOpen(false)}
-      onBrowseWorkspaceRoot={(path) => void browseWorkspacePath(path)}
-      onBrowseFolder={(path) => void browseWorkspacePath(path)}
+      onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
+      onBrowseFolder={(path) => browseWorkspacePath(path)}
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitIssue={handleCreateIssue}
