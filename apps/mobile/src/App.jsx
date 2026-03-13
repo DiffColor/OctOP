@@ -2070,7 +2070,10 @@ export default function App() {
             issue_status: detail?.issue?.status ?? issues[issueIndex]?.status ?? "staged"
           }))
         );
-        const latestThread = details.at(-1)?.thread ?? selectedThread ?? null;
+        const latestThread =
+          details.at(-1)?.thread ??
+          threads.find((thread) => thread.id === threadId) ??
+          null;
 
         setThreadDetails((current) => ({
           ...current,
@@ -2100,7 +2103,7 @@ export default function App() {
         }));
       }
     },
-    [selectedBridgeId, selectedThread, session?.loginId]
+    [selectedBridgeId, session?.loginId, threads]
   );
 
   async function loadBridges(sessionArg) {
@@ -2365,7 +2368,25 @@ export default function App() {
         }
 
         if (payload.payload?.thread) {
-          setThreads((current) => upsertThread(current, payload.payload.thread));
+          const incomingThread = normalizeThread(payload.payload.thread);
+
+          if (!incomingThread) {
+            return;
+          }
+
+          if (selectedThreadId === incomingThread.id) {
+            setThreadDetails((current) => ({
+              ...current,
+              [incomingThread.id]: {
+                ...(current[incomingThread.id] ?? {}),
+                thread: incomingThread
+              }
+            }));
+          }
+
+          if (!selectedProjectId || incomingThread.project_id === selectedProjectId) {
+            setThreads((current) => upsertThread(current, incomingThread));
+          }
         }
       } catch {
         // ignore malformed event payload
