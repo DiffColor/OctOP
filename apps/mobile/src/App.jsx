@@ -1630,6 +1630,9 @@ function ThreadDetail({
   const userInteractingRef = useRef(false);
   const userInteractionTimeoutRef = useRef(null);
   const [isUserInteracting, setIsUserInteracting] = useState(false);
+  const manualScrollLockRef = useRef(false);
+  const userScrolledAwayRef = useRef(false);
+  const autoScrollingRef = useRef(false);
   const [viewMode, setViewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -1777,7 +1780,7 @@ function ThreadDetail({
 
     const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
     const nearBottom = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-    const shouldPin = nearBottom && !userInteractingRef.current;
+    const shouldPin = nearBottom && !userInteractingRef.current && !manualScrollLockRef.current;
 
     if (shouldPin !== pinnedToLatestRef.current) {
       pinnedToLatestRef.current = shouldPin;
@@ -1801,6 +1804,17 @@ function ThreadDetail({
   const beginUserInteraction = useCallback(() => {
     clearUserInteractionTimeout();
     setUserInteractingState(true);
+    manualScrollLockRef.current = true;
+    recomputePinnedState();
+  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
+  const endUserInteraction = useCallback(() => {
+    clearUserInteractionTimeout();
+    setUserInteractingState(false);
+
+    if (!userScrolledAwayRef.current && manualScrollLockRef.current) {
+      manualScrollLockRef.current = false;
+    }
+
     recomputePinnedState();
   }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
   const scheduleUserInteractionEnd = useCallback(() => {
@@ -1809,6 +1823,9 @@ function ThreadDetail({
     userInteractionTimeoutRef.current = setTimeout(() => {
       userInteractionTimeoutRef.current = null;
       setUserInteractingState(false);
+      if (!userScrolledAwayRef.current && manualScrollLockRef.current) {
+        manualScrollLockRef.current = false;
+      }
       recomputePinnedState();
     }, 350);
   }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
@@ -1818,6 +1835,9 @@ function ThreadDetail({
     setIsPinnedToLatest(true);
     userInteractingRef.current = false;
     setIsUserInteracting(false);
+    manualScrollLockRef.current = false;
+    userScrolledAwayRef.current = false;
+    autoScrollingRef.current = false;
     clearUserInteractionTimeout();
     recomputePinnedState();
   }, [clearUserInteractionTimeout, recomputePinnedState, thread?.id, viewMode]);
@@ -1841,6 +1861,20 @@ function ThreadDetail({
       }
 
       rafId = window.requestAnimationFrame(() => {
+        const node = scrollRef.current;
+
+        if (node && !autoScrollingRef.current) {
+          const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
+
+          if (distanceFromBottom > CHAT_AUTO_SCROLL_THRESHOLD_PX) {
+            userScrolledAwayRef.current = true;
+            manualScrollLockRef.current = true;
+          } else if (userScrolledAwayRef.current && !userInteractingRef.current) {
+            userScrolledAwayRef.current = false;
+            manualScrollLockRef.current = false;
+          }
+        }
+
         recomputePinnedState();
       });
     };
@@ -1850,7 +1884,7 @@ function ThreadDetail({
       beginUserInteraction();
     };
     const handlePointerUp = () => {
-      scheduleUserInteractionEnd();
+      endUserInteraction();
     };
     const handleWheel = () => {
       beginUserInteraction();
@@ -1876,7 +1910,7 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [beginUserInteraction, recomputePinnedState, scheduleUserInteractionEnd, viewMode]);
+  }, [beginUserInteraction, endUserInteraction, recomputePinnedState, scheduleUserInteractionEnd, viewMode]);
 
   useLayoutEffect(() => {
     if (viewMode !== "chat" || !isPinnedToLatest || isUserInteracting) {
@@ -1884,18 +1918,29 @@ function ThreadDetail({
     }
 
     const frame = window.requestAnimationFrame(() => {
-      if (scrollAnchorRef.current) {
-        scrollAnchorRef.current.scrollIntoView({ block: "end" });
+      const anchorNode = scrollAnchorRef.current;
+      const containerNode = scrollRef.current;
+
+      if (!anchorNode && !containerNode) {
         return;
       }
 
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      autoScrollingRef.current = true;
+
+      if (anchorNode) {
+        anchorNode.scrollIntoView({ block: "end" });
+      } else if (containerNode) {
+        containerNode.scrollTop = containerNode.scrollHeight;
       }
+
+      window.requestAnimationFrame(() => {
+        autoScrollingRef.current = false;
+        recomputePinnedState();
+      });
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, isUserInteracting, messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
+  }, [isPinnedToLatest, isUserInteracting, messagesLoading, recomputePinnedState, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
