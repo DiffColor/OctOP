@@ -1044,18 +1044,22 @@ function ProjectComposer({
     return (
       <div key={entry.path} className="space-y-1">
         <div
-          className={`group flex items-center gap-2 rounded-2xl border px-3 py-2.5 transition ${
+          className={`group flex min-h-[3.25rem] cursor-pointer items-stretch gap-2 rounded-2xl border px-3 py-2.5 transition ${
             selected
               ? "border-sky-400/40 bg-sky-500/10"
               : "border-slate-800/80 bg-slate-900/30 hover:border-slate-700"
           }`}
           style={{ marginLeft: `${depth * 12}px` }}
+          onClick={() => handleSelectPath(entry.path)}
         >
           <button
             type="button"
-            onClick={() => void togglePath(entry.path)}
+            onClick={(event) => {
+              event.stopPropagation();
+              void togglePath(entry.path);
+            }}
             className="flex h-7 w-7 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/70 text-slate-400 transition hover:border-slate-700 hover:text-white"
-              aria-label={expanded ? copy.projectComposer.parentFolder : copy.projectComposer.browserTitle}
+            aria-label={expanded ? copy.projectComposer.parentFolder : copy.projectComposer.browserTitle}
           >
             <svg
               className={`h-3.5 w-3.5 transition ${expanded ? "rotate-90" : ""}`}
@@ -1067,20 +1071,16 @@ function ProjectComposer({
             </svg>
           </button>
 
-          <button
-            type="button"
-            onClick={() => handleSelectPath(entry.path)}
-            className="min-w-0 flex-1 text-left"
-          >
+          <div className="flex min-w-0 flex-1 items-center text-left">
             <div className="flex items-center gap-2">
               <svg className="h-4 w-4 shrink-0 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
               </svg>
               <OverflowRevealText value={entry.name} className="text-sm font-medium text-white" />
             </div>
-          </button>
+          </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <div className="pointer-events-none flex shrink-0 flex-wrap items-center gap-1">
             {entry.is_workspace ? (
               <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] text-sky-300">{copy.projectComposer.workspace}</span>
             ) : null}
