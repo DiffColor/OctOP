@@ -70,6 +70,7 @@ code,
 }
 
 .custom-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
   width: 10px;
   height: 10px;
 }
@@ -90,6 +91,7 @@ code,
 }
 
 .board-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
   height: 12px;
 }
 
