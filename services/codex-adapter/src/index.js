@@ -181,6 +181,27 @@ function loadThreadsForUser(loginId) {
     }
   }
 
+  const restoredQueueIds = Array.isArray(stored.queue_ids)
+    ? stored.queue_ids.filter((threadId) => threadIds.has(threadId))
+    : [...threadIds]
+        .map((threadId) => threadStateById.get(threadId))
+        .filter((thread) => thread?.status === "queued")
+        .sort((left, right) => {
+          const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+          const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+
+          if (leftOrder !== rightOrder) {
+            return leftOrder - rightOrder;
+          }
+
+          return Date.parse(left.updated_at) - Date.parse(right.updated_at);
+        })
+        .map((thread) => thread.id);
+
+  if (restoredQueueIds.length > 0) {
+    pendingStartQueues.set(loginId, [...restoredQueueIds]);
+  }
+
   return threadIds;
 }
 
@@ -197,6 +218,7 @@ function persistThreadsForUser(loginId) {
 
   storage[normalized] = {
     thread_ids: threadIds,
+    queue_ids: ensurePendingQueue(normalized).filter((threadId) => threadIds.includes(threadId)),
     threads: Object.fromEntries(
       threadIds.map((threadId) => [threadId, threadStateById.get(threadId)])
     ),
@@ -1380,7 +1402,7 @@ async function createQueuedIssue(userId, payload = {}) {
       project_id: projectId,
       prompt,
       progress: 5,
-      status: "queued",
+      status: "staged",
       last_event: "issue.created"
     })
   );
@@ -1409,8 +1431,27 @@ async function startQueuedThreads(userId, payload = {}) {
     .map((threadId) => String(threadId))
     .filter((threadId) => {
       const thread = threadStateById.get(threadId);
-      return Boolean(thread && state.threadIds.has(threadId) && !["running", "completed"].includes(thread.status));
+      return Boolean(
+        thread &&
+          state.threadIds.has(threadId) &&
+          !["running", "completed", "failed"].includes(thread.status)
+      );
     });
+
+  for (const threadId of eligibleThreadIds) {
+    const thread = threadStateById.get(threadId);
+
+    if (!thread || thread.status !== "staged") {
+      continue;
+    }
+
+    upsertThreadState(threadId, {
+      ...thread,
+      status: "queued",
+      progress: Math.max(thread.progress ?? 0, 10),
+      last_event: "thread.queued"
+    });
+  }
 
   enqueueThreadsForStart(userId, eligibleThreadIds);
   refreshQueuePositions(userId);
@@ -1427,6 +1468,29 @@ async function startQueuedThreads(userId, payload = {}) {
   };
 }
 
+async function reorderQueuedThreads(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const queue = ensurePendingQueue(normalized);
+  const requestedThreadIds = Array.isArray(payload.thread_ids)
+    ? payload.thread_ids.map((threadId) => String(threadId))
+    : [];
+  const reorderedIds = requestedThreadIds.filter((threadId) => queue.includes(threadId));
+  const remainingIds = queue.filter((threadId) => !reorderedIds.includes(threadId));
+
+  pendingStartQueues.set(normalized, [...reorderedIds, ...remainingIds]);
+  refreshQueuePositions(normalized);
+  await publishEvent(normalized, "threads.reordered", {
+    thread_ids: reorderedIds
+  });
+  await publishEvent(normalized, "bridge.threads.updated", { threads: listLocalThreads(normalized) });
+
+  return {
+    accepted: true,
+    queued_thread_ids: ensurePendingQueue(normalized),
+    threads: listLocalThreads(normalized)
+  };
+}
+
 async function deleteThread(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
 
@@ -1440,8 +1504,8 @@ async function deleteThread(userId, payload = {}) {
     throw new Error("이슈를 찾을 수 없습니다.");
   }
 
-  if (!["queued", "idle", "awaiting_input", "failed"].includes(thread.status)) {
-    throw new Error("To Do 또는 보류 상태의 이슈만 삭제할 수 있습니다.");
+  if (!["staged", "queued", "idle", "awaiting_input", "failed"].includes(thread.status)) {
+    throw new Error("준비 또는 보류 상태의 이슈만 삭제할 수 있습니다.");
   }
 
   deleteThreadState(userId, threadId);
@@ -1541,6 +1605,10 @@ async function subscribeRequests() {
       handler: async (userId, body) => ({
         threads: listVisibleThreads(userId, String(body.project_id ?? ""))
       })
+    },
+    {
+      subject: "octop.user.*.bridge.*.threads.reorder",
+      handler: async (userId, body) => reorderQueuedThreads(userId, body)
     },
     {
       subject: "octop.user.*.bridge.*.thread.detail.get",
@@ -1694,6 +1762,27 @@ async function subscribeRequests() {
     }
   })();
 
+  const threadsReorderSubscription = nc.subscribe("octop.user.*.bridge.*.threads.reorder");
+
+  (async () => {
+    for await (const message of threadsReorderSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await reorderQueuedThreads(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const pingSubscription = nc.subscribe("octop.user.*.bridge.*.command.ping");
 
   (async () => {
@@ -1811,6 +1900,16 @@ createServer(async (request, response) => {
     try {
       const body = await readJsonBody(request);
       const payload = await startQueuedThreads(userId, body);
+      return sendJson(response, 202, payload);
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/threads/reorder") {
+    try {
+      const body = await readJsonBody(request);
+      const payload = await reorderQueuedThreads(userId, body);
       return sendJson(response, 202, payload);
     } catch (error) {
       return sendJson(response, 400, { error: error.message });

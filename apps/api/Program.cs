@@ -474,6 +474,44 @@ app.MapPost("/api/threads/start", async (HttpContext httpContext, BridgeNatsClie
   );
 });
 
+app.MapPost("/api/threads/reorder", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var threadIds = body?["thread_ids"]?.AsArray()
+    .Select(node => node?.GetValue<string>())
+    .Where(value => !string.IsNullOrWhiteSpace(value))
+    .Cast<string>()
+    .ToArray() ?? [];
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ThreadsReorder,
+    new
+    {
+      user_id = userId,
+      login_id = userId,
+      bridge_id = bridgeId,
+      thread_ids = threadIds
+    },
+    cancellationToken
+  );
+
+  var accepted = payload?["accepted"]?.GetValue<bool?>() ?? true;
+  return Results.Text(
+    payload?.ToJsonString() ?? "{}",
+    "application/json; charset=utf-8",
+    statusCode: accepted ? StatusCodes.Status202Accepted : StatusCodes.Status502BadGateway
+  );
+});
+
 app.MapDelete("/api/threads/{threadId}", async (
   string threadId,
   HttpContext httpContext,

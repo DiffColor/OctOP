@@ -10,6 +10,7 @@ const DEFAULT_API_BASE_URL =
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
 
 const COLUMN_ORDER = [
+  { id: "prep", label: "준비", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
   { id: "todo", label: "To Do", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
   { id: "running", label: "In Progress", accent: "blue", countClassName: "bg-sky-500/10 text-sky-300" },
   { id: "review", label: "Review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
@@ -17,6 +18,12 @@ const COLUMN_ORDER = [
 ];
 
 const STATUS_META = {
+  staged: {
+    column: "prep",
+    label: "준비",
+    chipClassName: "bg-slate-800 text-slate-300",
+    dotClassName: "bg-slate-400"
+  },
   queued: {
     column: "todo",
     label: "Queued",
@@ -1062,12 +1069,57 @@ function ThreadDetailModal({ open, loading, thread, messages, onClose }) {
   );
 }
 
-function TodoThreadCard({
+function PrepThreadCard({
   thread,
   selected,
   active,
   onSelect,
   onToggle,
+  onDelete
+}) {
+  return (
+    <div
+      className={`rounded-xl border px-3.5 py-3 transition ${
+        active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(thread.id)}
+          className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
+              <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
+              <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(thread.id)}
+              className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
+            >
+              삭제
+            </button>
+          </div>
+
+          <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+            <span>{formatRelativeTime(thread.updated_at)}</span>
+            <span className="text-slate-700">•</span>
+            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">준비</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TodoThreadCard({
+  thread,
+  active,
+  onSelect,
   onDelete,
   onDragStart,
   onDragOver,
@@ -1089,51 +1141,69 @@ function TodoThreadCard({
         active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
-      <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={() => onToggle(thread.id)}
-          className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
-        />
-
+      <div className="flex items-start justify-between gap-3">
         <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
-              <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDelete(thread.id);
-                }}
-                className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
-              >
-                삭제
-              </button>
-              {thread.queue_position ? (
-                <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
-                  #{thread.queue_position}
-                </span>
-              ) : null}
-              <span className="cursor-grab rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400">
-                drag
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-            <span>{formatRelativeTime(thread.updated_at)}</span>
-            <span className="text-slate-700">•</span>
-            <span className="font-mono">{thread.id.slice(0, 8)}</span>
-          </div>
+          <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
+          <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
         </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onDelete(thread.id)}
+            className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
+          >
+            삭제
+          </button>
+          {thread.queue_position ? (
+            <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
+              #{thread.queue_position}
+            </span>
+          ) : null}
+          <span className="cursor-grab rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400">
+            drag
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+        <span>{formatRelativeTime(thread.updated_at)}</span>
+        <span className="text-slate-700">•</span>
+        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">대기열</span>
       </div>
     </div>
   );
+}
+
+function getColumnAccentClassName(columnId) {
+  switch (columnId) {
+    case "prep":
+    case "todo":
+      return "text-slate-400";
+    case "running":
+      return "text-sky-400";
+    case "review":
+      return "text-violet-400";
+    case "done":
+      return "text-emerald-400";
+    default:
+      return "text-slate-400";
+  }
+}
+
+function getColumnDotClassName(columnId) {
+  switch (columnId) {
+    case "prep":
+    case "todo":
+      return "bg-slate-400";
+    case "running":
+      return "bg-sky-400";
+    case "review":
+      return "bg-violet-400";
+    case "done":
+      return "bg-emerald-400";
+    default:
+      return "bg-slate-400";
+  }
 }
 
 function ThreadCard({ thread, selected, onSelect }) {
@@ -1278,8 +1348,8 @@ function MainPage({
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
   });
-  const queuedSelectedCount = filteredThreads.filter(
-    (thread) => selectedThreadIds.includes(thread.id) && getStatusMeta(thread.status).column === "todo"
+  const prepSelectedCount = filteredThreads.filter(
+    (thread) => selectedThreadIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
 
   return (
@@ -1324,16 +1394,20 @@ function MainPage({
                     ).length;
 
                     return (
-                      <button
+                      <div
                         key={project.id}
-                        type="button"
-                        onClick={() => onSelectProject(project.id)}
-                        className={`w-full rounded-md px-3 py-3 text-left transition ${
+                        className={`w-full rounded-md px-3 py-3 transition ${
                           active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <span className="truncate text-sm font-medium">{project.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => onSelectProject(project.id)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <span className="truncate text-sm font-medium">{project.name}</span>
+                          </button>
                           <div className="flex items-center gap-2">
                             <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
                               {projectThreads.length}
@@ -1355,7 +1429,7 @@ function MainPage({
                           <span className="text-slate-700">•</span>
                           <span>Queued {queuedCount}</span>
                         </div>
-                      </button>
+                      </div>
                     );
                   })
                 )}
@@ -1419,10 +1493,10 @@ function MainPage({
                 <button
                   type="button"
                   onClick={onStartSelectedThreads}
-                  disabled={queuedSelectedCount === 0 || startBusy}
+                  disabled={prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {startBusy ? "시작 중..." : `선택 작업 시작${queuedSelectedCount > 0 ? ` (${queuedSelectedCount})` : ""}`}
+                  {startBusy ? "이동 중..." : `선택 항목 To Do로 이동${prepSelectedCount > 0 ? ` (${prepSelectedCount})` : ""}`}
                 </button>
 
                 <button
@@ -1481,7 +1555,7 @@ function MainPage({
               <div className="flex items-center gap-3">
                 <span>{selectedProject ? `${projectScopedThreads.length} issues` : "프로젝트를 선택해 주세요."}</span>
                 <span className="text-slate-700">•</span>
-                <span>To Do 컬럼에서 체크 후 드래그로 순서를 정한 뒤 시작합니다.</span>
+                <span>준비 컬럼에서 선택한 이슈를 To Do로 옮기면 순차 진행됩니다. To Do에서는 드래그로 순서를 조정할 수 있습니다.</span>
               </div>
               <div className="hidden items-center gap-2 md:flex">
                 <span>{loadingState === "loading" ? "동기화 중" : `마지막 갱신 ${formatRelativeTime(status.updated_at)}`}</span>
@@ -1494,26 +1568,10 @@ function MainPage({
                   <section key={column.id} className="flex w-80 flex-col">
                     <div className="mb-4 flex items-center justify-between">
                       <h3
-                        className={`flex items-center text-sm font-bold uppercase tracking-widest ${
-                          column.id === "todo"
-                            ? "text-slate-400"
-                            : column.id === "running"
-                              ? "text-sky-400"
-                              : column.id === "review"
-                                ? "text-violet-400"
-                                : "text-emerald-400"
-                        }`}
+                        className={`flex items-center text-sm font-bold uppercase tracking-widest ${getColumnAccentClassName(column.id)}`}
                       >
                         <span
-                          className={`mr-2 h-2 w-2 rounded-full ${
-                            column.id === "todo"
-                              ? "bg-slate-400"
-                              : column.id === "running"
-                                ? "bg-sky-400"
-                                : column.id === "review"
-                                  ? "bg-violet-400"
-                                  : "bg-emerald-400"
-                          } ${column.id === "running" ? "animate-pulse" : ""}`}
+                          className={`mr-2 h-2 w-2 rounded-full ${getColumnDotClassName(column.id)} ${column.id === "running" ? "animate-pulse" : ""}`}
                         />
                         {column.label}
                         <span className="ml-2 rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300">
@@ -1529,15 +1587,27 @@ function MainPage({
                         </div>
                       ) : (
                         column.threads.map((thread) => {
-                          if (column.id === "todo") {
+                          if (column.id === "prep") {
                             return (
-                              <TodoThreadCard
+                              <PrepThreadCard
                                 key={thread.id}
                                 thread={thread}
                                 selected={selectedThreadIds.includes(thread.id)}
                                 active={thread.id === selectedThreadId}
                                 onSelect={onSelectThread}
                                 onToggle={onToggleThreadSelection}
+                                onDelete={onDeleteThread}
+                              />
+                            );
+                          }
+
+                          if (column.id === "todo") {
+                            return (
+                              <TodoThreadCard
+                                key={thread.id}
+                                thread={thread}
+                                active={thread.id === selectedThreadId}
+                                onSelect={onSelectThread}
                                 onDelete={onDeleteThread}
                                 onDragStart={onDragQueueThread.start}
                                 onDragOver={onDragQueueThread.over}
@@ -2015,7 +2085,7 @@ export default function App() {
           (thread) =>
             thread.id === threadId &&
             thread.project_id === selectedProjectId &&
-            getStatusMeta(thread.status).column === "todo"
+            getStatusMeta(thread.status).column === "prep"
         )
       )
     );
@@ -2094,7 +2164,6 @@ export default function App() {
       if (response?.thread) {
         setThreads((current) => upsertThread(current, response.thread));
         setSelectedThreadId(response.thread.id);
-        setQueueOrderIds((current) => [response.thread.id, ...current.filter((threadId) => threadId !== response.thread.id)]);
       }
 
       setComposerOpen(false);
@@ -2116,7 +2185,7 @@ export default function App() {
   const handleToggleThreadSelection = (threadId) => {
     const thread = threads.find((item) => item.id === threadId);
 
-    if (!thread || getStatusMeta(thread.status).column !== "todo") {
+    if (!thread || getStatusMeta(thread.status).column !== "prep") {
       return;
     }
 
@@ -2130,13 +2199,12 @@ export default function App() {
       return;
     }
 
-    const queuedThreadIds = queueOrderIds.filter((threadId) => {
+    const queuedThreadIds = selectedThreadIds.filter((threadId) => {
       const thread = threads.find((item) => item.id === threadId);
       return (
-        selectedThreadIds.includes(threadId) &&
         thread &&
         thread.project_id === selectedProjectId &&
-        getStatusMeta(thread.status).column === "todo"
+        getStatusMeta(thread.status).column === "prep"
       );
     });
 
@@ -2224,8 +2292,50 @@ export default function App() {
     },
     over: () => {},
     drop: (targetId) => {
-      setQueueOrderIds((current) => reorderIds(current, draggingThreadId, targetId));
+      const nextOrder = reorderIds(queueOrderIds, draggingThreadId, targetId);
+      setQueueOrderIds(nextOrder);
       setDraggingThreadId("");
+
+      if (!session?.loginId || !selectedBridgeId) {
+        return;
+      }
+
+      const projectQueueIds = nextOrder.filter((threadId) => {
+        const thread = threads.find((item) => item.id === threadId);
+        return (
+          thread &&
+          thread.project_id === selectedProjectId &&
+          getStatusMeta(thread.status).column === "todo"
+        );
+      });
+
+      void (async () => {
+        try {
+          const response = await apiRequest(
+            `/api/threads/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                thread_ids: projectQueueIds
+              })
+            }
+          );
+
+          if (Array.isArray(response?.threads)) {
+            setThreads(mergeThreads([], response.threads));
+          }
+        } catch (error) {
+          setRecentEvents((current) => [
+            {
+              id: createId(),
+              type: "threads.reorder.failed",
+              timestamp: new Date().toISOString(),
+              summary: error.message
+            },
+            ...current
+          ].slice(0, 20));
+        }
+      })();
     }
   };
 
@@ -2315,6 +2425,10 @@ export default function App() {
 
   const handleDeleteProject = async (projectId) => {
     if (!session?.loginId || !selectedBridgeId || !projectId) {
+      return;
+    }
+
+    if (!window.confirm("프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.")) {
       return;
     }
 

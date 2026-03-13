@@ -63,6 +63,7 @@ export function bridgeSubjects(userId, bridgeId = "local-bridge") {
     workspaceRootsGet: `${base}.workspace.roots.get`,
     folderListGet: `${base}.folder.list.get`,
     threadsGet: `${base}.threads.get`,
+    threadsReorder: `${base}.threads.reorder`,
     threadDetailGet: `${base}.thread.detail.get`,
     threadDelete: `${base}.thread.delete`,
     issueCreate: `${base}.issue.create`,
