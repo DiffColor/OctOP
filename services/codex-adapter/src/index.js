@@ -2179,7 +2179,8 @@ function formatAccount(accountInfo) {
     type: accountInfo.account.type ?? null,
     email: accountInfo.account.email ?? null,
     plan_type: accountInfo.account.planType ?? null,
-    requires_openai_auth: Boolean(accountInfo.requiresOpenaiAuth)
+    requires_openai_auth: Boolean(accountInfo.requiresOpenaiAuth),
+    rate_limits: accountInfo.rateLimits ?? null
   };
 }
 
@@ -2355,6 +2356,19 @@ class AppServerClient {
   }
 
   async handleNotification(method, params) {
+    if (method === "account/rateLimits/updated") {
+      this.account = {
+        ...(this.account ?? {}),
+        rate_limits: params.rateLimits ?? null
+      };
+
+      if (BRIDGE_OWNER_LOGIN_ID) {
+        await publishEvent(BRIDGE_OWNER_LOGIN_ID, "bridge.status.updated", await bridgeStatus(BRIDGE_OWNER_LOGIN_ID));
+      }
+
+      return;
+    }
+
     const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
     const threadId = resolveLocalThreadId(codexThreadId);
     let owner = resolveOwnerFromParams(params);
