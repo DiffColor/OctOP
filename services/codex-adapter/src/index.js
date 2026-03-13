@@ -1184,7 +1184,7 @@ async function bridgeStatus(userId) {
     appServer.lastError = error.message;
   }
 
-  const threads = await listThreads(userId);
+  const threads = listLocalThreads(userId);
 
   return {
     bridge_mode: BRIDGE_MODE,
@@ -1222,6 +1222,16 @@ function listLocalThreads(userId) {
     .map((threadId) => threadStateById.get(threadId) ?? null)
     .filter(Boolean)
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function listVisibleThreads(userId, projectId = "") {
+  const threads = listLocalThreads(userId);
+
+  if (!projectId) {
+    return threads;
+  }
+
+  return threads.filter((thread) => thread.project_id === projectId);
 }
 
 async function listThreads(userId) {
@@ -1528,7 +1538,9 @@ async function subscribeRequests() {
     },
     {
       subject: "octop.user.*.bridge.*.threads.get",
-      handler: async (userId) => ({ threads: await listThreads(userId) })
+      handler: async (userId, body) => ({
+        threads: listVisibleThreads(userId, String(body.project_id ?? ""))
+      })
     },
     {
       subject: "octop.user.*.bridge.*.thread.detail.get",
@@ -1765,7 +1777,9 @@ createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && url.pathname === "/api/threads") {
-    return sendJson(response, 200, { threads: await listThreads(userId) });
+    return sendJson(response, 200, {
+      threads: listVisibleThreads(userId, url.searchParams.get("project_id") ?? "")
+    });
   }
 
   if (request.method === "GET" && url.pathname.startsWith("/api/threads/")) {
