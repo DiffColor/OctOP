@@ -1801,9 +1801,7 @@ function MainPage({
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
-  const [footerHeight, setFooterHeight] = useState(44);
   const languageMenuRef = useRef(null);
-  const footerRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1873,37 +1871,6 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const footer = footerRef.current;
-
-    if (!footer) {
-      return undefined;
-    }
-
-    const syncFooterHeight = () => {
-      const next = Math.ceil(footer.getBoundingClientRect().height);
-      setFooterHeight((current) => (current === next ? current : next));
-    };
-
-    syncFooterHeight();
-
-    const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(syncFooterHeight);
-    });
-
-    resizeObserver.observe(footer);
-    window.addEventListener("resize", syncFooterHeight);
-
-    return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", syncFooterHeight);
-    };
-  }, []);
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -1977,10 +1944,7 @@ function MainPage({
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col">
-        <div
-          className="flex overflow-hidden"
-          style={{ height: `calc(100vh - ${footerHeight}px)` }}
-        >
+        <div className="flex flex-1 overflow-hidden">
           <aside
             className="hidden shrink-0 border-r border-slate-800 bg-[#0f172a] md:flex md:flex-col"
             style={{ width: `${sidebarWidth}px` }}
@@ -2270,7 +2234,7 @@ function MainPage({
               </div>
             </div>
 
-            <div className="octop-board-shell flex-1 min-h-0 overflow-x-scroll overflow-y-hidden">
+            <div className="octop-board-shell flex-1 min-h-0 overflow-y-hidden">
               <div className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
@@ -2375,10 +2339,7 @@ function MainPage({
           </main>
         </div>
 
-        <footer
-          ref={footerRef}
-          className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8"
-        >
+        <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative mr-2" ref={languageMenuRef}>

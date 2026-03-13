@@ -91,16 +91,14 @@ code,
 .octop-board-shell {
   min-height: 0;
   height: 100%;
-  overflow-x: scroll;
+  overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: auto;
   scrollbar-width: auto;
   scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
-  overscroll-behavior-x: contain;
 }
 
 .octop-board-shell::-webkit-scrollbar {
-  -webkit-appearance: none;
   height: 10px;
 }
 
@@ -111,7 +109,6 @@ code,
 .octop-board-shell::-webkit-scrollbar-thumb {
   background: #475569;
   border-radius: 999px;
-  border: 2px solid rgba(15, 23, 42, 0.92);
 }
 
 .octop-board-shell-inner {
