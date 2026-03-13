@@ -1068,6 +1068,7 @@ function TodoThreadCard({
   active,
   onSelect,
   onToggle,
+  onDelete,
   onDragStart,
   onDragOver,
   onDrop
@@ -1103,6 +1104,16 @@ function TodoThreadCard({
               <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(thread.id);
+                }}
+                className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
+              >
+                삭제
+              </button>
               {thread.queue_position ? (
                 <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
                   #{thread.queue_position}
@@ -1210,6 +1221,8 @@ function MainPage({
   onToggleThreadSelection,
   onStartSelectedThreads,
   onOpenCompletedThread,
+  onDeleteThread,
+  onDeleteProject,
   onDragQueueThread,
   onOpenProjectComposer,
   onOpenComposer,
@@ -1321,9 +1334,21 @@ function MainPage({
                       >
                         <div className="flex items-center justify-between gap-3">
                           <span className="truncate text-sm font-medium">{project.name}</span>
-                          <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
-                            {projectThreads.length}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
+                              {projectThreads.length}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onDeleteProject(project.id);
+                              }}
+                              className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
+                            >
+                              삭제
+                            </button>
+                          </div>
                         </div>
                         <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">
                           <span>{project.key}</span>
@@ -1513,6 +1538,7 @@ function MainPage({
                                 active={thread.id === selectedThreadId}
                                 onSelect={onSelectThread}
                                 onToggle={onToggleThreadSelection}
+                                onDelete={onDeleteThread}
                                 onDragStart={onDragQueueThread.start}
                                 onDragOver={onDragQueueThread.over}
                                 onDrop={onDragQueueThread.drop}
@@ -2252,6 +2278,86 @@ export default function App() {
     }
   };
 
+  const handleDeleteThread = async (threadId) => {
+    if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      if (Array.isArray(response?.threads)) {
+        setThreads(mergeThreads([], response.threads));
+      } else {
+        setThreads((current) => current.filter((thread) => thread.id !== threadId));
+      }
+
+      setSelectedThreadIds((current) => current.filter((item) => item !== threadId));
+      setQueueOrderIds((current) => current.filter((item) => item !== threadId));
+      setSelectedThreadId((current) => (current === threadId ? "" : current));
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "thread.delete.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    if (!session?.loginId || !selectedBridgeId || !projectId) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/projects/${encodeURIComponent(projectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      if (Array.isArray(response?.projects)) {
+        setProjects(response.projects);
+      } else {
+        setProjects((current) => current.filter((project) => project.id !== projectId));
+      }
+
+      if (Array.isArray(response?.threads)) {
+        setThreads(mergeThreads([], response.threads));
+      } else {
+        setThreads((current) => current.filter((thread) => thread.project_id !== projectId));
+      }
+
+      setSelectedProjectId((current) => (current === projectId ? "" : current));
+      setSelectedThreadIds((current) =>
+        current.filter((threadId) => threads.find((thread) => thread.id === threadId)?.project_id !== projectId)
+      );
+      setQueueOrderIds((current) =>
+        current.filter((threadId) => threads.find((thread) => thread.id === threadId)?.project_id !== projectId)
+      );
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "project.delete.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
+  };
+
   const handleRefresh = async () => {
     if (!session?.loginId) {
       return;
@@ -2335,6 +2441,8 @@ export default function App() {
       onToggleThreadSelection={handleToggleThreadSelection}
       onStartSelectedThreads={() => void handleStartSelectedThreads()}
       onOpenCompletedThread={(threadId) => void handleOpenCompletedThread(threadId)}
+      onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
+      onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onDragQueueThread={handleDragQueueThread}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}

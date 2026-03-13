@@ -230,15 +230,22 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
 
     var projects = @event["payload"]?["projects"] as JArray;
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
+    var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
+    var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+    var projectIds = new HashSet<string>(
+      (projects ?? []).OfType<JObject>()
+        .Select(token => token.Value<string>("id"))
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>(),
+      StringComparer.Ordinal);
+
+    await DeleteMissingProjectsAsync(connection, loginId, bridgeId, projectIds);
 
     if (projects is null || projects.Count == 0)
     {
       return;
     }
-
-    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
-    var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
-    var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
 
     foreach (var token in projects.OfType<JObject>())
     {
@@ -304,6 +311,14 @@ public sealed class ProjectionWorkerService : BackgroundService
     }
 
     var threads = @event["payload"]?["threads"] as JArray;
+    var threadIds = new HashSet<string>(
+      (threads ?? []).OfType<JObject>()
+        .Select(item => item.Value<string>("id"))
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>(),
+      StringComparer.Ordinal);
+
+    await DeleteMissingThreadsAsync(connection, loginId, bridgeId, threadIds);
 
     if (threads is null)
     {
@@ -402,5 +417,85 @@ public sealed class ProjectionWorkerService : BackgroundService
   {
     return string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase);
+  }
+
+  private async Task DeleteMissingProjectsAsync(
+    RethinkConnection connection,
+    string loginId,
+    string bridgeId,
+    HashSet<string> activeProjectIds)
+  {
+    var existingProjects = await _r.Db(_rethinkDb).Table(ProjectTable).RunResultAsync<JArray>(connection);
+
+    foreach (var project in existingProjects.OfType<JObject>())
+    {
+      var projectId = project.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(projectId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(project.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(project.Value<string>("owner_login_id") ?? project.Value<string>("owner_user_id"), loginId, StringComparison.Ordinal) &&
+        !activeProjectIds.Contains(projectId))
+      {
+        await _r.Db(_rethinkDb).Table(ProjectTable).Get(projectId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+
+    var memberships = await _r.Db(_rethinkDb).Table(ProjectMemberTable).RunResultAsync<JArray>(connection);
+
+    foreach (var membership in memberships.OfType<JObject>())
+    {
+      var membershipId = membership.Value<string>("id");
+      var projectId = membership.Value<string>("project_id");
+
+      if (string.IsNullOrWhiteSpace(membershipId) || string.IsNullOrWhiteSpace(projectId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(membership.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(membership.Value<string>("login_id") ?? membership.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        !activeProjectIds.Contains(projectId))
+      {
+        await _r.Db(_rethinkDb).Table(ProjectMemberTable).Get(membershipId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+  }
+
+  private async Task DeleteMissingThreadsAsync(
+    RethinkConnection connection,
+    string? loginId,
+    string? bridgeId,
+    HashSet<string> activeThreadIds)
+  {
+    if (string.IsNullOrWhiteSpace(loginId) || string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return;
+    }
+
+    var existingThreads = await _r.Db(_rethinkDb).Table(ThreadTable).RunResultAsync<JArray>(connection);
+
+    foreach (var thread in existingThreads.OfType<JObject>())
+    {
+      var threadId = thread.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(threadId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(thread.Value<string>("login_id") ?? thread.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        !activeThreadIds.Contains(threadId))
+      {
+        await _r.Db(_rethinkDb).Table(ThreadTable).Get(threadId).Delete().RunResultAsync<object>(connection);
+      }
+    }
   }
 }

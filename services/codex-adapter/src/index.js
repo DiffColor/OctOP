@@ -1157,6 +1157,18 @@ function removeThreadFromQueue(userId, threadId) {
   }
 }
 
+function deleteThreadState(userId, threadId) {
+  const normalized = sanitizeUserId(userId);
+  const state = ensureUserState(normalized);
+  state.threadIds.delete(threadId);
+  removeThreadFromQueue(normalized, threadId);
+  threadOwners.delete(threadId);
+  threadStateById.delete(threadId);
+  threadEventsById.delete(threadId);
+  threadMessagesById.delete(threadId);
+  persistThreadsForUser(normalized);
+}
+
 function hasRunningThread(userId) {
   return listLocalThreads(userId).some((thread) => thread.status === "running");
 }
@@ -1405,6 +1417,86 @@ async function startQueuedThreads(userId, payload = {}) {
   };
 }
 
+async function deleteThread(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+
+  if (!threadId) {
+    throw new Error("삭제할 이슈 id가 필요합니다.");
+  }
+
+  const thread = threadStateById.get(threadId);
+
+  if (!thread || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  if (!["queued", "idle", "awaiting_input", "failed"].includes(thread.status)) {
+    throw new Error("To Do 또는 보류 상태의 이슈만 삭제할 수 있습니다.");
+  }
+
+  deleteThreadState(userId, threadId);
+  refreshQueuePositions(userId);
+  await publishEvent(userId, "thread.deleted", {
+    thread_id: threadId,
+    project_id: thread.project_id
+  });
+  await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+
+  return {
+    accepted: true,
+    thread_id: threadId,
+    threads: listLocalThreads(userId)
+  };
+}
+
+async function deleteProject(userId, payload = {}) {
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+
+  if (!projectId) {
+    throw new Error("삭제할 프로젝트 id가 필요합니다.");
+  }
+
+  const normalized = sanitizeUserId(userId);
+  const state = ensureUserState(normalized);
+  const project = state.projects.find((item) => item.id === projectId);
+
+  if (!project) {
+    throw new Error("프로젝트를 찾을 수 없습니다.");
+  }
+
+  const runningThread = [...state.threadIds]
+    .map((threadId) => threadStateById.get(threadId))
+    .find((thread) => thread?.project_id === projectId && thread.status === "running");
+
+  if (runningThread) {
+    throw new Error("실행 중인 이슈가 있어 프로젝트를 삭제할 수 없습니다.");
+  }
+
+  const projectThreadIds = [...state.threadIds].filter(
+    (threadId) => threadStateById.get(threadId)?.project_id === projectId
+  );
+
+  for (const threadId of projectThreadIds) {
+    deleteThreadState(normalized, threadId);
+  }
+
+  state.projects = state.projects.filter((item) => item.id !== projectId);
+  state.updated_at = now();
+  persistUserProjects(normalized, state.projects);
+  refreshQueuePositions(normalized);
+
+  await publishEvent(normalized, "project.deleted", { project_id: projectId });
+  await publishEvent(normalized, "bridge.projects.updated", { projects: state.projects });
+  await publishEvent(normalized, "bridge.threads.updated", { threads: listLocalThreads(normalized) });
+
+  return {
+    accepted: true,
+    project_id: projectId,
+    projects: state.projects,
+    threads: listLocalThreads(normalized)
+  };
+}
+
 function resolveProjectWorkspace(userId, projectId) {
   const state = ensureUserState(userId);
   const project =
@@ -1486,6 +1578,27 @@ async function subscribeRequests() {
     }
   })();
 
+  const projectDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.project.delete");
+
+  (async () => {
+    for await (const message of projectDeleteSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.login_id ?? body.user_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await deleteProject(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const folderListSubscription = nc.subscribe("octop.user.*.bridge.*.folder.list.get");
 
   (async () => {
@@ -1520,6 +1633,27 @@ async function subscribeRequests() {
         }
 
         const result = await createQueuedIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.thread.delete");
+
+  (async () => {
+    for await (const message of threadDeleteSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await deleteThread(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1620,6 +1754,16 @@ createServer(async (request, response) => {
     }
   }
 
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/projects/")) {
+    try {
+      const projectId = url.pathname.split("/").at(-1);
+      const payload = await deleteProject(userId, { project_id: projectId });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
   if (request.method === "GET" && url.pathname === "/api/threads") {
     return sendJson(response, 200, { threads: await listThreads(userId) });
   }
@@ -1627,6 +1771,16 @@ createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname.startsWith("/api/threads/")) {
     const threadId = url.pathname.split("/").at(-1);
     return sendJson(response, 200, getThreadDetail(userId, threadId));
+  }
+
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/threads/")) {
+    try {
+      const threadId = url.pathname.split("/").at(-1);
+      const payload = await deleteThread(userId, { thread_id: threadId });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/issues") {
