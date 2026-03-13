@@ -184,8 +184,6 @@ function ensureUserState(userId) {
     persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
   }
 
-  ensureDefaultThreadsForProjects(normalized, state.projects);
-
   return state;
 }
 
@@ -646,32 +644,6 @@ function ensureDefaultProjectThread(loginId, projectId, preferredName = "Main") 
   getThreadIssueIds(threadId);
   persistThreadById(threadId);
   return threadId;
-}
-
-function ensureDefaultThreadsForProjects(loginId, projects = []) {
-  const normalized = sanitizeUserId(loginId);
-  const state = users.get(normalized);
-
-  if (!state) {
-    return;
-  }
-
-  let changed = false;
-
-  for (const project of projects) {
-    const exists = [...state.threadIds].some((threadId) => threadStateById.get(threadId)?.project_id === project.id);
-
-    if (exists) {
-      continue;
-    }
-
-    ensureDefaultProjectThread(normalized, project.id, "Main");
-    changed = true;
-  }
-
-  if (changed) {
-    persistThreadsForUser(normalized);
-  }
 }
 
 function listProjectThreads(userId, projectId = "") {

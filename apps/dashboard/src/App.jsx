@@ -472,6 +472,38 @@ function formatRelativeTime(value, language) {
   return formatter.format(Math.round(diffSeconds / 604800), "week");
 }
 
+function formatCompactRelativeTime(value) {
+  if (!value) {
+    return "0m";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "0m";
+  }
+
+  const diffSeconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+
+  if (diffSeconds < 60) {
+    return "1m";
+  }
+
+  if (diffSeconds < 3600) {
+    return `${Math.max(1, Math.floor(diffSeconds / 60))}m`;
+  }
+
+  if (diffSeconds < 86400) {
+    return `${Math.max(1, Math.floor(diffSeconds / 3600))}h`;
+  }
+
+  if (diffSeconds < 604800) {
+    return `${Math.max(1, Math.floor(diffSeconds / 86400))}d`;
+  }
+
+  return `${Math.max(1, Math.floor(diffSeconds / 604800))}w`;
+}
+
 function shortenPath(value) {
   if (!value) {
     return "-";
@@ -1386,7 +1418,7 @@ function SidebarThreadItem({
   return (
     <div
       onContextMenu={(event) => onContextMenu(event, thread)}
-      className={`group ml-7 flex items-center gap-2 rounded-md px-2 py-2 transition ${
+      className={`group ml-5 flex items-center gap-2 rounded-md px-2 py-1.5 transition ${
         active ? "bg-sky-500/10 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
       }`}
     >
@@ -1418,14 +1450,15 @@ function SidebarThreadItem({
           type="button"
           onClick={() => onSelect(thread.id)}
           onDoubleClick={() => onBeginRename(thread)}
-          className="min-w-0 flex-1 text-left"
+          className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
         >
-          <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium" />
-          <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
-            <span>{thread.issue_count ?? 0}</span>
-            <span className="text-slate-700">•</span>
-            <span>{formatRelativeTime(thread.updated_at, language)}</span>
-          </div>
+          <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
+          <span
+            className="shrink-0 text-[10px] text-slate-500"
+            title={formatRelativeTime(thread.updated_at, language)}
+          >
+            {formatCompactRelativeTime(thread.updated_at)}
+          </span>
         </button>
       )}
     </div>
