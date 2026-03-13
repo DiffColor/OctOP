@@ -1396,6 +1396,29 @@ function updateIssueCard(issueId, patch = {}) {
   return next;
 }
 
+function invalidateCodexThreadBinding(threadId) {
+  const current = threadStateById.get(threadId);
+
+  if (!current) {
+    return null;
+  }
+
+  if (current.codex_thread_id) {
+    codexThreadToThreadId.delete(current.codex_thread_id);
+  }
+
+  const next = {
+    ...current,
+    codex_thread_id: null,
+    updated_at: now(),
+    last_event: "thread.binding.invalidated"
+  };
+
+  threadStateById.set(threadId, next);
+  persistThreadById(threadId);
+  return next;
+}
+
 async function startIssueTurn(userId, threadId, issueId) {
   const thread = threadStateById.get(threadId);
   const issue = issueCardsById.get(issueId);
@@ -1433,58 +1456,75 @@ async function startIssueTurn(userId, threadId, issueId) {
     threads: listProjectThreads(userId, thread.project_id)
   });
 
-  try {
-    const turnResponse = await appServer.request("turn/start", {
-      threadId: codexThreadId,
-      cwd,
-      approvalPolicy: CODEX_APPROVAL_POLICY,
-      input: [
-        {
-          type: "text",
-          text: buildExecutionPrompt(issue.prompt)
-        }
-      ]
-    });
+  let attempt = 0;
 
-    const turn = turnResponse.result?.turn ?? null;
-    updateIssueCard(issueId, {
-      status: "running",
-      progress: 20,
-      last_event: "turn.started"
-    });
-    updateProjectThreadSnapshot(threadId);
-    await publishEvent(userId, "turn.started", {
-      thread_id: threadId,
-      issue_id: issueId,
-      turn
-    });
-    await publishEvent(userId, "bridge.threadIssues.updated", {
-      thread_id: threadId,
-      issues: listThreadIssues(threadId)
-    });
-    await publishEvent(userId, "bridge.projectThreads.updated", {
-      scope: "project",
-      project_id: thread.project_id,
-      threads: listProjectThreads(userId, thread.project_id)
-    });
-  } catch (error) {
-    clearRunningIssueTracking(threadId);
-    updateIssueCard(issueId, {
-      status: "failed",
-      progress: 0,
-      last_event: "turn.start.failed",
-      last_message: error.message
-    });
-    await publishEvent(userId, "turn.start.failed", {
-      thread_id: threadId,
-      issue_id: issueId,
-      error: error.message
-    });
-    await publishEvent(userId, "bridge.threadIssues.updated", {
-      thread_id: threadId,
-      issues: listThreadIssues(threadId)
-    });
-    void processIssueQueue(userId, threadId);
+  while (attempt < 2) {
+    try {
+      const activeThread = threadStateById.get(threadId);
+      const activeCodexThreadId = activeThread?.codex_thread_id ?? codexThreadId;
+      const turnResponse = await appServer.request("turn/start", {
+        threadId: activeCodexThreadId,
+        cwd,
+        approvalPolicy: CODEX_APPROVAL_POLICY,
+        input: [
+          {
+            type: "text",
+            text: buildExecutionPrompt(issue.prompt)
+          }
+        ]
+      });
+
+      const turn = turnResponse.result?.turn ?? null;
+      updateIssueCard(issueId, {
+        status: "running",
+        progress: 20,
+        last_event: "turn.started"
+      });
+      updateProjectThreadSnapshot(threadId);
+      await publishEvent(userId, "turn.started", {
+        thread_id: threadId,
+        issue_id: issueId,
+        turn
+      });
+      await publishEvent(userId, "bridge.threadIssues.updated", {
+        thread_id: threadId,
+        issues: listThreadIssues(threadId)
+      });
+      await publishEvent(userId, "bridge.projectThreads.updated", {
+        scope: "project",
+        project_id: thread.project_id,
+        threads: listProjectThreads(userId, thread.project_id)
+      });
+      return;
+    } catch (error) {
+      const threadNotFound = /thread not found/i.test(String(error.message ?? ""));
+
+      if (threadNotFound && attempt === 0) {
+        invalidateCodexThreadBinding(threadId);
+        await ensureCodexThreadForProjectThread(userId, threadId);
+        attempt += 1;
+        continue;
+      }
+
+      clearRunningIssueTracking(threadId);
+      updateIssueCard(issueId, {
+        status: "failed",
+        progress: 0,
+        last_event: "turn.start.failed",
+        last_message: error.message
+      });
+      await publishEvent(userId, "turn.start.failed", {
+        thread_id: threadId,
+        issue_id: issueId,
+        error: error.message
+      });
+      await publishEvent(userId, "bridge.threadIssues.updated", {
+        thread_id: threadId,
+        issues: listThreadIssues(threadId)
+      });
+      void processIssueQueue(userId, threadId);
+      return;
+    }
   }
 }
 
