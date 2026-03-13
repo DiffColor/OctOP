@@ -59,6 +59,8 @@ export function bridgeSubjects(userId, bridgeId = "local-bridge") {
     statusGet: `${base}.status.get`,
     projectsGet: `${base}.projects.get`,
     projectCreate: `${base}.project.create`,
+    workspaceRootsGet: `${base}.workspace.roots.get`,
+    folderListGet: `${base}.folder.list.get`,
     threadsGet: `${base}.threads.get`,
     pingStart: `${base}.command.ping`,
     events: `octop.user.${uid}.bridge.${bid}.events`

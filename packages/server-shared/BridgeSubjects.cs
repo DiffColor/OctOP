@@ -5,6 +5,8 @@ public sealed record BridgeSubjectSet(
   string StatusGet,
   string ProjectsGet,
   string ProjectCreate,
+  string WorkspaceRootsGet,
+  string FolderListGet,
   string ThreadsGet,
   string PingStart,
   string Events
@@ -45,6 +47,8 @@ public static class BridgeSubjects
       StatusGet: $"{@base}.status.get",
       ProjectsGet: $"{@base}.projects.get",
       ProjectCreate: $"{@base}.project.create",
+      WorkspaceRootsGet: $"{@base}.workspace.roots.get",
+      FolderListGet: $"{@base}.folder.list.get",
       ThreadsGet: $"{@base}.threads.get",
       PingStart: $"{@base}.command.ping",
       Events: $"octop.user.{uid}.bridge.{bid}.events"

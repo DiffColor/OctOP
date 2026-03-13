@@ -152,6 +152,20 @@ function formatRelativeTime(value) {
   return formatter.format(Math.round(diffSeconds / 604800), "week");
 }
 
+function shortenPath(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const normalized = String(value);
+
+  if (normalized.length <= 48) {
+    return normalized;
+  }
+
+  return `...${normalized.slice(-45)}`;
+}
+
 function clampProgress(value) {
   const numeric = Number(value);
 
@@ -613,7 +627,19 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
   );
 }
 
-function ProjectComposer({ open, busy, onClose, onSubmit }) {
+function ProjectComposer({
+  open,
+  busy,
+  roots,
+  folderState,
+  folderLoading,
+  selectedWorkspacePath,
+  onBrowseRoot,
+  onBrowseFolder,
+  onSelectWorkspace,
+  onClose,
+  onSubmit
+}) {
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
@@ -633,14 +659,15 @@ function ProjectComposer({ open, busy, onClose, onSubmit }) {
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!name.trim()) {
+    if (!name.trim() || !selectedWorkspacePath) {
       return;
     }
 
     await onSubmit({
       name: name.trim(),
       key: key.trim(),
-      description: description.trim()
+      description: description.trim(),
+      workspace_path: selectedWorkspacePath
     });
   };
 
@@ -652,7 +679,7 @@ function ProjectComposer({ open, busy, onClose, onSubmit }) {
             <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Project</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">새 프로젝트 등록</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              선택한 bridge 아래에서 이슈를 분리 관리할 프로젝트를 생성합니다.
+              bridge가 허용한 로컬 폴더를 탐색해서 실제 workspace 경로를 선택한 뒤 프로젝트를 등록합니다.
             </p>
           </div>
           <button
@@ -665,6 +692,146 @@ function ProjectComposer({ open, busy, onClose, onSubmit }) {
         </div>
 
         <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
+          <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Workspace Roots</p>
+                    <p className="mt-2 text-sm font-medium text-white">브라우즈 시작 위치</p>
+                  </div>
+                  {folderLoading ? (
+                    <span className="text-[11px] text-slate-500">불러오는 중</span>
+                  ) : null}
+                </div>
+                <div className="mt-4 space-y-2">
+                  {roots.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
+                      bridge가 노출한 workspace root가 없습니다.
+                    </div>
+                  ) : (
+                    roots.map((root) => (
+                      <button
+                        key={root.path}
+                        type="button"
+                        onClick={() => onBrowseRoot(root.path)}
+                        className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                          folderState.path === root.path
+                            ? "border-sky-400/40 bg-sky-500/10"
+                            : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{root.name}</p>
+                            <p className="mt-1 truncate text-[11px] text-slate-500">{root.path}</p>
+                          </div>
+                          {root.is_registered ? (
+                            <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">
+                              등록됨
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Folder Browser</p>
+                    <p className="mt-2 truncate text-sm font-medium text-white">{folderState.path || "경로 선택 필요"}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onBrowseFolder(folderState.parent_path)}
+                      disabled={!folderState.parent_path}
+                      className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      상위
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSelectWorkspace(folderState.path)}
+                      disabled={!folderState.path}
+                      className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+                        selectedWorkspacePath === folderState.path
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : "border border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
+                      }`}
+                    >
+                      현재 폴더 선택
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/50 px-3 py-3 text-xs text-slate-400">
+                  선택된 경로: <span className="font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
+                </div>
+
+                <div className="custom-scrollbar mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {folderState.entries.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
+                      하위 폴더가 없습니다.
+                    </div>
+                  ) : (
+                    folderState.entries.map((entry) => {
+                      const isSelected = selectedWorkspacePath === entry.path;
+
+                      return (
+                        <div
+                          key={entry.path}
+                          className={`rounded-2xl border px-3 py-3 transition ${
+                            isSelected
+                              ? "border-emerald-400/40 bg-emerald-500/10"
+                              : "border-slate-800 bg-slate-900/40"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <button
+                              type="button"
+                              onClick={() => onBrowseFolder(entry.path)}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <p className="truncate text-sm font-medium text-white">{entry.name}</p>
+                              <p className="mt-1 truncate text-[11px] text-slate-500">{entry.path}</p>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onSelectWorkspace(entry.path)}
+                              className={`rounded-xl px-3 py-1.5 text-[11px] font-medium transition ${
+                                isSelected
+                                  ? "bg-emerald-500 text-slate-950"
+                                  : "border border-slate-700 text-slate-300 hover:border-slate-600 hover:text-white"
+                              }`}
+                            >
+                              선택
+                            </button>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[10px]">
+                            <span className={`rounded-full px-2 py-1 ${entry.is_workspace ? "bg-sky-500/10 text-sky-300" : "bg-slate-800 text-slate-400"}`}>
+                              {entry.is_workspace ? "workspace" : "folder"}
+                            </span>
+                            {entry.is_registered ? (
+                              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-300">
+                                등록된 프로젝트
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
               프로젝트 이름
@@ -718,7 +885,7 @@ function ProjectComposer({ open, busy, onClose, onSubmit }) {
             </button>
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || !selectedWorkspacePath}
               className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "등록 중..." : "프로젝트 등록"}
@@ -777,6 +944,10 @@ function MainPage({
   status,
   projects,
   threads,
+  workspaceRoots,
+  folderState,
+  folderLoading,
+  selectedWorkspacePath,
   selectedBridgeId,
   selectedProjectId,
   selectedThreadId,
@@ -795,6 +966,9 @@ function MainPage({
   onOpenComposer,
   onCloseProjectComposer,
   onCloseComposer,
+  onBrowseWorkspaceRoot,
+  onBrowseFolder,
+  onSelectWorkspace,
   onSubmitProject,
   onSubmitIssue,
   onRefresh,
@@ -1241,6 +1415,13 @@ function MainPage({
       <ProjectComposer
         open={projectComposerOpen}
         busy={projectBusy}
+        roots={workspaceRoots}
+        folderState={folderState}
+        folderLoading={folderLoading}
+        selectedWorkspacePath={selectedWorkspacePath}
+        onBrowseRoot={onBrowseWorkspaceRoot}
+        onBrowseFolder={onBrowseFolder}
+        onSelectWorkspace={onSelectWorkspace}
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
       />
@@ -1263,6 +1444,10 @@ export default function App() {
   });
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
+  const [workspaceRoots, setWorkspaceRoots] = useState([]);
+  const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
+  const [folderLoading, setFolderLoading] = useState(false);
+  const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState("");
@@ -1349,6 +1534,48 @@ export default function App() {
         },
         ...current
       ].slice(0, 20));
+    }
+  }
+
+  async function loadWorkspaceRoots(sessionArg, bridgeId) {
+    if (!sessionArg?.loginId || !bridgeId) {
+      setWorkspaceRoots([]);
+      return [];
+    }
+
+    const payload = await apiRequest(
+      `/api/workspace-roots?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+    const roots = payload?.roots ?? [];
+    setWorkspaceRoots(roots);
+    return roots;
+  }
+
+  async function browseWorkspacePath(path, bridgeIdArg = selectedBridgeId) {
+    if (!session?.loginId || !bridgeIdArg) {
+      return;
+    }
+
+    setFolderLoading(true);
+
+    try {
+      const query = new URLSearchParams({
+        login_id: session.loginId,
+        bridge_id: bridgeIdArg
+      });
+
+      if (path) {
+        query.set("path", path);
+      }
+
+      const payload = await apiRequest(`/api/folders?${query.toString()}`);
+      setFolderState({
+        path: payload?.path ?? "",
+        parent_path: payload?.parent_path ?? null,
+        entries: payload?.entries ?? []
+      });
+    } finally {
+      setFolderLoading(false);
     }
   }
 
@@ -1454,8 +1681,31 @@ export default function App() {
   }, [session, selectedBridgeId]);
 
   useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId || !projectComposerOpen) {
+      return;
+    }
+
+    void (async () => {
+      const roots = await loadWorkspaceRoots(session, selectedBridgeId);
+      const currentProjectWorkspace =
+        projects.find((project) => project.id === selectedProjectId)?.workspace_path ?? "";
+      const preferredPath =
+        selectedWorkspacePath ||
+        currentProjectWorkspace ||
+        roots[0]?.path ||
+        "";
+
+      setSelectedWorkspacePath((current) => current || preferredPath);
+      await browseWorkspacePath(preferredPath, selectedBridgeId);
+    })();
+  }, [session, selectedBridgeId, projectComposerOpen]);
+
+  useEffect(() => {
     setSelectedProjectId("");
     setSelectedThreadId("");
+    setWorkspaceRoots([]);
+    setFolderState({ path: "", parent_path: null, entries: [] });
+    setSelectedWorkspacePath("");
   }, [selectedBridgeId]);
 
   useEffect(() => {
@@ -1528,6 +1778,9 @@ export default function App() {
     setBridges([]);
     setProjects([]);
     setThreads([]);
+    setWorkspaceRoots([]);
+    setFolderState({ path: "", parent_path: null, entries: [] });
+    setSelectedWorkspacePath("");
     setRecentEvents([]);
     setSelectedProjectId("");
     setSelectedThreadId("");
@@ -1603,6 +1856,7 @@ export default function App() {
         setSelectedProjectId(createdProject.id);
       }
 
+      setSelectedWorkspacePath("");
       setProjectComposerOpen(false);
     } catch (error) {
       setRecentEvents((current) => [
@@ -1632,6 +1886,33 @@ export default function App() {
     }
   };
 
+  const handleOpenProjectComposer = async () => {
+    setProjectComposerOpen(true);
+    setSelectedWorkspacePath("");
+    setFolderState({ path: "", parent_path: null, entries: [] });
+
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    const roots = await loadWorkspaceRoots(session, selectedBridgeId);
+    const preferredPath =
+      projects.find((project) => project.id === selectedProjectId)?.workspace_path ??
+      roots[0]?.path ??
+      "";
+
+    if (preferredPath) {
+      setSelectedWorkspacePath(preferredPath);
+      await browseWorkspacePath(preferredPath, selectedBridgeId);
+    }
+  };
+
+  const handleCloseProjectComposer = () => {
+    setProjectComposerOpen(false);
+    setSelectedWorkspacePath("");
+    setFolderState({ path: "", parent_path: null, entries: [] });
+  };
+
   if (!session) {
     return (
       <LoginPage
@@ -1650,6 +1931,10 @@ export default function App() {
       status={status}
       projects={projects}
       threads={threads}
+      workspaceRoots={workspaceRoots}
+      folderState={folderState}
+      folderLoading={folderLoading}
+      selectedWorkspacePath={selectedWorkspacePath}
       selectedBridgeId={selectedBridgeId}
       selectedProjectId={selectedProjectId}
       selectedThreadId={selectedThreadId}
@@ -1664,10 +1949,13 @@ export default function App() {
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={setSelectedProjectId}
       onSelectThread={setSelectedThreadId}
-      onOpenProjectComposer={() => setProjectComposerOpen(true)}
+      onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
-      onCloseProjectComposer={() => setProjectComposerOpen(false)}
+      onCloseProjectComposer={handleCloseProjectComposer}
       onCloseComposer={() => setComposerOpen(false)}
+      onBrowseWorkspaceRoot={(path) => void browseWorkspacePath(path)}
+      onBrowseFolder={(path) => void browseWorkspacePath(path)}
+      onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitIssue={handleCreateIssue}
       onRefresh={() => void handleRefresh()}

@@ -59,6 +59,7 @@
 - `bridge-id`는 로컬 머신에서 한 번 자동 생성되어 `~/.octop/bridge-id`에 저장됩니다.
 - 프로젝트 목록은 bridge별로 `~/.octop/<bridge-id>-projects.json`에 저장되어 재시작 후에도 유지됩니다.
 - bridge는 `process.cwd()`와 `OCTOP_WORKSPACE_ROOTS` 아래의 로컬 워크스페이스를 자동 감지해 프로젝트로 동기화합니다.
+- Dashboard의 프로젝트 등록 모달은 bridge가 노출한 허용 루트만 원격으로 탐색할 수 있으며, 선택한 폴더를 프로젝트 workspace로 등록합니다.
 - 실행 인자로 `-id`, `-name`을 넘기면 각각 owner loginId, 표시 이름으로 환경값보다 우선 적용됩니다.
 - 브릿지 프로세스를 띄우고, 필요하면 bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
 

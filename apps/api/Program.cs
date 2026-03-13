@@ -149,6 +149,57 @@ app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStor
   return Results.Text(new JObject { ["projects"] = projects }.ToString(), "application/json; charset=utf-8");
 });
 
+app.MapGet("/api/workspace-roots", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"roots\":[]}", "application/json; charset=utf-8");
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.WorkspaceRootsGet,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId
+    },
+    cancellationToken
+  );
+
+  return Results.Text(payload?.ToJsonString() ?? "{\"roots\":[]}", "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/folders", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"entries\":[]}", "application/json; charset=utf-8");
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.FolderListGet,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId,
+      path = httpContext.Request.Query["path"].ToString()
+    },
+    cancellationToken
+  );
+
+  return Results.Text(payload?.ToJsonString() ?? "{\"entries\":[]}", "application/json; charset=utf-8");
+});
+
 app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
@@ -173,7 +224,8 @@ app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient br
       bridge_id = bridgeId,
       name = body?["name"]?.GetValue<string>(),
       key = body?["key"]?.GetValue<string>(),
-      description = body?["description"]?.GetValue<string>()
+      description = body?["description"]?.GetValue<string>(),
+      workspace_path = body?["workspace_path"]?.GetValue<string>()
     },
     cancellationToken
   );

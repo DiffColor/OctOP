@@ -175,6 +175,70 @@ function resolveWorkspaceRoots() {
   return [...new Set(roots)];
 }
 
+function listWorkspaceRoots(userId) {
+  const state = ensureUserState(userId);
+
+  return WORKSPACE_ROOTS.map((rootPath) => {
+    const registeredProject = state.projects.find((project) => project.workspace_path === rootPath);
+
+    return {
+      name: basename(rootPath) || rootPath,
+      path: rootPath,
+      is_workspace: canUseAsWorkspace(rootPath),
+      is_registered: Boolean(registeredProject),
+      project_id: registeredProject?.id ?? null
+    };
+  });
+}
+
+function isAllowedWorkspacePath(targetPath) {
+  return WORKSPACE_ROOTS.some((rootPath) => {
+    const normalizedRoot = `${rootPath}${rootPath.endsWith("/") ? "" : "/"}`;
+    const normalizedTarget = `${targetPath}${targetPath.endsWith("/") ? "" : "/"}`;
+
+    return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(normalizedRoot);
+  });
+}
+
+function resolveBrowsePath(rawPath = "") {
+  const targetPath = rawPath ? resolve(String(rawPath)) : WORKSPACE_ROOTS[0];
+
+  if (!isAllowedWorkspacePath(targetPath)) {
+    throw new Error("허용되지 않은 경로입니다.");
+  }
+
+  if (!existsSync(targetPath)) {
+    throw new Error("경로를 찾을 수 없습니다.");
+  }
+
+  return targetPath;
+}
+
+function listFoldersForUser(userId, rawPath = "") {
+  const state = ensureUserState(userId);
+  const path = resolveBrowsePath(rawPath);
+  const entries = safeListDirectories(path).map((entryPath) => {
+    const registeredProject = state.projects.find((project) => project.workspace_path === entryPath);
+
+    return {
+      name: basename(entryPath) || entryPath,
+      path: entryPath,
+      is_workspace: canUseAsWorkspace(entryPath),
+      is_registered: Boolean(registeredProject),
+      project_id: registeredProject?.id ?? null
+    };
+  });
+  const parentPath = WORKSPACE_ROOTS.find((rootPath) => rootPath === path)
+    ? null
+    : dirname(path);
+
+  return {
+    path,
+    parent_path: parentPath && isAllowedWorkspacePath(parentPath) ? parentPath : null,
+    entries
+  };
+}
+
 function buildProjectId(loginId, workspacePath) {
   const digest = createHash("sha1")
     .update(`${sanitizeUserId(loginId)}:${workspacePath}`)
@@ -350,6 +414,11 @@ async function createProject(loginId, payload = {}) {
 
   const keyExists = state.projects.some((item) => item.key === project.key);
   const nameExists = state.projects.some((item) => item.name === project.name);
+  const pathExists = state.projects.some((item) => item.workspace_path === project.workspace_path);
+
+  if (pathExists) {
+    throw new Error("선택한 workspace는 이미 프로젝트로 등록되어 있습니다.");
+  }
 
   if (keyExists || nameExists) {
     throw new Error("같은 이름 또는 key의 프로젝트가 이미 있습니다.");
@@ -1026,6 +1095,10 @@ async function subscribeRequests() {
       handler: (userId) => ({ projects: listProjectState(userId) })
     },
     {
+      subject: "octop.user.*.bridge.*.workspace.roots.get",
+      handler: (userId) => ({ roots: listWorkspaceRoots(userId) })
+    },
+    {
       subject: "octop.user.*.bridge.*.threads.get",
       handler: async (userId) => ({ threads: await listThreads(userId) })
     }
@@ -1068,6 +1141,26 @@ async function subscribeRequests() {
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const folderListSubscription = nc.subscribe("octop.user.*.bridge.*.folder.list.get");
+
+  (async () => {
+    for await (const message of folderListSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.login_id ?? body.user_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        await respond(message, listFoldersForUser(userId, body.path ?? ""));
+      } catch (error) {
+        await respond(message, { error: error.message });
       }
     }
   })();
@@ -1120,6 +1213,18 @@ createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/projects") {
     return sendJson(response, 200, { projects: listProjectState(userId) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/workspace-roots") {
+    return sendJson(response, 200, { roots: listWorkspaceRoots(userId) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/folders") {
+    try {
+      return sendJson(response, 200, listFoldersForUser(userId, url.searchParams.get("path") ?? ""));
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/projects") {
