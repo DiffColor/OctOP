@@ -192,6 +192,17 @@ function normalizePath(value) {
   return String(value ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
+function getDisplayPathFromStartFolder(value, depth = 2) {
+  const normalized = normalizePath(value);
+
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.slice(-depth).join("/");
+}
+
 function getRelativeWorkspacePath(value, roots = []) {
   const normalizedValue = normalizePath(value);
 
@@ -206,11 +217,11 @@ function getRelativeWorkspacePath(value, roots = []) {
     .sort((left, right) => right.length - left.length)[0];
 
   if (!matchingRoot) {
-    return normalizedValue.replace(/^\/+/, "");
+    return getDisplayPathFromStartFolder(normalizedValue);
   }
 
   const relativePath = normalizedValue.slice(matchingRoot.length).replace(/^\/+/, "");
-  const rootLabel = getPathLabel(matchingRoot);
+  const rootLabel = getDisplayPathFromStartFolder(matchingRoot);
 
   return relativePath ? `${rootLabel}/${relativePath}` : rootLabel;
 }
