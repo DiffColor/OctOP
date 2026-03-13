@@ -68,6 +68,8 @@ const THREAD_CONTENT_FILTERS = [
   { id: "runs", label: "runs" }
 ];
 
+const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+
 function readStoredSession() {
   for (const key of [
     LOCAL_STORAGE_KEY,
@@ -1621,6 +1623,8 @@ function ThreadDetail({
   const status = thread ? getStatusMeta(thread.status) : null;
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
+  const pinnedToLatestRef = useRef(true);
+  const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const [viewMode, setViewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -1759,8 +1763,56 @@ function ThreadDetail({
     return chatTimeline;
   }, [chatTimeline, messageFilter]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
+    pinnedToLatestRef.current = true;
+    setIsPinnedToLatest(true);
+  }, [thread?.id]);
+
+  useEffect(() => {
     if (viewMode !== "chat") {
+      return;
+    }
+
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    const syncPinnedState = () => {
+      const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
+      const nearBottom = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+
+      if (nearBottom !== pinnedToLatestRef.current) {
+        pinnedToLatestRef.current = nearBottom;
+        setIsPinnedToLatest(nearBottom);
+      }
+    };
+
+    let rafId = null;
+
+    const handleScroll = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+
+      rafId = window.requestAnimationFrame(syncPinnedState);
+    };
+
+    syncPinnedState();
+    scrollNode.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      scrollNode.removeEventListener("scroll", handleScroll);
+
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [viewMode]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "chat" || !isPinnedToLatest) {
       return;
     }
 
@@ -1776,7 +1828,7 @@ function ThreadDetail({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
+  }, [isPinnedToLatest, messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
