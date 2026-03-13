@@ -162,6 +162,7 @@ const COPY = {
       noProjects: "No projects.",
       queuedCount: (count) => `Queued ${count}`,
       searchPlaceholder: "Search issues",
+      forceScrollbar: "Force Scrollbar",
       refresh: "Refresh",
       newIssue: "New Issue",
       noBridgeOption: "No connected bridge",
@@ -293,6 +294,7 @@ const COPY = {
       noProjects: "프로젝트가 없습니다.",
       queuedCount: (count) => `대기 ${count}`,
       searchPlaceholder: "이슈 검색",
+      forceScrollbar: "스크롤 고정",
       refresh: "새로고침",
       newIssue: "새 이슈",
       noBridgeOption: "연결된 브릿지 없음",
@@ -1801,6 +1803,7 @@ function MainPage({
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [forceBoardScrollbar, setForceBoardScrollbar] = useState(false);
   const languageMenuRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
@@ -2146,6 +2149,18 @@ function MainPage({
 
                 <button
                   type="button"
+                  onClick={() => setForceBoardScrollbar((current) => !current)}
+                  className={`hidden rounded-lg border px-3 py-2 text-sm font-medium transition md:inline-flex ${
+                    forceBoardScrollbar
+                      ? "border-sky-400/50 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15"
+                      : "border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
+                  }`}
+                >
+                  {copy.board.forceScrollbar}
+                </button>
+
+                <button
+                  type="button"
                   onClick={onStartSelectedIssues}
                   disabled={prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2234,7 +2249,11 @@ function MainPage({
               </div>
             </div>
 
-            <div className="octop-board-shell flex-1 min-h-0 overflow-y-hidden">
+            <div
+              className={`octop-board-shell flex-1 min-h-0 overflow-y-hidden ${
+                forceBoardScrollbar ? "octop-board-shell--force" : ""
+              }`}
+            >
               <div className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section

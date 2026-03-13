@@ -111,6 +111,11 @@ code,
   border-radius: 999px;
 }
 
+.octop-board-shell--force {
+  overflow-x: scroll;
+  scrollbar-gutter: stable both-edges;
+}
+
 .octop-board-shell-inner {
   min-height: 100%;
   width: max-content;
