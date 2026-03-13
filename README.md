@@ -4,6 +4,7 @@
 
 핵심 구성 요소:
 - `apps/dashboard`: React 기반 운영 UI
+- `apps/mobile`: React 기반 텔레그램형 모바일 PWA
 - `apps/api`: `.NET 10` 기반 외부 진입용 REST/SSE API
 - `services/codex-adapter`: Node.js 기반 `codex app-server` 브리지
 - `services/projection-worker`: `.NET 10` 기반 NATS -> RethinkDB projection worker
@@ -37,6 +38,7 @@
 - Projection 저장소는 `rethinkdb.ilycode.app` 외부 RethinkDB를 사용합니다.
 
 개발 실행:
+- 모바일 앱: `npm run dev:mobile`
 - Dashboard: `npm run dev:dashboard`
 - Bridge(Node): `npm run dev:bridge`
 - App Server 간편 실행: `npm run app-server:start`
