@@ -1532,13 +1532,13 @@ function ThreadDetail({
     return chatTimeline;
   }, [chatTimeline, messageFilter]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!scrollRef.current || viewMode !== "chat") {
       return;
     }
 
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messagesLoading, viewMode, visibleChatTimeline]);
+  }, [messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
@@ -2547,7 +2547,6 @@ export default function App() {
       return;
     }
 
-    setDraftThreadProjectId("");
     const projectThreads = threads.filter((thread) => thread.project_id === selectedProjectId);
 
     if (projectThreads.length === 0) {
@@ -2555,10 +2554,24 @@ export default function App() {
       return;
     }
 
-    if (!projectThreads.some((thread) => thread.id === selectedThreadId)) {
-      setSelectedThreadId(projectThreads[0].id);
+    if (!selectedThreadId) {
+      if (draftThreadProjectId === selectedProjectId) {
+        return;
+      }
+
+      setSelectedThreadId(projectThreads[0]?.id ?? "");
+      return;
     }
-  }, [selectedProjectId, selectedThreadId, threads]);
+
+    if (!projectThreads.some((thread) => thread.id === selectedThreadId)) {
+      setSelectedThreadId(projectThreads[0]?.id ?? "");
+      return;
+    }
+
+    if (draftThreadProjectId === selectedProjectId) {
+      setDraftThreadProjectId("");
+    }
+  }, [draftThreadProjectId, selectedProjectId, selectedThreadId, threads]);
 
   const handleLogin = async ({ loginId, password, rememberDevice }) => {
     setLoginState({ loading: true, error: "" });
