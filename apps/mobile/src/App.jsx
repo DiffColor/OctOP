@@ -69,6 +69,8 @@ const THREAD_CONTENT_FILTERS = [
 ];
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
+const PROJECT_CHIP_LONG_PRESS_MS = 650;
 
 function readStoredSession() {
   for (const key of [
@@ -2108,6 +2110,7 @@ function MainPage({
   onAppendThreadMessage,
   onRenameThread,
   onDeleteThread,
+  onDeleteProject,
   onRefreshThreadDetail,
   onRefresh,
   onLogout,
@@ -2115,6 +2118,8 @@ function MainPage({
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [threadBeingEdited, setThreadBeingEdited] = useState(null);
+  const projectLongPressTimerRef = useRef(null);
+  const projectLongPressTriggeredRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -2156,6 +2161,72 @@ function MainPage({
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
+  const clearPendingProjectLongPress = useCallback(() => {
+    if (projectLongPressTimerRef.current) {
+      clearTimeout(projectLongPressTimerRef.current);
+      projectLongPressTimerRef.current = null;
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      clearPendingProjectLongPress();
+    },
+    [clearPendingProjectLongPress]
+  );
+  const requestProjectDeletion = useCallback(
+    (project) => {
+      if (!project?.id || !onDeleteProject) {
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        const confirmMessage = project?.name
+          ? `\"${project.name}\" 프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.`
+          : PROJECT_DELETE_CONFIRM_MESSAGE;
+
+        if (!window.confirm(confirmMessage)) {
+          return;
+        }
+      }
+
+      void onDeleteProject(project.id);
+    },
+    [onDeleteProject]
+  );
+  const handleProjectChipPointerDown = useCallback(
+    (project) => {
+      if (!onDeleteProject || typeof window === "undefined") {
+        return;
+      }
+
+      projectLongPressTriggeredRef.current = false;
+      clearPendingProjectLongPress();
+
+      projectLongPressTimerRef.current = window.setTimeout(() => {
+        projectLongPressTimerRef.current = null;
+        projectLongPressTriggeredRef.current = true;
+        requestProjectDeletion(project);
+      }, PROJECT_CHIP_LONG_PRESS_MS);
+    },
+    [clearPendingProjectLongPress, onDeleteProject, requestProjectDeletion]
+  );
+  const handleProjectChipPointerCancel = useCallback(() => {
+    if (projectLongPressTimerRef.current) {
+      clearPendingProjectLongPress();
+      projectLongPressTriggeredRef.current = false;
+    }
+  }, [clearPendingProjectLongPress]);
+  const handleProjectChipClick = useCallback(
+    (projectId) => {
+      if (projectLongPressTriggeredRef.current) {
+        projectLongPressTriggeredRef.current = false;
+        return;
+      }
+
+      onSelectProject(projectId);
+    },
+    [onSelectProject]
+  );
 
   if (activeView === "thread" && (resolvedThread || draftProject || selectedThreadId)) {
     const threadProject =
@@ -2260,7 +2331,11 @@ function MainPage({
                 <button
                   key={project.id}
                   type="button"
-                  onClick={() => onSelectProject(project.id)}
+                  onClick={() => handleProjectChipClick(project.id)}
+                  onPointerDown={() => handleProjectChipPointerDown(project)}
+                  onPointerUp={handleProjectChipPointerCancel}
+                  onPointerLeave={handleProjectChipPointerCancel}
+                  onPointerCancel={handleProjectChipPointerCancel}
                   className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
                     project.id === selectedProjectId
                       ? "bg-white text-slate-900"
@@ -3286,6 +3361,66 @@ export default function App() {
     }
   };
 
+  const handleDeleteProject = async (projectId) => {
+    if (!session?.loginId || !selectedBridgeId || !projectId) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/projects/${projectId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+      const updatedProjects = Array.isArray(response?.projects)
+        ? response.projects
+        : projects.filter((project) => project.id !== projectId);
+
+      if (Array.isArray(response?.projects)) {
+        setProjects(response.projects);
+      } else {
+        setProjects(updatedProjects);
+      }
+
+      if (Array.isArray(response?.threads)) {
+        setThreads(mergeThreads([], response.threads));
+      } else {
+        setThreads((current) => current.filter((thread) => thread.project_id !== projectId));
+      }
+
+      setThreadDetails((current) => {
+        const next = { ...current };
+        Object.keys(next).forEach((threadKey) => {
+          const entry = next[threadKey];
+          const entryProjectId =
+            entry?.thread?.project_id ?? threads.find((thread) => thread.id === threadKey)?.project_id ?? null;
+
+          if (entryProjectId === projectId) {
+            delete next[threadKey];
+          }
+        });
+        return next;
+      });
+
+      if (selectedProjectId === projectId) {
+        const fallbackProjectId = updatedProjects[0]?.id ?? "";
+        setSelectedProjectId(fallbackProjectId);
+        setSelectedThreadId("");
+        setActiveView("inbox");
+      }
+
+      setDraftThreadProjectId((current) => (current === projectId ? "" : current));
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  };
+
   const handleCreateProject = async (payload) => {
     if (!session?.loginId || !selectedBridgeId) {
       return;
@@ -3482,6 +3617,7 @@ export default function App() {
       onAppendThreadMessage={handleAppendThreadMessage}
       onRenameThread={handleRenameThread}
       onDeleteThread={handleDeleteThread}
+      onDeleteProject={handleDeleteProject}
       onRefreshThreadDetail={() => {
         if (selectedThreadId) {
           void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
