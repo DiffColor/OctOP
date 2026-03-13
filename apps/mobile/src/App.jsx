@@ -397,7 +397,7 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
 
 function getLiveEventContext(event) {
   const payload = event?.payload ?? {};
-  const threadId = String(payload.thread_id ?? payload.threadId ?? payload.thread?.id ?? "").trim();
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
   const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
 
