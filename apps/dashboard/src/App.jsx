@@ -2206,10 +2206,6 @@ function MainPage({
                   <span className="text-slate-700">/</span>
                   <OverflowRevealText value={selectedProjectThread?.name ?? copy.fallback.noSelection} className="font-medium text-sky-200" />
                 </div>
-                <OverflowRevealText
-                  value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge}
-                  className="mt-1 text-[11px] text-slate-500"
-                />
               </div>
 
               <div className="ml-4 flex shrink-0 items-center space-x-3">
