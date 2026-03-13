@@ -844,19 +844,17 @@ function ProjectComposerSheet({
   onSubmit
 }) {
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const tapStateRef = useRef({ path: "", timestamp: 0 });
 
   useEffect(() => {
     if (!open) {
       setName("");
+      setDescription("");
       tapStateRef.current = { path: "", timestamp: 0 };
       return;
     }
-
-    if (!name.trim() && selectedWorkspacePath) {
-      setName(getPathLabel(selectedWorkspacePath));
-    }
-  }, [name, open, selectedWorkspacePath]);
+  }, [open]);
 
   const selectedWorkspaceLabel = useMemo(
     () => getRelativeWorkspacePath(selectedWorkspacePath, roots),
@@ -875,6 +873,7 @@ function ProjectComposerSheet({
       };
 
       onSelectWorkspace(path);
+      setName(getPathLabel(path));
 
       if (isSecondTap) {
         tapStateRef.current = { path: "", timestamp: 0 };
@@ -893,6 +892,7 @@ function ProjectComposerSheet({
 
     await onSubmit({
       name: name.trim(),
+      description: description.trim(),
       workspace_path: selectedWorkspacePath
     });
   };
@@ -973,6 +973,20 @@ function ProjectComposerSheet({
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="예: OctOP 모바일 운영"
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
+            프로젝트 설명
+          </label>
+          <textarea
+            id="project-description"
+            rows="4"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="프로젝트 목적과 작업 범위를 적어 주세요."
             className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
         </div>
