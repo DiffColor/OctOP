@@ -1276,7 +1276,7 @@ function ProjectComposer({
               </div>
             </div>
 
-            <div className="custom-scrollbar h-[34rem] space-y-1 overflow-y-auto pr-1">
+            <div className="custom-scrollbar h-[34rem] space-y-1 overflow-y-scroll pr-1">
               {roots.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-800 px-3 py-4 text-xs text-slate-500">
                   {copy.projectComposer.noRoots}
@@ -1490,7 +1490,7 @@ function ThreadDetailModal({ language, open, loading, thread, messages, onClose 
           </button>
         </div>
 
-        <div className="custom-scrollbar flex-1 overflow-y-auto px-6 py-5">
+        <div className="custom-scrollbar flex-1 overflow-y-scroll px-6 py-5">
           {loading ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
               {copy.detail.loading}

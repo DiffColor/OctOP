@@ -71,8 +71,11 @@ code,
 
 .custom-scrollbar::-webkit-scrollbar {
   -webkit-appearance: none;
+  display: block;
   width: 10px;
   height: 10px;
+  max-width: 10px;
+  max-height: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -92,7 +95,9 @@ code,
 
 .board-scrollbar::-webkit-scrollbar {
   -webkit-appearance: none;
+  display: block;
   height: 12px;
+  max-height: 12px;
 }
 
 .board-scrollbar::-webkit-scrollbar-track {
