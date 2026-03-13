@@ -370,22 +370,7 @@ function restoreThreadCentricState(loginId, stored) {
       continue;
     }
 
-    const runningIssue = getThreadIssueIds(threadId)
-      .map((issueId) => issueCardsById.get(issueId))
-      .find((issue) => issue && ["running", "awaiting_input"].includes(issue.status));
-    const thread = threadStateById.get(threadId);
-
-    if (!runningIssue || !thread) {
-      continue;
-    }
-
-    activeIssueByThreadId.set(threadId, runningIssue.id);
-    markRunningIssueActivity(threadId, {
-      startedAt: runningIssue.updated_at ?? thread.updated_at ?? now(),
-      lastActivityAt: runningIssue.updated_at ?? thread.updated_at ?? now(),
-      reconcileAttempts: 0,
-      lastReconciledAt: null
-    });
+    ensureRunningIssueTrackingForThread(threadId);
   }
 
   return threadIds;
@@ -620,6 +605,38 @@ function clearRunningIssueTracking(threadId) {
   runningIssueMetaByThreadId.delete(threadId);
 }
 
+function findRecoverableRunningIssue(threadId) {
+  return getThreadIssueIds(threadId)
+    .map((issueId) => issueCardsById.get(issueId))
+    .filter((issue) => issue && ["running", "awaiting_input"].includes(issue.status))
+    .sort((left, right) => Date.parse(right.updated_at ?? 0) - Date.parse(left.updated_at ?? 0))[0] ?? null;
+}
+
+function ensureRunningIssueTrackingForThread(threadId) {
+  const currentActiveIssueId = activeIssueByThreadId.get(threadId);
+  const currentActiveIssue = currentActiveIssueId ? issueCardsById.get(currentActiveIssueId) : null;
+
+  if (currentActiveIssue && ["running", "awaiting_input"].includes(currentActiveIssue.status)) {
+    return currentActiveIssue.id;
+  }
+
+  const recoverableIssue = findRecoverableRunningIssue(threadId);
+  const thread = threadStateById.get(threadId);
+
+  if (!recoverableIssue || !thread) {
+    return null;
+  }
+
+  activeIssueByThreadId.set(threadId, recoverableIssue.id);
+  markRunningIssueActivity(threadId, {
+    startedAt: recoverableIssue.updated_at ?? thread.updated_at ?? now(),
+    lastActivityAt: recoverableIssue.updated_at ?? thread.updated_at ?? now(),
+    reconcileAttempts: 0,
+    lastReconciledAt: null
+  });
+  return recoverableIssue.id;
+}
+
 function ensureIssueMessages(issueId) {
   if (!issueMessagesById.has(issueId)) {
     issueMessagesById.set(issueId, []);
@@ -682,6 +699,8 @@ function updateProjectThreadSnapshot(threadId) {
     ? activeIssue.status
     : queuedCount > 0
       ? "queued"
+      : latestIssue?.status === "running"
+        ? "running"
       : latestIssue?.status === "completed"
         ? "completed"
         : latestIssue?.status === "failed"
@@ -2844,7 +2863,15 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
 }
 
 async function reconcileRunningIssues() {
-  if (activeIssueByThreadId.size === 0) {
+  const candidateThreadIds = new Set(activeIssueByThreadId.keys());
+
+  for (const threadId of threadStateById.keys()) {
+    if (ensureRunningIssueTrackingForThread(threadId)) {
+      candidateThreadIds.add(threadId);
+    }
+  }
+
+  if (candidateThreadIds.size === 0) {
     return;
   }
 
@@ -2860,7 +2887,7 @@ async function reconcileRunningIssues() {
 
   const remoteThreadsByCodexId = new Map(remoteThreads.map((thread) => [thread.id, thread]));
 
-  for (const [threadId] of activeIssueByThreadId.entries()) {
+  for (const threadId of candidateThreadIds) {
     const owner = threadOwners.get(threadId);
 
     if (!owner) {
