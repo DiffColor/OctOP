@@ -1,4 +1,13 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -348,6 +357,21 @@ function createThreadTitleFromPrompt(prompt) {
   return normalized.length <= 34 ? normalized : `${normalized.slice(0, 34)}...`;
 }
 
+function summarizeMessageContent(content, limit = 160) {
+  const normalized = String(content ?? "").trim();
+
+  if (!normalized) {
+    return "내용 없음";
+  }
+
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+
+  const safeLimit = Math.max(0, limit - 3);
+  return `${normalized.slice(0, safeLimit)}...`;
+}
+
 function BottomSheet({ open, title, description, onClose, children }) {
   if (!open) {
     return null;
@@ -663,6 +687,30 @@ function UtilitySheet({
 
 function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
   const [prompt, setPrompt] = useState("");
+  const textareaRef = useRef(null);
+
+  const syncPromptHeight = useCallback((element) => {
+    const textarea = element ?? textareaRef.current;
+
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    syncPromptHeight();
+  }, [prompt, selectedProject, syncPromptHeight]);
+
+  const handlePromptChange = useCallback(
+    (event) => {
+      setPrompt(event.target.value);
+      syncPromptHeight(event.target);
+    },
+    [syncPromptHeight]
+  );
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -694,15 +742,16 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
           </div>
           <textarea
             rows="1"
+            ref={textareaRef}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={handlePromptChange}
             placeholder={
               selectedProject
                 ? "채팅처럼 작업 지시를 입력하세요"
                 : "먼저 프로젝트를 선택해 주세요"
             }
             disabled={!selectedProject || busy}
-            className="max-h-32 min-h-[24px] w-full resize-none border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
           />
         </div>
         <button
@@ -1011,8 +1060,76 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
   );
 }
 
-function ThreadDetail({ thread, project, onBack }) {
+function ThreadDetail({
+  thread,
+  project,
+  messages,
+  messagesLoading,
+  messagesError,
+  onRefreshMessages,
+  onSubmitPrompt,
+  submitBusy,
+  onBack
+}) {
   const status = getStatusMeta(thread.status);
+  const scrollRef = useRef(null);
+  const timeline = useMemo(() => {
+    const normalized = [];
+    let lastPrompt = null;
+
+    const safeMessages = Array.isArray(messages) ? messages : [];
+
+    safeMessages.forEach((message, index) => {
+      if (!message) {
+        return;
+      }
+
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const content = String(message.content ?? "").trim();
+      const timestamp = message.timestamp ?? thread.updated_at ?? thread.created_at ?? new Date().toISOString();
+      const base = {
+        id: message.id ?? `${role}-${index}`,
+        role,
+        content,
+        timestamp
+      };
+
+      if (role === "user") {
+        lastPrompt = base;
+        normalized.push({
+          ...base,
+          align: "right",
+          tone: "brand",
+          title: "프롬프트"
+        });
+        return;
+      }
+
+      normalized.push({
+        ...base,
+        align: "left",
+        tone: "light",
+        title: "응답",
+        replyTo: lastPrompt
+      });
+    });
+
+    return normalized;
+  }, [messages, thread.created_at, thread.updated_at]);
+
+  useEffect(() => {
+    if (!scrollRef.current) {
+      return;
+    }
+
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, messagesLoading]);
+
+  const handleRefreshMessages = () => {
+    if (onRefreshMessages) {
+      onRefreshMessages();
+    }
+  };
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -1037,25 +1154,95 @@ function ThreadDetail({ thread, project, onBack }) {
             </div>
           </div>
 
+          <button
+            type="button"
+            onClick={handleRefreshMessages}
+            disabled={messagesLoading}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {messagesLoading ? (
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M4 4v5h.582m15.418 11v-5h-.581M5.007 9a7 7 0 0111.995-3m2.998 9a7 7 0 01-11.995 3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                />
+              </svg>
+            )}
+          </button>
         </div>
       </header>
 
-      <div className="telegram-grid flex-1 px-4 py-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
               {formatDateTime(thread.created_at)}
             </span>
           </div>
 
-          <MessageBubble title="Thread" meta={formatRelativeTime(thread.updated_at)} tone="light">
-            <p className="text-sm font-semibold">{thread.title}</p>
-            <p className="mt-2 text-sm leading-6 opacity-80">
-              {thread.last_message || "아직 작업 메시지가 기록되지 않았습니다."}
-            </p>
-          </MessageBubble>
+          {messagesError ? (
+            <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+              <p>메시지를 불러오는 중 문제가 발생했습니다.</p>
+              <button
+                type="button"
+                onClick={handleRefreshMessages}
+                className="mt-2 rounded-full border border-white/20 px-3 py-1.5 text-xs text-white/80 transition hover:bg-white/10"
+              >
+                다시 시도
+              </button>
+            </div>
+          ) : null}
 
-          <MessageBubble align="right" tone={thread.status === "failed" ? "danger" : thread.status === "completed" ? "success" : thread.status === "awaiting_input" ? "warn" : "brand"} title={status.label} meta={formatRelativeTime(thread.updated_at)}>
+          {timeline.map((message) => (
+            <MessageBubble
+              key={message.id}
+              align={message.align}
+              tone={message.tone}
+              title={message.title}
+              meta={formatRelativeTime(message.timestamp)}
+            >
+              {message.replyTo ? (
+                <div className="mb-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">프롬프트</p>
+                  <p className="mt-1 text-sm leading-5 text-white/90">{summarizeMessageContent(message.replyTo.content)}</p>
+                </div>
+              ) : null}
+              <p className="whitespace-pre-wrap text-sm leading-6">
+                {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
+              </p>
+            </MessageBubble>
+          ))}
+
+          {messagesLoading ? (
+            <div className="flex justify-center py-4">
+              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            </div>
+          ) : null}
+
+          {!messagesLoading && !messagesError && timeline.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/15 px-4 py-4 text-center text-sm text-slate-300">
+              아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요.
+            </div>
+          ) : null}
+
+          <MessageBubble
+            align="left"
+            tone={
+              thread.status === "failed"
+                ? "danger"
+                : thread.status === "completed"
+                  ? "success"
+                  : thread.status === "awaiting_input"
+                    ? "warn"
+                    : "brand"
+            }
+            title={status.label}
+            meta={formatRelativeTime(thread.updated_at)}
+          >
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <span>진행률</span>
@@ -1068,6 +1255,16 @@ function ThreadDetail({ thread, project, onBack }) {
           </MessageBubble>
         </div>
       </div>
+
+      <div className="border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="mx-auto w-full max-w-3xl">
+          <InlineIssueComposer
+            busy={submitBusy}
+            selectedProject={project}
+            onSubmit={onSubmitPrompt}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1078,6 +1275,7 @@ function MainPage({
   status,
   projects,
   threads,
+  threadDetail,
   workspaceRoots,
   folderState,
   folderLoading,
@@ -1111,6 +1309,7 @@ function MainPage({
   onSelectWorkspace,
   onSubmitProject,
   onSubmitIssue,
+  onRefreshThreadDetail,
   onRefresh,
   onLogout,
   onBackToInbox
@@ -1135,6 +1334,9 @@ function MainPage({
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ??
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.bridge_id ??
     "No Bridge";
+  const threadDetailMessages = threadDetail?.messages ?? [];
+  const threadDetailLoading = threadDetail?.loading ?? false;
+  const threadDetailError = threadDetail?.error ?? "";
 
   if (activeView === "thread" && selectedThread) {
     const threadProject = projects.find((project) => project.id === selectedThread.project_id) ?? selectedProject;
@@ -1144,6 +1346,12 @@ function MainPage({
         <ThreadDetail
           thread={selectedThread}
           project={threadProject}
+          messages={threadDetailMessages}
+          messagesLoading={threadDetailLoading}
+          messagesError={threadDetailError}
+          onRefreshMessages={onRefreshThreadDetail}
+          onSubmitPrompt={(payload) => onSubmitIssue(payload, { stayOnThread: true })}
+          submitBusy={issueBusy}
           onBack={onBackToInbox}
         />
       </div>
@@ -1290,13 +1498,6 @@ function MainPage({
               selectedProject={selectedProject}
               onSubmit={onSubmitIssue}
             />
-            <button
-              type="button"
-              onClick={onRefresh}
-              className="rounded-full px-3 py-2 text-[11px] font-medium text-slate-300 transition hover:bg-white/5 hover:text-white"
-            >
-              새로고침
-            </button>
           </div>
         </div>
       </div>
@@ -1347,6 +1548,7 @@ export default function App() {
   });
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
+  const [threadDetails, setThreadDetails] = useState({});
   const [workspaceRoots, setWorkspaceRoots] = useState([]);
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
   const [folderLoading, setFolderLoading] = useState(false);
@@ -1365,6 +1567,75 @@ export default function App() {
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
+  const selectedThread = useMemo(
+    () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
+    [threads, selectedThreadId]
+  );
+  const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
+  const currentThreadDetailVersion = currentThreadDetail?.version ?? null;
+  const currentThreadDetailLoading = currentThreadDetail?.loading ?? false;
+  const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
+  const hasCurrentThreadDetail = Boolean(currentThreadDetail);
+  const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
+  const loadThreadMessages = useCallback(
+    async (threadId, { force = false, version = null } = {}) => {
+      if (!session?.loginId || !selectedBridgeId || !threadId) {
+        return;
+      }
+
+      setThreadDetails((current) => {
+        const currentEntry = current[threadId];
+
+        if (!force && currentEntry?.loading) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [threadId]: {
+            ...currentEntry,
+            loading: true,
+            error: "",
+            messages: currentEntry?.messages ?? [],
+            version: currentEntry?.version ?? null
+          }
+        };
+      });
+
+      try {
+        const detail = await apiRequest(
+          `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        );
+
+        setThreadDetails((current) => ({
+          ...current,
+          [threadId]: {
+            loading: false,
+            error: "",
+            messages: detail?.messages ?? [],
+            thread: detail?.thread ?? current[threadId]?.thread ?? null,
+            fetchedAt: Date.now(),
+            version:
+              version ??
+              detail?.thread?.updated_at ??
+              detail?.thread?.created_at ??
+              current[threadId]?.version ??
+              null
+          }
+        }));
+      } catch (error) {
+        setThreadDetails((current) => ({
+          ...current,
+          [threadId]: {
+            ...current[threadId],
+            loading: false,
+            error: error.message ?? "메시지를 불러오지 못했습니다."
+          }
+        }));
+      }
+    },
+    [selectedBridgeId, session?.loginId]
+  );
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -1512,6 +1783,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !window.history?.pushState) {
+      return undefined;
+    }
+
+    const handlePopState = (event) => {
+      event?.preventDefault?.();
+      window.history.pushState(null, "", window.location.href);
+      setActiveView((current) => (current === "thread" ? "inbox" : current));
+    };
+
+    window.history.pushState(null, "", window.location.href);
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!session?.loginId) {
       return;
     }
@@ -1609,6 +1899,36 @@ export default function App() {
   }, [projectComposerOpen, projects, selectedBridgeId, selectedProjectId, selectedWorkspacePath, session]);
 
   useEffect(() => {
+    if (
+      !session?.loginId ||
+      !selectedBridgeId ||
+      !selectedThreadId ||
+      activeView !== "thread"
+    ) {
+      return;
+    }
+
+    if (currentThreadDetailLoading) {
+      return;
+    }
+
+    if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt || !currentThreadDetailHasMessages) {
+      void loadThreadMessages(selectedThreadId, { version: selectedThreadUpdatedAt });
+    }
+  }, [
+    activeView,
+    currentThreadDetailHasMessages,
+    currentThreadDetailLoading,
+    currentThreadDetailVersion,
+    hasCurrentThreadDetail,
+    loadThreadMessages,
+    selectedBridgeId,
+    selectedThreadId,
+    selectedThreadUpdatedAt,
+    session?.loginId
+  ]);
+
+  useEffect(() => {
     setSelectedProjectId("");
     setSelectedThreadId("");
     setWorkspaceRoots([]);
@@ -1687,6 +2007,7 @@ export default function App() {
     setBridges([]);
     setProjects([]);
     setThreads([]);
+    setThreadDetails({});
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -1698,7 +2019,7 @@ export default function App() {
     setActiveView("inbox");
   };
 
-  const handleCreateIssue = async (payload) => {
+  const handleCreateIssue = async (payload, options = {}) => {
     if (!session?.loginId) {
       return;
     }
@@ -1713,6 +2034,8 @@ export default function App() {
           body: JSON.stringify(payload)
         }
       );
+
+      const stayOnThread = Boolean(options?.stayOnThread);
 
       if (created?.thread?.id) {
         setThreads((current) => upsertThread(current, created.thread));
@@ -1735,7 +2058,11 @@ export default function App() {
         setLaneFilter("todo");
       }
 
-      setActiveView("inbox");
+      if (stayOnThread && created?.thread?.id) {
+        setActiveView("thread");
+      } else {
+        setActiveView("inbox");
+      }
       return true;
     } catch (error) {
       if (typeof window !== "undefined") {
@@ -1876,6 +2203,8 @@ export default function App() {
     );
   }
 
+  const currentThreadDetailState = threadDetails[selectedThreadId] ?? { messages: [], loading: false, error: "" };
+
   return (
     <MainPage
       session={session}
@@ -1900,6 +2229,7 @@ export default function App() {
       installBusy={installBusy}
       laneFilter={laneFilter}
       activeView={activeView}
+      threadDetail={currentThreadDetailState}
       onSearchChange={setSearch}
       onChangeLaneFilter={setLaneFilter}
       onSelectBridge={setSelectedBridgeId}
@@ -1916,6 +2246,11 @@ export default function App() {
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitIssue={handleCreateIssue}
+      onRefreshThreadDetail={() => {
+        if (selectedThreadId) {
+          void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
+        }
+      }}
       onRefresh={() => void handleRefresh()}
       onLogout={handleLogout}
       onBackToInbox={() => setActiveView("inbox")}
