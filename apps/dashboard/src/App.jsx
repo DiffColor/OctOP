@@ -2110,7 +2110,7 @@ function MainPage({
 
           <main className="flex min-h-screen min-w-0 flex-1 flex-col pb-14">
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1 pr-4">
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-slate-500">{copy.board.project}</span>
                   <span className="text-slate-700">/</span>
@@ -2124,7 +2124,7 @@ function MainPage({
                 />
               </div>
 
-              <div className="flex items-center space-x-3">
+              <div className="ml-4 flex shrink-0 items-center space-x-3">
                 <div className="relative hidden sm:block">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                     <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
