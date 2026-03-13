@@ -4,6 +4,7 @@ const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
+const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -101,6 +102,22 @@ function storeSession(session, rememberDevice) {
 function clearSessionStorage() {
   window.localStorage.removeItem(LOCAL_STORAGE_KEY);
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function isPwaPromptDismissed() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.localStorage.getItem(PWA_PROMPT_DISMISSED_KEY) === "true";
+}
+
+function dismissPwaPrompt() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(PWA_PROMPT_DISMISSED_KEY, "true");
 }
 
 function formatDateTime(value) {
@@ -358,6 +375,45 @@ function BottomSheet({ open, title, description, onClose, children }) {
         </div>
         <div className="telegram-scroll max-h-[80dvh] overflow-y-auto">{children}</div>
       </section>
+    </div>
+  );
+}
+
+function InstallPromptBanner({ visible, installing, onInstall, onDismiss }) {
+  if (!visible) {
+    return null;
+  }
+
+  return (
+    <div className="border-b border-telegram-400/20 bg-telegram-500/10 px-4 py-3">
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/20 text-telegram-100">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 19h14" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white">앱으로 설치해서 바로 여시겠습니까?</p>
+            <p className="truncate text-xs text-telegram-100/70">홈 화면에 추가하면 더 빠르게 접근하실 수 있습니다.</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onInstall}
+          disabled={installing}
+          className="shrink-0 rounded-full bg-telegram-500 px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {installing ? "설치 중" : "설치"}
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="shrink-0 text-[11px] text-slate-300 transition hover:text-white"
+        >
+          다시 보지 않음
+        </button>
+      </div>
     </div>
   );
 }
@@ -1035,6 +1091,8 @@ function MainPage({
   issueBusy,
   utilityOpen,
   projectComposerOpen,
+  installPromptVisible,
+  installBusy,
   laneFilter,
   activeView,
   onSearchChange,
@@ -1044,6 +1102,8 @@ function MainPage({
   onSelectThread,
   onOpenUtility,
   onOpenProjectComposer,
+  onInstallPwa,
+  onDismissInstallPrompt,
   onCloseUtility,
   onCloseProjectComposer,
   onBrowseWorkspaceRoot,
@@ -1123,6 +1183,13 @@ function MainPage({
             </div>
           </div>
         </header>
+
+        <InstallPromptBanner
+          visible={installPromptVisible}
+          installing={installBusy}
+          onInstall={onInstallPwa}
+          onDismiss={onDismissInstallPrompt}
+        />
 
         <main className="flex-1 px-4 pb-24 pt-2">
           <div className="border-b border-white/10 pb-3">
@@ -1295,6 +1362,9 @@ export default function App() {
   const [projectBusy, setProjectBusy] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [installPromptVisible, setInstallPromptVisible] = useState(false);
+  const [installBusy, setInstallBusy] = useState(false);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -1407,6 +1477,39 @@ export default function App() {
       setFolderLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+    if (isStandalone || isPwaPromptDismissed()) {
+      return undefined;
+    }
+
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event);
+      setInstallPromptVisible(true);
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setInstallPromptVisible(false);
+      dismissPwaPrompt();
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -1739,6 +1842,29 @@ export default function App() {
     });
   };
 
+  const handleDismissInstallPrompt = () => {
+    dismissPwaPrompt();
+    setInstallPromptVisible(false);
+    setDeferredInstallPrompt(null);
+  };
+
+  const handleInstallPwa = async () => {
+    if (!deferredInstallPrompt) {
+      return;
+    }
+
+    setInstallBusy(true);
+
+    try {
+      await deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice.catch(() => null);
+      setDeferredInstallPrompt(null);
+      setInstallPromptVisible(false);
+    } finally {
+      setInstallBusy(false);
+    }
+  };
+
   if (!session) {
     return (
       <LoginPage
@@ -1770,6 +1896,8 @@ export default function App() {
       projectBusy={projectBusy}
       issueBusy={issueBusy}
       projectComposerOpen={projectComposerOpen}
+      installPromptVisible={installPromptVisible}
+      installBusy={installBusy}
       laneFilter={laneFilter}
       activeView={activeView}
       onSearchChange={setSearch}
@@ -1779,6 +1907,8 @@ export default function App() {
       onSelectThread={handleSelectThread}
       onOpenUtility={() => setUtilityOpen(true)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
+      onInstallPwa={() => void handleInstallPwa()}
+      onDismissInstallPrompt={handleDismissInstallPrompt}
       onCloseUtility={() => setUtilityOpen(false)}
       onCloseProjectComposer={handleCloseProjectComposer}
       onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
