@@ -49,6 +49,11 @@ const threadStateById = new Map();
 const threadEventsById = new Map();
 const threadMessagesById = new Map();
 const pendingStartQueues = new Map();
+const issueCardsById = new Map();
+const issueMessagesById = new Map();
+const threadIssueIdsById = new Map();
+const activeIssueByThreadId = new Map();
+const codexThreadToThreadId = new Map();
 
 function now() {
   return new Date().toISOString();
@@ -56,6 +61,14 @@ function now() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createThreadEntityId() {
+  return sanitizeBridgeId(`thread-${randomUUID()}`);
+}
+
+function createIssueCardId() {
+  return sanitizeBridgeId(`issue-${randomUUID()}`);
 }
 
 async function connectToNats() {
@@ -171,6 +184,8 @@ function ensureUserState(userId) {
     persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
   }
 
+  ensureDefaultThreadsForProjects(normalized, state.projects);
+
   return state;
 }
 
@@ -196,54 +211,15 @@ function loadThreadsForUser(loginId) {
   const storage = readThreadStorage();
   const stored = storage[loginId];
 
-  if (!stored || !Array.isArray(stored.thread_ids)) {
+  if (!stored || typeof stored !== "object") {
     return new Set();
   }
 
-  const threadIds = new Set();
-
-  for (const threadId of stored.thread_ids) {
-    if (!threadId) {
-      continue;
-    }
-
-    const thread = stored.threads?.[threadId];
-
-    if (thread) {
-      threadStateById.set(threadId, thread);
-      threadOwners.set(threadId, loginId);
-      threadIds.add(threadId);
-    }
-
-    const messages = stored.messages?.[threadId];
-
-    if (Array.isArray(messages) && messages.length > 0) {
-      threadMessagesById.set(threadId, messages);
-    }
+  if (Array.isArray(stored.project_thread_ids)) {
+    return restoreThreadCentricState(loginId, stored);
   }
 
-  const restoredQueueIds = Array.isArray(stored.queue_ids)
-    ? stored.queue_ids.filter((threadId) => threadIds.has(threadId))
-    : [...threadIds]
-        .map((threadId) => threadStateById.get(threadId))
-        .filter((thread) => thread?.status === "queued")
-        .sort((left, right) => {
-          const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
-          const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
-
-          if (leftOrder !== rightOrder) {
-            return leftOrder - rightOrder;
-          }
-
-          return Date.parse(left.updated_at) - Date.parse(right.updated_at);
-        })
-        .map((thread) => thread.id);
-
-  if (restoredQueueIds.length > 0) {
-    pendingStartQueues.set(loginId, [...restoredQueueIds]);
-  }
-
-  return threadIds;
+  return migrateLegacyThreadState(loginId, stored);
 }
 
 function persistThreadsForUser(loginId) {
@@ -256,17 +232,39 @@ function persistThreadsForUser(loginId) {
 
   const storage = readThreadStorage();
   const threadIds = [...state.threadIds].filter((threadId) => threadStateById.has(threadId));
+  const issueIds = threadIds.flatMap((threadId) => getThreadIssueIds(threadId));
+  const queueIds = Object.fromEntries(
+    threadIds.map((threadId) => [threadId, ensurePendingQueue(threadId)])
+  );
+  const activeIssueIds = Object.fromEntries(
+    threadIds
+      .filter((threadId) => activeIssueByThreadId.has(threadId))
+      .map((threadId) => [threadId, activeIssueByThreadId.get(threadId)])
+  );
+  const codexThreadIds = Object.fromEntries(
+    threadIds
+      .map((threadId) => [threadId, threadStateById.get(threadId)?.codex_thread_id ?? null])
+  );
 
   storage[normalized] = {
-    thread_ids: threadIds,
-    queue_ids: ensurePendingQueue(normalized).filter((threadId) => threadIds.includes(threadId)),
-    threads: Object.fromEntries(
+    project_thread_ids: threadIds,
+    project_threads: Object.fromEntries(
       threadIds.map((threadId) => [threadId, threadStateById.get(threadId)])
     ),
-    messages: Object.fromEntries(
-      threadIds
-        .filter((threadId) => threadMessagesById.has(threadId))
-        .map((threadId) => [threadId, threadMessagesById.get(threadId)])
+    issue_ids: issueIds,
+    issues: Object.fromEntries(
+      issueIds.map((issueId) => [issueId, issueCardsById.get(issueId)])
+    ),
+    thread_issue_ids: Object.fromEntries(
+      threadIds.map((threadId) => [threadId, getThreadIssueIds(threadId)])
+    ),
+    issue_queue_ids: queueIds,
+    active_issue_ids: activeIssueIds,
+    codex_thread_ids: codexThreadIds,
+    issue_messages: Object.fromEntries(
+      issueIds
+        .filter((issueId) => issueMessagesById.has(issueId))
+        .map((issueId) => [issueId, issueMessagesById.get(issueId)])
     ),
     updated_at: now()
   };
@@ -282,6 +280,118 @@ function persistThreadById(threadId) {
   }
 
   persistThreadsForUser(owner);
+}
+
+function restoreThreadCentricState(loginId, stored) {
+  const threadIds = new Set();
+
+  for (const threadId of stored.project_thread_ids ?? []) {
+    if (!threadId) {
+      continue;
+    }
+
+    const thread = stored.project_threads?.[threadId];
+
+    if (!thread) {
+      continue;
+    }
+
+    const normalizedThread = normalizeProjectThread(loginId, thread);
+    threadStateById.set(threadId, normalizedThread);
+    threadOwners.set(threadId, loginId);
+    threadIds.add(threadId);
+
+    if (normalizedThread.codex_thread_id) {
+      codexThreadToThreadId.set(normalizedThread.codex_thread_id, threadId);
+    }
+  }
+
+  for (const issueId of stored.issue_ids ?? []) {
+    if (!issueId) {
+      continue;
+    }
+
+    const issue = stored.issues?.[issueId];
+
+    if (!issue) {
+      continue;
+    }
+
+    issueCardsById.set(issueId, normalizeIssueCard(issue));
+
+    const messages = stored.issue_messages?.[issueId];
+
+    if (Array.isArray(messages) && messages.length > 0) {
+      issueMessagesById.set(issueId, messages);
+    }
+  }
+
+  for (const [threadId, issueIds] of Object.entries(stored.thread_issue_ids ?? {})) {
+    threadIssueIdsById.set(
+      threadId,
+      Array.isArray(issueIds) ? issueIds.filter((issueId) => issueCardsById.has(issueId)) : []
+    );
+  }
+
+  for (const [threadId, issueIds] of Object.entries(stored.issue_queue_ids ?? {})) {
+    pendingStartQueues.set(
+      threadId,
+      Array.isArray(issueIds) ? issueIds.filter((issueId) => issueCardsById.has(issueId)) : []
+    );
+  }
+
+  for (const [threadId, issueId] of Object.entries(stored.active_issue_ids ?? {})) {
+    if (issueCardsById.has(issueId)) {
+      activeIssueByThreadId.set(threadId, issueId);
+    }
+  }
+
+  return threadIds;
+}
+
+function migrateLegacyThreadState(loginId, stored) {
+  const migratedThreadIds = new Set();
+  const legacyThreads = Array.isArray(stored.thread_ids) ? stored.thread_ids : [];
+
+  for (const legacyThreadId of legacyThreads) {
+    const legacyThread = stored.threads?.[legacyThreadId];
+
+    if (!legacyThread) {
+      continue;
+    }
+
+    const projectId = legacyThread.project_id ?? buildDefaultProject(loginId).id;
+    const migratedThreadId = ensureDefaultProjectThread(loginId, projectId, "Legacy");
+    const cardId = createIssueCardId();
+    const issue = normalizeIssueCard({
+      id: cardId,
+      project_id: projectId,
+      thread_id: migratedThreadId,
+      title: legacyThread.title ?? legacyThread.name ?? "Legacy issue",
+      prompt: legacyThread.prompt ?? "",
+      status: legacyThread.status ?? "completed",
+      progress: legacyThread.progress ?? 100,
+      last_event: legacyThread.last_event ?? "legacy.migrated",
+      last_message: legacyThread.last_message ?? "",
+      created_at: legacyThread.created_at ?? now(),
+      updated_at: legacyThread.updated_at ?? now(),
+      source: "legacy"
+    });
+
+    issueCardsById.set(cardId, issue);
+    setThreadIssueIds(migratedThreadId, [...getThreadIssueIds(migratedThreadId), cardId]);
+
+    const legacyMessages = stored.messages?.[legacyThreadId];
+
+    if (Array.isArray(legacyMessages) && legacyMessages.length > 0) {
+      issueMessagesById.set(cardId, legacyMessages);
+    }
+
+    migratedThreadIds.add(migratedThreadId);
+    updateProjectThreadSnapshot(migratedThreadId);
+  }
+
+  return migratedThreadIds;
 }
 
 function loadProjectEntry(loginId) {
@@ -364,6 +474,236 @@ function normalizeProject(loginId, project = {}) {
     created_at: project.created_at ?? now(),
     updated_at: project.updated_at ?? now()
   };
+}
+
+function normalizeProjectThread(loginId, thread = {}) {
+  return {
+    id: sanitizeBridgeId(thread.id ?? createThreadEntityId()),
+    project_id: String(thread.project_id ?? "").trim(),
+    name: String(thread.name ?? thread.title ?? "Main").trim() || "Main",
+    description: String(thread.description ?? "").trim(),
+    bridge_id: BRIDGE_ID,
+    login_id: sanitizeUserId(loginId),
+    codex_thread_id: thread.codex_thread_id ? String(thread.codex_thread_id).trim() : null,
+    status: String(thread.status ?? "idle").trim() || "idle",
+    progress: Number.isFinite(Number(thread.progress)) ? Number(thread.progress) : 0,
+    last_event: String(thread.last_event ?? "thread.ready").trim(),
+    last_message: String(thread.last_message ?? "").trim(),
+    created_at: thread.created_at ?? now(),
+    updated_at: thread.updated_at ?? now()
+  };
+}
+
+function normalizeIssueCard(issue = {}) {
+  return {
+    id: sanitizeBridgeId(issue.id ?? createIssueCardId()),
+    project_id: String(issue.project_id ?? "").trim(),
+    thread_id: String(issue.thread_id ?? "").trim(),
+    title: String(issue.title ?? "").trim() || "Untitled issue",
+    prompt: String(issue.prompt ?? "").trim(),
+    status: String(issue.status ?? "staged").trim() || "staged",
+    progress: Number.isFinite(Number(issue.progress)) ? Number(issue.progress) : 0,
+    last_event: String(issue.last_event ?? "issue.created").trim(),
+    last_message: String(issue.last_message ?? "").trim(),
+    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
+    created_at: issue.created_at ?? now(),
+    updated_at: issue.updated_at ?? now(),
+    source: issue.source ?? "bridge"
+  };
+}
+
+function getThreadIssueIds(threadId) {
+  if (!threadIssueIdsById.has(threadId)) {
+    threadIssueIdsById.set(threadId, []);
+  }
+
+  return threadIssueIdsById.get(threadId);
+}
+
+function setThreadIssueIds(threadId, issueIds) {
+  threadIssueIdsById.set(threadId, issueIds);
+  persistThreadById(threadId);
+}
+
+function ensurePendingQueue(threadId) {
+  const normalized = sanitizeBridgeId(threadId);
+
+  if (!pendingStartQueues.has(normalized)) {
+    pendingStartQueues.set(normalized, []);
+  }
+
+  return pendingStartQueues.get(normalized);
+}
+
+function ensureIssueMessages(issueId) {
+  if (!issueMessagesById.has(issueId)) {
+    issueMessagesById.set(issueId, []);
+  }
+
+  return issueMessagesById.get(issueId);
+}
+
+function pushIssueMessage(issueId, message) {
+  const messages = ensureIssueMessages(issueId);
+  messages.push({
+    id: randomUUID(),
+    timestamp: now(),
+    ...message
+  });
+  return messages;
+}
+
+function appendAssistantDeltaToIssue(issueId, delta = "") {
+  const messages = ensureIssueMessages(issueId);
+  const lastMessage = messages.at(-1);
+
+  if (lastMessage?.role === "assistant") {
+    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.timestamp = now();
+    return;
+  }
+
+  messages.push({
+    id: randomUUID(),
+    role: "assistant",
+    kind: "message",
+    content: String(delta ?? ""),
+    timestamp: now()
+  });
+}
+
+function listIssueMessages(issueId) {
+  return [...(issueMessagesById.get(issueId) ?? [])];
+}
+
+function updateProjectThreadSnapshot(threadId) {
+  const thread = threadStateById.get(threadId);
+
+  if (!thread) {
+    return null;
+  }
+
+  const issueIds = getThreadIssueIds(threadId);
+  const issues = issueIds
+    .map((issueId) => issueCardsById.get(issueId))
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  const activeIssueId = activeIssueByThreadId.get(threadId);
+  const activeIssue = activeIssueId ? issueCardsById.get(activeIssueId) : null;
+  const queuedCount = ensurePendingQueue(threadId).length;
+  const latestIssue = issues[0] ?? null;
+
+  const nextStatus = activeIssue
+    ? activeIssue.status
+    : queuedCount > 0
+      ? "queued"
+      : latestIssue?.status === "completed"
+        ? "completed"
+        : latestIssue?.status === "failed"
+          ? "failed"
+          : latestIssue?.status === "awaiting_input"
+            ? "awaiting_input"
+            : "idle";
+
+  const nextThread = {
+    ...thread,
+    status: nextStatus,
+    progress: activeIssue?.progress ?? latestIssue?.progress ?? 0,
+    last_event: activeIssue?.last_event ?? latestIssue?.last_event ?? thread.last_event,
+    last_message: activeIssue?.last_message ?? latestIssue?.last_message ?? thread.last_message,
+    updated_at: latestIssue?.updated_at ?? thread.updated_at
+  };
+
+  threadStateById.set(threadId, nextThread);
+  return nextThread;
+}
+
+function ensureDefaultProjectThread(loginId, projectId, preferredName = "Main") {
+  const normalized = sanitizeUserId(loginId);
+  const state = users.get(normalized);
+  const existing = [...(state?.threadIds ?? [])]
+    .map((threadId) => threadStateById.get(threadId))
+    .find((thread) => thread?.project_id === projectId);
+
+  if (existing?.id) {
+    return existing.id;
+  }
+
+  const threadId = createThreadEntityId();
+  const thread = normalizeProjectThread(normalized, {
+    id: threadId,
+    project_id: projectId,
+    name: preferredName,
+    status: "idle",
+    last_event: "thread.created",
+    created_at: now(),
+    updated_at: now()
+  });
+
+  threadStateById.set(threadId, thread);
+  threadOwners.set(threadId, normalized);
+  state?.threadIds.add(threadId);
+  getThreadIssueIds(threadId);
+  persistThreadById(threadId);
+  return threadId;
+}
+
+function ensureDefaultThreadsForProjects(loginId, projects = []) {
+  const normalized = sanitizeUserId(loginId);
+  const state = users.get(normalized);
+
+  if (!state) {
+    return;
+  }
+
+  let changed = false;
+
+  for (const project of projects) {
+    const exists = [...state.threadIds].some((threadId) => threadStateById.get(threadId)?.project_id === project.id);
+
+    if (exists) {
+      continue;
+    }
+
+    ensureDefaultProjectThread(normalized, project.id, "Main");
+    changed = true;
+  }
+
+  if (changed) {
+    persistThreadsForUser(normalized);
+  }
+}
+
+function listProjectThreads(userId, projectId = "") {
+  const state = ensureUserState(userId);
+  const items = [...state.threadIds]
+    .map((threadId) => updateProjectThreadSnapshot(threadId) ?? threadStateById.get(threadId))
+    .filter(Boolean)
+    .filter((thread) => !projectId || thread.project_id === projectId)
+    .map((thread) => ({
+      ...thread,
+      issue_count: getThreadIssueIds(thread.id).length,
+      queued_count: ensurePendingQueue(thread.id).length
+    }))
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+
+  return items;
+}
+
+function listThreadIssues(threadId) {
+  return getThreadIssueIds(threadId)
+    .map((issueId) => issueCardsById.get(issueId))
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+
+      if (left.status === "queued" && right.status === "queued" && leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return Date.parse(right.updated_at) - Date.parse(left.updated_at);
+    });
 }
 
 function resolveWorkspaceRoots() {
@@ -729,6 +1069,532 @@ function listProjectState(userId) {
   return ensureUserState(userId).projects;
 }
 
+async function createProjectThread(userId, payload = {}) {
+  const state = ensureUserState(userId);
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+  const name = String(payload.name ?? "").trim() || "New Thread";
+
+  if (!projectId) {
+    throw new Error("thread를 생성할 프로젝트 id가 필요합니다.");
+  }
+
+  const project = state.projects.find((item) => item.id === projectId);
+
+  if (!project) {
+    throw new Error("프로젝트를 찾을 수 없습니다.");
+  }
+
+  const threadId = createThreadEntityId();
+  const thread = normalizeProjectThread(userId, {
+    id: threadId,
+    project_id: projectId,
+    name,
+    description: payload.description ?? "",
+    status: "idle",
+    last_event: "thread.created"
+  });
+
+  threadStateById.set(threadId, thread);
+  threadOwners.set(threadId, sanitizeUserId(userId));
+  state.threadIds.add(threadId);
+  getThreadIssueIds(threadId);
+  persistThreadsForUser(userId);
+  await publishEvent(userId, "thread.created", { thread });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: projectId,
+    threads: listProjectThreads(userId, projectId)
+  });
+
+  return {
+    accepted: true,
+    thread,
+    threads: listProjectThreads(userId, projectId)
+  };
+}
+
+async function updateProjectThread(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const name = String(payload.name ?? "").trim();
+
+  if (!threadId) {
+    throw new Error("변경할 thread id가 필요합니다.");
+  }
+
+  if (!name) {
+    throw new Error("thread 이름이 필요합니다.");
+  }
+
+  const current = threadStateById.get(threadId);
+
+  if (!current || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const next = {
+    ...current,
+    name,
+    updated_at: now()
+  };
+
+  threadStateById.set(threadId, next);
+  persistThreadById(threadId);
+  await publishEvent(userId, "thread.updated", { thread: next });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: next.project_id,
+    threads: listProjectThreads(userId, next.project_id)
+  });
+
+  return {
+    accepted: true,
+    thread: next,
+    threads: listProjectThreads(userId, next.project_id)
+  };
+}
+
+async function deleteProjectThread(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+
+  if (!threadId) {
+    throw new Error("삭제할 thread id가 필요합니다.");
+  }
+
+  const current = threadStateById.get(threadId);
+
+  if (!current || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  if (activeIssueByThreadId.has(threadId)) {
+    throw new Error("실행 중인 thread는 삭제할 수 없습니다.");
+  }
+
+  for (const issueId of getThreadIssueIds(threadId)) {
+    issueCardsById.delete(issueId);
+    issueMessagesById.delete(issueId);
+  }
+
+  threadIssueIdsById.delete(threadId);
+  pendingStartQueues.delete(threadId);
+  activeIssueByThreadId.delete(threadId);
+
+  const codexThreadId = current.codex_thread_id;
+  if (codexThreadId) {
+    codexThreadToThreadId.delete(codexThreadId);
+  }
+
+  const state = ensureUserState(userId);
+  state.threadIds.delete(threadId);
+  threadStateById.delete(threadId);
+  threadOwners.delete(threadId);
+  persistThreadsForUser(userId);
+  await publishEvent(userId, "thread.deleted", {
+    thread_id: threadId,
+    project_id: current.project_id
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: current.project_id,
+    threads: listProjectThreads(userId, current.project_id)
+  });
+
+  return {
+    accepted: true,
+    thread_id: threadId,
+    threads: listProjectThreads(userId, current.project_id)
+  };
+}
+
+function getIssueDetail(userId, issueId) {
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue) {
+    return {
+      issue: null,
+      messages: []
+    };
+  }
+
+  const thread = threadStateById.get(issue.thread_id);
+
+  if (!thread || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+    return {
+      issue: null,
+      messages: []
+    };
+  }
+
+  return {
+    issue,
+    thread,
+    messages: listIssueMessages(issueId)
+  };
+}
+
+async function createThreadIssue(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const prompt = String(payload.prompt ?? "").trim();
+
+  if (!threadId) {
+    throw new Error("이슈를 등록할 thread가 필요합니다.");
+  }
+
+  if (!prompt) {
+    throw new Error("프롬프트를 입력해 주세요.");
+  }
+
+  const thread = threadStateById.get(threadId);
+
+  if (!thread || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const issue = normalizeIssueCard({
+    id: createIssueCardId(),
+    project_id: thread.project_id,
+    thread_id: threadId,
+    title: createIssueTitle(payload),
+    prompt,
+    status: "staged",
+    progress: 0,
+    last_event: "issue.created",
+    last_message: ""
+  });
+
+  issueCardsById.set(issue.id, issue);
+  setThreadIssueIds(threadId, [...getThreadIssueIds(threadId), issue.id]);
+  pushIssueMessage(issue.id, {
+    role: "user",
+    kind: "prompt",
+    content: prompt
+  });
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+  await publishEvent(userId, "issue.created", { issue, thread_id: threadId });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: thread.project_id,
+    threads: listProjectThreads(userId, thread.project_id)
+  });
+
+  return {
+    accepted: true,
+    issue,
+    issues: listThreadIssues(threadId)
+  };
+}
+
+async function ensureCodexThreadForProjectThread(userId, threadId) {
+  const thread = threadStateById.get(threadId);
+
+  if (!thread) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  if (thread.codex_thread_id) {
+    return thread.codex_thread_id;
+  }
+
+  const cwd = resolveProjectWorkspace(userId, thread.project_id);
+  await appServer.ensureReady();
+  const threadResponse = await appServer.request("thread/start", {
+    cwd,
+    approvalPolicy: "never",
+    sandbox: "workspace-write",
+    model: "gpt-5-codex",
+    personality: "pragmatic"
+  });
+  const codexThread = threadResponse.result?.thread;
+
+  if (!codexThread?.id) {
+    throw new Error("app-server thread/start 응답에 thread id가 없습니다.");
+  }
+
+  const next = {
+    ...thread,
+    codex_thread_id: codexThread.id,
+    updated_at: now(),
+    last_event: "thread.bound"
+  };
+
+  threadStateById.set(threadId, next);
+  codexThreadToThreadId.set(codexThread.id, threadId);
+  persistThreadById(threadId);
+  await publishEvent(userId, "thread.bound", {
+    thread: next
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: next.project_id,
+    threads: listProjectThreads(userId, next.project_id)
+  });
+
+  return codexThread.id;
+}
+
+function updateIssueCard(issueId, patch = {}) {
+  const current = issueCardsById.get(issueId);
+
+  if (!current) {
+    return null;
+  }
+
+  const next = {
+    ...current,
+    ...patch,
+    id: issueId,
+    updated_at: patch.updated_at ?? now()
+  };
+
+  issueCardsById.set(issueId, next);
+  updateProjectThreadSnapshot(next.thread_id);
+  persistThreadById(next.thread_id);
+  return next;
+}
+
+async function startIssueTurn(userId, threadId, issueId) {
+  const thread = threadStateById.get(threadId);
+  const issue = issueCardsById.get(issueId);
+
+  if (!thread || !issue) {
+    throw new Error("실행할 작업을 찾을 수 없습니다.");
+  }
+
+  const codexThreadId = await ensureCodexThreadForProjectThread(userId, threadId);
+  const cwd = resolveProjectWorkspace(userId, thread.project_id);
+  activeIssueByThreadId.set(threadId, issueId);
+
+  try {
+    const turnResponse = await appServer.request("turn/start", {
+      threadId: codexThreadId,
+      cwd,
+      approvalPolicy: "never",
+      input: [
+        {
+          type: "text",
+          text: buildExecutionPrompt(issue.prompt)
+        }
+      ]
+    });
+
+    const turn = turnResponse.result?.turn ?? null;
+    updateIssueCard(issueId, {
+      status: "running",
+      progress: 20,
+      last_event: "turn.started"
+    });
+    updateProjectThreadSnapshot(threadId);
+    await publishEvent(userId, "turn.started", {
+      thread_id: threadId,
+      issue_id: issueId,
+      turn
+    });
+    await publishEvent(userId, "bridge.threadIssues.updated", {
+      thread_id: threadId,
+      issues: listThreadIssues(threadId)
+    });
+    await publishEvent(userId, "bridge.projectThreads.updated", {
+      project_id: thread.project_id,
+      threads: listProjectThreads(userId, thread.project_id)
+    });
+  } catch (error) {
+    activeIssueByThreadId.delete(threadId);
+    updateIssueCard(issueId, {
+      status: "failed",
+      progress: 0,
+      last_event: "turn.start.failed",
+      last_message: error.message
+    });
+    await publishEvent(userId, "turn.start.failed", {
+      thread_id: threadId,
+      issue_id: issueId,
+      error: error.message
+    });
+    await publishEvent(userId, "bridge.threadIssues.updated", {
+      thread_id: threadId,
+      issues: listThreadIssues(threadId)
+    });
+    void processIssueQueue(userId, threadId);
+  }
+}
+
+async function processIssueQueue(userId, threadId) {
+  if (activeIssueByThreadId.has(threadId)) {
+    return;
+  }
+
+  const queue = ensurePendingQueue(threadId);
+  const nextIssueId = queue.shift();
+
+  if (!nextIssueId) {
+    updateProjectThreadSnapshot(threadId);
+    persistThreadById(threadId);
+    return;
+  }
+
+  refreshIssueQueuePositions(threadId);
+  await startIssueTurn(userId, threadId, nextIssueId);
+}
+
+function refreshIssueQueuePositions(threadId) {
+  const queue = ensurePendingQueue(threadId);
+
+  for (const issueId of getThreadIssueIds(threadId)) {
+    const issue = issueCardsById.get(issueId);
+
+    if (!issue) {
+      continue;
+    }
+
+    const queueIndex = queue.indexOf(issueId);
+    issueCardsById.set(issueId, {
+      ...issue,
+      queue_position: queueIndex >= 0 ? queueIndex + 1 : null,
+      updated_at: queueIndex >= 0 ? now() : issue.updated_at
+    });
+  }
+
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+}
+
+async function startThreadIssues(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const requestedIssueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids.map((value) => String(value)) : [];
+
+  if (!threadId) {
+    throw new Error("시작할 thread가 필요합니다.");
+  }
+
+  const eligibleIssueIds = requestedIssueIds.filter((issueId) => {
+    const issue = issueCardsById.get(issueId);
+    return issue && issue.thread_id === threadId && issue.status === "staged";
+  });
+
+  if (eligibleIssueIds.length === 0) {
+    return {
+      accepted: true,
+      issues: listThreadIssues(threadId)
+    };
+  }
+
+  for (const issueId of eligibleIssueIds) {
+    updateIssueCard(issueId, {
+      status: "queued",
+      progress: 10,
+      last_event: "issue.queued"
+    });
+  }
+
+  const queue = ensurePendingQueue(threadId);
+  for (const issueId of eligibleIssueIds) {
+    if (!queue.includes(issueId)) {
+      queue.push(issueId);
+    }
+  }
+
+  refreshIssueQueuePositions(threadId);
+  await publishEvent(userId, "thread.issues.queued", {
+    thread_id: threadId,
+    issue_ids: eligibleIssueIds
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: threadStateById.get(threadId)?.project_id ?? null,
+    threads: listProjectThreads(userId, threadStateById.get(threadId)?.project_id ?? "")
+  });
+  await processIssueQueue(userId, threadId);
+
+  return {
+    accepted: true,
+    issues: listThreadIssues(threadId)
+  };
+}
+
+async function reorderThreadIssues(userId, payload = {}) {
+  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const issueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids.map((value) => String(value)) : [];
+
+  if (!threadId) {
+    throw new Error("정렬할 thread가 필요합니다.");
+  }
+
+  const queue = ensurePendingQueue(threadId);
+  const reordered = issueIds.filter((issueId) => queue.includes(issueId));
+  const remaining = queue.filter((issueId) => !reordered.includes(issueId));
+  pendingStartQueues.set(threadId, [...reordered, ...remaining]);
+  refreshIssueQueuePositions(threadId);
+  await publishEvent(userId, "thread.issues.reordered", {
+    thread_id: threadId,
+    issue_ids: ensurePendingQueue(threadId)
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: threadId,
+    issues: listThreadIssues(threadId)
+  });
+
+  return {
+    accepted: true,
+    issues: listThreadIssues(threadId)
+  };
+}
+
+async function deleteThreadIssue(userId, payload = {}) {
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+
+  if (!issueId) {
+    throw new Error("삭제할 이슈 id가 필요합니다.");
+  }
+
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  const thread = threadStateById.get(issue.thread_id);
+
+  if (!thread || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  if (activeIssueByThreadId.get(issue.thread_id) === issueId) {
+    throw new Error("실행 중인 이슈는 삭제할 수 없습니다.");
+  }
+
+  issueCardsById.delete(issueId);
+  issueMessagesById.delete(issueId);
+  setThreadIssueIds(
+    issue.thread_id,
+    getThreadIssueIds(issue.thread_id).filter((item) => item !== issueId)
+  );
+  pendingStartQueues.set(
+    issue.thread_id,
+    ensurePendingQueue(issue.thread_id).filter((item) => item !== issueId)
+  );
+  refreshIssueQueuePositions(issue.thread_id);
+  await publishEvent(userId, "issue.deleted", {
+    issue_id: issueId,
+    thread_id: issue.thread_id
+  });
+  await publishEvent(userId, "bridge.threadIssues.updated", {
+    thread_id: issue.thread_id,
+    issues: listThreadIssues(issue.thread_id)
+  });
+  await publishEvent(userId, "bridge.projectThreads.updated", {
+    project_id: issue.project_id,
+    threads: listProjectThreads(userId, issue.project_id)
+  });
+
+  return {
+    accepted: true,
+    issues: listThreadIssues(issue.thread_id)
+  };
+}
+
 function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
   if (!rawStatus || typeof rawStatus !== "object") {
     return currentStatus;
@@ -902,16 +1768,6 @@ function buildExecutionPrompt(prompt = "") {
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
 }
 
-function ensurePendingQueue(userId) {
-  const normalized = sanitizeUserId(userId);
-
-  if (!pendingStartQueues.has(normalized)) {
-    pendingStartQueues.set(normalized, []);
-  }
-
-  return pendingStartQueues.get(normalized);
-}
-
 function refreshQueuePositions(userId) {
   const state = ensureUserState(userId);
   const queue = ensurePendingQueue(userId);
@@ -943,11 +1799,19 @@ async function publishSnapshots(loginId) {
 
   await publishEvent(loginId, "bridge.status.updated", await bridgeStatus(loginId));
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
-  await publishEvent(loginId, "bridge.threads.updated", { threads: listLocalThreads(loginId) });
+  await publishEvent(loginId, "bridge.projectThreads.updated", {
+    threads: listProjectThreads(loginId)
+  });
 }
 
 function resolveOwnerFromParams(params = {}) {
-  const threadId = params.threadId ?? params.thread?.id ?? params.conversationId ?? params.thread_id;
+  const codexThreadId = params.threadId ?? params.thread?.id ?? params.conversationId ?? params.thread_id;
+
+  if (!codexThreadId) {
+    return null;
+  }
+
+  const threadId = codexThreadToThreadId.get(codexThreadId);
 
   if (!threadId) {
     return null;
@@ -1142,17 +2006,40 @@ class AppServerClient {
 
   async handleNotification(method, params) {
     const owner = resolveOwnerFromParams(params);
-    const threadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
+    const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
+    const threadId = codexThreadId ? codexThreadToThreadId.get(codexThreadId) ?? null : null;
 
     if (threadId) {
       const eventPatch = buildThreadPatch(method, params);
 
       if (eventPatch) {
-        upsertThreadState(threadId, eventPatch);
+        const current = threadStateById.get(threadId);
+
+        if (current) {
+          threadStateById.set(threadId, {
+            ...current,
+            ...eventPatch,
+            updated_at: eventPatch.updated_at ?? now()
+          });
+        }
+      }
+
+      const activeIssueId = activeIssueByThreadId.get(threadId);
+
+      if (activeIssueId) {
+        const issuePatch = buildIssuePatch(method, params, activeIssueId);
+
+        if (issuePatch) {
+          updateIssueCard(activeIssueId, issuePatch);
+        }
       }
 
       if (method === "item/agentMessage/delta" && params.delta) {
-        appendAssistantDelta(threadId, params.delta);
+        const activeIssueId = activeIssueByThreadId.get(threadId);
+
+        if (activeIssueId) {
+          appendAssistantDeltaToIssue(activeIssueId, params.delta);
+        }
       }
     }
 
@@ -1169,7 +2056,17 @@ class AppServerClient {
       method === "turn/completed" ||
       method === "item/agentMessage/delta"
     ) {
-      await publishEvent(owner, "bridge.threads.updated", { threads: listLocalThreads(owner) });
+      const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
+      await publishEvent(owner, "bridge.projectThreads.updated", {
+        project_id: projectId,
+        threads: listProjectThreads(owner, projectId)
+      });
+      if (threadId) {
+        await publishEvent(owner, "bridge.threadIssues.updated", {
+          thread_id: threadId,
+          issues: listThreadIssues(threadId)
+        });
+      }
     }
 
     if (
@@ -1177,7 +2074,10 @@ class AppServerClient {
       (method === "thread/status/changed" &&
         ["idle", "error", "waitingForInput"].includes(params.status?.type ?? ""))
     ) {
-      void processStartQueue(owner);
+      if (threadId) {
+        activeIssueByThreadId.delete(threadId);
+        void processIssueQueue(owner, threadId);
+      }
     }
   }
 
@@ -1229,16 +2129,18 @@ class AppServerClient {
 }
 
 function buildThreadPatch(method, params) {
-  const threadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
-  const currentStatus = threadId ? threadStateById.get(threadId)?.status ?? "queued" : "queued";
+  const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
+  const threadId = codexThreadId ? codexThreadToThreadId.get(codexThreadId) ?? null : null;
+  const currentStatus = threadId ? threadStateById.get(threadId)?.status ?? "idle" : "idle";
 
   switch (method) {
     case "thread/started":
-      return normalizeThreadRecord(params.thread, {
-        progress: 5,
-        status: currentStatus === "staged" ? "staged" : "queued",
+      return {
+        codex_thread_id: params.thread?.id ?? codexThreadId ?? null,
+        progress: Math.max(5, threadStateById.get(threadId)?.progress ?? 0),
+        status: currentStatus,
         last_event: "thread.started"
-      });
+      };
     case "thread/status/changed":
       return {
         status: normalizeThreadStatus(params.status, currentStatus),
@@ -1267,8 +2169,69 @@ function buildThreadPatch(method, params) {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${threadStateById.get(params.threadId)?.last_message ?? ""}${params.delta ?? ""}`
+        last_message: `${threadStateById.get(threadId)?.last_message ?? ""}${params.delta ?? ""}`
       };
+    case "turn/completed":
+      return {
+        status: params.turn?.status === "completed" ? "idle" : "failed",
+        progress: params.turn?.status === "completed" ? 100 : 0,
+        last_event: "turn.completed"
+      };
+    default:
+      return null;
+  }
+}
+
+function buildIssuePatch(method, params, issueId) {
+  const current = issueCardsById.get(issueId);
+
+  if (!current) {
+    return null;
+  }
+
+  switch (method) {
+    case "turn/started":
+      return {
+        status: "running",
+        progress: Math.max(current.progress ?? 0, 20),
+        last_event: "turn.started"
+      };
+    case "turn/plan/updated":
+      return {
+        status: "running",
+        progress: 45,
+        last_event: "turn.plan.updated"
+      };
+    case "turn/diff/updated":
+      return {
+        status: "running",
+        progress: 75,
+        last_event: "turn.diff.updated"
+      };
+    case "item/agentMessage/delta":
+      return {
+        status: "running",
+        progress: 90,
+        last_event: "item.agentMessage.delta",
+        last_message: `${current.last_message ?? ""}${params.delta ?? ""}`
+      };
+    case "thread/status/changed":
+      if ((params.status?.type ?? "") === "waitingForInput") {
+        return {
+          status: "awaiting_input",
+          last_event: "thread.status.changed"
+        };
+      }
+
+      if ((params.status?.type ?? "") === "error") {
+        return {
+          status: "failed",
+          progress: 0,
+          last_event: "thread.status.changed"
+        };
+      }
+
+      return null;
     case "turn/completed":
       return {
         status: params.turn?.status === "completed" ? "completed" : "failed",
@@ -1293,7 +2256,7 @@ function getThreadDetail(userId, threadId) {
 
   return {
     thread,
-    messages: listThreadMessages(threadId)
+    messages: []
   };
 }
 
@@ -1692,6 +2655,20 @@ async function deleteProject(userId, payload = {}) {
   );
 
   for (const threadId of projectThreadIds) {
+    const codexThreadId = threadStateById.get(threadId)?.codex_thread_id;
+
+    if (codexThreadId) {
+      codexThreadToThreadId.delete(codexThreadId);
+    }
+
+    for (const issueId of getThreadIssueIds(threadId)) {
+      issueCardsById.delete(issueId);
+      issueMessagesById.delete(issueId);
+    }
+
+    threadIssueIdsById.delete(threadId);
+    pendingStartQueues.delete(threadId);
+    activeIssueByThreadId.delete(threadId);
     deleteThreadState(normalized, threadId);
   }
 
@@ -1701,17 +2678,16 @@ async function deleteProject(userId, payload = {}) {
   }
   state.updated_at = now();
   persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
-  refreshQueuePositions(normalized);
 
   await publishEvent(normalized, "project.deleted", { project_id: projectId });
   await publishEvent(normalized, "bridge.projects.updated", { projects: state.projects });
-  await publishEvent(normalized, "bridge.threads.updated", { threads: listLocalThreads(normalized) });
+  await publishEvent(normalized, "bridge.projectThreads.updated", { threads: listProjectThreads(normalized) });
 
   return {
     accepted: true,
     project_id: projectId,
     projects: state.projects,
-    threads: listLocalThreads(normalized)
+    threads: listProjectThreads(normalized)
   };
 }
 
@@ -1745,18 +2721,20 @@ async function subscribeRequests() {
       handler: (userId) => ({ roots: listWorkspaceRoots(userId) })
     },
     {
-      subject: "octop.user.*.bridge.*.threads.get",
+      subject: "octop.user.*.bridge.*.project.threads.get",
       handler: async (userId, body) => ({
-        threads: listVisibleThreads(userId, String(body.project_id ?? ""))
+        threads: listProjectThreads(userId, String(body.project_id ?? ""))
       })
     },
     {
-      subject: "octop.user.*.bridge.*.threads.reorder",
-      handler: async (userId, body) => reorderQueuedThreads(userId, body)
+      subject: "octop.user.*.bridge.*.thread.issues.get",
+      handler: async (_userId, body) => ({
+        issues: listThreadIssues(String(body.thread_id ?? body.threadId ?? ""))
+      })
     },
     {
-      subject: "octop.user.*.bridge.*.thread.detail.get",
-      handler: (userId, body) => getThreadDetail(userId, body.thread_id ?? body.threadId ?? "")
+      subject: "octop.user.*.bridge.*.thread.issue.detail.get",
+      handler: (userId, body) => getIssueDetail(userId, body.issue_id ?? body.issueId ?? "")
     }
   ];
 
@@ -1864,10 +2842,10 @@ async function subscribeRequests() {
     }
   })();
 
-  const issueCreateSubscription = nc.subscribe("octop.user.*.bridge.*.issue.create");
+  const projectThreadCreateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.create");
 
   (async () => {
-    for await (const message of issueCreateSubscription) {
+    for await (const message of projectThreadCreateSubscription) {
       try {
         const body = parseJson(message.data);
         const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
@@ -1877,7 +2855,7 @@ async function subscribeRequests() {
           continue;
         }
 
-        const result = await createQueuedIssue(userId, body);
+        const result = await createProjectThread(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1885,10 +2863,10 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.thread.delete");
+  const projectThreadDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.delete");
 
   (async () => {
-    for await (const message of threadDeleteSubscription) {
+    for await (const message of projectThreadDeleteSubscription) {
       try {
         const body = parseJson(message.data);
         const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
@@ -1898,7 +2876,7 @@ async function subscribeRequests() {
           continue;
         }
 
-        const result = await deleteThread(userId, body);
+        const result = await deleteProjectThread(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1906,10 +2884,10 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadsStartSubscription = nc.subscribe("octop.user.*.bridge.*.threads.start");
+  const projectThreadUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.update");
 
   (async () => {
-    for await (const message of threadsStartSubscription) {
+    for await (const message of projectThreadUpdateSubscription) {
       try {
         const body = parseJson(message.data);
         const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
@@ -1919,7 +2897,7 @@ async function subscribeRequests() {
           continue;
         }
 
-        const result = await startQueuedThreads(userId, body);
+        const result = await updateProjectThread(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1927,10 +2905,10 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadsReorderSubscription = nc.subscribe("octop.user.*.bridge.*.threads.reorder");
+  const threadIssueCreateSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.create");
 
   (async () => {
-    for await (const message of threadsReorderSubscription) {
+    for await (const message of threadIssueCreateSubscription) {
       try {
         const body = parseJson(message.data);
         const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
@@ -1940,7 +2918,70 @@ async function subscribeRequests() {
           continue;
         }
 
-        const result = await reorderQueuedThreads(userId, body);
+        const result = await createThreadIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadIssueDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.delete");
+
+  (async () => {
+    for await (const message of threadIssueDeleteSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await deleteThreadIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadIssuesStartSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issues.start");
+
+  (async () => {
+    for await (const message of threadIssuesStartSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await startThreadIssues(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadIssuesReorderSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issues.reorder");
+
+  (async () => {
+    for await (const message of threadIssuesReorderSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await reorderThreadIssues(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1961,7 +3002,22 @@ async function subscribeRequests() {
           continue;
         }
 
-        const result = await createQueuedIssue(userId, body);
+        const projectId = String(body.project_id ?? ensureUserState(userId).projects[0]?.id ?? "").trim();
+        const threadId = ensureDefaultProjectThread(userId, projectId, "Main");
+        const created = await createThreadIssue(userId, {
+          ...body,
+          thread_id: threadId,
+          project_id: projectId
+        });
+        const started = await startThreadIssues(userId, {
+          thread_id: threadId,
+          issue_ids: [created.issue.id]
+        });
+        const result = {
+          accepted: true,
+          issue: created.issue,
+          issues: started.issues
+        };
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -2044,54 +3100,114 @@ createServer(async (request, response) => {
     }
   }
 
-  if (request.method === "GET" && url.pathname === "/api/threads") {
+  if (request.method === "GET" && /^\/api\/projects\/[^/]+\/threads$/.test(url.pathname)) {
+    const projectId = url.pathname.split("/")[3];
     return sendJson(response, 200, {
-      threads: listVisibleThreads(userId, url.searchParams.get("project_id") ?? "")
+      threads: listProjectThreads(userId, projectId)
     });
   }
 
-  if (request.method === "GET" && url.pathname.startsWith("/api/threads/")) {
-    const threadId = url.pathname.split("/").at(-1);
-    return sendJson(response, 200, getThreadDetail(userId, threadId));
+  if (request.method === "POST" && /^\/api\/projects\/[^/]+\/threads$/.test(url.pathname)) {
+    try {
+      const projectId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await createProjectThread(userId, {
+        ...body,
+        project_id: projectId
+      });
+      return sendJson(response, 201, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
   }
 
-  if (request.method === "DELETE" && url.pathname.startsWith("/api/threads/")) {
+  if (request.method === "PATCH" && /^\/api\/threads\/[^/]+$/.test(url.pathname)) {
     try {
       const threadId = url.pathname.split("/").at(-1);
-      const payload = await deleteThread(userId, { thread_id: threadId });
+      const body = await readJsonBody(request);
+      const payload = await updateProjectThread(userId, {
+        ...body,
+        thread_id: threadId
+      });
       return sendJson(response, 200, payload);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/api/issues") {
+  if (request.method === "DELETE" && /^\/api\/threads\/[^/]+$/.test(url.pathname)) {
     try {
-      const body = await readJsonBody(request);
-      const payload = await createQueuedIssue(userId, body);
-      return sendJson(response, 202, payload);
+      const threadId = url.pathname.split("/").at(-1);
+      const payload = await deleteProjectThread(userId, { thread_id: threadId });
+      return sendJson(response, 200, payload);
     } catch (error) {
-      return sendJson(response, 400, { error: error.message });
+      return sendJson(response, 400, { accepted: false, error: error.message });
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/api/threads/start") {
+  if (request.method === "GET" && /^\/api\/threads\/[^/]+\/issues$/.test(url.pathname)) {
+    const threadId = url.pathname.split("/")[3];
+    return sendJson(response, 200, {
+      issues: listThreadIssues(threadId)
+    });
+  }
+
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/issues$/.test(url.pathname)) {
     try {
+      const threadId = url.pathname.split("/")[3];
       const body = await readJsonBody(request);
-      const payload = await startQueuedThreads(userId, body);
-      return sendJson(response, 202, payload);
+      const payload = await createThreadIssue(userId, {
+        ...body,
+        thread_id: threadId
+      });
+      return sendJson(response, 201, payload);
     } catch (error) {
-      return sendJson(response, 400, { error: error.message });
+      return sendJson(response, 400, { accepted: false, error: error.message });
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/api/threads/reorder") {
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/issues\/start$/.test(url.pathname)) {
     try {
+      const threadId = url.pathname.split("/")[3];
       const body = await readJsonBody(request);
-      const payload = await reorderQueuedThreads(userId, body);
+      const payload = await startThreadIssues(userId, {
+        ...body,
+        thread_id: threadId
+      });
       return sendJson(response, 202, payload);
     } catch (error) {
-      return sendJson(response, 400, { error: error.message });
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/issues\/reorder$/.test(url.pathname)) {
+    try {
+      const threadId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await reorderThreadIssues(userId, {
+        ...body,
+        thread_id: threadId
+      });
+      return sendJson(response, 202, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "GET" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
+    const issueId = url.pathname.split("/").at(-1);
+    return sendJson(response, 200, getIssueDetail(userId, issueId));
+  }
+
+  if (request.method === "DELETE" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
+    try {
+      const issueId = url.pathname.split("/").at(-1);
+      const payload = await deleteThreadIssue(userId, {
+        issue_id: issueId
+      });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
     }
   }
 

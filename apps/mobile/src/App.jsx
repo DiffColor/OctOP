@@ -61,11 +61,11 @@ const STATUS_META = {
   }
 };
 
-const KANBAN_FILTERS = [
-  { id: "todo", label: "todo" },
-  { id: "in_progress", label: "in progress" },
-  { id: "review", label: "review" },
-  { id: "done", label: "done" }
+const THREAD_CONTENT_FILTERS = [
+  { id: "all", label: "all" },
+  { id: "prompts", label: "prompts" },
+  { id: "responses", label: "responses" },
+  { id: "runs", label: "runs" }
 ];
 
 function readStoredSession() {
@@ -254,22 +254,6 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
-function getLaneByStatus(status) {
-  if (status === "running") {
-    return "in_progress";
-  }
-
-  if (status === "awaiting_input" || status === "failed") {
-    return "review";
-  }
-
-  if (status === "completed") {
-    return "done";
-  }
-
-  return "todo";
-}
-
 function parseResponseBody(response, text) {
   if (!text) {
     return {};
@@ -409,6 +393,41 @@ function summarizeMessageContent(content, limit = 160) {
 
   const safeLimit = Math.max(0, limit - 3);
   return `${normalized.slice(0, safeLimit)}...`;
+}
+
+function buildRunTimeline(thread) {
+  if (!thread) {
+    return [];
+  }
+
+  const entries = [
+    {
+      id: `${thread.id}-created`,
+      title: "Thread 생성",
+      description: `${thread.title || "새 채팅창"}이 생성되었습니다.`,
+      timestamp: thread.created_at
+    }
+  ];
+
+  if (thread.last_event && thread.last_event !== "issue.created") {
+    entries.push({
+      id: `${thread.id}-latest`,
+      title: "최근 실행 상태",
+      description: `${thread.last_event} · ${getStatusMeta(thread.status).label}`,
+      timestamp: thread.updated_at
+    });
+  }
+
+  if (thread.turn_id) {
+    entries.push({
+      id: `${thread.id}-turn`,
+      title: "최근 turn",
+      description: `turn id ${thread.turn_id}`,
+      timestamp: thread.updated_at
+    });
+  }
+
+  return entries.filter((entry) => entry.timestamp);
 }
 
 function BottomSheet({ open, title, description, onClose, children, variant = "bottom" }) {
@@ -744,7 +763,14 @@ function UtilitySheet({
   );
 }
 
-function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
+function InlineIssueComposer({
+  busy,
+  selectedProject,
+  onSubmit,
+  label,
+  placeholder,
+  disabled = false
+}) {
   const [prompt, setPrompt] = useState("");
   const textareaRef = useRef(null);
 
@@ -777,7 +803,7 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
     const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
 
-    if (!normalizedPrompt || !normalizedTitle || !selectedProject?.id) {
+    if (!normalizedPrompt || !selectedProject?.id || disabled) {
       return;
     }
 
@@ -797,7 +823,7 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
       <div className="flex items-end gap-3">
         <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-white/[0.03] px-4 py-3">
           <div className="mb-1 text-[11px] text-slate-500">
-            {selectedProject ? `${selectedProject.name} · 프롬프트` : "프로젝트를 선택해 주세요"}
+            {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
           </div>
           <textarea
             rows="1"
@@ -805,17 +831,20 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
             value={prompt}
             onChange={handlePromptChange}
             placeholder={
-              selectedProject
-                ? "채팅처럼 작업 지시를 입력하세요"
-                : "먼저 프로젝트를 선택해 주세요"
+              disabled
+                ? "현재 실행 중인 thread입니다"
+                : placeholder ??
+                  (selectedProject
+                    ? "채팅처럼 작업 지시를 입력하세요"
+                    : "먼저 프로젝트를 선택해 주세요")
             }
-            disabled={!selectedProject || busy}
+            disabled={!selectedProject || busy || disabled}
             className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
           />
         </div>
         <button
           type="submit"
-          disabled={busy || !selectedProject || !prompt.trim()}
+          disabled={busy || !selectedProject || !prompt.trim() || disabled}
           className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {busy ? (
@@ -1012,45 +1041,195 @@ function ProjectComposerSheet({
   );
 }
 
-function ThreadListItem({ thread, projectName, active, onOpen }) {
-  const status = getStatusMeta(thread.status);
+function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
+  const [title, setTitle] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      return;
+    }
+
+    setTitle(thread?.title ?? "");
+  }, [open, thread]);
+
+  if (!open || !thread) {
+    return null;
+  }
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(thread.id)}
-      className={`w-full border-b border-white/8 px-1 py-3 text-left transition ${
-        active
-          ? "bg-white/[0.04]"
-          : "bg-transparent hover:bg-white/[0.03]"
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/12 text-sm font-semibold text-white">
-          {thread.title.slice(0, 1).toUpperCase()}
+    <BottomSheet open={open} title="채팅창 제목 변경" onClose={onClose} variant="center">
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+
+          if (!title.trim()) {
+            return;
+          }
+
+          const accepted = await onSubmit(title.trim());
+
+          if (accepted !== false) {
+            onClose();
+          }
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-title">
+            제목
+          </label>
+          <input
+            id="thread-title"
+            type="text"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
         </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="thread-title text-sm font-semibold text-white">{thread.title}</p>
-              <p className="mt-0.5 text-xs text-slate-400">{projectName || "프로젝트 미지정"}</p>
-            </div>
-            <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
-          </div>
-
-          <p className="thread-preview mt-1.5 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
-
-          <div className="mt-2 flex items-center gap-2">
-            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
-              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-              {status.label}
-            </span>
-            <span className="text-[11px] text-slate-500">{thread.progress}%</span>
-          </div>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !title.trim()}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "변경 중..." : "저장"}
+          </button>
         </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
+function ThreadListItem({ thread, projectName, active, onOpen, onRename, onDelete }) {
+  const status = getStatusMeta(thread.status);
+  const startXRef = useRef(null);
+  const offsetRef = useRef(0);
+  const movedRef = useRef(false);
+  const ACTION_WIDTH = 128;
+  const [offset, setOffset] = useState(0);
+
+  const setRevealOffset = useCallback((nextOffset) => {
+    const clamped = Math.max(-ACTION_WIDTH, Math.min(0, nextOffset));
+    offsetRef.current = clamped;
+    setOffset(clamped);
+  }, []);
+
+  const handlePointerDown = useCallback((event) => {
+    startXRef.current = event.clientX;
+    movedRef.current = false;
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      if (startXRef.current === null) {
+        return;
+      }
+
+      const delta = event.clientX - startXRef.current;
+
+      if (Math.abs(delta) > 6) {
+        movedRef.current = true;
+      }
+
+      setRevealOffset(delta < 0 ? delta : 0);
+    },
+    [setRevealOffset]
+  );
+
+  const handlePointerUp = useCallback(() => {
+    if (startXRef.current === null) {
+      return;
+    }
+
+    setRevealOffset(offsetRef.current <= -56 ? -ACTION_WIDTH : 0);
+    startXRef.current = null;
+  }, [setRevealOffset]);
+
+  return (
+    <div className="relative overflow-hidden border-b border-white/8">
+      <div className="absolute inset-y-0 right-0 flex w-32 items-stretch">
+        <button
+          type="button"
+          onClick={() => {
+            setRevealOffset(0);
+            onRename(thread);
+          }}
+          className="flex-1 bg-slate-800 text-[12px] font-semibold text-white"
+        >
+          편집
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setRevealOffset(0);
+            onDelete(thread);
+          }}
+          className="flex-1 bg-rose-500 text-[12px] font-semibold text-white"
+        >
+          삭제
+        </button>
       </div>
-    </button>
+
+      <button
+        type="button"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onClick={() => {
+          if (movedRef.current) {
+            movedRef.current = false;
+            return;
+          }
+
+          if (offsetRef.current < 0) {
+            setRevealOffset(0);
+            return;
+          }
+
+          onOpen(thread.id);
+        }}
+        className={`relative w-full px-1 py-3 text-left transition ${
+          active ? "bg-white/[0.04]" : "bg-transparent hover:bg-white/[0.03]"
+        }`}
+        style={{ transform: `translateX(${offset}px)` }}
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/12 text-sm font-semibold text-white">
+            {thread.title.slice(0, 1).toUpperCase()}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="thread-title text-sm font-semibold text-white">{thread.title}</p>
+                <p className="mt-0.5 text-xs text-slate-400">{projectName || "프로젝트 미지정"}</p>
+              </div>
+              <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
+            </div>
+
+            <p className="thread-preview mt-1.5 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
+
+            <div className="mt-2 flex items-center gap-2">
+              <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
+                <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+                {status.label}
+              </span>
+              <span className="text-[11px] text-slate-500">{thread.progress}%</span>
+            </div>
+          </div>
+        </div>
+      </button>
+    </div>
   );
 }
 
@@ -1124,6 +1303,26 @@ function ConversationTimeline({ entries }) {
   );
 }
 
+function RunTimeline({ entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <ul className="space-y-3">
+      {entries.map((entry) => (
+        <li key={entry.id} className="border-b border-white/8 px-1 pb-3">
+          <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+            <span>{entry.title}</span>
+            <span>{formatRelativeTime(entry.timestamp)}</span>
+          </div>
+          <p className="mt-1 text-sm leading-6 text-slate-200">{entry.description}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ThreadDetail({
   thread,
   project,
@@ -1133,11 +1332,16 @@ function ThreadDetail({
   onRefreshMessages,
   onSubmitPrompt,
   submitBusy,
-  onBack
+  onBack,
+  messageFilter,
+  onChangeMessageFilter,
+  isDraft = false
 }) {
-  const status = getStatusMeta(thread.status);
+  const status = thread ? getStatusMeta(thread.status) : null;
   const scrollRef = useRef(null);
   const [viewMode, setViewMode] = useState("chat");
+  const threadTitle = thread?.title ?? "새 채팅창";
+  const threadTimestamp = thread?.created_at ?? new Date().toISOString();
   const chatTimeline = useMemo(() => {
     const normalized = [];
     let lastPrompt = null;
@@ -1180,9 +1384,9 @@ function ThreadDetail({
     });
 
     return normalized;
-  }, [messages, thread.created_at, thread.updated_at]);
+  }, [messages, thread?.created_at, thread?.updated_at]);
   const conversationTimeline = useMemo(() => {
-    const fallbackTimestamp = thread.updated_at ?? thread.created_at ?? new Date().toISOString();
+    const fallbackTimestamp = thread?.updated_at ?? thread?.created_at ?? new Date().toISOString();
     const safeMessages = Array.isArray(messages) ? messages : [];
     const groups = [];
     let currentGroup = null;
@@ -1242,7 +1446,36 @@ function ThreadDetail({
     commitGroup();
 
     return groups;
-  }, [messages, thread.created_at, thread.updated_at]);
+  }, [messages, thread?.created_at, thread?.updated_at]);
+  const runTimeline = useMemo(() => buildRunTimeline(thread), [thread]);
+  const promptTimeline = useMemo(
+    () => conversationTimeline.map((entry) => ({ ...entry, responses: [] })),
+    [conversationTimeline]
+  );
+  const responseTimeline = useMemo(
+    () =>
+      chatTimeline.filter((entry) => entry.role === "assistant").map((entry) => ({
+        id: entry.id,
+        content: entry.content,
+        timestamp: entry.timestamp
+      })),
+    [chatTimeline]
+  );
+  const visibleChatTimeline = useMemo(() => {
+    if (messageFilter === "prompts") {
+      return chatTimeline.filter((entry) => entry.role === "user");
+    }
+
+    if (messageFilter === "responses") {
+      return chatTimeline.filter((entry) => entry.role === "assistant");
+    }
+
+    if (messageFilter === "runs") {
+      return [];
+    }
+
+    return chatTimeline;
+  }, [chatTimeline, messageFilter]);
 
   useEffect(() => {
     if (!scrollRef.current || viewMode !== "chat") {
@@ -1250,7 +1483,7 @@ function ThreadDetail({
     }
 
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [chatTimeline, messagesLoading, viewMode]);
+  }, [messagesLoading, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
@@ -1258,11 +1491,31 @@ function ThreadDetail({
     }
   };
 
-  const showEmptyState =
-    !messagesLoading &&
-    !messagesError &&
-    ((viewMode === "chat" && chatTimeline.length === 0) ||
-      (viewMode === "timeline" && conversationTimeline.length === 0));
+  const canRefresh = Boolean(thread?.id && onRefreshMessages);
+  const isInputDisabled = thread?.status === "running";
+  const showEmptyState = (() => {
+    if (messagesLoading || messagesError) {
+      return false;
+    }
+
+    if (messageFilter === "runs") {
+      return runTimeline.length === 0;
+    }
+
+    if (viewMode === "chat") {
+      return visibleChatTimeline.length === 0;
+    }
+
+    if (messageFilter === "prompts") {
+      return promptTimeline.length === 0;
+    }
+
+    if (messageFilter === "responses") {
+      return responseTimeline.length === 0;
+    }
+
+    return conversationTimeline.length === 0;
+  })();
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -1279,18 +1532,18 @@ function ThreadDetail({
           </button>
 
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-white">{thread.title}</p>
+            <p className="truncate text-sm font-semibold text-white">{threadTitle}</p>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
               <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
-              <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} />
-              <span>{status.label}</span>
+              {status ? <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} /> : null}
+              <span>{status ? status.label : "새 채팅창"}</span>
             </div>
           </div>
 
           <button
             type="button"
             onClick={handleRefreshMessages}
-            disabled={messagesLoading}
+            disabled={messagesLoading || !canRefresh}
             className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {messagesLoading ? (
@@ -1313,8 +1566,25 @@ function ThreadDetail({
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
-              {formatDateTime(thread.created_at)}
+              {formatDateTime(threadTimestamp)}
             </span>
+          </div>
+
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {THREAD_CONTENT_FILTERS.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                onClick={() => onChangeMessageFilter(filter.id)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-[12px] font-medium transition ${
+                  messageFilter === filter.id
+                    ? "bg-white text-slate-900"
+                    : "bg-transparent text-slate-400 hover:text-white"
+                }`}
+              >
+                {filter.label}
+              </button>
+            ))}
           </div>
 
           <div className="flex justify-center">
@@ -1353,8 +1623,10 @@ function ThreadDetail({
             </div>
           ) : null}
 
-          {viewMode === "chat" ? (
-            chatTimeline.map((message) => (
+          {messageFilter === "runs" ? (
+            <RunTimeline entries={runTimeline} />
+          ) : viewMode === "chat" ? (
+            visibleChatTimeline.map((message) => (
               <MessageBubble
                 key={message.id}
                 align={message.align}
@@ -1373,6 +1645,20 @@ function ThreadDetail({
                 </p>
               </MessageBubble>
             ))
+          ) : messageFilter === "prompts" ? (
+            <ConversationTimeline entries={promptTimeline} />
+          ) : messageFilter === "responses" ? (
+            <ul className="space-y-3">
+              {responseTimeline.map((response) => (
+                <li key={response.id} className="border-b border-white/8 px-1 pb-3">
+                  <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                    <span>응답</span>
+                    <span>{formatRelativeTime(response.timestamp)}</span>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-200">{response.content || "응답이 비어 있습니다."}</p>
+                </li>
+              ))}
+            </ul>
           ) : (
             <ConversationTimeline entries={conversationTimeline} />
           )}
@@ -1385,20 +1671,26 @@ function ThreadDetail({
 
           {showEmptyState ? (
             <div className="rounded-2xl border border-dashed border-white/15 px-4 py-4 text-center text-sm text-slate-300">
-              {viewMode === "chat"
-                ? "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
-                : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
+              {messageFilter === "runs"
+                ? "표시할 실행 기록이 없습니다."
+                : viewMode === "chat"
+                  ? isDraft
+                    ? "새 채팅창입니다. 첫 프롬프트를 입력해 작업을 시작해 주세요."
+                    : "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
+                  : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
             </div>
           ) : null}
 
-          <div className="flex justify-center">
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
-              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-              <span>{status.label}</span>
-              <span className="text-slate-500">{thread.progress}%</span>
-              <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
+          {status ? (
+            <div className="flex justify-center">
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
+                <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+                <span>{status.label}</span>
+                <span className="text-slate-500">{thread.progress}%</span>
+                <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </div>
 
@@ -1408,6 +1700,9 @@ function ThreadDetail({
             busy={submitBusy}
             selectedProject={project}
             onSubmit={onSubmitPrompt}
+            label={isDraft ? "첫 프롬프트" : "프롬프트"}
+            placeholder={isDraft ? "새 채팅창의 첫 작업 지시를 입력해 주세요" : "이 thread에서 이어서 진행할 작업을 입력해 주세요"}
+            disabled={isInputDisabled}
           />
         </div>
       </div>
@@ -1429,21 +1724,24 @@ function MainPage({
   selectedBridgeId,
   selectedProjectId,
   selectedThreadId,
+  draftThreadProjectId,
   search,
   loadingState,
   projectBusy,
-  issueBusy,
+  threadBusy,
+  renameBusy,
   utilityOpen,
   projectComposerOpen,
   installPromptVisible,
   installBusy,
-  laneFilter,
   activeView,
+  threadMessageFilter,
   onSearchChange,
-  onChangeLaneFilter,
+  onChangeThreadMessageFilter,
   onSelectBridge,
   onSelectProject,
   onSelectThread,
+  onOpenNewThread,
   onOpenUtility,
   onOpenProjectComposer,
   onInstallPwa,
@@ -1454,28 +1752,33 @@ function MainPage({
   onBrowseFolder,
   onSelectWorkspace,
   onSubmitProject,
-  onSubmitIssue,
+  onCreateThread,
+  onAppendThreadMessage,
+  onRenameThread,
+  onDeleteThread,
   onRefreshThreadDetail,
   onRefresh,
   onLogout,
   onBackToInbox
 }) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [threadBeingEdited, setThreadBeingEdited] = useState(null);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const draftProject = projects.find((project) => project.id === draftThreadProjectId) ?? null;
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const filteredThreads = useMemo(() => {
     return threads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
-      const matchesLane = getLaneByStatus(thread.status) === laneFilter;
       const matchesSearch =
         !searchKeyword ||
         thread.title.toLowerCase().includes(searchKeyword) ||
         thread.last_message.toLowerCase().includes(searchKeyword);
 
-      return matchesProject && matchesLane && matchesSearch;
+      return matchesProject && matchesSearch;
     });
-  }, [laneFilter, searchKeyword, selectedProjectId, threads]);
+  }, [searchKeyword, selectedProjectId, threads]);
   const bridgeLabel =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ??
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.bridge_id ??
@@ -1484,21 +1787,33 @@ function MainPage({
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
 
-  if (activeView === "thread" && selectedThread) {
-    const threadProject = projects.find((project) => project.id === selectedThread.project_id) ?? selectedProject;
+  if (activeView === "thread" && (selectedThread || draftProject)) {
+    const threadProject =
+      projects.find((project) => project.id === selectedThread?.project_id) ??
+      draftProject ??
+      selectedProject;
 
     return (
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <ThreadDetail
           thread={selectedThread}
           project={threadProject}
-          messages={threadDetailMessages}
+          messages={selectedThread ? threadDetailMessages : []}
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
-          onRefreshMessages={onRefreshThreadDetail}
-          onSubmitPrompt={(payload) => onSubmitIssue(payload, { stayOnThread: true })}
-          submitBusy={issueBusy}
+          onRefreshMessages={selectedThread ? onRefreshThreadDetail : null}
+          onSubmitPrompt={(payload) => {
+            if (selectedThread?.id) {
+              return onAppendThreadMessage(selectedThread.id, payload.prompt);
+            }
+
+            return onCreateThread(payload, { stayOnThread: true });
+          }}
+          submitBusy={threadBusy}
           onBack={onBackToInbox}
+          messageFilter={threadMessageFilter}
+          onChangeMessageFilter={onChangeThreadMessageFilter}
+          isDraft={!selectedThread}
         />
       </div>
     );
@@ -1532,10 +1847,33 @@ function MainPage({
               </div>
             </div>
 
-            <div className="text-right text-[11px] text-slate-500">
-              {selectedProject ? selectedProject.name : "프로젝트 선택"}
-            </div>
+            <button
+              type="button"
+              onClick={() => setSearchOpen((current) => !current)}
+              className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+                searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
+              }`}
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </button>
           </div>
+
+          {searchOpen ? (
+            <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
+              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => onSearchChange(event.target.value)}
+                placeholder="채팅창 검색"
+                className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+              />
+            </div>
+          ) : null}
         </header>
 
         <InstallPromptBanner
@@ -1545,60 +1883,9 @@ function MainPage({
           onDismiss={onDismissInstallPrompt}
         />
 
-        <main className="flex-1 px-4 pb-24 pt-2">
+        <main className="flex-1 px-4 pb-28 pt-2">
           <div className="border-b border-white/10 pb-3">
-            <div className="flex gap-2 overflow-x-auto pb-2">
-              {KANBAN_FILTERS.map((filter) => {
-                const count = threads.filter((thread) => {
-                  const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
-                  return matchesProject && getLaneByStatus(thread.status) === filter.id;
-                }).length;
-
-                return (
-                  <button
-                    key={filter.id}
-                    type="button"
-                    onClick={() => onChangeLaneFilter(filter.id)}
-                    className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
-                      laneFilter === filter.id
-                        ? "bg-white text-slate-900"
-                        : "bg-transparent text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    {filter.label}
-                    <span className={`ml-1.5 text-[11px] ${laneFilter === filter.id ? "text-slate-500" : "text-slate-500"}`}>
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex items-center gap-3 px-1 py-2">
-              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => onSearchChange(event.target.value)}
-                placeholder="검색"
-                className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
-              />
-            </div>
-
             <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-              <button
-                type="button"
-                onClick={() => onSelectProject("")}
-                className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
-                  !selectedProjectId
-                    ? "bg-white text-slate-900"
-                    : "bg-transparent text-slate-400 hover:text-white"
-                }`}
-              >
-                전체
-              </button>
               {projects.map((project) => (
                 <button
                   key={project.id}
@@ -1621,7 +1908,7 @@ function MainPage({
               <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
                 {loadingState === "loading"
                   ? "데이터를 동기화하고 있습니다."
-                  : "조건에 맞는 thread가 없습니다. 새 이슈를 보내서 작업을 시작해 주세요."}
+                  : "조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요."}
               </div>
             ) : (
               filteredThreads.map((thread) => (
@@ -1631,23 +1918,33 @@ function MainPage({
                   active={thread.id === selectedThreadId}
                   projectName={projects.find((project) => project.id === thread.project_id)?.name}
                   onOpen={onSelectThread}
+                  onRename={(targetThread) => setThreadBeingEdited(targetThread)}
+                  onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
                 />
               ))
             )}
           </section>
         </main>
 
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
-          <div className="pointer-events-auto flex w-full items-center gap-3 px-1 py-1">
-            <InlineIssueComposer
-              busy={issueBusy}
-              selectedProject={selectedProject}
-              onSubmit={onSubmitIssue}
-            />
-          </div>
+        <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+          <button
+            type="button"
+            onClick={() => onOpenNewThread(selectedProjectId)}
+            disabled={!selectedProject}
+            className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            새 채팅창
+          </button>
         </div>
       </div>
 
+      <ThreadRenameDialog
+        open={Boolean(threadBeingEdited)}
+        busy={renameBusy}
+        thread={threadBeingEdited}
+        onClose={() => setThreadBeingEdited(null)}
+        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
+      />
       <UtilitySheet
         open={utilityOpen}
         session={session}
@@ -1702,14 +1999,16 @@ export default function App() {
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState("");
+  const [draftThreadProjectId, setDraftThreadProjectId] = useState("");
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
-  const [laneFilter, setLaneFilter] = useState("todo");
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
-  const [issueBusy, setIssueBusy] = useState(false);
+  const [threadBusy, setThreadBusy] = useState(false);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
+  const [threadMessageFilter, setThreadMessageFilter] = useState("all");
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
@@ -1749,22 +2048,43 @@ export default function App() {
       });
 
       try {
-        const detail = await apiRequest(
-          `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        const issueList = await apiRequest(
+          `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
         );
+        const issues = [...(issueList?.issues ?? [])].sort(
+          (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)
+        );
+        const details = await Promise.all(
+          issues.map((issue) =>
+            apiRequest(
+              `/api/issues/${issue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+            )
+          )
+        );
+        const messages = details.flatMap((detail, issueIndex) =>
+          (detail?.messages ?? []).map((message, messageIndex) => ({
+            ...message,
+            id: message.id ?? `${detail?.issue?.id ?? issues[issueIndex]?.id}-${messageIndex}`,
+            issue_id: detail?.issue?.id ?? issues[issueIndex]?.id ?? null,
+            issue_title: detail?.issue?.title ?? issues[issueIndex]?.title ?? "",
+            issue_status: detail?.issue?.status ?? issues[issueIndex]?.status ?? "staged"
+          }))
+        );
+        const latestThread = details.at(-1)?.thread ?? selectedThread ?? null;
 
         setThreadDetails((current) => ({
           ...current,
           [threadId]: {
             loading: false,
             error: "",
-            messages: detail?.messages ?? [],
-            thread: detail?.thread ?? current[threadId]?.thread ?? null,
+            messages,
+            issues,
+            thread: latestThread ?? current[threadId]?.thread ?? null,
             fetchedAt: Date.now(),
             version:
               version ??
-              detail?.thread?.updated_at ??
-              detail?.thread?.created_at ??
+              latestThread?.updated_at ??
+              latestThread?.created_at ??
               current[threadId]?.version ??
               null
           }
@@ -1780,7 +2100,7 @@ export default function App() {
         }));
       }
     },
-    [selectedBridgeId, session?.loginId]
+    [selectedBridgeId, selectedThread, session?.loginId]
   );
 
   async function loadBridges(sessionArg) {
@@ -1823,33 +2143,52 @@ export default function App() {
     setLoadingState("loading");
 
     try {
-      const [nextStatus, nextProjects, nextThreads] = await Promise.all([
+      const [nextStatus, nextProjects] = await Promise.all([
         apiRequest(
           `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         ),
         apiRequest(
           `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        ),
-        apiRequest(
-          `/api/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         )
       ]);
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
-      setThreads(mergeThreads([], nextThreads.threads ?? []));
-      setSelectedProjectId((current) => {
-        if (current && nextProjects.projects?.some((project) => project.id === current)) {
-          return current;
-        }
+      const nextProjectId =
+        selectedProjectId && nextProjects.projects?.some((project) => project.id === selectedProjectId)
+          ? selectedProjectId
+          : nextProjects.projects?.[0]?.id || "";
 
-        return nextProjects.projects?.[0]?.id || "";
-      });
-      setSelectedThreadId((current) => current || nextThreads.threads?.[0]?.id || "");
+      setSelectedProjectId(nextProjectId);
+
+      if (nextProjectId) {
+        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId);
+        setSelectedThreadId((current) =>
+          current && nextThreads.some((thread) => thread.id === current) ? current : nextThreads[0]?.id || ""
+        );
+      } else {
+        setThreads([]);
+        setSelectedThreadId("");
+      }
+
       setLoadingState("ready");
     } catch (error) {
       setLoadingState("error");
     }
+  }
+
+  async function loadProjectThreads(sessionArg, bridgeId, projectId) {
+    if (!sessionArg?.loginId || !bridgeId || !projectId) {
+      setThreads([]);
+      return [];
+    }
+
+    const payload = await apiRequest(
+      `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+
+    setThreads(mergeThreads([], payload?.threads ?? []));
+    return payload?.threads ?? [];
   }
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
@@ -1994,16 +2333,39 @@ export default function App() {
           return;
         }
 
-        if (payload.type === "bridge.threads.updated") {
-          const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
-          setThreads(nextThreads);
-          setSelectedThreadId((current) => current || nextThreads[0]?.id || "");
+        if (payload.type === "bridge.projectThreads.updated") {
+          const projectId = payload.payload?.project_id ?? "";
+
+          if (!projectId || projectId === selectedProjectId) {
+            setThreads(mergeThreads([], payload.payload?.threads ?? []));
+          }
+
+          if (selectedThreadId && payload.payload?.threads?.some((thread) => thread.id === selectedThreadId)) {
+            const matched = payload.payload.threads.find((thread) => thread.id === selectedThreadId);
+            if (matched) {
+              setThreadDetails((current) => ({
+                ...current,
+                [selectedThreadId]: {
+                  ...(current[selectedThreadId] ?? {}),
+                  thread: normalizeThread(matched)
+                }
+              }));
+            }
+          }
+          return;
+        }
+
+        if (payload.type === "bridge.threadIssues.updated") {
+          const threadId = payload.payload?.thread_id ?? "";
+
+          if (threadId && threadId === selectedThreadId) {
+            void loadThreadMessages(threadId, { force: true });
+          }
           return;
         }
 
         if (payload.payload?.thread) {
           setThreads((current) => upsertThread(current, payload.payload.thread));
-          setSelectedThreadId((current) => current || payload.payload.thread.id);
         }
       } catch {
         // ignore malformed event payload
@@ -2013,7 +2375,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [session, selectedBridgeId]);
+  }, [loadThreadMessages, selectedBridgeId, selectedProjectId, selectedThreadId, session]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -2022,6 +2384,14 @@ export default function App() {
 
     void loadBridgeWorkspace(session, selectedBridgeId);
   }, [session, selectedBridgeId]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      return;
+    }
+
+    void loadProjectThreads(session, selectedBridgeId, selectedProjectId);
+  }, [selectedBridgeId, selectedProjectId, session]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !projectComposerOpen) {
@@ -2075,6 +2445,7 @@ export default function App() {
   useEffect(() => {
     setSelectedProjectId("");
     setSelectedThreadId("");
+    setDraftThreadProjectId("");
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -2089,7 +2460,6 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
-      setSelectedThreadId(threads[0].id);
       return;
     }
 
@@ -2103,6 +2473,7 @@ export default function App() {
       return;
     }
 
+    setDraftThreadProjectId("");
     const projectThreads = threads.filter((thread) => thread.project_id === selectedProjectId);
 
     if (projectThreads.length === 0) {
@@ -2157,53 +2528,75 @@ export default function App() {
     setSelectedWorkspacePath("");
     setSelectedProjectId("");
     setSelectedThreadId("");
+    setDraftThreadProjectId("");
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
     setActiveView("inbox");
   };
 
-  const handleCreateIssue = async (payload, options = {}) => {
-    if (!session?.loginId) {
+  const handleCreateThread = async (payload, options = {}) => {
+    if (!session?.loginId || !selectedBridgeId) {
       return;
     }
 
-    setIssueBusy(true);
+    setThreadBusy(true);
 
     try {
-      const created = await apiRequest(
-        `/api/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+      const projectId = payload.project_id ?? draftThreadProjectId ?? selectedProjectId;
+
+      if (!projectId) {
+        throw new Error("프로젝트를 먼저 선택해 주세요.");
+      }
+
+      const createdThread = await apiRequest(
+        `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: createThreadTitleFromPrompt(payload.prompt) || "새 채팅창"
+          })
+        }
+      );
+      const threadId = createdThread?.thread?.id;
+
+      if (!threadId) {
+        throw new Error("새 채팅창을 생성하지 못했습니다.");
+      }
+
+      const createdIssue = await apiRequest(
+        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
         }
       );
+      const issueId = createdIssue?.issue?.id;
 
       const stayOnThread = Boolean(options?.stayOnThread);
 
-      if (created?.thread?.id) {
-        setThreads((current) => upsertThread(current, created.thread));
-        setSelectedThreadId(created.thread.id);
+      if (threadId) {
+        setThreads((current) => upsertThread(current, createdThread.thread));
+        setSelectedThreadId(threadId);
+        setDraftThreadProjectId("");
 
-        const started = await apiRequest(
-          `/api/threads/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              thread_ids: [created.thread.id]
-            })
-          }
-        );
-
-        if (Array.isArray(started?.threads)) {
-          setThreads((current) => mergeThreads(current, started.threads));
+        if (issueId) {
+          await apiRequest(
+            `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                issue_ids: [issueId]
+              })
+            }
+          );
         }
-
-        setLaneFilter("todo");
       }
 
-      if (stayOnThread && created?.thread?.id) {
+      if (stayOnThread && threadId) {
+        setThreadMessageFilter("all");
         setActiveView("thread");
+        await loadThreadMessages(threadId, { force: true });
       } else {
         setActiveView("inbox");
       }
@@ -2214,7 +2607,131 @@ export default function App() {
       }
       return false;
     } finally {
-      setIssueBusy(false);
+      setThreadBusy(false);
+    }
+  };
+
+  const handleAppendThreadMessage = async (threadId, prompt) => {
+    if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return false;
+    }
+
+    setThreadBusy(true);
+
+    try {
+      const createdIssue = await apiRequest(
+        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ prompt })
+        }
+      );
+      const issueId = createdIssue?.issue?.id;
+
+      if (issueId) {
+        await apiRequest(
+          `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+          {
+            method: "POST",
+            body: JSON.stringify({ issue_ids: [issueId] })
+          }
+        );
+      }
+
+      if (createdIssue?.issue?.thread_id) {
+        const matchingThread = threads.find((thread) => thread.id === createdIssue.issue.thread_id);
+        if (matchingThread) {
+          setThreads((current) => upsertThread(current, matchingThread));
+        }
+      }
+
+      await loadThreadMessages(threadId, { force: true });
+      setThreadMessageFilter("all");
+      setActiveView("thread");
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setThreadBusy(false);
+    }
+  };
+
+  const handleRenameThread = async (threadId, title) => {
+    if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return false;
+    }
+
+    setRenameBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ name: title })
+        }
+      );
+
+      if (response?.thread) {
+        setThreads((current) => upsertThread(current, response.thread));
+        setThreadDetails((current) => ({
+          ...current,
+          [threadId]: {
+            ...(current[threadId] ?? {}),
+            thread: response.thread
+          }
+        }));
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const handleDeleteThread = async (threadId) => {
+    if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return false;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm("이 채팅창을 삭제하시겠습니까?")) {
+      return false;
+    }
+
+    try {
+      await apiRequest(
+        `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      setThreads((current) => current.filter((thread) => thread.id !== threadId));
+      setThreadDetails((current) => {
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      });
+
+      if (selectedThreadId === threadId) {
+        setSelectedThreadId("");
+        setActiveView("inbox");
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
     }
   };
 
@@ -2303,14 +2820,32 @@ export default function App() {
 
   const handleSelectProject = (projectId) => {
     setSelectedProjectId(projectId);
+    setSelectedThreadId("");
+    setDraftThreadProjectId("");
     setActiveView("inbox");
   };
 
   const handleSelectThread = (threadId) => {
     startTransition(() => {
+      setDraftThreadProjectId("");
       setSelectedThreadId(threadId);
+      setThreadMessageFilter("all");
       setActiveView("thread");
     });
+  };
+
+  const handleOpenNewThread = (projectId) => {
+    const nextProjectId = projectId || selectedProjectId || projects[0]?.id || "";
+
+    if (!nextProjectId) {
+      return;
+    }
+
+    setSelectedProjectId(nextProjectId);
+    setSelectedThreadId("");
+    setDraftThreadProjectId(nextProjectId);
+    setThreadMessageFilter("all");
+    setActiveView("thread");
   };
 
   const handleDismissInstallPrompt = () => {
@@ -2363,22 +2898,25 @@ export default function App() {
       selectedBridgeId={selectedBridgeId}
       selectedProjectId={selectedProjectId}
       selectedThreadId={selectedThreadId}
+      draftThreadProjectId={draftThreadProjectId}
       search={search}
       loadingState={loadingState}
       utilityOpen={utilityOpen}
       projectBusy={projectBusy}
-      issueBusy={issueBusy}
+      threadBusy={threadBusy}
+      renameBusy={renameBusy}
       projectComposerOpen={projectComposerOpen}
       installPromptVisible={installPromptVisible}
       installBusy={installBusy}
-      laneFilter={laneFilter}
       activeView={activeView}
+      threadMessageFilter={threadMessageFilter}
       threadDetail={currentThreadDetailState}
       onSearchChange={setSearch}
-      onChangeLaneFilter={setLaneFilter}
+      onChangeThreadMessageFilter={setThreadMessageFilter}
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={handleSelectProject}
       onSelectThread={handleSelectThread}
+      onOpenNewThread={handleOpenNewThread}
       onOpenUtility={() => setUtilityOpen(true)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onInstallPwa={() => void handleInstallPwa()}
@@ -2389,7 +2927,10 @@ export default function App() {
       onBrowseFolder={(path) => browseWorkspacePath(path)}
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
-      onSubmitIssue={handleCreateIssue}
+      onCreateThread={handleCreateThread}
+      onAppendThreadMessage={handleAppendThreadMessage}
+      onRenameThread={handleRenameThread}
+      onDeleteThread={handleDeleteThread}
       onRefreshThreadDetail={() => {
         if (selectedThreadId) {
           void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
@@ -2397,7 +2938,10 @@ export default function App() {
       }}
       onRefresh={() => void handleRefresh()}
       onLogout={handleLogout}
-      onBackToInbox={() => setActiveView("inbox")}
+      onBackToInbox={() => {
+        setDraftThreadProjectId("");
+        setActiveView("inbox");
+      }}
     />
   );
 }
