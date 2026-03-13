@@ -4304,12 +4304,6 @@ export default function App() {
     setSelectedIssueId((current) => (current && issues.some((issue) => issue.id === current) ? current : ""));
   }, [selectedProjectThreadId, issues]);
   useEffect(() => {
-    setSelectionAnchor({
-      threadId: "",
-      columnId: ""
-    });
-  }, [selectedProjectThreadId]);
-  useEffect(() => {
     if (!selectedBridgeId || !selectedProjectThreadId) {
       return;
     }
