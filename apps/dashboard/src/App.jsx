@@ -2300,6 +2300,9 @@ function MainPage({
   startBusy,
   projectComposerOpen,
   composerOpen,
+  issueEditorOpen,
+  issueEditorBusy,
+  editingIssue,
   threadMenuState,
   onSearchChange,
   onSelectBridge,
@@ -2324,11 +2327,13 @@ function MainPage({
   onOpenComposer,
   onCloseProjectComposer,
   onCloseComposer,
+  onCloseIssueEditor,
   onBrowseWorkspaceRoot,
   onBrowseFolder,
   onSelectWorkspace,
   onSubmitProject,
   onSubmitIssue,
+  onSubmitIssueEdit,
   onRefresh,
   onLogout,
   onCloseDetail
@@ -3270,8 +3275,8 @@ function MainPage({
         open={issueEditorOpen}
         busy={issueEditorBusy}
         issue={editingIssue}
-        onClose={handleCloseIssueEditor}
-        onSubmit={handleUpdateIssue}
+        onClose={onCloseIssueEditor}
+        onSubmit={onSubmitIssueEdit}
       />
       <ProjectComposer
         language={language}
@@ -4757,6 +4762,9 @@ export default function App() {
       startBusy={startBusy}
       projectComposerOpen={projectComposerOpen}
       composerOpen={composerOpen}
+      issueEditorOpen={issueEditorOpen}
+      issueEditorBusy={issueEditorBusy}
+      editingIssue={editingIssue}
       threadMenuState={threadMenuState}
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
@@ -4798,11 +4806,13 @@ export default function App() {
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}
       onCloseComposer={() => setComposerOpen(false)}
+      onCloseIssueEditor={handleCloseIssueEditor}
       onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
       onBrowseFolder={(path) => browseWorkspacePath(path)}
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitIssue={handleCreateIssue}
+      onSubmitIssueEdit={handleUpdateIssue}
       onRefresh={() => void handleRefresh()}
       onLogout={handleLogout}
       onCloseDetail={() =>
