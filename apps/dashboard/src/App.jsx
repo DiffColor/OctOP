@@ -67,14 +67,14 @@ const COPY = {
   en: {
     locale: "en-US",
     columns: {
-      prep: "Prep",
+      prep: "Preparation",
       todo: "To Do",
       running: "In Progress",
       review: "Review",
       done: "Done"
     },
     status: {
-      staged: "Prep",
+      staged: "Preparation",
       queued: "Queued",
       idle: "Idle",
       awaiting_input: "Need Input",
@@ -167,7 +167,7 @@ const COPY = {
       issueCount: (count) => `${count} issues`,
       selectProject: "Select a project.",
       prepHint:
-        "Select issues in Prep and move them to To Do. Items in To Do run sequentially, and you can reorder them by drag and drop.",
+        "Select issues in Preparation and move them to To Do. Items in To Do run sequentially, and you can reorder them by drag and drop.",
       syncing: "Syncing",
       updatedAt: (value) => `Updated ${value}`,
       emptyColumn: "No issues in this state.",
@@ -176,7 +176,7 @@ const COPY = {
       bridge: "Bridge",
       project: "Project",
       drag: "Drag",
-      prep: "Prep",
+      prep: "Preparation",
       queue: "Queue",
       delete: "Delete",
       logout: "Sign out",
@@ -1319,11 +1319,14 @@ function PrepThreadCard({
   active,
   onSelect,
   onToggle,
-  onDelete
+  onDelete,
+  onDragStart
 }) {
   const copy = getCopy(language);
   return (
     <div
+      draggable
+      onDragStart={() => onDragStart(thread.id)}
       className={`rounded-xl border px-3.5 py-3 transition ${
         active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
@@ -1546,6 +1549,7 @@ function MainPage({
   onDeleteProject,
   onRenameProject,
   onDragQueueThread,
+  onDragPrepThreads,
   onOpenProjectComposer,
   onOpenComposer,
   onCloseProjectComposer,
@@ -1602,7 +1606,7 @@ function MainPage({
       ...column,
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
-  });
+  }).filter((column) => column.id !== "review" || column.threads.length > 0);
   const prepSelectedCount = filteredThreads.filter(
     (thread) => selectedThreadIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
@@ -1866,10 +1870,26 @@ function MainPage({
               </div>
             </div>
 
-            <div className="custom-scrollbar flex-1 overflow-x-auto p-4 md:p-8">
+            <div className="custom-scrollbar flex-1 overflow-x-scroll p-4 pb-6 md:p-8 md:pb-8">
               <div className="flex h-full min-w-max space-x-6">
                 {columns.map((column) => (
-                  <section key={column.id} className="flex w-80 flex-col">
+                  <section
+                    key={column.id}
+                    className={`flex w-80 flex-col rounded-2xl ${column.id === "todo" ? "ring-1 ring-transparent" : ""}`}
+                    onDragOver={(event) => {
+                      if (column.id === "todo") {
+                        event.preventDefault();
+                      }
+                    }}
+                    onDrop={(event) => {
+                      if (column.id !== "todo") {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      onDragPrepThreads.drop();
+                    }}
+                  >
                     <div className="mb-4 flex items-center justify-between">
                       <h3
                         className={`flex items-center text-sm font-bold uppercase tracking-widest ${getColumnAccentClassName(column.id)}`}
@@ -1902,6 +1922,7 @@ function MainPage({
                                 onSelect={onSelectThread}
                                 onToggle={onToggleThreadSelection}
                                 onDelete={onDeleteThread}
+                                onDragStart={onDragPrepThreads.start}
                               />
                             );
                           }
@@ -2077,6 +2098,7 @@ export default function App() {
   const [selectedThreadIds, setSelectedThreadIds] = useState([]);
   const [queueOrderIds, setQueueOrderIds] = useState([]);
   const [draggingThreadId, setDraggingThreadId] = useState("");
+  const [draggingPrepThreadIds, setDraggingPrepThreadIds] = useState([]);
   const [detailState, setDetailState] = useState({
     open: false,
     loading: false,
@@ -2351,6 +2373,7 @@ export default function App() {
     setSelectedThreadIds([]);
     setQueueOrderIds([]);
     setDraggingThreadId("");
+    setDraggingPrepThreadIds([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -2541,54 +2564,7 @@ export default function App() {
   };
 
   const handleStartSelectedThreads = async () => {
-    if (!session?.loginId || !selectedBridgeId) {
-      return;
-    }
-
-    const queuedThreadIds = selectedThreadIds.filter((threadId) => {
-      const thread = threads.find((item) => item.id === threadId);
-      return (
-        thread &&
-        thread.project_id === selectedProjectId &&
-        getStatusMeta(thread.status).column === "prep"
-      );
-    });
-
-    if (queuedThreadIds.length === 0) {
-      return;
-    }
-
-    setStartBusy(true);
-
-    try {
-      const response = await apiRequest(
-        `/api/threads/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            thread_ids: queuedThreadIds
-          })
-        }
-      );
-
-      if (Array.isArray(response?.threads)) {
-        setThreads(mergeThreads([], response.threads));
-      }
-
-      setSelectedThreadIds((current) => current.filter((threadId) => !queuedThreadIds.includes(threadId)));
-    } catch (error) {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "threads.start.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
-    } finally {
-      setStartBusy(false);
-    }
+    await movePrepThreadsToTodo(selectedThreadIds);
   };
 
   const handleOpenCompletedThread = async (threadId) => {
@@ -2634,10 +2610,16 @@ export default function App() {
   const handleDragQueueThread = {
     start: (threadId) => {
       setDraggingThreadId(threadId);
+      setDraggingPrepThreadIds([]);
       setSelectedThreadId(threadId);
     },
     over: () => {},
     drop: (targetId) => {
+      if (draggingPrepThreadIds.length > 0) {
+        void movePrepThreadsToTodo(draggingPrepThreadIds, targetId);
+        return;
+      }
+
       const nextOrder = reorderIds(queueOrderIds, draggingThreadId, targetId);
       setQueueOrderIds(nextOrder);
       setDraggingThreadId("");
@@ -2682,6 +2664,126 @@ export default function App() {
           ].slice(0, 20));
         }
       })();
+    }
+  };
+
+  const movePrepThreadsToTodo = async (threadIds, targetId = "") => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    const queuedThreadIds = threadIds.filter((threadId) => {
+      const thread = threads.find((item) => item.id === threadId);
+      return (
+        thread &&
+        thread.project_id === selectedProjectId &&
+        getStatusMeta(thread.status).column === "prep"
+      );
+    });
+
+    if (queuedThreadIds.length === 0) {
+      setDraggingPrepThreadIds([]);
+      return;
+    }
+
+    setStartBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            thread_ids: queuedThreadIds
+          })
+        }
+      );
+
+      const nextThreads = Array.isArray(response?.threads) ? mergeThreads([], response.threads) : [];
+
+      if (nextThreads.length > 0) {
+        setThreads(nextThreads);
+      }
+
+      if (targetId && nextThreads.length > 0) {
+        const visibleTodoIds = nextThreads
+          .filter(
+            (thread) =>
+              thread.project_id === selectedProjectId && getStatusMeta(thread.status).column === "todo"
+          )
+          .sort((left, right) => {
+            const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+            const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+
+            if (leftOrder !== rightOrder) {
+              return leftOrder - rightOrder;
+            }
+
+            return Date.parse(left.updated_at) - Date.parse(right.updated_at);
+          })
+          .map((thread) => thread.id);
+
+        const insertedIds = queuedThreadIds.filter((threadId) => visibleTodoIds.includes(threadId));
+
+        if (insertedIds.length > 0 && visibleTodoIds.includes(targetId)) {
+          const reorderedIds = visibleTodoIds.filter((threadId) => !insertedIds.includes(threadId));
+          const targetIndex = reorderedIds.indexOf(targetId);
+
+          if (targetIndex >= 0) {
+            reorderedIds.splice(targetIndex, 0, ...insertedIds);
+            setQueueOrderIds(reorderedIds);
+
+            const reorderResponse = await apiRequest(
+              `/api/threads/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  thread_ids: reorderedIds
+                })
+              }
+            );
+
+            if (Array.isArray(reorderResponse?.threads)) {
+              setThreads(mergeThreads([], reorderResponse.threads));
+            }
+          }
+        }
+      }
+
+      setSelectedThreadIds((current) => current.filter((threadId) => !queuedThreadIds.includes(threadId)));
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "threads.start.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setStartBusy(false);
+      setDraggingPrepThreadIds([]);
+    }
+  };
+
+  const handleDragPrepThreads = {
+    start: (threadId) => {
+      const currentPrepIds = selectedThreadIds.filter((selectedId) => {
+        const thread = threads.find((item) => item.id === selectedId);
+        return (
+          thread &&
+          thread.project_id === selectedProjectId &&
+          getStatusMeta(thread.status).column === "prep"
+        );
+      });
+      const draggedIds = currentPrepIds.includes(threadId) ? currentPrepIds : [threadId];
+      setDraggingThreadId("");
+      setDraggingPrepThreadIds(draggedIds);
+      setSelectedThreadId(threadId);
+    },
+    drop: (targetId = "") => {
+      void movePrepThreadsToTodo(draggingPrepThreadIds, targetId);
     }
   };
 
@@ -2947,6 +3049,7 @@ export default function App() {
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
       onDragQueueThread={handleDragQueueThread}
+      onDragPrepThreads={handleDragPrepThreads}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}
