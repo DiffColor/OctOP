@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { connect, StringCodec } from "nats";
 import {
   bridgeSubjects,
@@ -33,6 +33,7 @@ const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
 );
 const BRIDGE_STORAGE_DIR = resolve(os.homedir(), ".octop");
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
+const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 
 dns.setDefaultResultOrder("ipv4first");
 
@@ -99,35 +100,55 @@ function ensureUserState(userId) {
     });
   }
 
-  return users.get(normalized);
+  const state = users.get(normalized);
+  const discoveredProjects = discoverProjectsForUser(normalized);
+  const mergedProjects = mergeProjects(state.projects, discoveredProjects);
+
+  if (hasProjectSetChanged(state.projects, mergedProjects)) {
+    state.projects = mergedProjects;
+    persistUserProjects(normalized, state.projects);
+  }
+
+  return state;
 }
 
 function loadProjectsForUser(loginId) {
   const persisted = readProjectStorage();
   const stored = persisted[loginId];
+  const discoveredProjects = discoverProjectsForUser(loginId);
 
   if (Array.isArray(stored) && stored.length > 0) {
-    return stored.map((project) => normalizeProject(loginId, project));
+    return mergeProjects(
+      stored.map((project) => normalizeProject(loginId, project)),
+      discoveredProjects
+    );
   }
 
-  const project = buildDefaultProject(loginId);
-  persisted[loginId] = [project];
+  const project = discoveredProjects[0] ?? buildDefaultProject(loginId);
+  persisted[loginId] = mergeProjects([project], discoveredProjects);
   writeProjectStorage(persisted);
-  return [project];
+  return persisted[loginId];
 }
 
 function buildDefaultProject(loginId) {
   return normalizeProject(loginId, {
-    id: `${BRIDGE_ID}-${loginId}-project-1`,
+    id: buildProjectId(loginId, process.cwd()),
     key: loginId.toUpperCase().replace(/-/g, "_"),
     name: `${loginId} project`,
-    description: "OctOP bridge와 app-server 연결 점검용 기본 프로젝트"
+    description: "OctOP bridge와 app-server 연결 점검용 기본 프로젝트",
+    workspace_path: process.cwd(),
+    source: "default"
   });
 }
 
 function normalizeProject(loginId, project = {}) {
   const sanitizedLoginId = sanitizeUserId(loginId);
-  const fallbackId = `${BRIDGE_ID}-${sanitizedLoginId}-${randomUUID().slice(0, 8)}`;
+  const resolvedWorkspacePath = project.workspace_path
+    ? resolve(String(project.workspace_path))
+    : "";
+  const fallbackId = resolvedWorkspacePath
+    ? buildProjectId(sanitizedLoginId, resolvedWorkspacePath)
+    : `${BRIDGE_ID}-${sanitizedLoginId}-${randomUUID().slice(0, 8)}`;
   const fallbackName = `${sanitizedLoginId} project`;
 
   return {
@@ -136,9 +157,148 @@ function normalizeProject(loginId, project = {}) {
     name: String(project.name ?? fallbackName).trim() || fallbackName,
     description: String(project.description ?? "").trim(),
     bridge_id: BRIDGE_ID,
+    workspace_path: resolvedWorkspacePath || null,
+    source: project.source ?? (resolvedWorkspacePath ? "workspace" : "manual"),
     created_at: project.created_at ?? now(),
     updated_at: project.updated_at ?? now()
   };
+}
+
+function resolveWorkspaceRoots() {
+  const configured = String(process.env.OCTOP_WORKSPACE_ROOTS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => resolve(value));
+
+  const roots = configured.length > 0 ? configured : [process.cwd()];
+  return [...new Set(roots)];
+}
+
+function buildProjectId(loginId, workspacePath) {
+  const digest = createHash("sha1")
+    .update(`${sanitizeUserId(loginId)}:${workspacePath}`)
+    .digest("hex")
+    .slice(0, 10);
+
+  return sanitizeBridgeId(`${BRIDGE_ID}-${digest}`);
+}
+
+function canUseAsWorkspace(path) {
+  return (
+    existsSync(resolve(path, ".git")) ||
+    existsSync(resolve(path, "package.json")) ||
+    existsSync(resolve(path, "pnpm-workspace.yaml")) ||
+    hasSolutionFile(path) ||
+    existsSync(resolve(path, "AGENTS.md"))
+  );
+}
+
+function safeListDirectories(path) {
+  try {
+    return readdirSync(path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => resolve(path, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+function hasSolutionFile(path) {
+  try {
+    return readdirSync(path).some((entry) => entry.endsWith(".sln"));
+  } catch {
+    return false;
+  }
+}
+
+function discoverProjectsForUser(loginId) {
+  const discovered = [];
+
+  for (const root of WORKSPACE_ROOTS) {
+    const candidates = [root, ...safeListDirectories(root)];
+
+    for (const candidate of candidates) {
+      if (!canUseAsWorkspace(candidate)) {
+        continue;
+      }
+
+      const name = basename(candidate) || `${sanitizeUserId(loginId)} project`;
+      discovered.push(
+        normalizeProject(loginId, {
+          id: buildProjectId(loginId, candidate),
+          key: name,
+          name,
+          description: `${candidate} 워크스페이스`,
+          workspace_path: candidate,
+          source: "workspace"
+        })
+      );
+    }
+  }
+
+  return dedupeProjects(discovered);
+}
+
+function dedupeProjects(projects) {
+  const seen = new Set();
+  const result = [];
+
+  for (const project of projects) {
+    const key = project.workspace_path
+      ? `path:${project.workspace_path}`
+      : `id:${project.id}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(project);
+  }
+
+  return result;
+}
+
+function mergeProjects(currentProjects, discoveredProjects) {
+  const mergedById = new Map();
+  const discoveredByPath = new Map(
+    discoveredProjects
+      .filter((project) => project.workspace_path)
+      .map((project) => [project.workspace_path, project])
+  );
+
+  for (const project of currentProjects) {
+    const normalized = normalizeProject(project.owner_login_id ?? BRIDGE_OWNER_LOGIN_ID, project);
+    const discovered = normalized.workspace_path
+      ? discoveredByPath.get(normalized.workspace_path)
+      : null;
+
+    mergedById.set(normalized.id, {
+      ...normalized,
+      ...(discovered
+        ? {
+            key: normalized.key || discovered.key,
+            name: normalized.name || discovered.name,
+            description: normalized.description || discovered.description,
+            source: discovered.source,
+            updated_at: discovered.updated_at
+          }
+        : {})
+    });
+  }
+
+  for (const project of discoveredProjects) {
+    if (![...mergedById.values()].some((current) => current.workspace_path === project.workspace_path)) {
+      mergedById.set(project.id, project);
+    }
+  }
+
+  return [...mergedById.values()].sort((left, right) => left.name.localeCompare(right.name, "ko-KR"));
+}
+
+function hasProjectSetChanged(left, right) {
+  return JSON.stringify(left) !== JSON.stringify(right);
 }
 
 function readProjectStorage() {
@@ -173,11 +333,19 @@ async function createProject(loginId, payload = {}) {
     throw new Error("프로젝트 이름이 필요합니다.");
   }
 
+  const workspacePath = resolveWorkspaceFromPayload(loginId, payload);
+
   const project = normalizeProject(loginId, {
-    id: payload.id ?? `${BRIDGE_ID}-${sanitizeUserId(loginId)}-${randomUUID().slice(0, 8)}`,
+    id:
+      payload.id ??
+      (workspacePath
+        ? buildProjectId(loginId, workspacePath)
+        : `${BRIDGE_ID}-${sanitizeUserId(loginId)}-${randomUUID().slice(0, 8)}`),
     key: payload.key ?? name,
     name,
-    description: payload.description ?? ""
+    description: payload.description ?? "",
+    workspace_path: workspacePath,
+    source: "workspace"
   });
 
   const keyExists = state.projects.some((item) => item.key === project.key);
@@ -197,6 +365,33 @@ async function createProject(loginId, payload = {}) {
     project,
     projects: state.projects
   };
+}
+
+function resolveWorkspaceFromPayload(loginId, payload = {}) {
+  if (payload.workspace_path) {
+    return resolve(String(payload.workspace_path));
+  }
+
+  const discoveredProjects = discoverProjectsForUser(loginId);
+  const requestedName = String(payload.name ?? "").trim().toLowerCase();
+  const requestedKey = String(payload.key ?? payload.name ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "_");
+  const matchedProject = discoveredProjects.find((project) => {
+    return (
+      project.name.toLowerCase() === requestedName ||
+      project.key === requestedKey
+    );
+  });
+
+  if (matchedProject?.workspace_path) {
+    return matchedProject.workspace_path;
+  }
+
+  throw new Error(
+    "로컬 workspace를 찾을 수 없습니다. bridge를 workspace 루트에서 실행하거나 OCTOP_WORKSPACE_ROOTS를 설정해 주세요."
+  );
 }
 
 function listProjectState(userId) {
@@ -704,10 +899,12 @@ async function listThreads(userId) {
 }
 
 async function startTurnInBackground(userId, threadId, payload = {}) {
+  const cwd = resolveProjectWorkspace(userId, payload.project_id);
+
   try {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
-      cwd: process.cwd(),
+      cwd,
       approvalPolicy: "never",
       input: [
         {
@@ -759,10 +956,12 @@ async function startTurnInBackground(userId, threadId, payload = {}) {
 
 async function startPingThread(userId, payload = {}) {
   const state = ensureUserState(userId);
+  const projectId = payload.project_id ?? state.projects[0]?.id ?? null;
+  const cwd = resolveProjectWorkspace(userId, projectId);
   await appServer.ensureReady();
 
   const threadResponse = await appServer.request("thread/start", {
-    cwd: process.cwd(),
+    cwd,
     approvalPolicy: "never",
     sandbox: "workspace-write",
     model: "gpt-5-codex",
@@ -780,7 +979,7 @@ async function startPingThread(userId, payload = {}) {
     thread.id,
     normalizeThreadRecord(thread, {
       title: payload.title ?? payload.prompt ?? "OctOP bridge ping",
-      project_id: payload.project_id ?? state.projects[0]?.id ?? null,
+      project_id: projectId,
       progress: 5,
       status: "queued",
       last_event: "thread.started"
@@ -799,6 +998,16 @@ async function startPingThread(userId, payload = {}) {
     thread: threadStateById.get(thread.id),
     turn: null
   };
+}
+
+function resolveProjectWorkspace(userId, projectId) {
+  const state = ensureUserState(userId);
+  const project =
+    state.projects.find((item) => item.id === projectId) ??
+    state.projects.find((item) => item.workspace_path) ??
+    null;
+
+  return project?.workspace_path ?? process.cwd();
 }
 
 async function respond(message, payload) {
