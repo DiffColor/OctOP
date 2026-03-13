@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from "react";
+import { PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -757,6 +758,42 @@ function InstallPromptBanner({ visible, installing, onInstall, onDismiss }) {
           className="shrink-0 text-[11px] text-slate-300 transition hover:text-white"
         >
           다시 보지 않음
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PwaUpdateDialog({ visible, busy, onConfirm }) {
+  if (!visible) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center px-6 py-8">
+      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
+      <div className="relative w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/95 px-6 py-7 text-center shadow-2xl">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-telegram-500/10 text-telegram-300">
+          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path d="M12 8v4l2.5 1.5M12 22a10 10 0 100-20 10 10 0 000 20z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+          </svg>
+        </div>
+        <h2 className="mt-4 text-base font-semibold text-white">업데이트가 준비되었습니다</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-300">최신 버전을 적용하려면 새로고침을 진행해 주세요.</p>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy}
+          className="mt-5 inline-flex w-full items-center justify-center rounded-full bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? (
+            <>
+              <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-slate-900" />
+              새로고침 중...
+            </>
+          ) : (
+            "지금 새로고침"
+          )}
         </button>
       </div>
     </div>
@@ -1645,7 +1682,7 @@ function ThreadDetail({
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
-  const [viewMode, setViewMode] = useState("chat");
+  const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
   const chatTimeline = useMemo(() => {
@@ -1988,28 +2025,6 @@ function ThreadDetail({
             ))}
           </div>
 
-          <div className="mt-2 flex justify-center">
-            <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1 text-[12px] font-semibold text-slate-400">
-              <button
-                type="button"
-                onClick={() => setViewMode("chat")}
-                className={`rounded-full px-4 py-1.5 transition ${
-                  viewMode === "chat" ? "bg-white text-slate-900 shadow" : "text-slate-300 hover:text-white"
-                }`}
-              >
-                채팅
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("timeline")}
-                className={`rounded-full px-4 py-1.5 transition ${
-                  viewMode === "timeline" ? "bg-white text-slate-900 shadow" : "text-slate-300 hover:text-white"
-                }`}
-              >
-                타임라인
-              </button>
-            </div>
-          </div>
         </div>
       </header>
 
@@ -2525,6 +2540,9 @@ export default function App() {
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
+  const [pwaUpdateVisible, setPwaUpdateVisible] = useState(false);
+  const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
+  const pendingUpdateActivatorRef = useRef(null);
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
@@ -2784,6 +2802,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const handleUpdateReady = (event) => {
+      pendingUpdateActivatorRef.current = event?.detail?.activate ?? null;
+      setPwaUpdateBusy(false);
+      setPwaUpdateVisible(true);
+    };
+
+    window.addEventListener(PWA_UPDATE_READY_EVENT, handleUpdateReady);
+
+    return () => {
+      window.removeEventListener(PWA_UPDATE_READY_EVENT, handleUpdateReady);
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined" || !window.history?.pushState) {
       return undefined;
     }
@@ -2791,7 +2827,6 @@ export default function App() {
     const handlePopState = (event) => {
       event?.preventDefault?.();
       window.history.pushState(null, "", window.location.href);
-      setActiveView((current) => (current === "thread" ? "inbox" : current));
     };
 
     window.history.pushState(null, "", window.location.href);
@@ -2799,6 +2834,70 @@ export default function App() {
 
     return () => {
       window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    let touchStartY = 0;
+    let scrollTarget = null;
+
+    const resolveScrollTarget = (node) => {
+      let current = node instanceof HTMLElement ? node : node?.parentElement ?? null;
+
+      while (current) {
+        const style = window.getComputedStyle(current);
+        const overflowY = style.overflowY;
+
+        if ((overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") && current.scrollHeight > current.clientHeight) {
+          return current;
+        }
+
+        current = current.parentElement;
+      }
+
+      return document.scrollingElement ?? document.documentElement;
+    };
+
+    const handleTouchStart = (event) => {
+      if (event.touches.length !== 1) {
+        scrollTarget = null;
+        return;
+      }
+
+      touchStartY = event.touches[0].clientY;
+      scrollTarget = resolveScrollTarget(event.target);
+    };
+
+    const handleTouchMove = (event) => {
+      if (event.touches.length !== 1 || !scrollTarget) {
+        return;
+      }
+
+      const currentY = event.touches[0].clientY;
+      const deltaY = currentY - touchStartY;
+      touchStartY = currentY;
+
+      const scrollContainer =
+        scrollTarget === document.scrollingElement || scrollTarget === document.documentElement
+          ? document.scrollingElement ?? document.documentElement
+          : scrollTarget;
+      const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+
+      if (deltaY > 0 && scrollTop <= 0) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+
+    return () => {
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
     };
   }, []);
 
@@ -3626,6 +3725,21 @@ export default function App() {
     }
   };
 
+  const handleConfirmPwaUpdate = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    setPwaUpdateBusy(true);
+    const activate = pendingUpdateActivatorRef.current;
+
+    if (typeof activate === "function") {
+      activate();
+    } else {
+      window.location.reload();
+    }
+  }, []);
+
   if (!session) {
     return (
       <LoginPage
@@ -3640,64 +3754,67 @@ export default function App() {
   const currentThreadDetailState = threadDetails[selectedThreadId] ?? { messages: [], loading: false, error: "" };
 
   return (
-    <MainPage
-      session={session}
-      bridges={bridges}
-      status={status}
-      projects={projects}
-      threads={threads}
-      workspaceRoots={workspaceRoots}
-      folderState={folderState}
-      folderLoading={folderLoading}
-      selectedWorkspacePath={selectedWorkspacePath}
-      selectedBridgeId={selectedBridgeId}
-      selectedProjectId={selectedProjectId}
-      selectedThreadId={selectedThreadId}
-      draftThreadProjectId={draftThreadProjectId}
-      search={search}
-      loadingState={loadingState}
-      utilityOpen={utilityOpen}
-      projectBusy={projectBusy}
-      threadBusy={threadBusy}
-      renameBusy={renameBusy}
-      projectComposerOpen={projectComposerOpen}
-      installPromptVisible={installPromptVisible}
-      installBusy={installBusy}
-      activeView={activeView}
-      threadMessageFilter={threadMessageFilter}
-      threadDetail={currentThreadDetailState}
-      onSearchChange={setSearch}
-      onChangeThreadMessageFilter={setThreadMessageFilter}
-      onSelectBridge={setSelectedBridgeId}
-      onSelectProject={handleSelectProject}
-      onSelectThread={handleSelectThread}
-      onOpenNewThread={handleOpenNewThread}
-      onOpenUtility={() => setUtilityOpen(true)}
-      onOpenProjectComposer={() => void handleOpenProjectComposer()}
-      onInstallPwa={() => void handleInstallPwa()}
-      onDismissInstallPrompt={handleDismissInstallPrompt}
-      onCloseUtility={() => setUtilityOpen(false)}
-      onCloseProjectComposer={handleCloseProjectComposer}
-      onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
-      onBrowseFolder={(path) => browseWorkspacePath(path)}
-      onSelectWorkspace={setSelectedWorkspacePath}
-      onSubmitProject={handleCreateProject}
-      onCreateThread={handleCreateThread}
-      onAppendThreadMessage={handleAppendThreadMessage}
-      onRenameThread={handleRenameThread}
-      onDeleteThread={handleDeleteThread}
-      onDeleteProject={handleDeleteProject}
-      onRefreshThreadDetail={() => {
-        if (selectedThreadId) {
-          void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
-        }
-      }}
-      onRefresh={() => void handleRefresh()}
-      onLogout={handleLogout}
-      onBackToInbox={() => {
-        setDraftThreadProjectId("");
-        setActiveView("inbox");
-      }}
-    />
+    <>
+      <MainPage
+        session={session}
+        bridges={bridges}
+        status={status}
+        projects={projects}
+        threads={threads}
+        workspaceRoots={workspaceRoots}
+        folderState={folderState}
+        folderLoading={folderLoading}
+        selectedWorkspacePath={selectedWorkspacePath}
+        selectedBridgeId={selectedBridgeId}
+        selectedProjectId={selectedProjectId}
+        selectedThreadId={selectedThreadId}
+        draftThreadProjectId={draftThreadProjectId}
+        search={search}
+        loadingState={loadingState}
+        utilityOpen={utilityOpen}
+        projectBusy={projectBusy}
+        threadBusy={threadBusy}
+        renameBusy={renameBusy}
+        projectComposerOpen={projectComposerOpen}
+        installPromptVisible={installPromptVisible}
+        installBusy={installBusy}
+        activeView={activeView}
+        threadMessageFilter={threadMessageFilter}
+        threadDetail={currentThreadDetailState}
+        onSearchChange={setSearch}
+        onChangeThreadMessageFilter={setThreadMessageFilter}
+        onSelectBridge={setSelectedBridgeId}
+        onSelectProject={handleSelectProject}
+        onSelectThread={handleSelectThread}
+        onOpenNewThread={handleOpenNewThread}
+        onOpenUtility={() => setUtilityOpen(true)}
+        onOpenProjectComposer={() => void handleOpenProjectComposer()}
+        onInstallPwa={() => void handleInstallPwa()}
+        onDismissInstallPrompt={handleDismissInstallPrompt}
+        onCloseUtility={() => setUtilityOpen(false)}
+        onCloseProjectComposer={handleCloseProjectComposer}
+        onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
+        onBrowseFolder={(path) => browseWorkspacePath(path)}
+        onSelectWorkspace={setSelectedWorkspacePath}
+        onSubmitProject={handleCreateProject}
+        onCreateThread={handleCreateThread}
+        onAppendThreadMessage={handleAppendThreadMessage}
+        onRenameThread={handleRenameThread}
+        onDeleteThread={handleDeleteThread}
+        onDeleteProject={handleDeleteProject}
+        onRefreshThreadDetail={() => {
+          if (selectedThreadId) {
+            void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
+          }
+        }}
+        onRefresh={() => void handleRefresh()}
+        onLogout={handleLogout}
+        onBackToInbox={() => {
+          setDraftThreadProjectId("");
+          setActiveView("inbox");
+        }}
+      />
+      <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
+    </>
   );
 }

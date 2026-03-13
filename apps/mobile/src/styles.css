@@ -25,6 +25,9 @@ body {
   margin: 0;
   color: inherit;
   background: inherit;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
+  touch-action: pan-y;
 }
 
 button,
