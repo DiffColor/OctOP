@@ -4374,51 +4374,6 @@ export default function App() {
     setSelectedIssueId((current) => (current && issues.some((issue) => issue.id === current) ? current : ""));
   }, [selectedProjectThreadId, issues]);
   useEffect(() => {
-    if (!selectedBridgeId || !selectedProjectThreadId) {
-      return;
-    }
-
-    updateArchivedIssuesState((current) => {
-      const bridgeMap = current[selectedBridgeId];
-
-      if (!bridgeMap) {
-        return current;
-      }
-
-      const archived = bridgeMap[selectedProjectThreadId];
-
-      if (!archived?.length) {
-        return current;
-      }
-
-      const validIds = archived.filter((threadId) =>
-        issues.some((issue) => issue.id === threadId && issue.thread_id === selectedProjectThreadId)
-      );
-
-      if (validIds.length === archived.length) {
-        return current;
-      }
-
-      const next = {
-        ...current,
-        [selectedBridgeId]: { ...bridgeMap }
-      };
-
-      if (validIds.length === 0) {
-        delete next[selectedBridgeId][selectedProjectThreadId];
-
-        if (Object.keys(next[selectedBridgeId]).length === 0) {
-          delete next[selectedBridgeId];
-        }
-      } else {
-        next[selectedBridgeId][selectedProjectThreadId] = validIds;
-      }
-
-      return next;
-    });
-  }, [issues, selectedBridgeId, selectedProjectThreadId, updateArchivedIssuesState]);
-
-  useEffect(() => {
     if (!issueEditorOpen || !editingIssueId) {
       return;
     }
