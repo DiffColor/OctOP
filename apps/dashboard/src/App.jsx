@@ -125,11 +125,9 @@ const COPY = {
     },
     projectComposer: {
       eyebrow: "New Project",
-      title: "Create project",
-      subtitle: "Browse a local workspace exposed by the bridge and connect it to project metadata.",
+      title: "New Project",
       close: "Close",
-      browserEyebrow: "Folder Browser",
-      browserTitle: "Select workspace",
+      browserTitle: "Select Workspace",
       foldersLoading: "Loading folders",
       noRoots: "No browsable roots are available.",
       parentFolder: "Up",
@@ -137,15 +135,9 @@ const COPY = {
       registered: "Added",
       selected: "Selected",
       noChildren: "No subfolders.",
-      metaEyebrow: "Project Meta",
-      metaTitle: "Project details",
+      workspacePath: "Workspace Path",
       name: "Project name",
-      namePlaceholder: "Example: LicenseHub operations automation",
-      key: "Project key",
-      keyPlaceholder: "Auto-generated from the name if left blank",
-      description: "Description",
-      descriptionPlaceholder: "Describe the project scope briefly.",
-      helper: "The selected folder is used as the Codex working directory.",
+      namePlaceholder: "Auto-filled from the selected folder",
       cancel: "Cancel",
       submit: "Create project",
       submitting: "Creating..."
@@ -258,11 +250,9 @@ const COPY = {
     },
     projectComposer: {
       eyebrow: "새 프로젝트",
-      title: "프로젝트 등록",
-      subtitle: "브릿지가 노출한 로컬 워크스페이스를 선택하고 프로젝트 메타데이터를 연결합니다.",
+      title: "New Project",
       close: "닫기",
-      browserEyebrow: "폴더 브라우저",
-      browserTitle: "프로젝트 위치 선택",
+      browserTitle: "Select Workspace",
       foldersLoading: "폴더 불러오는 중",
       noRoots: "탐색 가능한 루트가 없습니다.",
       parentFolder: "상위",
@@ -270,15 +260,9 @@ const COPY = {
       registered: "등록됨",
       selected: "선택됨",
       noChildren: "하위 폴더가 없습니다.",
-      metaEyebrow: "프로젝트 메타",
-      metaTitle: "프로젝트 정보",
+      workspacePath: "워크스페이스 경로",
       name: "프로젝트 이름",
-      namePlaceholder: "예: LicenseHub 운영 자동화",
-      key: "프로젝트 키",
-      keyPlaceholder: "비워두면 이름 기준으로 자동 생성됩니다",
-      description: "설명",
-      descriptionPlaceholder: "프로젝트 목적과 관리 범위를 간단히 적어 주세요.",
-      helper: "선택한 폴더가 실제 Codex 작업 디렉터리로 사용됩니다.",
+      namePlaceholder: "선택한 폴더명으로 자동 입력됩니다",
       cancel: "취소",
       submit: "프로젝트 등록",
       submitting: "등록 중..."
@@ -942,16 +926,12 @@ function ProjectComposer({
 }) {
   const copy = getCopy(language);
   const [name, setName] = useState("");
-  const [key, setKey] = useState("");
-  const [description, setDescription] = useState("");
   const [treeState, setTreeState] = useState({});
   const [expandedPaths, setExpandedPaths] = useState({});
 
   useEffect(() => {
     if (!open) {
       setName("");
-      setKey("");
-      setDescription("");
       setTreeState({});
       setExpandedPaths({});
     }
@@ -1024,10 +1004,7 @@ function ProjectComposer({
 
   const handleSelectPath = (path) => {
     onSelectWorkspace(path);
-
-    if (!name.trim()) {
-      setName(getPathLabel(path));
-    }
+    setName(getPathLabel(path));
   };
 
   const renderTreeNode = (entry, depth = 0) => {
@@ -1074,12 +1051,6 @@ function ProjectComposer({
               </svg>
               <OverflowRevealText value={entry.name} className="text-sm font-medium text-white" />
             </div>
-              <OverflowRevealText
-                value={entry.path}
-                className="mt-1 text-[11px] text-slate-500"
-                mono
-                truncateAt="start"
-              />
           </button>
 
           <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -1122,8 +1093,8 @@ function ProjectComposer({
 
     await onSubmit({
       name: name.trim(),
-      key: key.trim(),
-      description: description.trim(),
+      key: "",
+      description: "",
       workspace_path: selectedWorkspacePath
     });
   };
@@ -1133,9 +1104,7 @@ function ProjectComposer({
       <div className="w-full max-w-5xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">{copy.projectComposer.eyebrow}</p>
             <h2 className="mt-2 text-xl font-semibold text-white">{copy.projectComposer.title}</h2>
-            <p className="mt-1.5 text-sm leading-6 text-slate-400">{copy.projectComposer.subtitle}</p>
           </div>
           <button
             type="button"
@@ -1150,7 +1119,6 @@ function ProjectComposer({
           <div className="min-w-0 border-b border-slate-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
             <div className="flex items-center justify-between gap-3 pb-3">
               <div>
-                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.projectComposer.browserEyebrow}</p>
                 <p className="mt-2 text-sm font-medium text-white">{copy.projectComposer.browserTitle}</p>
               </div>
               <div className="flex items-center gap-2">
@@ -1195,12 +1163,20 @@ function ProjectComposer({
           </div>
 
           <div className="space-y-4 pt-4 xl:pl-5 xl:pt-0">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.projectComposer.metaEyebrow}</p>
-              <h3 className="mt-2 text-lg font-semibold text-white">{copy.projectComposer.metaTitle}</h3>
-            </div>
-
             <div className="grid gap-4">
+              <div>
+                <p className="mb-2 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
+                  {copy.projectComposer.workspacePath}
+                </p>
+                <OverflowRevealText
+                  value={selectedWorkspacePath || "-"}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-sm text-slate-300"
+                  mono
+                  truncateAt="start"
+                />
+              </div>
+
+              <div>
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
                 {copy.projectComposer.name}
               </label>
@@ -1213,39 +1189,8 @@ function ProjectComposer({
                 placeholder={copy.projectComposer.namePlaceholder}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
+              </div>
             </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
-                {copy.projectComposer.key}
-              </label>
-              <input
-                id="project-key"
-                type="text"
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                placeholder={copy.projectComposer.keyPlaceholder}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-              />
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
-                {copy.projectComposer.description}
-              </label>
-              <textarea
-                id="project-description"
-                rows="5"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                placeholder={copy.projectComposer.descriptionPlaceholder}
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-              />
-            </div>
-
-            <p className="text-xs leading-6 text-slate-500">
-              {copy.projectComposer.helper}
-            </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
