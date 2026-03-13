@@ -1380,7 +1380,7 @@ function ThreadContextMenu({ language, menuState, onRename, onDelete, onClose })
         onClick={onClose}
       />
       <div
-        className="fixed z-50 min-w-[10rem] overflow-hidden rounded-xl border border-slate-800 bg-slate-950/98 p-1.5 shadow-2xl shadow-slate-950/60"
+        className="fixed z-50 min-w-[10rem] overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-1.5 shadow-[0_18px_60px_rgba(2,6,23,0.55)] ring-1 ring-black/20"
         style={{ left: menuState.x, top: menuState.y }}
       >
         <button
