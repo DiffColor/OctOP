@@ -2299,7 +2299,7 @@ function getColumnDotClassName(columnId) {
   }
 }
 
-function ThreadCard({ language, thread, active, multiSelected, columnId, onSelect, onSelectionGesture }) {
+function ThreadCard({ language, thread, active, multiSelected, columnId, onSelect, onSelectionGesture, onDragStart, onDragEnd }) {
   const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
   const progressText = getRealtimeProgressText(thread, language);
@@ -2316,6 +2316,9 @@ function ThreadCard({ language, thread, active, multiSelected, columnId, onSelec
     <button
       type="button"
       onClick={handleClick}
+      draggable={typeof onDragStart === "function"}
+      onDragStart={() => onDragStart?.(thread.id, columnId)}
+      onDragEnd={() => onDragEnd?.()}
       className={`w-full rounded-xl border px-3.5 py-3 text-left transition ${
         highlighted ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
@@ -2352,7 +2355,9 @@ function CompletedThreadCard({
   onSelect,
   onOpen,
   onSelectionGesture,
-  columnId
+  columnId,
+  onDragStart,
+  onDragEnd
 }) {
   const copy = getCopy(language);
   const highlighted = active || multiSelected;
@@ -2368,6 +2373,9 @@ function CompletedThreadCard({
       type="button"
       onClick={handleClick}
       onDoubleClick={() => onOpen(thread.id)}
+      draggable={typeof onDragStart === "function"}
+      onDragStart={() => onDragStart?.(thread.id, columnId ?? "done")}
+      onDragEnd={() => onDragEnd?.()}
       className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
         highlighted ? "border-emerald-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-900/65 hover:border-slate-700"
       }`}
@@ -2378,6 +2386,32 @@ function CompletedThreadCard({
         <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">{copy.status.completed}</span>
         <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at, language)}</span>
       </div>
+    </button>
+  );
+}
+
+function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`relative inline-flex h-8 w-8 items-center justify-center rounded-lg border transition ${
+        active
+          ? "border-sky-400/40 bg-sky-500/10 text-sky-200"
+          : "border-slate-800 bg-slate-900/80 text-slate-400 hover:border-slate-700 hover:text-white"
+      }`}
+      title="보관함"
+    >
+      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path d="M4 7h16M9 7V5.5A1.5 1.5 0 0110.5 4h3A1.5 1.5 0 0115 5.5V7m-8 0l1 11a2 2 0 001.99 1.82h4.02A2 2 0 0016 18l1-11" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      </svg>
+      {count > 0 ? (
+        <span className="absolute -right-1.5 -top-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-slate-200 px-1 text-[10px] font-semibold text-slate-900">
+          {count}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -2436,6 +2470,7 @@ function MainPage({
   onCloseThreadMenu,
   onDragQueueIssue,
   onDragPrepIssues,
+  onDragArchiveIssues,
   onEditPrepIssue,
   onOpenProjectComposer,
   onOpenComposer,
@@ -2480,7 +2515,7 @@ function MainPage({
     pointerOffsetX: 0
   });
   const archiveViewerRef = useRef(null);
-  const [archiveViewerOpen, setArchiveViewerOpen] = useState(false);
+  const [archiveViewerColumnId, setArchiveViewerColumnId] = useState("");
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -2507,43 +2542,41 @@ function MainPage({
       String(thread.last_message ?? "").toLowerCase().includes(keyword)
     );
   });
-  const archivedIssuesList = useMemo(() => {
+  const archivedIssuesByColumn = useMemo(() => {
+    const grouped = {
+      review: [],
+      done: []
+    };
+
     if (!selectedProjectThreadId) {
-      return [];
+      return grouped;
     }
 
-    return archivedIssueIds
-      .map((threadId) =>
-        issues.find(
-          (issue) =>
-            issue.id === threadId &&
-            issue.thread_id === selectedProjectThreadId &&
-            (getStatusMeta(issue.status).column === "review" || getStatusMeta(issue.status).column === "done")
-        )
-      )
-      .filter(Boolean);
+    for (const issueId of archivedIssueIds) {
+      const issue = issues.find(
+        (item) =>
+          item.id === issueId &&
+          item.thread_id === selectedProjectThreadId &&
+          (getStatusMeta(item.status).column === "review" || getStatusMeta(item.status).column === "done")
+      );
+
+      if (!issue) {
+        continue;
+      }
+
+      grouped[getStatusMeta(issue.status).column].push(issue);
+    }
+
+    return grouped;
   }, [archivedIssueIds, issues, selectedProjectThreadId]);
   const archivedCounts = useMemo(
-    () =>
-      archivedIssuesList.reduce(
-        (acc, thread) => {
-          const columnId = getStatusMeta(thread.status).column;
-
-          if (columnId === "review" || columnId === "done") {
-            acc[columnId] += 1;
-          }
-
-          return acc;
-        },
-        { review: 0, done: 0 }
-      ),
-    [archivedIssuesList]
+    () => ({
+      review: archivedIssuesByColumn.review.length,
+      done: archivedIssuesByColumn.done.length
+    }),
+    [archivedIssuesByColumn]
   );
-  const archivedSelectedCount = filteredIssues.filter(
-    (thread) =>
-      selectedIssueIds.includes(thread.id) &&
-      (getStatusMeta(thread.status).column === "review" || getStatusMeta(thread.status).column === "done")
-  ).length;
+  const archiveViewerIssues = archiveViewerColumnId ? archivedIssuesByColumn[archiveViewerColumnId] ?? [] : [];
   const selectedProjectThread =
     scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
     null;
@@ -2716,13 +2749,13 @@ function MainPage({
     };
   }, [languageMenuOpen]);
   useEffect(() => {
-    if (!archiveViewerOpen) {
+    if (!archiveViewerColumnId) {
       return undefined;
     }
 
     const handlePointerDown = (event) => {
       if (!archiveViewerRef.current?.contains(event.target)) {
-        setArchiveViewerOpen(false);
+        setArchiveViewerColumnId("");
       }
     };
 
@@ -2731,12 +2764,12 @@ function MainPage({
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [archiveViewerOpen]);
+  }, [archiveViewerColumnId]);
   useEffect(() => {
-    if (archivedIssuesList.length === 0) {
-      setArchiveViewerOpen(false);
+    if (archiveViewerColumnId && archiveViewerIssues.length === 0) {
+      setArchiveViewerColumnId("");
     }
-  }, [archivedIssuesList.length]);
+  }, [archiveViewerColumnId, archiveViewerIssues.length]);
 
   useEffect(() => {
     setExpandedProjectIds((current) => {
@@ -3215,83 +3248,6 @@ function MainPage({
                   {copy.board.refresh}
                 </button>
 
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setArchiveViewerOpen((open) => !open)}
-                    disabled={archivedIssuesList.length === 0}
-                    className="rounded-lg border border-violet-500/20 px-3 py-2 text-sm font-medium text-violet-200 transition hover:border-violet-400/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {copy.board.archivedHidden(archivedIssuesList.length)}
-                  </button>
-                  {archiveViewerOpen ? (
-                    <div
-                      ref={archiveViewerRef}
-                      className="absolute right-0 z-20 mt-2 w-80 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl"
-                    >
-                      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-                        <p className="text-xs font-semibold text-slate-200">{copy.board.archivedListTitle}</p>
-                        <button
-                          type="button"
-                          onClick={() => setArchiveViewerOpen(false)}
-                          className="text-[10px] lowercase text-slate-500 transition hover:text-slate-200"
-                        >
-                          {copy.detail.close}
-                        </button>
-                      </div>
-                      <div className="custom-scrollbar max-h-72 space-y-3 overflow-y-auto px-4 py-3">
-                        {archivedIssuesList.length === 0 ? (
-                          <p className="text-xs text-slate-500">{copy.board.archivedEmpty}</p>
-                        ) : (
-                          archivedIssuesList.map((thread) => {
-                            const columnId = getStatusMeta(thread.status).column;
-                            return (
-                              <div key={`archived-${thread.id}`} className="rounded-xl border border-slate-800/80 bg-slate-900/80 px-3 py-3">
-                                <p className="text-sm font-medium text-white">
-                                  <OverflowRevealText value={getIssueTitle(thread, language)} />
-                                </p>
-                                <p className="mt-1 text-[11px] text-slate-500">
-                                  {copy.columns[columnId]} • {formatRelativeTime(thread.updated_at, language)}
-                                </p>
-                                <div className="mt-3 flex items-center justify-between">
-                                  <span className="text-[11px] text-slate-500">{copy.status[getStatusMeta(thread.status).labelKey]}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => onRestoreArchivedIssues([thread.id])}
-                                    className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
-                                  >
-                                    {copy.board.restore}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                      {archivedIssuesList.length > 0 ? (
-                        <div className="border-t border-slate-800 px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => onRestoreArchivedIssues(archivedIssuesList.map((thread) => thread.id))}
-                            className="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-400/40 hover:text-emerald-200"
-                          >
-                            {copy.board.restoreAll}
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => onArchiveIssues(selectedIssueIds)}
-                  disabled={archivedSelectedCount === 0}
-                  className="rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-semibold text-violet-200 transition hover:border-violet-400/40 hover:bg-violet-500/15 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {copy.board.archiveSelected(archivedSelectedCount)}
-                </button>
-
                 <button
                   type="button"
                   onClick={onStartSelectedIssues}
@@ -3423,14 +3379,72 @@ function MainPage({
                           {column.threads.length}
                         </span>
                       </h3>
-                      {((column.id === "review" || column.id === "done") && archivedCounts[column.id] > 0) ? (
-                        <button
-                          type="button"
-                          onClick={() => setArchiveViewerOpen(true)}
-                          className="text-[10px] text-slate-500 underline-offset-2 transition hover:text-slate-200 hover:underline"
-                        >
-                          {copy.board.archivedHidden(archivedCounts[column.id])}
-                        </button>
+                      {column.id === "review" || column.id === "done" ? (
+                        <div className="relative" ref={archiveViewerColumnId === column.id ? archiveViewerRef : undefined}>
+                          <ArchiveBasketButton
+                            active={archiveViewerColumnId === column.id}
+                            count={archivedCounts[column.id]}
+                            onClick={() => setArchiveViewerColumnId((current) => (current === column.id ? "" : column.id))}
+                            onDragOver={(event) => {
+                              event.preventDefault();
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              onDragArchiveIssues.drop();
+                            }}
+                          />
+                          {archiveViewerColumnId === column.id ? (
+                            <div className="absolute right-0 top-full z-20 mt-2 w-80 rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl shadow-slate-950/60">
+                              <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                                <p className="text-xs font-semibold text-slate-200">{copy.board.archivedListTitle}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => setArchiveViewerColumnId("")}
+                                  className="text-[10px] lowercase text-slate-500 transition hover:text-slate-200"
+                                >
+                                  {copy.detail.close}
+                                </button>
+                              </div>
+                              <div className="custom-scrollbar max-h-72 space-y-3 overflow-y-auto px-4 py-3">
+                                {archiveViewerIssues.length === 0 ? (
+                                  <p className="text-xs text-slate-500">{copy.board.archivedEmpty}</p>
+                                ) : (
+                                  archiveViewerIssues.map((thread) => (
+                                    <div key={`archived-${column.id}-${thread.id}`} className="rounded-xl border border-slate-800/80 bg-slate-900/80 px-3 py-3">
+                                      <p className="text-sm font-medium text-white">
+                                        <OverflowRevealText value={getIssueTitle(thread, language)} />
+                                      </p>
+                                      <p className="mt-1 text-[11px] text-slate-500">
+                                        {copy.columns[column.id]} • {formatRelativeTime(thread.updated_at, language)}
+                                      </p>
+                                      <div className="mt-3 flex items-center justify-between">
+                                        <span className="text-[11px] text-slate-500">{copy.status[getStatusMeta(thread.status).labelKey]}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => onRestoreArchivedIssues([thread.id])}
+                                          className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
+                                        >
+                                          {copy.board.restore}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                              {archiveViewerIssues.length > 0 ? (
+                                <div className="border-t border-slate-800 px-4 py-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => onRestoreArchivedIssues(archiveViewerIssues.map((thread) => thread.id))}
+                                    className="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-400/40 hover:text-emerald-200"
+                                  >
+                                    {copy.board.restoreAll}
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                       ) : (
                         <span className="text-[10px] text-transparent">–</span>
                       )}
@@ -3490,6 +3504,8 @@ function MainPage({
                                 onSelect={onSelectIssue}
                                 onOpen={onOpenCompletedIssue}
                                 onSelectionGesture={handleIssueSelectionGesture}
+                                onDragStart={onDragArchiveIssues.start}
+                                onDragEnd={onDragArchiveIssues.clear}
                               />
                             );
                           }
@@ -3504,6 +3520,8 @@ function MainPage({
                               columnId={column.id}
                               onSelect={onSelectIssue}
                               onSelectionGesture={handleIssueSelectionGesture}
+                              onDragStart={column.id === "review" ? onDragArchiveIssues.start : undefined}
+                              onDragEnd={column.id === "review" ? onDragArchiveIssues.clear : undefined}
                             />
                           );
                         })
@@ -3723,6 +3741,7 @@ export default function App() {
   const [prepIssueOrderIds, setPrepIssueOrderIds] = useState([]);
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
+  const [draggingArchiveIssueIds, setDraggingArchiveIssueIds] = useState([]);
   const [archivedIssuesState, setArchivedIssuesState] = useState(() => readStoredArchives());
   const [threadMenuState, setThreadMenuState] = useState({
     open: false,
@@ -4177,6 +4196,7 @@ export default function App() {
     setPrepIssueOrderIds([]);
     setDraggingIssueId("");
     setDraggingPrepIssueIds([]);
+    setDraggingArchiveIssueIds([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -4509,6 +4529,7 @@ export default function App() {
       return next;
     });
     setSelectedIssueIds((current) => current.filter((threadId) => !archiveableIds.includes(threadId)));
+    setDraggingArchiveIssueIds([]);
   };
 
   const handleRestoreArchivedIssues = (threadIds) => {
@@ -4552,6 +4573,7 @@ export default function App() {
 
       return next;
     });
+    setDraggingArchiveIssueIds([]);
   };
 
   const handleStartSelectedIssues = async () => {
@@ -4888,6 +4910,30 @@ export default function App() {
     },
     drop: (targetId = "") => {
       void movePrepIssuesToTodo(draggingPrepIssueIds, targetId);
+    }
+  };
+
+  const handleDragArchiveIssues = {
+    start: (threadId, columnId) => {
+      const selectedIdsInColumn = selectedIssueIds.filter((selectedId) => {
+        const issue = issues.find((item) => item.id === selectedId);
+        return issue && getStatusMeta(issue.status).column === columnId;
+      });
+      const draggedIds = selectedIdsInColumn.includes(threadId) ? selectedIdsInColumn : [threadId];
+      setDraggingIssueId("");
+      setDraggingPrepIssueIds([]);
+      setDraggingArchiveIssueIds(draggedIds);
+    },
+    clear: () => {
+      setDraggingArchiveIssueIds([]);
+    },
+    drop: () => {
+      if (draggingArchiveIssueIds.length === 0) {
+        return;
+      }
+
+      handleArchiveIssues(draggingArchiveIssueIds);
+      setDraggingArchiveIssueIds([]);
     }
   };
 
@@ -5309,6 +5355,7 @@ export default function App() {
       }
       onDragQueueIssue={handleDragQueueIssue}
       onDragPrepIssues={handleDragPrepIssues}
+      onDragArchiveIssues={handleDragArchiveIssues}
       onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
