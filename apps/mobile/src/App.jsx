@@ -399,6 +399,16 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
   }
 }
 
+function isTerminalThreadStatus(status) {
+  return ["completed", "failed"].includes(status);
+}
+
+function isLiveThreadProgressEvent(eventType) {
+  return ["turn.started", "turn.starting", "turn.plan.updated", "turn.diff.updated", "item.agentMessage.delta"].includes(
+    eventType ?? ""
+  );
+}
+
 function getLiveEventContext(event) {
   const payload = event?.payload ?? {};
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
@@ -417,6 +427,10 @@ function buildLiveThreadPatch(event, currentThread = null) {
   const { payload, threadId, projectId } = getLiveEventContext(event);
 
   if (!threadId) {
+    return null;
+  }
+
+  if (isTerminalThreadStatus(currentThread?.status) && isLiveThreadProgressEvent(event?.type)) {
     return null;
   }
 

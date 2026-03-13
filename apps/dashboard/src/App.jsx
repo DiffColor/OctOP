@@ -976,6 +976,16 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
   }
 }
 
+function isTerminalIssueStatus(status) {
+  return ["completed", "failed"].includes(status);
+}
+
+function isLiveIssueProgressEvent(eventType) {
+  return ["turn.started", "turn.starting", "turn.plan.updated", "turn.diff.updated", "item.agentMessage.delta"].includes(
+    eventType ?? ""
+  );
+}
+
 function getLiveEventContext(event) {
   const payload = event?.payload ?? {};
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
@@ -1082,6 +1092,10 @@ function buildLiveIssuePatch(event, currentIssue = null) {
   const { payload, issueId, threadId, projectId } = getLiveEventContext(event);
 
   if (!issueId || !threadId) {
+    return null;
+  }
+
+  if (isTerminalIssueStatus(currentIssue?.status) && isLiveIssueProgressEvent(event?.type)) {
     return null;
   }
 

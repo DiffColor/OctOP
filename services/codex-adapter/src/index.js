@@ -1888,6 +1888,14 @@ function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
   return nextStatus;
 }
 
+function isIssueTerminalStatus(status) {
+  return ["completed", "failed"].includes(status);
+}
+
+function isIssueProgressEvent(method) {
+  return ["turn/started", "turn/plan/updated", "turn/diff/updated", "item/agentMessage/delta"].includes(method);
+}
+
 function normalizeThreadRecord(thread, fallback = {}) {
   const current = threadStateById.get(thread.id) ?? {};
   const lastEvent = threadEventsById.get(thread.id);
@@ -2521,6 +2529,10 @@ function buildIssuePatch(method, params, issueId) {
   const current = issueCardsById.get(issueId);
 
   if (!current) {
+    return null;
+  }
+
+  if (isIssueTerminalStatus(current.status) && isIssueProgressEvent(method)) {
     return null;
   }
 
