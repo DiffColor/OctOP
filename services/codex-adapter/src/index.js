@@ -1892,8 +1892,9 @@ async function publishEvent(loginId, type, payload) {
   };
   ensureUserState(loginId).updated_at = event.timestamp;
   nc.publish(subjects.events, sc.encode(JSON.stringify(event)));
-  const threadId =
-    payload?.thread?.id ?? payload?.threadId ?? payload?.thread_id ?? payload?.conversationId;
+  const threadId = resolveLocalThreadId(
+    payload?.thread_id ?? payload?.threadId ?? payload?.thread?.id ?? payload?.conversationId
+  );
 
   if (threadId) {
     threadEventsById.set(threadId, event);
@@ -1997,6 +1998,33 @@ async function publishSnapshots(loginId) {
   });
 }
 
+function resolveLocalThreadId(threadReference) {
+  const candidate = String(threadReference ?? "").trim();
+
+  if (!candidate) {
+    return null;
+  }
+
+  if (threadStateById.has(candidate)) {
+    return candidate;
+  }
+
+  const mappedThreadId = codexThreadToThreadId.get(candidate);
+
+  if (mappedThreadId) {
+    return mappedThreadId;
+  }
+
+  for (const [threadId, thread] of threadStateById.entries()) {
+    if (thread?.codex_thread_id === candidate) {
+      codexThreadToThreadId.set(candidate, threadId);
+      return threadId;
+    }
+  }
+
+  return null;
+}
+
 function resolveOwnerFromParams(params = {}) {
   const codexThreadId = params.threadId ?? params.thread?.id ?? params.conversationId ?? params.thread_id;
 
@@ -2004,13 +2032,37 @@ function resolveOwnerFromParams(params = {}) {
     return null;
   }
 
-  const threadId = codexThreadToThreadId.get(codexThreadId);
+  const threadId = resolveLocalThreadId(codexThreadId);
 
   if (!threadId) {
     return null;
   }
 
   return threadOwners.get(threadId) ?? null;
+}
+
+function buildRemoteNotificationPayload(params = {}, context = {}) {
+  const remotePayload = {
+    ...params
+  };
+
+  if (context.codexThreadId && !remotePayload.codex_thread_id) {
+    remotePayload.codex_thread_id = context.codexThreadId;
+  }
+
+  if (context.threadId) {
+    remotePayload.thread_id = context.threadId;
+  }
+
+  if (context.projectId) {
+    remotePayload.project_id = context.projectId;
+  }
+
+  if (context.issueId) {
+    remotePayload.issue_id = context.issueId;
+  }
+
+  return remotePayload;
 }
 
 function formatAccount(accountInfo) {
@@ -2198,9 +2250,12 @@ class AppServerClient {
   }
 
   async handleNotification(method, params) {
-    const owner = resolveOwnerFromParams(params);
-    const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
-    const threadId = codexThreadId ? codexThreadToThreadId.get(codexThreadId) ?? null : null;
+    const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
+    const threadId = resolveLocalThreadId(codexThreadId);
+    let owner = resolveOwnerFromParams(params);
+    let eventPatch = null;
+    let issuePatch = null;
+    const activeIssueId = threadId ? activeIssueByThreadId.get(threadId) ?? null : null;
 
     if (threadId) {
       if (
@@ -2216,7 +2271,7 @@ class AppServerClient {
         });
       }
 
-      const eventPatch = buildThreadPatch(method, params);
+      eventPatch = buildThreadPatch(method, params);
 
       if (eventPatch) {
         const current = threadStateById.get(threadId);
@@ -2230,10 +2285,8 @@ class AppServerClient {
         }
       }
 
-      const activeIssueId = activeIssueByThreadId.get(threadId);
-
       if (activeIssueId) {
-        const issuePatch = buildIssuePatch(method, params, activeIssueId);
+        issuePatch = buildIssuePatch(method, params, activeIssueId);
 
         if (issuePatch) {
           updateIssueCard(activeIssueId, issuePatch);
@@ -2249,20 +2302,36 @@ class AppServerClient {
       }
     }
 
+    if (!owner && (threadId || codexThreadId)) {
+      owner = threadId ? threadOwners.get(threadId) ?? null : null;
+
+      if (!owner && BRIDGE_OWNER_LOGIN_ID) {
+        owner = BRIDGE_OWNER_LOGIN_ID;
+      }
+    }
+
     if (!owner) {
+      console.warn("[OctOP bridge] ownerless app-server notification dropped", {
+        method,
+        codexThreadId,
+        threadId
+      });
       return;
     }
 
-    await publishEvent(owner, method.replaceAll("/", "."), params);
+    const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
+    await publishEvent(
+      owner,
+      method.replaceAll("/", "."),
+      buildRemoteNotificationPayload(params, {
+        codexThreadId,
+        threadId,
+        projectId,
+        issueId: activeIssueId
+      })
+    );
 
-    if (
-      method === "thread/started" ||
-      method === "thread/status/changed" ||
-      method === "turn/started" ||
-      method === "turn/completed" ||
-      method === "item/agentMessage/delta"
-    ) {
-      const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
+    if (threadId && (eventPatch || issuePatch || (method === "item/agentMessage/delta" && params.delta))) {
       await publishEvent(owner, "bridge.projectThreads.updated", {
         scope: projectId ? "project" : "all",
         project_id: projectId,
@@ -2337,7 +2406,7 @@ class AppServerClient {
 
 function buildThreadPatch(method, params) {
   const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
-  const threadId = codexThreadId ? codexThreadToThreadId.get(codexThreadId) ?? null : null;
+  const threadId = resolveLocalThreadId(params.thread_id ?? codexThreadId);
   const currentStatus = threadId ? threadStateById.get(threadId)?.status ?? "idle" : "idle";
 
   switch (method) {
