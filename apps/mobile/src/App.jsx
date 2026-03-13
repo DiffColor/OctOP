@@ -1627,6 +1627,9 @@ function ThreadDetail({
   const scrollAnchorRef = useRef(null);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
+  const userInteractingRef = useRef(false);
+  const userInteractionTimeoutRef = useRef(null);
+  const [isUserInteracting, setIsUserInteracting] = useState(false);
   const [viewMode, setViewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -1765,10 +1768,40 @@ function ThreadDetail({
     return chatTimeline;
   }, [chatTimeline, messageFilter]);
 
+  const clearUserInteractionTimeout = useCallback(() => {
+    if (userInteractionTimeoutRef.current) {
+      clearTimeout(userInteractionTimeoutRef.current);
+      userInteractionTimeoutRef.current = null;
+    }
+  }, []);
+  const setUserInteractingState = useCallback((nextValue) => {
+    if (userInteractingRef.current === nextValue) {
+      return;
+    }
+
+    userInteractingRef.current = nextValue;
+    setIsUserInteracting(nextValue);
+  }, []);
+  const beginUserInteraction = useCallback(() => {
+    clearUserInteractionTimeout();
+    setUserInteractingState(true);
+  }, [clearUserInteractionTimeout, setUserInteractingState]);
+  const scheduleUserInteractionEnd = useCallback(() => {
+    clearUserInteractionTimeout();
+
+    userInteractionTimeoutRef.current = setTimeout(() => {
+      userInteractionTimeoutRef.current = null;
+      setUserInteractingState(false);
+    }, 350);
+  }, [clearUserInteractionTimeout, setUserInteractingState]);
+
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
-  }, [thread?.id]);
+    userInteractingRef.current = false;
+    setIsUserInteracting(false);
+    clearUserInteractionTimeout();
+  }, [clearUserInteractionTimeout, thread?.id, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat") {
@@ -1802,19 +1835,40 @@ function ThreadDetail({
     };
 
     syncPinnedState();
+    const handlePointerDown = () => {
+      beginUserInteraction();
+    };
+    const handlePointerUp = () => {
+      scheduleUserInteractionEnd();
+    };
+    const handleWheel = () => {
+      beginUserInteraction();
+      scheduleUserInteractionEnd();
+    };
+
     scrollNode.addEventListener("scroll", handleScroll, { passive: true });
+    scrollNode.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    scrollNode.addEventListener("pointerup", handlePointerUp, { passive: true });
+    scrollNode.addEventListener("pointercancel", handlePointerUp, { passive: true });
+    scrollNode.addEventListener("pointerleave", handlePointerUp, { passive: true });
+    scrollNode.addEventListener("wheel", handleWheel, { passive: true });
 
     return () => {
       scrollNode.removeEventListener("scroll", handleScroll);
+      scrollNode.removeEventListener("pointerdown", handlePointerDown);
+      scrollNode.removeEventListener("pointerup", handlePointerUp);
+      scrollNode.removeEventListener("pointercancel", handlePointerUp);
+      scrollNode.removeEventListener("pointerleave", handlePointerUp);
+      scrollNode.removeEventListener("wheel", handleWheel);
 
       if (rafId) {
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [viewMode]);
+  }, [beginUserInteraction, scheduleUserInteractionEnd, viewMode]);
 
   useLayoutEffect(() => {
-    if (viewMode !== "chat" || !isPinnedToLatest) {
+    if (viewMode !== "chat" || !isPinnedToLatest || isUserInteracting) {
       return;
     }
 
@@ -1830,7 +1884,7 @@ function ThreadDetail({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
+  }, [isPinnedToLatest, isUserInteracting, messagesLoading, thread?.id, viewMode, visibleChatTimeline]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
