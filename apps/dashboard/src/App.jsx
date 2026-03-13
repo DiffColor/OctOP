@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -2588,8 +2588,12 @@ function MainPage({
                 <span className={`h-2 w-2 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
                 {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
               </span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.projectsChip(projects.length)}</span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(projectThreads.length)}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
+                {copy.board.projectsChip(status.counts?.projects ?? projects.length)}
+              </span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
+                {copy.board.threadsChip(status.counts?.threads ?? projectThreads.length)}
+              </span>
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -2716,6 +2720,10 @@ export default function App() {
       account: null,
       last_error: null
     },
+    counts: {
+      projects: 0,
+      threads: 0
+    },
     updated_at: null
   });
   const [projects, setProjects] = useState([]);
@@ -2755,6 +2763,16 @@ export default function App() {
   const [startBusy, setStartBusy] = useState(false);
   const copy = getCopy(language);
 
+  const updateStatusCounts = useCallback((nextCounts) => {
+    setStatus((current) => ({
+      ...current,
+      counts: {
+        projects: nextCounts.projects ?? current.counts?.projects ?? 0,
+        threads: nextCounts.threads ?? current.counts?.threads ?? 0
+      }
+    }));
+  }, []);
+
   useEffect(() => {
     storeLanguage(language);
   }, [language]);
@@ -2791,6 +2809,10 @@ export default function App() {
           initialized: false,
           account: null,
           last_error: null
+        },
+        counts: {
+          projects: 0,
+          threads: 0
         },
         updated_at: null
       });
@@ -2963,6 +2985,7 @@ export default function App() {
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
           setProjects(nextProjects);
+          updateStatusCounts({ projects: nextProjects.length });
           setSelectedProjectId((current) => {
             if (current && nextProjects.some((project) => project.id === current)) {
               return current;
@@ -2977,6 +3000,9 @@ export default function App() {
           const nextThreads = mergeProjectThreads([], payload.payload?.threads ?? []);
           const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? "";
           const scope = payload.payload?.scope ?? "project";
+          if (scope === "all") {
+            updateStatusCounts({ threads: nextThreads.length });
+          }
           setProjectThreads((current) =>
             scope === "all" ? mergeProjectThreads([], nextThreads) : replaceProjectThreadsForProject(current, nextThreads, projectId)
           );
@@ -3515,11 +3541,17 @@ export default function App() {
 
       if (Array.isArray(nextProjects)) {
         setProjects(nextProjects);
+        updateStatusCounts({ projects: nextProjects.length });
       } else if (createdProject?.id) {
+        let didInsert = false;
         setProjects((current) => {
           const exists = current.some((project) => project.id === createdProject.id);
+          didInsert = !exists;
           return exists ? current : [createdProject, ...current];
         });
+        if (didInsert) {
+          updateStatusCounts({ projects: (status.counts?.projects ?? projects.length) + 1 });
+        }
       }
 
       if (createdProject?.id) {
@@ -3561,6 +3593,7 @@ export default function App() {
       } else {
         setProjectThreads((current) => current.filter((thread) => thread.id !== threadId));
       }
+      updateStatusCounts({ threads: Math.max((status.counts?.threads ?? 0) - 1, 0) });
 
       if (selectedProjectThreadId === threadId) {
         setIssues([]);
@@ -3598,12 +3631,15 @@ export default function App() {
 
       if (Array.isArray(response?.projects)) {
         setProjects(response.projects);
+        updateStatusCounts({ projects: response.projects.length });
       } else {
         setProjects((current) => current.filter((project) => project.id !== projectId));
+        updateStatusCounts({ projects: Math.max((status.counts?.projects ?? 0) - 1, 0) });
       }
 
       if (Array.isArray(response?.threads)) {
         setProjectThreads(mergeProjectThreads([], response.threads));
+        updateStatusCounts({ threads: response.threads.length });
       } else {
         setProjectThreads((current) => current.filter((thread) => thread.project_id !== projectId));
       }
@@ -3728,6 +3764,7 @@ export default function App() {
       if (response?.thread?.id) {
         setProjectThreads((current) => upsertProjectThread(current, response.thread));
         setSelectedProjectThreadId(response.thread.id);
+        updateStatusCounts({ threads: (status.counts?.threads ?? projectThreads.length) + 1 });
       }
     } catch (error) {
       setRecentEvents((current) => [
