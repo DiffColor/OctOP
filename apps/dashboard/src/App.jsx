@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -123,6 +123,13 @@ const COPY = {
       cancel: "Cancel",
       submit: "Create issue",
       submitting: "Creating..."
+    },
+    issueEditor: {
+      eyebrow: "Edit Issue",
+      title: "Update issue",
+      subtitle: "Adjust the title or prompt before you move work into the queue.",
+      submit: "Save changes",
+      submitting: "Saving..."
     },
     projectComposer: {
       eyebrow: "New Project",
@@ -254,6 +261,13 @@ const COPY = {
       cancel: "취소",
       submit: "이슈 등록",
       submitting: "등록 중..."
+    },
+    issueEditor: {
+      eyebrow: "이슈 수정",
+      title: "이슈 업데이트",
+      subtitle: "큐에 넣기 전에 제목과 프롬프트를 손볼 수 있습니다.",
+      submit: "변경 사항 저장",
+      submitting: "저장 중..."
     },
     projectComposer: {
       eyebrow: "새 프로젝트",
@@ -441,6 +455,44 @@ function formatDateTime(value, language) {
 
 function formatRelativeTime(value, language) {
   const copy = getCopy(language);
+  const orderedPrepIssueIds = useMemo(() => {
+    const prepIssues = issues
+      .filter((thread) => getStatusMeta(thread.status).column === "prep")
+      .sort((left, right) => {
+        const leftHasOrder = Number.isFinite(left.prep_position);
+        const rightHasOrder = Number.isFinite(right.prep_position);
+
+        if (leftHasOrder && rightHasOrder && left.prep_position !== right.prep_position) {
+          return left.prep_position - right.prep_position;
+        }
+
+        if (leftHasOrder && !rightHasOrder) {
+          return -1;
+        }
+
+        if (!leftHasOrder && rightHasOrder) {
+          return 1;
+        }
+
+        return Date.parse(right.updated_at) - Date.parse(left.updated_at);
+      })
+      .map((thread) => thread.id);
+
+    if (prepIssueOrderIds.length === 0) {
+      return prepIssues;
+    }
+
+    const normalized = prepIssueOrderIds.filter((threadId) => prepIssues.includes(threadId));
+    const trailing = prepIssues.filter((threadId) => !normalized.includes(threadId));
+    return [...normalized, ...trailing];
+  }, [issues, prepIssueOrderIds]);
+  const editingIssue = useMemo(() => {
+    if (!issueEditorOpen || !editingIssueId) {
+      return null;
+    }
+
+    return issues.find((issue) => issue.id === editingIssueId) ?? null;
+  }, [issueEditorOpen, editingIssueId, issues]);
 
   if (!value) {
     return copy.fallback.justNow;
@@ -710,7 +762,8 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     created_at: issue.created_at ?? new Date().toISOString(),
     updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
     prompt: issue.prompt ?? "",
-    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null
+    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
+    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null
   };
 }
 
@@ -770,6 +823,29 @@ function reorderIds(items, draggedId, targetId) {
   return next;
 }
 
+function reorderIdGroup(items, draggedIds, targetId) {
+  if (!Array.isArray(items) || !Array.isArray(draggedIds) || draggedIds.length === 0 || !targetId) {
+    return items;
+  }
+
+  const normalizedDragged = draggedIds.filter((id) => items.includes(id));
+
+  if (normalizedDragged.length === 0 || normalizedDragged.includes(targetId)) {
+    return items;
+  }
+
+  const remaining = items.filter((id) => !normalizedDragged.includes(id));
+  const targetIndex = remaining.indexOf(targetId);
+
+  if (targetIndex < 0) {
+    return items;
+  }
+
+  const next = [...remaining];
+  next.splice(targetIndex, 0, ...normalizedDragged);
+  return next;
+}
+
 function buildMessagePreview(thread, language) {
   const copy = getCopy(language);
   const prompt = String(thread.prompt ?? "").trim();
@@ -783,6 +859,278 @@ function getThreadTitle(thread, language) {
 
 function getIssueTitle(issue, language) {
   return String(issue?.title ?? "").trim() || getCopy(language).fallback.untitledIssue;
+}
+
+function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
+  switch (statusType) {
+    case "waitingForInput":
+      return "awaiting_input";
+    case "error":
+      return "failed";
+    case "completed":
+      return "completed";
+    case "idle":
+      return currentStatus === "running" ? "idle" : currentStatus;
+    case "active":
+    case "running":
+      return "running";
+    default:
+      return currentStatus;
+  }
+}
+
+function getLiveEventContext(event) {
+  const payload = event?.payload ?? {};
+  const threadId = String(payload.thread_id ?? payload.threadId ?? payload.thread?.id ?? "").trim();
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+
+  return {
+    payload,
+    threadId,
+    issueId,
+    projectId
+  };
+}
+
+function buildLiveThreadPatch(event, currentThread = null) {
+  const { payload, threadId, projectId } = getLiveEventContext(event);
+
+  if (!threadId) {
+    return null;
+  }
+
+  const currentStatus = currentThread?.status ?? "queued";
+
+  switch (event?.type) {
+    case "thread.started":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        codex_thread_id: payload.codex_thread_id ?? currentThread?.codex_thread_id ?? null,
+        progress: Math.max(5, currentThread?.progress ?? 0),
+        status: currentStatus,
+        last_event: "thread.started",
+        updated_at: new Date().toISOString()
+      };
+    case "thread.status.changed":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus),
+        last_event: "thread.status.changed",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.started":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 20),
+        last_event: "turn.started",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.plan.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 45),
+        last_event: "turn.plan.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.diff.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 75),
+        last_event: "turn.diff.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "item.agentMessage.delta":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 90),
+        last_event: "item.agentMessage.delta",
+        last_message: `${currentThread?.last_message ?? ""}${payload.delta ?? ""}`,
+        updated_at: new Date().toISOString()
+      };
+    case "turn.completed":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: payload.turn?.status === "completed" ? "idle" : "failed",
+        progress: payload.turn?.status === "completed" ? 100 : 0,
+        last_event: "turn.completed",
+        updated_at: new Date().toISOString()
+      };
+    default:
+      return null;
+  }
+}
+
+function buildLiveIssuePatch(event, currentIssue = null) {
+  const { payload, issueId, threadId, projectId } = getLiveEventContext(event);
+
+  if (!issueId || !threadId) {
+    return null;
+  }
+
+  switch (event?.type) {
+    case "turn.started":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: "running",
+        progress: Math.max(currentIssue?.progress ?? 0, 20),
+        last_event: "turn.started",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.plan.updated":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: "running",
+        progress: Math.max(currentIssue?.progress ?? 0, 45),
+        last_event: "turn.plan.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.diff.updated":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: "running",
+        progress: Math.max(currentIssue?.progress ?? 0, 75),
+        last_event: "turn.diff.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "item.agentMessage.delta":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: "running",
+        progress: Math.max(currentIssue?.progress ?? 0, 90),
+        last_event: "item.agentMessage.delta",
+        last_message: `${currentIssue?.last_message ?? ""}${payload.delta ?? ""}`,
+        updated_at: new Date().toISOString()
+      };
+    case "thread.status.changed":
+      if ((payload.status?.type ?? "") === "waitingForInput") {
+        return {
+          id: issueId,
+          thread_id: threadId,
+          project_id: projectId || currentIssue?.project_id || null,
+          status: "awaiting_input",
+          last_event: "thread.status.changed",
+          updated_at: new Date().toISOString()
+        };
+      }
+
+      if ((payload.status?.type ?? "") === "error") {
+        return {
+          id: issueId,
+          thread_id: threadId,
+          project_id: projectId || currentIssue?.project_id || null,
+          status: "failed",
+          progress: 0,
+          last_event: "thread.status.changed",
+          updated_at: new Date().toISOString()
+        };
+      }
+
+      return null;
+    case "turn.completed":
+      return {
+        id: issueId,
+        thread_id: threadId,
+        project_id: projectId || currentIssue?.project_id || null,
+        status: payload.turn?.status === "completed" ? "completed" : "failed",
+        progress: payload.turn?.status === "completed" ? 100 : 0,
+        last_event: "turn.completed",
+        updated_at: new Date().toISOString()
+      };
+    default:
+      return null;
+  }
+}
+
+function upsertLiveIssuePatch(currentIssues, event) {
+  const { issueId } = getLiveEventContext(event);
+
+  if (!issueId) {
+    return currentIssues;
+  }
+
+  const currentIssue = currentIssues.find((issue) => issue.id === issueId) ?? null;
+  const patch = buildLiveIssuePatch(event, currentIssue);
+
+  if (!patch || !currentIssue) {
+    return currentIssues;
+  }
+
+  return upsertIssue(currentIssues, {
+    ...currentIssue,
+    ...patch
+  });
+}
+
+function upsertLiveThreadPatch(currentThreads, event) {
+  const { threadId } = getLiveEventContext(event);
+
+  if (!threadId) {
+    return currentThreads;
+  }
+
+  const currentThread = currentThreads.find((thread) => thread.id === threadId) ?? null;
+  const patch = buildLiveThreadPatch(event, currentThread);
+
+  if (!patch || !currentThread) {
+    return currentThreads;
+  }
+
+  return upsertProjectThread(currentThreads, {
+    ...currentThread,
+    ...patch
+  });
+}
+
+function appendIssueDeltaMessage(messages, event, fallbackIssue) {
+  const { payload, issueId } = getLiveEventContext(event);
+
+  if (event?.type !== "item.agentMessage.delta" || !payload.delta) {
+    return messages;
+  }
+
+  const next = [...messages];
+  const lastMessage = next.at(-1);
+
+  if (lastMessage?.role === "assistant" && (lastMessage.issue_id ?? "") === issueId) {
+    next[next.length - 1] = {
+      ...lastMessage,
+      content: `${lastMessage.content ?? ""}${payload.delta}`,
+      timestamp: new Date().toISOString()
+    };
+    return next;
+  }
+
+  next.push({
+    id: `${issueId || "assistant"}-${Date.now()}`,
+    role: "assistant",
+    kind: "message",
+    content: String(payload.delta ?? ""),
+    timestamp: new Date().toISOString(),
+    issue_id: issueId || fallbackIssue?.id || null,
+    issue_title: fallbackIssue?.title ?? "",
+    issue_status: fallbackIssue?.status ?? "running"
+  });
+  return next;
 }
 
 function summarizeProjects(projects, language) {
@@ -1064,6 +1412,124 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
               className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? copy.issueComposer.submitting : copy.issueComposer.submit}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
+  const copy = getCopy(language);
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const promptInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      setPrompt("");
+      return;
+    }
+
+    setTitle(issue?.title ?? "");
+    setPrompt(issue?.prompt ?? "");
+  }, [open, issue]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      promptInputRef.current?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [open]);
+
+  if (!open || !issue) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+
+    if (!prompt.trim()) {
+      return;
+    }
+
+    await onSubmit({
+      title: title.trim(),
+      prompt: prompt.trim()
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">{copy.issueEditor.eyebrow}</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">{copy.issueEditor.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">{copy.issueEditor.subtitle}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            {copy.projectComposer.close}
+          </button>
+        </div>
+
+        <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="edit-issue-title">
+              {copy.issueComposer.issueTitle} <span className="text-slate-500">({copy.issueComposer.optional})</span>
+            </label>
+            <input
+              id="edit-issue-title"
+              type="text"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder={copy.issueComposer.titlePlaceholder}
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="edit-issue-prompt">
+              {copy.issueComposer.prompt}
+            </label>
+            <textarea
+              ref={promptInputRef}
+              id="edit-issue-prompt"
+              rows="5"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={copy.issueComposer.promptPlaceholder}
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              {copy.issueComposer.cancel}
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? copy.issueEditor.submitting : copy.issueEditor.submit}
             </button>
           </div>
         </form>
@@ -1558,13 +2024,23 @@ function PrepThreadCard({
   onSelect,
   onToggle,
   onDelete,
-  onDragStart
+  onDragStart,
+  onDrop,
+  onEdit
 }) {
   const copy = getCopy(language);
   return (
     <div
       draggable
       onDragStart={() => onDragStart(thread.id)}
+      onDoubleClick={() => onEdit(thread.id)}
+      onDragOver={(event) => {
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDrop(thread.id);
+      }}
       className={`rounded-xl border px-3.5 py-3 transition ${
         active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
@@ -1770,6 +2246,7 @@ function MainPage({
   selectedIssueId,
   selectedIssueIds,
   issueQueueOrderIds,
+  prepIssueOrderIds,
   detailState,
   search,
   loadingState,
@@ -1797,6 +2274,7 @@ function MainPage({
   onCloseThreadMenu,
   onDragQueueIssue,
   onDragPrepIssues,
+  onEditPrepIssue,
   onOpenProjectComposer,
   onOpenComposer,
   onCloseProjectComposer,
@@ -1874,6 +2352,20 @@ function MainPage({
 
   const columns = COLUMN_ORDER.map((column) => {
     const columnThreads = filteredIssues.filter((thread) => getStatusMeta(thread.status).column === column.id);
+
+    if (column.id === "prep") {
+      const orderedIds = prepIssueOrderIds.filter((threadId) => columnThreads.some((thread) => thread.id === threadId));
+      const trailingIds = columnThreads
+        .map((thread) => thread.id)
+        .filter((threadId) => !orderedIds.includes(threadId));
+
+      return {
+        ...column,
+        threads: [...orderedIds, ...trailingIds]
+          .map((threadId) => columnThreads.find((thread) => thread.id === threadId))
+          .filter(Boolean)
+      };
+    }
 
     if (column.id === "todo") {
       const orderedIds = issueQueueOrderIds.filter((threadId) => columnThreads.some((thread) => thread.id === threadId));
@@ -2516,7 +3008,7 @@ function MainPage({
                       }
 
                       event.preventDefault();
-                      onDragPrepThreads.drop();
+                      onDragPrepIssues.drop();
                     }}
                   >
                     <div className="mb-4 flex items-center justify-between">
@@ -2552,6 +3044,8 @@ function MainPage({
                                 onToggle={onToggleIssueSelection}
                                 onDelete={onDeleteIssue}
                                 onDragStart={onDragPrepIssues.start}
+                                onDrop={onDragPrepIssues.reorder}
+                                onEdit={onEditPrepIssue}
                               />
                             );
                           }
@@ -2726,6 +3220,14 @@ function MainPage({
         onClose={onCloseComposer}
         onSubmit={onSubmitIssue}
       />
+      <IssueEditor
+        language={language}
+        open={issueEditorOpen}
+        busy={issueEditorBusy}
+        issue={editingIssue}
+        onClose={handleCloseIssueEditor}
+        onSubmit={handleUpdateIssue}
+      />
       <ProjectComposer
         language={language}
         open={projectComposerOpen}
@@ -2800,6 +3302,7 @@ export default function App() {
   const [selectedIssueId, setSelectedIssueId] = useState("");
   const [selectedIssueIds, setSelectedIssueIds] = useState([]);
   const [issueQueueOrderIds, setIssueQueueOrderIds] = useState([]);
+  const [prepIssueOrderIds, setPrepIssueOrderIds] = useState([]);
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
   const [threadMenuState, setThreadMenuState] = useState({
@@ -2822,6 +3325,16 @@ export default function App() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
+  const [issueEditorOpen, setIssueEditorOpen] = useState(false);
+  const [issueEditorBusy, setIssueEditorBusy] = useState(false);
+  const [editingIssueId, setEditingIssueId] = useState("");
+  const issuesRef = useRef([]);
+  const detailStateRef = useRef({
+    open: false,
+    loading: false,
+    thread: null,
+    messages: []
+  });
   const copy = getCopy(language);
 
   const updateStatusCounts = useCallback((nextCounts) => {
@@ -2837,6 +3350,14 @@ export default function App() {
   useEffect(() => {
     storeLanguage(language);
   }, [language]);
+
+  useEffect(() => {
+    issuesRef.current = issues;
+  }, [issues]);
+
+  useEffect(() => {
+    detailStateRef.current = detailState;
+  }, [detailState]);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -3028,8 +3549,10 @@ export default function App() {
     eventSource.addEventListener("message", (event) => {
       try {
         const payload = JSON.parse(event.data);
+        const { threadId: eventThreadId, issueId: eventIssueId, projectId: eventProjectId } = getLiveEventContext(payload);
         const summary =
           payload?.payload?.thread?.title ??
+          issuesRef.current.find((issue) => issue.id === eventIssueId)?.title ??
           payload?.payload?.error ??
           payload?.payload?.projects?.[0]?.name ??
           payload?.payload?.threads?.[0]?.name ??
@@ -3041,6 +3564,36 @@ export default function App() {
         if (payload.type === "bridge.status.updated") {
           setStatus(payload.payload);
           return;
+        }
+
+        if (eventThreadId) {
+          setProjectThreads((current) => upsertLiveThreadPatch(current, payload));
+        }
+
+        if (eventThreadId && eventThreadId === selectedProjectThreadId) {
+          setIssues((current) => upsertLiveIssuePatch(current, payload));
+        }
+
+        if (
+          detailStateRef.current.open &&
+          detailStateRef.current.thread?.id &&
+          eventIssueId &&
+          detailStateRef.current.thread.id === eventIssueId
+        ) {
+          setDetailState((current) => {
+            const nextThread = current.thread
+              ? {
+                  ...current.thread,
+                  ...(buildLiveIssuePatch(payload, current.thread) ?? {})
+                }
+              : current.thread;
+
+            return {
+              ...current,
+              thread: nextThread,
+              messages: appendIssueDeltaMessage(current.messages, payload, nextThread)
+            };
+          });
         }
 
         if (payload.type === "bridge.projects.updated") {
@@ -3059,7 +3612,7 @@ export default function App() {
 
         if (payload.type === "bridge.projectThreads.updated") {
           const nextThreads = mergeProjectThreads([], payload.payload?.threads ?? []);
-          const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? "";
+          const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? eventProjectId ?? "";
           const scope = payload.payload?.scope ?? "project";
           if (scope === "all") {
             updateStatusCounts({ threads: nextThreads.length });
@@ -3150,6 +3703,7 @@ export default function App() {
     setSelectedIssueId("");
     setSelectedIssueIds([]);
     setIssueQueueOrderIds([]);
+    setPrepIssueOrderIds([]);
     setDraggingIssueId("");
     setDraggingPrepIssueIds([]);
     setWorkspaceRoots([]);
@@ -3226,9 +3780,36 @@ export default function App() {
       })
       .map((thread) => thread.id);
 
+    const prepIds = issues
+      .filter((thread) => getStatusMeta(thread.status).column === "prep")
+      .sort((left, right) => {
+        const leftHasOrder = Number.isFinite(left.prep_position);
+        const rightHasOrder = Number.isFinite(right.prep_position);
+
+        if (leftHasOrder && rightHasOrder && left.prep_position !== right.prep_position) {
+          return left.prep_position - right.prep_position;
+        }
+
+        if (leftHasOrder && !rightHasOrder) {
+          return -1;
+        }
+
+        if (!leftHasOrder && rightHasOrder) {
+          return 1;
+        }
+
+        return Date.parse(right.updated_at) - Date.parse(left.updated_at);
+      })
+      .map((thread) => thread.id);
+
     setIssueQueueOrderIds((current) => {
       const preserved = current.filter((threadId) => todoIds.includes(threadId));
       const appended = todoIds.filter((threadId) => !preserved.includes(threadId));
+      return [...preserved, ...appended];
+    });
+    setPrepIssueOrderIds((current) => {
+      const preserved = current.filter((threadId) => prepIds.includes(threadId));
+      const appended = prepIds.filter((threadId) => !preserved.includes(threadId));
       return [...preserved, ...appended];
     });
     setSelectedIssueIds((current) => current.filter((threadId) => issues.some((thread) => thread.id === threadId)));
@@ -3253,6 +3834,22 @@ export default function App() {
     );
     setSelectedIssueId((current) => (current && issues.some((issue) => issue.id === current) ? current : ""));
   }, [selectedProjectThreadId, issues]);
+
+  useEffect(() => {
+    if (!issueEditorOpen || !editingIssueId) {
+      return;
+    }
+
+    const exists = issues.some(
+      (issue) => issue.id === editingIssueId && getStatusMeta(issue.status).column === "prep"
+    );
+
+    if (!exists) {
+      setIssueEditorOpen(false);
+      setEditingIssueId("");
+      setIssueEditorBusy(false);
+    }
+  }, [issueEditorOpen, editingIssueId, issues]);
 
   const handleLogin = async ({ loginId, password, rememberDevice }) => {
     setLoginState({ loading: true, error: "" });
@@ -3300,6 +3897,7 @@ export default function App() {
     setSelectedIssueId("");
     setSelectedIssueIds([]);
     setIssueQueueOrderIds([]);
+    setPrepIssueOrderIds([]);
     setDraggingIssueId("");
     setDetailState({
       open: false,
@@ -3409,6 +4007,60 @@ export default function App() {
     }
   };
 
+  const handleOpenIssueEditor = (threadId) => {
+    const issue = issues.find(
+      (item) => item.id === threadId && getStatusMeta(item.status).column === "prep"
+    );
+
+    if (!issue) {
+      return;
+    }
+
+    setEditingIssueId(threadId);
+    setIssueEditorOpen(true);
+  };
+
+  const handleCloseIssueEditor = () => {
+    setIssueEditorOpen(false);
+    setEditingIssueId("");
+    setIssueEditorBusy(false);
+  };
+
+  const handleUpdateIssue = async ({ title, prompt }) => {
+    if (!session?.loginId || !selectedBridgeId || !editingIssueId) {
+      return;
+    }
+
+    setIssueEditorBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(editingIssueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ title, prompt })
+        }
+      );
+
+      if (response?.issue) {
+        setIssues((current) => upsertIssue(current, response.issue));
+      }
+
+      handleCloseIssueEditor();
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.update.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+      setIssueEditorBusy(false);
+    }
+  };
+
   const handleDragQueueIssue = {
     start: (threadId) => {
       setDraggingIssueId(threadId);
@@ -3477,7 +4129,12 @@ export default function App() {
       );
     });
 
-    if (queuedThreadIds.length === 0) {
+    const normalizedQueuedThreadIds = (() => {
+      const ordered = orderedPrepIssueIds.filter((threadId) => queuedThreadIds.includes(threadId));
+      return ordered.length > 0 ? ordered : queuedThreadIds;
+    })();
+
+    if (normalizedQueuedThreadIds.length === 0) {
       setDraggingPrepIssueIds([]);
       return;
     }
@@ -3490,7 +4147,7 @@ export default function App() {
         {
           method: "POST",
           body: JSON.stringify({
-            issue_ids: queuedThreadIds
+            issue_ids: normalizedQueuedThreadIds
           })
         }
       );
@@ -3518,7 +4175,7 @@ export default function App() {
           })
           .map((thread) => thread.id);
 
-        const insertedIds = queuedThreadIds.filter((threadId) => visibleTodoIds.includes(threadId));
+        const insertedIds = normalizedQueuedThreadIds.filter((threadId) => visibleTodoIds.includes(threadId));
 
         if (insertedIds.length > 0 && visibleTodoIds.includes(targetId)) {
           const reorderedIds = visibleTodoIds.filter((threadId) => !insertedIds.includes(threadId));
@@ -3545,7 +4202,7 @@ export default function App() {
         }
       }
 
-      setSelectedIssueIds((current) => current.filter((threadId) => !queuedThreadIds.includes(threadId)));
+      setSelectedIssueIds((current) => current.filter((threadId) => !normalizedQueuedThreadIds.includes(threadId)));
     } catch (error) {
       setRecentEvents((current) => [
         {
@@ -3572,9 +4229,70 @@ export default function App() {
           getStatusMeta(thread.status).column === "prep"
         );
       });
-      const draggedIds = currentPrepIds.includes(threadId) ? currentPrepIds : [threadId];
+      const normalizeIds = (ids) => {
+        const ordered = orderedPrepIssueIds.filter((threadId) => ids.includes(threadId));
+        return ordered.length > 0 ? ordered : ids;
+      };
+      const draggedIds = currentPrepIds.includes(threadId) ? normalizeIds(currentPrepIds) : normalizeIds([threadId]);
       setDraggingIssueId("");
       setDraggingPrepIssueIds(draggedIds);
+    },
+    reorder: (targetId) => {
+      const draggedIds = draggingPrepIssueIds.length > 0 ? draggingPrepIssueIds : [];
+
+      if (draggedIds.length === 0 || !targetId || draggedIds.includes(targetId)) {
+        return;
+      }
+
+      const nextOrder = reorderIdGroup(orderedPrepIssueIds, draggedIds, targetId);
+
+      if (nextOrder === orderedPrepIssueIds) {
+        return;
+      }
+
+      setPrepIssueOrderIds(nextOrder);
+
+      if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+        return;
+      }
+
+      const projectPrepIds = nextOrder.filter((threadId) =>
+        issues.some(
+          (thread) =>
+            thread.id === threadId &&
+            thread.thread_id === selectedProjectThreadId &&
+            getStatusMeta(thread.status).column === "prep"
+        )
+      );
+
+      void (async () => {
+        try {
+          const response = await apiRequest(
+            `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                issue_ids: projectPrepIds,
+                stage: "prep"
+              })
+            }
+          );
+
+          if (Array.isArray(response?.issues)) {
+            setIssues(mergeIssues([], response.issues));
+          }
+        } catch (error) {
+          setRecentEvents((current) => [
+            {
+              id: createId(),
+              type: "issues.reorder.failed",
+              timestamp: new Date().toISOString(),
+              summary: error.message
+            },
+            ...current
+          ].slice(0, 20));
+        }
+      })();
     },
     drop: (targetId = "") => {
       void movePrepIssuesToTodo(draggingPrepIssueIds, targetId);
@@ -3694,8 +4412,8 @@ export default function App() {
         setProjects(response.projects);
         updateStatusCounts({ projects: response.projects.length });
       } else {
-        setProjects((current) => current.filter((project) => project.id !== projectId));
-        updateStatusCounts({ projects: Math.max((status.counts?.projects ?? 0) - 1, 0) });
+      setProjects((current) => current.filter((project) => project.id !== projectId));
+      updateStatusCounts({ projects: Math.max((status.counts?.projects ?? 0) - 1, 0) });
       }
 
       if (Array.isArray(response?.threads)) {
@@ -3708,6 +4426,7 @@ export default function App() {
       setSelectedProjectId((current) => (current === projectId ? "" : current));
       setSelectedIssueIds([]);
       setIssueQueueOrderIds([]);
+      setPrepIssueOrderIds([]);
       if (selectedProjectId === projectId) {
         setSelectedProjectThreadId("");
         setIssues([]);
@@ -3948,6 +4667,7 @@ export default function App() {
       search={search}
       recentEvents={recentEvents}
       issueQueueOrderIds={issueQueueOrderIds}
+      prepIssueOrderIds={orderedPrepIssueIds}
       loadingState={loadingState}
       projectBusy={projectBusy}
       issueBusy={issueBusy}
@@ -3990,6 +4710,7 @@ export default function App() {
       }
       onDragQueueIssue={handleDragQueueIssue}
       onDragPrepIssues={handleDragPrepIssues}
+      onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}

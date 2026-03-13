@@ -314,6 +314,168 @@ function normalizeThread(thread, fallbackProjectId = null) {
   };
 }
 
+function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
+  switch (statusType) {
+    case "waitingForInput":
+      return "awaiting_input";
+    case "error":
+      return "failed";
+    case "completed":
+      return "completed";
+    case "idle":
+      return currentStatus === "running" ? "idle" : currentStatus;
+    case "active":
+    case "running":
+      return "running";
+    default:
+      return currentStatus;
+  }
+}
+
+function getLiveEventContext(event) {
+  const payload = event?.payload ?? {};
+  const threadId = String(payload.thread_id ?? payload.threadId ?? payload.thread?.id ?? "").trim();
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+
+  return {
+    payload,
+    threadId,
+    issueId,
+    projectId
+  };
+}
+
+function buildLiveThreadPatch(event, currentThread = null) {
+  const { payload, threadId, projectId } = getLiveEventContext(event);
+
+  if (!threadId) {
+    return null;
+  }
+
+  const currentStatus = currentThread?.status ?? "queued";
+
+  switch (event?.type) {
+    case "thread.started":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        progress: Math.max(currentThread?.progress ?? 0, 5),
+        status: currentStatus,
+        last_event: "thread.started",
+        updated_at: new Date().toISOString()
+      };
+    case "thread.status.changed":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus),
+        last_event: "thread.status.changed",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.started":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 20),
+        last_event: "turn.started",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.plan.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 45),
+        last_event: "turn.plan.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "turn.diff.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 75),
+        last_event: "turn.diff.updated",
+        updated_at: new Date().toISOString()
+      };
+    case "item.agentMessage.delta":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: "running",
+        progress: Math.max(currentThread?.progress ?? 0, 90),
+        last_event: "item.agentMessage.delta",
+        last_message: `${currentThread?.last_message ?? ""}${payload.delta ?? ""}`,
+        updated_at: new Date().toISOString()
+      };
+    case "turn.completed":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        status: payload.turn?.status === "completed" ? "idle" : "failed",
+        progress: payload.turn?.status === "completed" ? 100 : 0,
+        last_event: "turn.completed",
+        updated_at: new Date().toISOString()
+      };
+    default:
+      return null;
+  }
+}
+
+function upsertLiveThread(currentThreads, event) {
+  const { threadId } = getLiveEventContext(event);
+
+  if (!threadId) {
+    return currentThreads;
+  }
+
+  const currentThread = currentThreads.find((thread) => thread.id === threadId) ?? null;
+  const patch = buildLiveThreadPatch(event, currentThread);
+
+  if (!patch || !currentThread) {
+    return currentThreads;
+  }
+
+  return upsertThread(currentThreads, {
+    ...currentThread,
+    ...patch
+  });
+}
+
+function appendLiveAssistantMessage(messages, event, fallback = {}) {
+  const { payload, issueId } = getLiveEventContext(event);
+
+  if (event?.type !== "item.agentMessage.delta" || !payload.delta) {
+    return messages;
+  }
+
+  const next = [...messages];
+  const lastMessage = next.at(-1);
+
+  if (lastMessage?.role === "assistant" && (lastMessage.issue_id ?? "") === issueId) {
+    next[next.length - 1] = {
+      ...lastMessage,
+      content: `${lastMessage.content ?? ""}${payload.delta}`,
+      timestamp: new Date().toISOString()
+    };
+    return next;
+  }
+
+  next.push({
+    id: `${issueId || "assistant"}-${Date.now()}`,
+    role: "assistant",
+    kind: "message",
+    content: String(payload.delta ?? ""),
+    timestamp: new Date().toISOString(),
+    issue_id: issueId || fallback.issue_id || null,
+    issue_title: fallback.issue_title ?? "",
+    issue_status: fallback.issue_status ?? "running"
+  });
+  return next;
+}
+
 function mergeThreads(currentThreads, nextThreads) {
   const nextById = new Map();
 
@@ -2076,6 +2238,7 @@ export default function App() {
   const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
+
   const loadThreadMessages = useCallback(
     async (threadId, { force = false, version = null } = {}) => {
       if (!session?.loginId || !selectedBridgeId || !threadId) {
@@ -2371,6 +2534,41 @@ export default function App() {
     eventSource.addEventListener("message", (event) => {
       try {
         const payload = JSON.parse(event.data);
+        const { threadId: eventThreadId, issueId: eventIssueId } = getLiveEventContext(payload);
+
+        if (eventThreadId) {
+          setThreads((current) => upsertLiveThread(current, payload));
+        }
+
+        if (eventThreadId && eventThreadId === selectedThreadId) {
+          setThreadDetails((current) => {
+            const currentEntry = current[eventThreadId];
+
+            if (!currentEntry) {
+              return current;
+            }
+
+            const nextThread = currentEntry.thread
+              ? {
+                  ...currentEntry.thread,
+                  ...(buildLiveThreadPatch(payload, currentEntry.thread) ?? {})
+                }
+              : currentEntry.thread;
+
+            return {
+              ...current,
+              [eventThreadId]: {
+                ...currentEntry,
+                thread: nextThread,
+                messages: appendLiveAssistantMessage(currentEntry.messages ?? [], payload, {
+                  issue_id: eventIssueId,
+                  issue_title: currentEntry.issues?.find((issue) => issue.id === eventIssueId)?.title ?? "",
+                  issue_status: currentEntry.issues?.find((issue) => issue.id === eventIssueId)?.status ?? "running"
+                })
+              }
+            };
+          });
+        }
 
         if (payload.type === "bridge.status.updated") {
           setStatus(payload.payload);
@@ -2418,6 +2616,15 @@ export default function App() {
           if (threadId && threadId === selectedThreadId) {
             void loadThreadMessages(threadId, { force: true });
           }
+          return;
+        }
+
+        if (
+          eventThreadId &&
+          eventThreadId === selectedThreadId &&
+          (payload.type === "turn.completed" || payload.type === "thread.status.changed")
+        ) {
+          void loadThreadMessages(eventThreadId, { force: true });
           return;
         }
 
