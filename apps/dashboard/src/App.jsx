@@ -1816,6 +1816,7 @@ function MainPage({
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
+  const [expandedProjectIds, setExpandedProjectIds] = useState({});
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [boardScrollbarVisible, setBoardScrollbarVisible] = useState(false);
   const [boardScrollbarDragging, setBoardScrollbarDragging] = useState(false);
@@ -1851,6 +1852,25 @@ function MainPage({
   const selectedProjectThread =
     scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
     null;
+  const handleSelectProject = useCallback((projectId) => {
+    onSelectProject(projectId);
+    setExpandedProjectIds((current) => {
+      if (current[projectId] !== false) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [projectId]: true
+      };
+    });
+  }, [onSelectProject]);
+  const handleToggleProjectExpanded = useCallback((projectId) => {
+    setExpandedProjectIds((current) => ({
+      ...current,
+      [projectId]: !(current[projectId] ?? (projectId === selectedProjectId))
+    }));
+  }, [selectedProjectId]);
 
   const columns = COLUMN_ORDER.map((column) => {
     const columnThreads = filteredIssues.filter((thread) => getStatusMeta(thread.status).column === column.id);
@@ -1902,6 +1922,28 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
+
+  useEffect(() => {
+    setExpandedProjectIds((current) => {
+      let changed = false;
+      const next = {};
+
+      for (const project of projects) {
+        if (Object.prototype.hasOwnProperty.call(current, project.id)) {
+          next[project.id] = current[project.id];
+        } else {
+          next[project.id] = project.id === selectedProjectId;
+          changed = true;
+        }
+      }
+
+      if (Object.keys(current).length !== Object.keys(next).length) {
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
+  }, [projects, selectedProjectId]);
 
   useEffect(() => {
     const syncBoardScrollbarState = () => {
@@ -2201,6 +2243,7 @@ function MainPage({
                   projects.map((project) => {
                     const active = project.id === selectedProjectId;
                     const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
+                    const expanded = expandedProjectIds[project.id] ?? active;
 
                     return (
                       <div key={project.id} className="rounded-md px-1 py-0.5">
@@ -2211,6 +2254,24 @@ function MainPage({
                         >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex min-w-0 flex-1 items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleToggleProjectExpanded(project.id);
+                                }}
+                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
+                                aria-label={expanded ? "collapse project tree" : "expand project tree"}
+                              >
+                                <svg
+                                  className={`h-3.5 w-3.5 transition ${expanded ? "rotate-90" : ""}`}
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                                </svg>
+                              </button>
                               <svg className="h-4 w-4 shrink-0 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
                               </svg>
@@ -2237,7 +2298,7 @@ function MainPage({
                           ) : (
                             <button
                               type="button"
-                              onClick={() => onSelectProject(project.id)}
+                              onClick={() => handleSelectProject(project.id)}
                               onDoubleClick={() => beginProjectRename(project)}
                               className="min-w-0 flex-1 text-left"
                             >
@@ -2261,7 +2322,7 @@ function MainPage({
                             </button>
                           </div>
                         </div>
-                        {active ? (
+                        {expanded ? (
                           <div className="mt-1.5 space-y-1">
                             {sidebarThreads.map((thread) => (
                               <SidebarThreadItem
