@@ -2501,12 +2501,11 @@ export default function App() {
       return;
     }
 
-    if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt || !currentThreadDetailHasMessages) {
+    if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
       void loadThreadMessages(selectedThreadId, { version: selectedThreadUpdatedAt });
     }
   }, [
     activeView,
-    currentThreadDetailHasMessages,
     currentThreadDetailLoading,
     currentThreadDetailVersion,
     hasCurrentThreadDetail,
