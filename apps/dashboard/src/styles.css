@@ -93,6 +93,11 @@ code,
   min-height: 0;
   min-height: calc(100dvh - 64px - 46px - 42px);
   height: calc(100dvh - 64px - 46px - 42px);
+  overflow: hidden;
+}
+
+.octop-board-scroll {
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-gutter: stable both-edges;
@@ -100,18 +105,18 @@ code,
   scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
 }
 
-.octop-board-page::-webkit-scrollbar {
+.octop-board-scroll::-webkit-scrollbar {
   -webkit-appearance: none;
   display: block;
   height: 10px;
   max-height: 10px;
 }
 
-.octop-board-page::-webkit-scrollbar-track {
+.octop-board-scroll::-webkit-scrollbar-track {
   background: rgba(15, 23, 42, 0.92);
 }
 
-.octop-board-page::-webkit-scrollbar-thumb {
+.octop-board-scroll::-webkit-scrollbar-thumb {
   background: #475569;
   border-radius: 999px;
 }

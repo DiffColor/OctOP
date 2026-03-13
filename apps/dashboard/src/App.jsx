@@ -2250,16 +2250,17 @@ function MainPage({
               </div>
             </div>
 
-            <div
-              className={`octop-board-page flex-1 min-h-0 ${
-                forceBoardScrollbar ? "octop-board-page--force" : ""
-              }`}
-            >
-              <section
-                className="octop-board-frame flex h-full min-h-0"
-                style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
+            <div className="octop-board-page flex-1 min-h-0">
+              <div
+                className={`octop-board-scroll custom-scrollbar h-full min-h-0 ${
+                  forceBoardScrollbar ? "octop-board-page--force" : ""
+                }`}
               >
-                <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
+                <section
+                  className="octop-board-frame flex h-full min-h-0"
+                  style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
+                >
+                  <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -2358,9 +2359,10 @@ function MainPage({
                     </div>
                   </section>
                 ))}
-                </div>
-              </section>
+                  </div>
+                </section>
               </div>
+            </div>
             
           </main>
         </div>
