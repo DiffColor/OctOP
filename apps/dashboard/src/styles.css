@@ -83,6 +83,23 @@ code,
   background: #334155;
 }
 
+.board-scrollbar {
+  scrollbar-width: auto;
+  scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
+}
+
+.board-scrollbar::-webkit-scrollbar {
+  height: 12px;
+}
+
+.board-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.board-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+
 .kanban-column {
   min-height: calc(100vh - 20rem);
 }
