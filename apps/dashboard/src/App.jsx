@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -171,6 +171,63 @@ function shortenPath(value) {
   }
 
   return `...${normalized.slice(-45)}`;
+}
+
+function OverflowRevealText({ value, className = "", mono = false }) {
+  const text = value ? String(value) : "-";
+  const containerRef = useRef(null);
+  const trackRef = useRef(null);
+  const [overflowDistance, setOverflowDistance] = useState(0);
+
+  useEffect(() => {
+    const measure = () => {
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+      const contentWidth = trackRef.current?.scrollWidth ?? 0;
+      setOverflowDistance(Math.max(0, contentWidth - containerWidth));
+    };
+
+    measure();
+
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            measure();
+          })
+        : null;
+
+    if (resizeObserver) {
+      if (containerRef.current) {
+        resizeObserver.observe(containerRef.current);
+      }
+
+      if (trackRef.current) {
+        resizeObserver.observe(trackRef.current);
+      }
+    }
+
+    window.addEventListener("resize", measure);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [text]);
+
+  const hasOverflow = overflowDistance > 4;
+
+  return (
+    <span
+      ref={containerRef}
+      className={`overflow-reveal ${hasOverflow ? "is-overflow" : ""} ${className}`.trim()}
+      style={hasOverflow ? { "--overflow-distance": `${overflowDistance}px` } : undefined}
+      title={text}
+    >
+      {hasOverflow ? <span className="overflow-reveal__ellipsis">...</span> : null}
+      <span ref={trackRef} className={`overflow-reveal__track ${mono ? "font-mono" : ""}`.trim()}>
+        {text}
+      </span>
+    </span>
+  );
 }
 
 function getPathLabel(value) {
@@ -757,9 +814,9 @@ function ProjectComposer({
               <svg className="h-4 w-4 shrink-0 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
               </svg>
-              <span className="truncate text-sm font-medium text-white">{entry.name}</span>
+              <OverflowRevealText value={entry.name} className="text-sm font-medium text-white" />
             </div>
-            <p className="mt-1 truncate text-[11px] text-slate-500">{entry.path}</p>
+            <OverflowRevealText value={entry.path} className="mt-1 text-[11px] text-slate-500" mono />
           </button>
 
           <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -845,77 +902,39 @@ function ProjectComposer({
                 {folderLoading ? (
                   <span className="text-[11px] text-slate-500">폴더 불러오는 중</span>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => onBrowseFolder(folderState.parent_path)}
-                  disabled={!folderState.parent_path}
-                    className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    상위
-                  </button>
-                </div>
               </div>
+            </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-              <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
-                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                  Roots
-                </p>
+            <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
+              <div className="custom-scrollbar max-h-[34rem] space-y-1 overflow-y-auto pr-1">
+                {folderState.parent_path ? (
+                  <button
+                    type="button"
+                    onClick={() => onBrowseFolder(folderState.parent_path)}
+                    className="flex w-full items-center gap-2 rounded-2xl border border-slate-800/80 bg-slate-900/30 px-3 py-2.5 text-left text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+                  >
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/70 text-slate-400">
+                      ..
+                    </span>
+                    <span>상위 폴더</span>
+                  </button>
+                ) : null}
+
                 {roots.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                    bridge가 노출한 workspace root가 없습니다.
+                    탐색 가능한 root가 없습니다.
                   </div>
                 ) : (
-                  roots.map((root) => {
-                    const active = folderState.path === root.path || selectedWorkspacePath === root.path;
-
-                    return (
-                      <button
-                        key={root.path}
-                        type="button"
-                        onClick={() => {
-                          onBrowseRoot(root.path);
-                          void togglePath(root.path);
-                        }}
-                        className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
-                          active
-                            ? "border-sky-400/40 bg-sky-500/10"
-                            : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
-                        }`}
-                      >
-                        <p className="truncate text-sm font-medium text-white">{root.name}</p>
-                        <p className="mt-1 truncate text-[11px] text-slate-500">{root.path}</p>
-                      </button>
-                    );
-                  })
+                  roots.map((root) =>
+                    renderTreeNode({
+                      name: root.name,
+                      path: root.path,
+                      is_workspace: root.is_workspace,
+                      is_registered: root.is_registered,
+                      project_id: root.project_id
+                    })
+                  )
                 )}
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-3 py-3 text-xs text-slate-400">
-                  현재 위치 <span className="ml-2 font-mono text-slate-200">{shortenPath(folderState.path)}</span>
-                </div>
-                <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/70 px-3 py-3 text-xs text-slate-400">
-                  선택 경로 <span className="ml-2 font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
-                </div>
-
-                <div className="custom-scrollbar mt-4 max-h-[28rem] space-y-1 overflow-y-auto pr-1">
-                  {roots.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                      탐색 가능한 root가 없습니다.
-                    </div>
-                  ) : (
-                    roots.map((root) =>
-                      renderTreeNode({
-                        name: root.name,
-                        path: root.path,
-                        is_workspace: root.is_workspace,
-                        is_registered: root.is_registered,
-                        project_id: root.project_id
-                      })
-                    )
-                  )}
-                </div>
               </div>
             </div>
           </div>
@@ -924,13 +943,6 @@ function ProjectComposer({
             <div>
               <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Project Meta</p>
               <h3 className="mt-2 text-lg font-semibold text-white">프로젝트 정보</h3>
-            </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/20 p-4">
-              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Workspace Path</p>
-              <p className="mt-2 break-all font-mono text-sm text-slate-200">
-                {selectedWorkspacePath || "왼쪽 트리에서 폴더를 선택해 주세요."}
-              </p>
             </div>
 
             <div>
@@ -1093,8 +1105,8 @@ function PrepThreadCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-              <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
-              <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
+              <OverflowRevealText value={thread.title} className="text-sm font-medium text-slate-100" />
+              <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
             </button>
             <button
               type="button"
@@ -1143,8 +1155,8 @@ function TodoThreadCard({
     >
       <div className="flex items-start justify-between gap-3">
         <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-          <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
-          <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
+          <OverflowRevealText value={thread.title} className="text-sm font-medium text-slate-100" />
+          <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
         </button>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -1224,8 +1236,8 @@ function ThreadCard({ thread, selected, onSelect }) {
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
-      <h4 className="mt-3 truncate text-sm font-medium text-slate-100">{thread.title}</h4>
-      <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
+      <OverflowRevealText value={thread.title} className="mt-3 text-sm font-medium text-slate-100" />
+      <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
       <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
           className="h-1 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
@@ -1253,7 +1265,7 @@ function CompletedThreadCard({ thread, selected, onSelect, onOpen }) {
     >
       <div className="flex items-center gap-3">
         <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{thread.title}</span>
+        <OverflowRevealText value={thread.title} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
         <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">Done</span>
         <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
       </div>
@@ -1406,7 +1418,7 @@ function MainPage({
                             onClick={() => onSelectProject(project.id)}
                             className="min-w-0 flex-1 text-left"
                           >
-                            <span className="truncate text-sm font-medium">{project.name}</span>
+                            <OverflowRevealText value={project.name} className="text-sm font-medium" />
                           </button>
                           <div className="flex items-center gap-2">
                             <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
@@ -1443,11 +1455,12 @@ function MainPage({
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-slate-500">Projects</span>
                   <span className="text-slate-700">/</span>
-                  <span className="truncate font-medium text-white">{selectedProject?.name ?? "선택 필요"}</span>
+                  <OverflowRevealText value={selectedProject?.name ?? "선택 필요"} className="font-medium text-white" />
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 없음"}
-                </p>
+                <OverflowRevealText
+                  value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 없음"}
+                  className="mt-1 text-[11px] text-slate-500"
+                />
               </div>
 
               <div className="flex items-center space-x-3">
@@ -1653,7 +1666,10 @@ function MainPage({
               <span className="text-slate-600">/</span>
               <span>{session.loginId}</span>
               <span className="text-slate-600">/</span>
-              <span>{selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "No Bridge"}</span>
+              <OverflowRevealText
+                value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "No Bridge"}
+                className="max-w-[18rem]"
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
