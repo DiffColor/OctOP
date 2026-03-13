@@ -2234,12 +2234,11 @@ function MainPage({
               </div>
             </div>
 
-            <div className="octop-board-shell flex-1 min-h-0 px-4 py-4 md:px-8 md:py-6">
-              <div
-                className="board-scrollbar octop-board-scroll h-full min-h-0 overflow-x-auto overflow-y-hidden"
-                style={{ scrollbarGutter: "stable both-edges" }}
-              >
-                <div className="flex h-full min-w-max space-x-6 pb-3 pr-4">
+            <div
+              className="board-scrollbar octop-board-shell flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
+              style={{ scrollbarGutter: "auto" }}
+            >
+              <div className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -2338,7 +2337,6 @@ function MainPage({
                     </div>
                   </section>
                 ))}
-                </div>
               </div>
             </div>
           </main>

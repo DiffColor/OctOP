@@ -110,15 +110,15 @@ code,
 
 .octop-board-shell {
   min-height: 0;
-  overflow: hidden;
-}
-
-.octop-board-scroll {
-  min-height: 0;
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: auto;
+}
+
+.octop-board-shell-inner {
+  min-height: 100%;
+  width: max-content;
 }
 
 .kanban-column {
