@@ -28,6 +28,7 @@ public sealed class ProjectionWorkerService : BackgroundService
   private readonly string _rethinkUser;
   private readonly string _rethinkPassword;
   private readonly RethinkDB _r = RethinkDB.R;
+  private readonly SemaphoreSlim _eventLock = new(1, 1);
 
   public ProjectionWorkerService(ILogger<ProjectionWorkerService> logger)
   {
@@ -58,10 +59,10 @@ public sealed class ProjectionWorkerService : BackgroundService
     await EnsureStorageAsync(connection);
 
     using var subscription = nats.SubscribeAsync("octop.user.*.bridge.*.events");
-    subscription.MessageHandler += (_, args) =>
+    subscription.MessageHandler += async (_, args) =>
     {
       var payload = Encoding.UTF8.GetString(args.Message.Data ?? []);
-      _ = Task.Run(() => HandleEventAsync(connection, payload, stoppingToken), stoppingToken);
+      await HandleEventAsync(connection, payload, stoppingToken);
     };
     subscription.Start();
 
@@ -106,6 +107,7 @@ public sealed class ProjectionWorkerService : BackgroundService
 
   private async Task HandleEventAsync(RethinkConnection connection, string payload, CancellationToken stoppingToken)
   {
+    await _eventLock.WaitAsync(stoppingToken);
     try
     {
       var @event = JObject.Parse(payload);
@@ -119,6 +121,10 @@ public sealed class ProjectionWorkerService : BackgroundService
     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
     {
       _logger.LogError(exception, "Projection worker failed to persist event payload");
+    }
+    finally
+    {
+      _eventLock.Release();
     }
   }
 
@@ -316,6 +322,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
+    var scope = @event["payload"]?["scope"]?.Value<string>() ?? "project";
     var threads = @event["payload"]?["threads"] as JArray;
     var threadIds = new HashSet<string>(
       (threads ?? []).OfType<JObject>()
@@ -324,8 +331,8 @@ public sealed class ProjectionWorkerService : BackgroundService
         .Cast<string>(),
       StringComparer.Ordinal);
 
-    await DeleteMissingThreadsAsync(connection, ProjectThreadTable, loginId, bridgeId, projectId, threadIds);
-    await DeleteMissingThreadsAsync(connection, ThreadTable, loginId, bridgeId, projectId, threadIds);
+    await DeleteMissingThreadsAsync(connection, ProjectThreadTable, loginId, bridgeId, scope == "all" ? null : projectId, threadIds);
+    await DeleteMissingThreadsAsync(connection, ThreadTable, loginId, bridgeId, scope == "all" ? null : projectId, threadIds);
 
     if (threads is null)
     {
@@ -391,6 +398,18 @@ public sealed class ProjectionWorkerService : BackgroundService
       item["last_event_type"] = @event.Value<string>("type");
       item["projected_at"] = projectedAt;
 
+      var existing = await _r.Db(_rethinkDb)
+        .Table(ThreadIssueCardTable)
+        .Get(issueId)
+        .RunResultAsync<JObject?>(connection);
+
+      if (!ShouldReplaceProjection(existing, projectedAt))
+      {
+        continue;
+      }
+
+      PreserveTerminalStatus(existing, item);
+
       await _r.Db(_rethinkDb)
         .Table(ThreadIssueCardTable)
         .Insert(item)
@@ -413,7 +432,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       .Get(threadId)
       .RunResultAsync<JObject?>(connection);
 
-    if (!ShouldReplaceThreadProjection(existing, projectedAt))
+    if (!ShouldReplaceProjection(existing, projectedAt))
     {
       return;
     }
@@ -427,7 +446,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       .RunResultAsync<object>(connection);
   }
 
-  private static bool ShouldReplaceThreadProjection(JObject? existing, string? incomingProjectedAt)
+  private static bool ShouldReplaceProjection(JObject? existing, string? incomingProjectedAt)
   {
     if (existing is null)
     {

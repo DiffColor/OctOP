@@ -2615,13 +2615,21 @@ export default function App() {
         if (payload.type === "bridge.projectThreads.updated") {
           const nextThreads = mergeProjectThreads([], payload.payload?.threads ?? []);
           const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? "";
-          setProjectThreads((current) => replaceProjectThreadsForProject(current, nextThreads, projectId));
+          const scope = payload.payload?.scope ?? "project";
+          setProjectThreads((current) =>
+            scope === "all" ? mergeProjectThreads([], nextThreads) : replaceProjectThreadsForProject(current, nextThreads, projectId)
+          );
           setSelectedProjectThreadId((current) => {
-            if (current && nextThreads.some((thread) => thread.id === current)) {
+            const candidateThreads =
+              scope === "all"
+                ? nextThreads.filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId)
+                : nextThreads;
+
+            if (current && candidateThreads.some((thread) => thread.id === current)) {
               return current;
             }
 
-            return nextThreads[0]?.id || "";
+            return candidateThreads[0]?.id || current || "";
           });
           return;
         }
@@ -2658,7 +2666,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, session, selectedBridgeId, selectedProjectThreadId]);
+  }, [copy.alerts.sseReconnect, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
 
   useEffect(() => {
     if (!session?.loginId) {

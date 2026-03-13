@@ -1101,6 +1101,7 @@ async function createProjectThread(userId, payload = {}) {
   persistThreadsForUser(userId);
   await publishEvent(userId, "thread.created", { thread });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: projectId,
     threads: listProjectThreads(userId, projectId)
   });
@@ -1140,6 +1141,7 @@ async function updateProjectThread(userId, payload = {}) {
   persistThreadById(threadId);
   await publishEvent(userId, "thread.updated", { thread: next });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: next.project_id,
     threads: listProjectThreads(userId, next.project_id)
   });
@@ -1192,6 +1194,7 @@ async function deleteProjectThread(userId, payload = {}) {
     project_id: current.project_id
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: current.project_id,
     threads: listProjectThreads(userId, current.project_id)
   });
@@ -1274,6 +1277,7 @@ async function createThreadIssue(userId, payload = {}) {
     issues: listThreadIssues(threadId)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: thread.project_id,
     threads: listProjectThreads(userId, thread.project_id)
   });
@@ -1325,6 +1329,7 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
     thread: next
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: next.project_id,
     threads: listProjectThreads(userId, next.project_id)
   });
@@ -1394,6 +1399,7 @@ async function startIssueTurn(userId, threadId, issueId) {
       issues: listThreadIssues(threadId)
     });
     await publishEvent(userId, "bridge.projectThreads.updated", {
+      scope: "project",
       project_id: thread.project_id,
       threads: listProjectThreads(userId, thread.project_id)
     });
@@ -1503,6 +1509,7 @@ async function startThreadIssues(userId, payload = {}) {
     issues: listThreadIssues(threadId)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: threadStateById.get(threadId)?.project_id ?? null,
     threads: listProjectThreads(userId, threadStateById.get(threadId)?.project_id ?? "")
   });
@@ -1585,6 +1592,7 @@ async function deleteThreadIssue(userId, payload = {}) {
     issues: listThreadIssues(issue.thread_id)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
+    scope: "project",
     project_id: issue.project_id,
     threads: listProjectThreads(userId, issue.project_id)
   });
@@ -1800,6 +1808,7 @@ async function publishSnapshots(loginId) {
   await publishEvent(loginId, "bridge.status.updated", await bridgeStatus(loginId));
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
   await publishEvent(loginId, "bridge.projectThreads.updated", {
+    scope: "all",
     threads: listProjectThreads(loginId)
   });
 }
@@ -2058,6 +2067,7 @@ class AppServerClient {
     ) {
       const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
       await publishEvent(owner, "bridge.projectThreads.updated", {
+        scope: projectId ? "project" : "all",
         project_id: projectId,
         threads: listProjectThreads(owner, projectId)
       });
@@ -2072,7 +2082,7 @@ class AppServerClient {
     if (
       method === "turn/completed" ||
       (method === "thread/status/changed" &&
-        ["idle", "error", "waitingForInput"].includes(params.status?.type ?? ""))
+        ["idle", "error"].includes(params.status?.type ?? ""))
     ) {
       if (threadId) {
         activeIssueByThreadId.delete(threadId);
@@ -2681,7 +2691,10 @@ async function deleteProject(userId, payload = {}) {
 
   await publishEvent(normalized, "project.deleted", { project_id: projectId });
   await publishEvent(normalized, "bridge.projects.updated", { projects: state.projects });
-  await publishEvent(normalized, "bridge.projectThreads.updated", { threads: listProjectThreads(normalized) });
+  await publishEvent(normalized, "bridge.projectThreads.updated", {
+    scope: "all",
+    threads: listProjectThreads(normalized)
+  });
 
   return {
     accepted: true,
