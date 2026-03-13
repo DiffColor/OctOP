@@ -65,22 +65,23 @@ code,
 }
 
 .custom-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-width: auto;
+  scrollbar-color: #475569 rgba(15, 23, 42, 0.65);
 }
 
 .custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(15, 23, 42, 0.65);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: #334155;
+  background: #475569;
+  border: 2px solid rgba(15, 23, 42, 0.65);
 }
 
 .board-scrollbar {
