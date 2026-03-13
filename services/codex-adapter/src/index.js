@@ -44,9 +44,28 @@ const users = new Map();
 const threadOwners = new Map();
 const threadStateById = new Map();
 const threadEventsById = new Map();
+const threadMessagesById = new Map();
+const pendingStartQueues = new Map();
 
 function now() {
   return new Date().toISOString();
+}
+
+function createIssueTitle(payload = {}) {
+  const title = String(payload.title ?? "").trim();
+
+  if (title) {
+    return title;
+  }
+
+  const prompt = String(payload.prompt ?? "").trim();
+
+  if (!prompt) {
+    return "새 이슈";
+  }
+
+  const singleLine = prompt.replace(/\s+/g, " ").trim();
+  return singleLine.slice(0, 42) + (singleLine.length > 42 ? "..." : "");
 }
 
 function unixSecondsToIso(value) {
@@ -504,9 +523,11 @@ function normalizeThreadRecord(thread, fallback = {}) {
     progress: fallback.progress ?? current.progress ?? 0,
     last_event: fallback.last_event ?? current.last_event ?? lastEvent?.type ?? "thread.synced",
     last_message: fallback.last_message ?? current.last_message ?? "",
+    prompt: fallback.prompt ?? current.prompt ?? "",
     created_at: fallback.created_at ?? current.created_at ?? unixSecondsToIso(thread.createdAt),
     updated_at: fallback.updated_at ?? current.updated_at ?? unixSecondsToIso(thread.updatedAt),
-    source: thread.source ?? current.source ?? "appServer"
+    source: thread.source ?? current.source ?? "appServer",
+    queue_position: fallback.queue_position ?? current.queue_position ?? null
   };
 }
 
@@ -517,6 +538,7 @@ function upsertThreadState(threadId, patch) {
     status: "queued",
     last_event: "thread.created",
     last_message: "",
+    prompt: "",
     created_at: now(),
     updated_at: now(),
     source: "appServer"
@@ -550,6 +572,82 @@ async function publishEvent(loginId, type, payload) {
 
   if (threadId) {
     threadEventsById.set(threadId, event);
+  }
+}
+
+function ensureThreadMessages(threadId) {
+  if (!threadMessagesById.has(threadId)) {
+    threadMessagesById.set(threadId, []);
+  }
+
+  return threadMessagesById.get(threadId);
+}
+
+function pushThreadMessage(threadId, message) {
+  const messages = ensureThreadMessages(threadId);
+  messages.push({
+    id: randomUUID(),
+    timestamp: now(),
+    ...message
+  });
+  return messages;
+}
+
+function appendAssistantDelta(threadId, delta = "") {
+  const messages = ensureThreadMessages(threadId);
+  const lastMessage = messages.at(-1);
+
+  if (lastMessage?.role === "assistant") {
+    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.timestamp = now();
+    return;
+  }
+
+  messages.push({
+    id: randomUUID(),
+    role: "assistant",
+    kind: "message",
+    content: String(delta ?? ""),
+    timestamp: now()
+  });
+}
+
+function listThreadMessages(threadId) {
+  return [...(threadMessagesById.get(threadId) ?? [])];
+}
+
+function ensurePendingQueue(userId) {
+  const normalized = sanitizeUserId(userId);
+
+  if (!pendingStartQueues.has(normalized)) {
+    pendingStartQueues.set(normalized, []);
+  }
+
+  return pendingStartQueues.get(normalized);
+}
+
+function refreshQueuePositions(userId) {
+  const state = ensureUserState(userId);
+  const queue = ensurePendingQueue(userId);
+
+  for (const threadId of state.threadIds) {
+    const current = threadStateById.get(threadId);
+
+    if (!current) {
+      continue;
+    }
+
+    const queueIndex = queue.indexOf(threadId);
+    const nextPosition = queueIndex >= 0 ? queueIndex + 1 : null;
+
+    if ((current.queue_position ?? null) === nextPosition) {
+      continue;
+    }
+
+    upsertThreadState(threadId, {
+      ...current,
+      queue_position: nextPosition
+    });
   }
 }
 
@@ -766,6 +864,10 @@ class AppServerClient {
       if (eventPatch) {
         upsertThreadState(threadId, eventPatch);
       }
+
+      if (method === "item/agentMessage/delta" && params.delta) {
+        appendAssistantDelta(threadId, params.delta);
+      }
     }
 
     if (!owner) {
@@ -782,6 +884,14 @@ class AppServerClient {
       method === "item/agentMessage/delta"
     ) {
       await publishEvent(owner, "bridge.threads.updated", { threads: listLocalThreads(owner) });
+    }
+
+    if (
+      method === "turn/completed" ||
+      (method === "thread/status/changed" &&
+        ["idle", "error", "waitingForInput"].includes(params.status?.type ?? ""))
+    ) {
+      void processStartQueue(owner);
     }
   }
 
@@ -881,6 +991,50 @@ function buildThreadPatch(method, params) {
   }
 }
 
+function getThreadDetail(userId, threadId) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const thread = threadStateById.get(threadId);
+
+  if (!thread || threadOwners.get(threadId) !== normalizedUserId) {
+    return {
+      thread: null,
+      messages: []
+    };
+  }
+
+  return {
+    thread,
+    messages: listThreadMessages(threadId)
+  };
+}
+
+function enqueueThreadsForStart(userId, threadIds = []) {
+  const queue = ensurePendingQueue(userId);
+
+  for (const threadId of threadIds) {
+    if (!threadId || queue.includes(threadId)) {
+      continue;
+    }
+
+    queue.push(threadId);
+  }
+
+  return queue;
+}
+
+function removeThreadFromQueue(userId, threadId) {
+  const queue = ensurePendingQueue(userId);
+  const index = queue.indexOf(threadId);
+
+  if (index >= 0) {
+    queue.splice(index, 1);
+  }
+}
+
+function hasRunningThread(userId) {
+  return listLocalThreads(userId).some((thread) => thread.status === "running");
+}
+
 const appServer = new AppServerClient();
 
 async function bridgeStatus(userId) {
@@ -967,8 +1121,14 @@ async function listThreads(userId) {
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
 }
 
-async function startTurnInBackground(userId, threadId, payload = {}) {
-  const cwd = resolveProjectWorkspace(userId, payload.project_id);
+async function startThreadTurn(userId, threadId) {
+  const current = threadStateById.get(threadId);
+
+  if (!current) {
+    throw new Error("시작할 thread를 찾을 수 없습니다.");
+  }
+
+  const cwd = resolveProjectWorkspace(userId, current.project_id);
 
   try {
     const turnResponse = await appServer.request("turn/start", {
@@ -978,26 +1138,20 @@ async function startTurnInBackground(userId, threadId, payload = {}) {
       input: [
         {
           type: "text",
-          text:
-            payload.prompt ??
-            '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
+          text: current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
         }
       ]
     });
 
     const turn = turnResponse.result?.turn ?? null;
-    const current = threadStateById.get(threadId);
-
-    if (!turn?.id) {
-      return;
-    }
 
     upsertThreadState(threadId, {
       ...current,
       status: "running",
-      progress: Math.max(current?.progress ?? 0, 20),
+      progress: Math.max(current.progress ?? 0, 20),
       last_event: "turn.started",
-      turn_id: turn.id
+      turn_id: turn?.id ?? null,
+      queue_position: null
     });
 
     await publishEvent(userId, "turn.started", {
@@ -1006,8 +1160,6 @@ async function startTurnInBackground(userId, threadId, payload = {}) {
     });
     await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
   } catch (error) {
-    const current = threadStateById.get(threadId);
-
     upsertThreadState(threadId, {
       ...current,
       status: "failed",
@@ -1020,13 +1172,40 @@ async function startTurnInBackground(userId, threadId, payload = {}) {
       error: error.message
     });
     await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+    void processStartQueue(userId);
   }
 }
 
-async function startPingThread(userId, payload = {}) {
+async function processStartQueue(userId) {
+  const queue = ensurePendingQueue(userId);
+
+  if (queue.length === 0 || hasRunningThread(userId)) {
+    return;
+  }
+
+  const nextThreadId = queue.shift();
+  refreshQueuePositions(userId);
+
+  if (!nextThreadId) {
+    return;
+  }
+
+  const nextThread = threadStateById.get(nextThreadId);
+
+  if (!nextThread || ["running", "completed"].includes(nextThread.status)) {
+    void processStartQueue(userId);
+    return;
+  }
+
+  await startThreadTurn(userId, nextThreadId);
+}
+
+async function createQueuedIssue(userId, payload = {}) {
   const state = ensureUserState(userId);
   const projectId = payload.project_id ?? state.projects[0]?.id ?? null;
   const cwd = resolveProjectWorkspace(userId, projectId);
+  const issueTitle = createIssueTitle(payload);
+  const prompt = String(payload.prompt ?? "").trim();
   await appServer.ensureReady();
 
   const threadResponse = await appServer.request("thread/start", {
@@ -1047,25 +1226,54 @@ async function startPingThread(userId, payload = {}) {
   upsertThreadState(
     thread.id,
     normalizeThreadRecord(thread, {
-      title: payload.title ?? payload.prompt ?? "OctOP bridge ping",
+      title: issueTitle,
       project_id: projectId,
+      prompt,
       progress: 5,
       status: "queued",
-      last_event: "thread.started"
+      last_event: "issue.created"
     })
   );
+  pushThreadMessage(thread.id, {
+    role: "user",
+    kind: "prompt",
+    content: prompt
+  });
 
-  await publishEvent(userId, "thread.started", {
+  await publishEvent(userId, "issue.created", {
     thread: threadStateById.get(thread.id)
   });
   await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
 
-  void startTurnInBackground(userId, thread.id, payload);
-
   return {
     accepted: true,
     thread: threadStateById.get(thread.id),
-    turn: null
+    queue: ensurePendingQueue(userId)
+  };
+}
+
+async function startQueuedThreads(userId, payload = {}) {
+  const requestedThreadIds = Array.isArray(payload.thread_ids) ? payload.thread_ids : [];
+  const state = ensureUserState(userId);
+  const eligibleThreadIds = requestedThreadIds
+    .map((threadId) => String(threadId))
+    .filter((threadId) => {
+      const thread = threadStateById.get(threadId);
+      return Boolean(thread && state.threadIds.has(threadId) && !["running", "completed"].includes(thread.status));
+    });
+
+  enqueueThreadsForStart(userId, eligibleThreadIds);
+  refreshQueuePositions(userId);
+  await publishEvent(userId, "threads.start.queued", {
+    thread_ids: eligibleThreadIds
+  });
+  await publishEvent(userId, "bridge.threads.updated", { threads: listLocalThreads(userId) });
+  await processStartQueue(userId);
+
+  return {
+    accepted: true,
+    queued_thread_ids: ensurePendingQueue(userId),
+    threads: listLocalThreads(userId)
   };
 }
 
@@ -1101,6 +1309,10 @@ async function subscribeRequests() {
     {
       subject: "octop.user.*.bridge.*.threads.get",
       handler: async (userId) => ({ threads: await listThreads(userId) })
+    },
+    {
+      subject: "octop.user.*.bridge.*.thread.detail.get",
+      handler: (userId, body) => getThreadDetail(userId, body.thread_id ?? body.threadId ?? "")
     }
   ];
 
@@ -1116,7 +1328,8 @@ async function subscribeRequests() {
           continue;
         }
         try {
-          await respond(message, await entry.handler(userId));
+          const body = message.data?.length ? parseJson(message.data) : {};
+          await respond(message, await entry.handler(userId, body));
         } catch (error) {
           await respond(message, { error: error.message });
         }
@@ -1165,20 +1378,62 @@ async function subscribeRequests() {
     }
   })();
 
+  const issueCreateSubscription = nc.subscribe("octop.user.*.bridge.*.issue.create");
+
+  (async () => {
+    for await (const message of issueCreateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await createQueuedIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadsStartSubscription = nc.subscribe("octop.user.*.bridge.*.threads.start");
+
+  (async () => {
+    for await (const message of threadsStartSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await startQueuedThreads(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const pingSubscription = nc.subscribe("octop.user.*.bridge.*.command.ping");
 
   (async () => {
     for await (const message of pingSubscription) {
       try {
-      const body = parseJson(message.data);
-      const userId = sanitizeUserId(body.user_id ?? message.subject.split(".")[2]);
-      const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
 
-      if (bridgeId !== BRIDGE_ID) {
-        continue;
-      }
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
 
-      const result = await startPingThread(userId, body);
+        const result = await createQueuedIssue(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -1241,10 +1496,35 @@ createServer(async (request, response) => {
     return sendJson(response, 200, { threads: await listThreads(userId) });
   }
 
+  if (request.method === "GET" && url.pathname.startsWith("/api/threads/")) {
+    const threadId = url.pathname.split("/").at(-1);
+    return sendJson(response, 200, getThreadDetail(userId, threadId));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/issues") {
+    try {
+      const body = await readJsonBody(request);
+      const payload = await createQueuedIssue(userId, body);
+      return sendJson(response, 202, payload);
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/threads/start") {
+    try {
+      const body = await readJsonBody(request);
+      const payload = await startQueuedThreads(userId, body);
+      return sendJson(response, 202, payload);
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
+  }
+
   if (request.method === "POST" && url.pathname === "/api/commands/ping") {
     try {
       const body = await readJsonBody(request);
-      const payload = await startPingThread(userId, body);
+      const payload = await createQueuedIssue(userId, body);
       return sendJson(response, 202, payload);
     } catch (error) {
       return sendJson(response, 400, { error: error.message });

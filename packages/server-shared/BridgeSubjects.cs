@@ -8,6 +8,9 @@ public sealed record BridgeSubjectSet(
   string WorkspaceRootsGet,
   string FolderListGet,
   string ThreadsGet,
+  string ThreadDetailGet,
+  string IssueCreate,
+  string ThreadsStart,
   string PingStart,
   string Events
 );
@@ -50,6 +53,9 @@ public static class BridgeSubjects
       WorkspaceRootsGet: $"{@base}.workspace.roots.get",
       FolderListGet: $"{@base}.folder.list.get",
       ThreadsGet: $"{@base}.threads.get",
+      ThreadDetailGet: $"{@base}.thread.detail.get",
+      IssueCreate: $"{@base}.issue.create",
+      ThreadsStart: $"{@base}.threads.start",
       PingStart: $"{@base}.command.ping",
       Events: $"octop.user.{uid}.bridge.{bid}.events"
     );

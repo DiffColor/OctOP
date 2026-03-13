@@ -283,23 +283,56 @@ public sealed class ProjectionWorkerService : BackgroundService
   {
     var thread = @event["payload"]?["thread"] as JObject;
 
-    if (thread?["id"] is null)
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var eventType = @event.Value<string>("type");
+    var projectedAt = @event.Value<string>("timestamp");
+
+    if (thread?["id"] is not null)
+    {
+      thread["login_id"] = loginId;
+      thread["user_id"] = loginId;
+      thread["bridge_id"] = bridgeId;
+      thread["last_event_type"] = eventType;
+      thread["projected_at"] = projectedAt;
+
+      await _r.Db(_rethinkDb)
+        .Table(ThreadTable)
+        .Insert(thread)
+        .OptArg("conflict", "update")
+        .RunResultAsync<object>(connection);
+    }
+
+    if (eventType != "bridge.threads.updated")
     {
       return;
     }
 
-    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var threads = @event["payload"]?["threads"] as JArray;
 
-    thread["login_id"] = loginId;
-    thread["user_id"] = loginId;
-    thread["bridge_id"] = @event.Value<string>("bridge_id");
-    thread["last_event_type"] = @event.Value<string>("type");
-    thread["projected_at"] = @event.Value<string>("timestamp");
+    if (threads is null)
+    {
+      return;
+    }
 
-    await _r.Db(_rethinkDb)
-      .Table(ThreadTable)
-      .Insert(thread)
-      .OptArg("conflict", "update")
-      .RunResultAsync<object>(connection);
+    foreach (var item in threads.OfType<JObject>())
+    {
+      if (item["id"] is null)
+      {
+        continue;
+      }
+
+      item["login_id"] = loginId;
+      item["user_id"] = loginId;
+      item["bridge_id"] = bridgeId;
+      item["last_event_type"] = eventType;
+      item["projected_at"] = projectedAt;
+
+      await _r.Db(_rethinkDb)
+        .Table(ThreadTable)
+        .Insert(item)
+        .OptArg("conflict", "update")
+        .RunResultAsync<object>(connection);
+    }
   }
 }
