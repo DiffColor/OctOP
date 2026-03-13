@@ -1078,6 +1078,52 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
   );
 }
 
+function ConversationTimeline({ entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <ul className="mt-4 space-y-6 border-l border-white/10 pl-4">
+      {entries.map((entry, index) => (
+        <li key={entry.id ?? index} className="relative pl-6">
+          <span
+            aria-hidden="true"
+            className="absolute left-[-13px] top-3 flex h-6 w-6 items-center justify-center rounded-full border border-telegram-400 bg-slate-950 text-[10px] font-semibold text-white"
+          >
+            {index + 1}
+          </span>
+          <article className="rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-sm leading-6 text-slate-200">
+            <div className="flex items-center justify-between text-[11px] text-slate-400">
+              <span>{formatDateTime(entry.promptAt)}</span>
+              <span>{entry.responses.length ? `${entry.responses.length}개의 응답` : "응답 없음"}</span>
+            </div>
+            <p className="mt-3 text-base font-semibold text-white">
+              {entry.prompt?.trim() ? entry.prompt : "프롬프트가 비어 있습니다."}
+            </p>
+
+            {entry.responses.length ? (
+              <div className="mt-3 space-y-3">
+                {entry.responses.map((response) => (
+                  <div
+                    key={response.id}
+                    className="rounded-[1rem] border border-white/5 bg-slate-950/70 px-3 py-2 text-sm leading-6 text-slate-200"
+                  >
+                    <p className="whitespace-pre-wrap">{response.content || "응답이 비어 있습니다."}</p>
+                    <p className="mt-1 text-right text-[11px] text-slate-500">{formatRelativeTime(response.timestamp)}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-full bg-amber-400/15 px-3 py-1.5 text-[12px] text-amber-200">아직 응답이 없습니다.</p>
+            )}
+          </article>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ThreadDetail({
   thread,
   project,
@@ -1091,7 +1137,8 @@ function ThreadDetail({
 }) {
   const status = getStatusMeta(thread.status);
   const scrollRef = useRef(null);
-  const timeline = useMemo(() => {
+  const [viewMode, setViewMode] = useState("chat");
+  const chatTimeline = useMemo(() => {
     const normalized = [];
     let lastPrompt = null;
 
@@ -1134,20 +1181,88 @@ function ThreadDetail({
 
     return normalized;
   }, [messages, thread.created_at, thread.updated_at]);
+  const conversationTimeline = useMemo(() => {
+    const fallbackTimestamp = thread.updated_at ?? thread.created_at ?? new Date().toISOString();
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const groups = [];
+    let currentGroup = null;
+    let syntheticIndex = 0;
+
+    const commitGroup = () => {
+      if (!currentGroup) {
+        return;
+      }
+
+      groups.push({
+        ...currentGroup,
+        prompt: currentGroup.prompt,
+        promptAt: currentGroup.promptAt ?? fallbackTimestamp,
+        responses: currentGroup.responses
+      });
+      currentGroup = null;
+    };
+
+    safeMessages.forEach((message, index) => {
+      if (!message) {
+        return;
+      }
+
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const content = String(message.content ?? "").trim();
+      const timestamp = message.timestamp ?? fallbackTimestamp;
+      const identifier = message.id ?? `${role}-${index}`;
+
+      if (role === "user") {
+        commitGroup();
+        currentGroup = {
+          id: identifier,
+          prompt: content || "",
+          promptAt: timestamp,
+          responses: []
+        };
+        return;
+      }
+
+      if (!currentGroup) {
+        currentGroup = {
+          id: `synthetic-${syntheticIndex++}`,
+          prompt: "이전 프롬프트 없음",
+          promptAt: timestamp,
+          responses: []
+        };
+      }
+
+      currentGroup.responses.push({
+        id: identifier,
+        content,
+        timestamp
+      });
+    });
+
+    commitGroup();
+
+    return groups;
+  }, [messages, thread.created_at, thread.updated_at]);
 
   useEffect(() => {
-    if (!scrollRef.current) {
+    if (!scrollRef.current || viewMode !== "chat") {
       return;
     }
 
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages, messagesLoading]);
+  }, [chatTimeline, messagesLoading, viewMode]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
       onRefreshMessages();
     }
   };
+
+  const showEmptyState =
+    !messagesLoading &&
+    !messagesError &&
+    ((viewMode === "chat" && chatTimeline.length === 0) ||
+      (viewMode === "timeline" && conversationTimeline.length === 0));
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -1202,6 +1317,29 @@ function ThreadDetail({
             </span>
           </div>
 
+          <div className="flex justify-center">
+            <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1 text-[12px] font-semibold text-slate-400">
+              <button
+                type="button"
+                onClick={() => setViewMode("chat")}
+                className={`rounded-full px-4 py-1.5 transition ${
+                  viewMode === "chat" ? "bg-white text-slate-900 shadow" : "text-slate-300 hover:text-white"
+                }`}
+              >
+                채팅
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("timeline")}
+                className={`rounded-full px-4 py-1.5 transition ${
+                  viewMode === "timeline" ? "bg-white text-slate-900 shadow" : "text-slate-300 hover:text-white"
+                }`}
+              >
+                타임라인
+              </button>
+            </div>
+          </div>
+
           {messagesError ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
               <p>메시지를 불러오는 중 문제가 발생했습니다.</p>
@@ -1215,25 +1353,29 @@ function ThreadDetail({
             </div>
           ) : null}
 
-          {timeline.map((message) => (
-            <MessageBubble
-              key={message.id}
-              align={message.align}
-              tone={message.tone}
-              title={message.title}
-              meta={formatRelativeTime(message.timestamp)}
-            >
-              {message.replyTo ? (
-                <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
-                  <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
-                </div>
-              ) : null}
-              <p className="whitespace-pre-wrap text-sm leading-6">
-                {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
-              </p>
-            </MessageBubble>
-          ))}
+          {viewMode === "chat" ? (
+            chatTimeline.map((message) => (
+              <MessageBubble
+                key={message.id}
+                align={message.align}
+                tone={message.tone}
+                title={message.title}
+                meta={formatRelativeTime(message.timestamp)}
+              >
+                {message.replyTo ? (
+                  <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
+                    <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
+                  </div>
+                ) : null}
+                <p className="whitespace-pre-wrap text-sm leading-6">
+                  {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
+                </p>
+              </MessageBubble>
+            ))
+          ) : (
+            <ConversationTimeline entries={conversationTimeline} />
+          )}
 
           {messagesLoading ? (
             <div className="flex justify-center py-4">
@@ -1241,9 +1383,11 @@ function ThreadDetail({
             </div>
           ) : null}
 
-          {!messagesLoading && !messagesError && timeline.length === 0 ? (
+          {showEmptyState ? (
             <div className="rounded-2xl border border-dashed border-white/15 px-4 py-4 text-center text-sm text-slate-300">
-              아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요.
+              {viewMode === "chat"
+                ? "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
+                : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
             </div>
           ) : null}
 
