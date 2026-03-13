@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const LANGUAGE_STORAGE_KEY = "octop.dashboard.language";
+const SIDEBAR_WIDTH_STORAGE_KEY = "octop.dashboard.sidebar.width";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -340,6 +341,29 @@ function readStoredLanguage() {
 function storeLanguage(language) {
   try {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readStoredSidebarWidth() {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const width = Number(raw);
+
+    if (Number.isFinite(width) && width >= 220 && width <= 420) {
+      return width;
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  return 272;
+}
+
+function storeSidebarWidth(width) {
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
   } catch {
     // ignore storage errors
   }
@@ -1740,6 +1764,11 @@ function MainPage({
   const copy = getCopy(language);
   const [editingProjectId, setEditingProjectId] = useState("");
   const [editingProjectName, setEditingProjectName] = useState("");
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    typeof window === "undefined" ? 272 : readStoredSidebarWidth()
+  );
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const languageMenuRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1787,6 +1816,28 @@ function MainPage({
   ).length;
   const [editingThreadId, setEditingThreadId] = useState("");
   const [editingThreadName, setEditingThreadName] = useState("");
+
+  useEffect(() => {
+    storeSidebarWidth(sidebarWidth);
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!languageMenuOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (!languageMenuRef.current?.contains(event.target)) {
+        setLanguageMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [languageMenuOpen]);
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -1838,60 +1889,82 @@ function MainPage({
     }
   };
 
+  const startSidebarResize = (event) => {
+    event.preventDefault();
+    const originX = event.clientX;
+    const originWidth = sidebarWidth;
+
+    const handleMouseMove = (moveEvent) => {
+      const delta = moveEvent.clientX - originX;
+      setSidebarWidth(Math.max(220, Math.min(420, originWidth + delta)));
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col">
         <div className="flex flex-1 overflow-hidden">
-          <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-[#0f172a] md:flex md:flex-col">
-            <div className="flex items-center space-x-3 px-6 py-6">
+          <aside
+            className="hidden shrink-0 border-r border-slate-800 bg-[#0f172a] md:flex md:flex-col"
+            style={{ width: `${sidebarWidth}px` }}
+          >
+            <div className="flex items-center justify-between gap-3 px-4 py-4">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-violet-500">
                 <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
                 </svg>
               </div>
-              <span className="text-xl font-bold tracking-tight text-white">OctOP</span>
+              <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                <span className="truncate text-lg font-bold tracking-tight text-white">OctOP</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={onOpenProjectComposer}
+                    disabled={!selectedBridge}
+                    className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {copy.board.addProject}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onCreateThread}
+                    disabled={!selectedProject}
+                    className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {copy.board.addThread}
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4 flex-1 px-4">
-              <div className="mb-4 flex items-center justify-between px-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.sidebarEyebrow}</p>
-                  <p className="mt-2 text-sm font-medium text-white">{copy.board.projectsCount(projects.length)}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={onOpenProjectComposer}
-                  disabled={!selectedBridge}
-                  className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {copy.board.addProject}
-                </button>
-                <button
-                  type="button"
-                  onClick={onCreateThread}
-                  disabled={!selectedProject}
-                  className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {copy.board.addThread}
-                </button>
+            <div className="flex flex-1 flex-col px-3 pb-3">
+              <div className="mb-2 flex items-center justify-between px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                <span>{copy.board.sidebarEyebrow}</span>
+                <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] normal-case tracking-normal text-slate-400">
+                  {projects.length}
+                </span>
               </div>
 
-              <div className="custom-scrollbar max-h-[calc(100vh-15rem)] space-y-1 overflow-y-auto px-2">
+              <div className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-1 overflow-y-auto px-1">
                 {projects.length === 0 ? (
                   <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
                 ) : (
                   projects.map((project) => {
                     const active = project.id === selectedProjectId;
                     const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
-                    const queuedCount = sidebarThreads.reduce(
-                      (sum, thread) => sum + (thread.queued_count ?? 0),
-                      0
-                    );
 
                     return (
                       <div key={project.id} className="rounded-md px-1 py-1">
                         <div
-                          className={`w-full rounded-md px-3 py-3 transition ${
+                          className={`w-full rounded-md px-2.5 py-2 transition ${
                             active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
                           }`}
                         >
@@ -1931,10 +2004,10 @@ function MainPage({
                             </button>
                           )}
                             </div>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
-                              {sidebarThreads.length}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
+                                {sidebarThreads.length}
+                              </span>
                             <button
                               type="button"
                               onClick={(event) => {
@@ -1947,13 +2020,8 @@ function MainPage({
                             </button>
                           </div>
                         </div>
-                        <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                          <span>{project.key}</span>
-                          <span className="text-slate-700">•</span>
-                          <span>{copy.board.queuedCount(queuedCount)}</span>
-                        </div>
                         {active ? (
-                          <div className="mt-2 space-y-1">
+                          <div className="mt-1.5 space-y-1">
                             {sidebarThreads.map((thread) => (
                               <SidebarThreadItem
                                 key={thread.id}
@@ -1980,6 +2048,11 @@ function MainPage({
               </div>
             </div>
           </aside>
+          <div
+            className="hidden w-2 shrink-0 cursor-col-resize border-r border-transparent bg-slate-950/70 transition hover:border-sky-400/40 hover:bg-sky-500/10 md:block"
+            onMouseDown={startSidebarResize}
+            aria-hidden="true"
+          />
 
           <main className="flex min-h-screen min-w-0 flex-1 flex-col pb-14">
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
@@ -2127,8 +2200,11 @@ function MainPage({
               </div>
             </div>
 
-            <div className="custom-scrollbar flex-1 overflow-x-scroll p-4 pb-6 md:p-8 md:pb-8">
-              <div className="flex h-full min-w-max space-x-6">
+            <div
+              className="custom-scrollbar flex-1 overflow-x-auto overflow-y-hidden p-4 pb-6 md:p-8 md:pb-8"
+              style={{ scrollbarGutter: "stable both-edges" }}
+            >
+              <div className="flex h-full min-w-max space-x-6 pr-4">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -2235,30 +2311,42 @@ function MainPage({
         <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="mr-2 flex items-center gap-2">
+              <div className="relative mr-2" ref={languageMenuRef}>
+                {languageMenuOpen ? (
+                  <div className="absolute bottom-full left-0 mb-2 min-w-[9rem] rounded-xl border border-slate-800 bg-slate-950/98 p-1.5 shadow-2xl shadow-slate-950/60">
+                    {[
+                      { value: "en", label: copy.footer.languageEnglish },
+                      { value: "ko", label: copy.footer.languageKorean }
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          onChangeLanguage(option.value);
+                          setLanguageMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition ${
+                          language === option.value
+                            ? "bg-sky-500/12 text-sky-200"
+                            : "text-slate-300 hover:bg-slate-900 hover:text-white"
+                        }`}
+                      >
+                        <span>{option.label}</span>
+                        {language === option.value ? <span className="text-[10px] text-sky-300">●</span> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => onChangeLanguage("ko")}
-                  className={`flex h-11 w-11 items-center justify-center rounded-full border px-1 text-[9px] font-semibold leading-tight transition ${
-                    language === "ko"
-                      ? "border-sky-400 bg-sky-500/15 text-sky-200"
-                      : "border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-200"
-                  }`}
-                  title={copy.footer.languageKorean}
+                  onClick={() => setLanguageMenuOpen((current) => !current)}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-700 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:border-slate-500 hover:text-white"
+                  title={language === "ko" ? copy.footer.languageKorean : copy.footer.languageEnglish}
                 >
-                  {copy.footer.languageKorean}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onChangeLanguage("en")}
-                  className={`flex h-11 w-11 items-center justify-center rounded-full border px-1 text-[9px] font-semibold leading-tight transition ${
-                    language === "en"
-                      ? "border-sky-400 bg-sky-500/15 text-sky-200"
-                      : "border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-200"
-                  }`}
-                  title={copy.footer.languageEnglish}
-                >
-                  {copy.footer.languageEnglish}
+                  <span>{language === "ko" ? copy.footer.languageKorean : copy.footer.languageEnglish}</span>
+                  <svg className="h-3.5 w-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
                 </button>
               </div>
               <span className="font-medium text-slate-200">{session.displayName || session.loginId}</span>
