@@ -188,6 +188,33 @@ function getPathLabel(value) {
   return segments.at(-1) ?? normalized;
 }
 
+function normalizePath(value) {
+  return String(value ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function getRelativeWorkspacePath(value, roots = []) {
+  const normalizedValue = normalizePath(value);
+
+  if (!normalizedValue) {
+    return "";
+  }
+
+  const matchingRoot = [...roots]
+    .map((root) => normalizePath(root?.path))
+    .filter(Boolean)
+    .filter((rootPath) => normalizedValue === rootPath || normalizedValue.startsWith(`${rootPath}/`))
+    .sort((left, right) => right.length - left.length)[0];
+
+  if (!matchingRoot) {
+    return normalizedValue.replace(/^\/+/, "");
+  }
+
+  const relativePath = normalizedValue.slice(matchingRoot.length).replace(/^\/+/, "");
+  const rootLabel = getPathLabel(matchingRoot);
+
+  return relativePath ? `${rootLabel}/${relativePath}` : rootLabel;
+}
+
 function shortenPath(value) {
   if (!value) {
     return "-";
@@ -796,6 +823,7 @@ function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
 function ProjectComposerSheet({
   open,
   busy,
+  roots,
   folderState,
   folderLoading,
   selectedWorkspacePath,
@@ -805,10 +833,12 @@ function ProjectComposerSheet({
   onSubmit
 }) {
   const [name, setName] = useState("");
+  const tapStateRef = useRef({ path: "", timestamp: 0 });
 
   useEffect(() => {
     if (!open) {
       setName("");
+      tapStateRef.current = { path: "", timestamp: 0 };
       return;
     }
 
@@ -816,6 +846,32 @@ function ProjectComposerSheet({
       setName(getPathLabel(selectedWorkspacePath));
     }
   }, [name, open, selectedWorkspacePath]);
+
+  const selectedWorkspaceLabel = useMemo(
+    () => getRelativeWorkspacePath(selectedWorkspacePath, roots),
+    [roots, selectedWorkspacePath]
+  );
+
+  const handleFolderTap = useCallback(
+    (path) => {
+      const now = Date.now();
+      const lastTap = tapStateRef.current;
+      const isSecondTap = lastTap.path === path && now - lastTap.timestamp < 320;
+
+      tapStateRef.current = {
+        path,
+        timestamp: now
+      };
+
+      onSelectWorkspace(path);
+
+      if (isSecondTap) {
+        tapStateRef.current = { path: "", timestamp: 0 };
+        void onBrowseFolder(path);
+      }
+    },
+    [onBrowseFolder, onSelectWorkspace]
+  );
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -834,7 +890,6 @@ function ProjectComposerSheet({
     <BottomSheet
       open={open}
       title="새 프로젝트 등록"
-      description="bridge가 노출한 폴더를 선택해 모바일에서도 바로 관리할 수 있게 만듭니다."
       onClose={onClose}
       variant="center"
     >
@@ -853,8 +908,7 @@ function ProjectComposerSheet({
             {folderState.parent_path ? (
               <button
                 type="button"
-                onClick={() => onSelectWorkspace(folderState.parent_path)}
-                onDoubleClick={() => void onBrowseFolder(folderState.parent_path)}
+                onClick={() => handleFolderTap(folderState.parent_path)}
                 className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left transition ${
                   selectedWorkspacePath === folderState.parent_path
                     ? "bg-telegram-500/10"
@@ -873,8 +927,7 @@ function ProjectComposerSheet({
                   <button
                     key={entry.path}
                     type="button"
-                    onClick={() => onSelectWorkspace(entry.path)}
-                    onDoubleClick={() => void onBrowseFolder(entry.path)}
+                    onClick={() => handleFolderTap(entry.path)}
                     className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left last:border-b-0 transition ${
                       active ? "bg-telegram-500/10" : "bg-transparent hover:bg-white/[0.03]"
                     }`}
@@ -894,7 +947,7 @@ function ProjectComposerSheet({
         <div className="border border-white/10 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Selected Workspace</p>
           <p className="mt-2 break-all text-sm text-white">
-            {selectedWorkspacePath || "아직 선택된 경로가 없습니다."}
+            {selectedWorkspaceLabel || "아직 선택된 경로가 없습니다."}
           </p>
         </div>
 
