@@ -135,7 +135,7 @@ app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore
   return Results.Text(new JObject { ["bridges"] = bridges }.ToString(), "application/json; charset=utf-8");
 });
 
-app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
+app.MapGet("/api/projects", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
@@ -145,8 +145,21 @@ app.MapGet("/api/projects", async (HttpContext httpContext, OctopStore octopStor
     return Results.Text("{\"projects\":[]}", "application/json; charset=utf-8");
   }
 
-  var projects = await octopStore.ListProjectsForUserAsync(userId, bridgeId);
-  return Results.Text(new JObject { ["projects"] = projects }.ToString(), "application/json; charset=utf-8");
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ProjectsGet,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId
+    },
+    cancellationToken
+  );
+
+  return Results.Text(
+    payload?.ToJsonString() ?? "{\"projects\":[]}",
+    "application/json; charset=utf-8");
 });
 
 app.MapGet("/api/workspace-roots", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
