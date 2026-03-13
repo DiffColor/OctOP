@@ -88,32 +88,32 @@ code,
   border: 2px solid rgba(15, 23, 42, 0.65);
 }
 
-.board-scrollbar {
+.octop-board-shell {
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
   scrollbar-width: auto;
   scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
 }
 
-.board-scrollbar::-webkit-scrollbar {
+.octop-board-shell::-webkit-scrollbar {
   -webkit-appearance: none;
-  display: block;
-  height: 12px;
-  max-height: 12px;
+  height: 10px;
 }
 
-.board-scrollbar::-webkit-scrollbar-track {
+.octop-board-shell::-webkit-scrollbar-track {
   background: rgba(15, 23, 42, 0.92);
 }
 
-.board-scrollbar::-webkit-scrollbar-thumb {
+.octop-board-shell::-webkit-scrollbar-thumb {
   background: #475569;
+  border-radius: 999px;
 }
 
-.octop-board-shell {
-  min-height: 0;
-  height: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-gutter: auto;
+.octop-board-shell--overflow {
+  overflow-x: scroll;
 }
 
 .octop-board-shell-inner {
