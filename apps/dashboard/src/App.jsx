@@ -1802,6 +1802,13 @@ function MainPage({
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const languageMenuRef = useRef(null);
+  const boardScrollViewportRef = useRef(null);
+  const boardScrollBarRef = useRef(null);
+  const boardScrollSyncRef = useRef(false);
+  const [boardScrollMetrics, setBoardScrollMetrics] = useState({
+    clientWidth: 0,
+    scrollWidth: 0
+  });
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1872,6 +1879,49 @@ function MainPage({
     };
   }, [languageMenuOpen]);
 
+  useEffect(() => {
+    const updateBoardScrollMetrics = () => {
+      const viewport = boardScrollViewportRef.current;
+
+      if (!viewport) {
+        setBoardScrollMetrics({
+          clientWidth: 0,
+          scrollWidth: 0
+        });
+        return;
+      }
+
+      setBoardScrollMetrics({
+        clientWidth: viewport.clientWidth,
+        scrollWidth: viewport.scrollWidth
+      });
+    };
+
+    updateBoardScrollMetrics();
+
+    const viewport = boardScrollViewportRef.current;
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" && viewport
+        ? new ResizeObserver(() => updateBoardScrollMetrics())
+        : null;
+
+    if (resizeObserver && viewport) {
+      resizeObserver.observe(viewport);
+      const content = viewport.firstElementChild;
+
+      if (content) {
+        resizeObserver.observe(content);
+      }
+    }
+
+    window.addEventListener("resize", updateBoardScrollMetrics);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateBoardScrollMetrics);
+    };
+  }, [columns, sidebarWidth, selectedProjectThreadId]);
+
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
     setEditingProjectName(project.name);
@@ -1940,6 +1990,44 @@ function MainPage({
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
   };
+
+  const syncBoardScrollFromViewport = (event) => {
+    if (boardScrollSyncRef.current) {
+      return;
+    }
+
+    const scrollbar = boardScrollBarRef.current;
+
+    if (!scrollbar) {
+      return;
+    }
+
+    boardScrollSyncRef.current = true;
+    scrollbar.scrollLeft = event.currentTarget.scrollLeft;
+    requestAnimationFrame(() => {
+      boardScrollSyncRef.current = false;
+    });
+  };
+
+  const syncBoardScrollFromBar = (event) => {
+    if (boardScrollSyncRef.current) {
+      return;
+    }
+
+    const viewport = boardScrollViewportRef.current;
+
+    if (!viewport) {
+      return;
+    }
+
+    boardScrollSyncRef.current = true;
+    viewport.scrollLeft = event.currentTarget.scrollLeft;
+    requestAnimationFrame(() => {
+      boardScrollSyncRef.current = false;
+    });
+  };
+
+  const showBoardScrollbar = boardScrollMetrics.scrollWidth > boardScrollMetrics.clientWidth + 8;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -2239,8 +2327,9 @@ function MainPage({
             </div>
 
             <div
-              className="custom-scrollbar board-scrollbar flex-1 overflow-x-scroll overflow-y-hidden p-4 pb-5 md:p-8 md:pb-5"
-              style={{ scrollbarGutter: "stable" }}
+              ref={boardScrollViewportRef}
+              onScroll={syncBoardScrollFromViewport}
+              className="custom-scrollbar board-scrollbar-hidden flex-1 overflow-x-auto overflow-y-hidden p-4 pb-4 md:p-8 md:pb-4"
             >
               <div className="flex h-full min-w-max space-x-6 pr-4">
                 {columns.map((column) => (
@@ -2343,6 +2432,22 @@ function MainPage({
                 ))}
               </div>
             </div>
+            {showBoardScrollbar ? (
+              <div className="border-t border-slate-800/80 px-4 pb-3 md:px-8">
+                <div
+                  ref={boardScrollBarRef}
+                  onScroll={syncBoardScrollFromBar}
+                  className="board-scrollbar custom-scrollbar overflow-x-auto overflow-y-hidden"
+                >
+                  <div
+                    className="h-3"
+                    style={{
+                      width: `${Math.max(boardScrollMetrics.scrollWidth, boardScrollMetrics.clientWidth)}px`
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
           </main>
         </div>
 

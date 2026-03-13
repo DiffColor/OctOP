@@ -100,6 +100,16 @@ code,
   background: #475569;
 }
 
+.board-scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.board-scrollbar-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .kanban-column {
   min-height: calc(100vh - 20rem);
 }
