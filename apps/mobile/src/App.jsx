@@ -930,7 +930,6 @@ function InlineIssueComposer({
   selectedProject,
   onSubmit,
   label,
-  placeholder,
   disabled = false
 }) {
   const [prompt, setPrompt] = useState("");
@@ -983,7 +982,7 @@ function InlineIssueComposer({
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleSubmit}>
       <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-white/[0.03] px-4 py-3">
+        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-4 py-3">
           <div className="mb-1 text-[11px] text-slate-500">
             {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
           </div>
@@ -992,16 +991,9 @@ function InlineIssueComposer({
             ref={textareaRef}
             value={prompt}
             onChange={handlePromptChange}
-            placeholder={
-              disabled
-                ? "현재 실행 중인 thread입니다"
-                : placeholder ??
-                  (selectedProject
-                    ? "채팅처럼 작업 지시를 입력하세요"
-                    : "먼저 프로젝트를 선택해 주세요")
-            }
+            placeholder=""
             disabled={!selectedProject || busy || disabled}
-            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 focus:ring-0"
           />
         </div>
         <button
@@ -1931,7 +1923,6 @@ function ThreadDetail({
             selectedProject={project}
             onSubmit={onSubmitPrompt}
             label={isDraft ? "첫 프롬프트" : "프롬프트"}
-            placeholder={isDraft ? "새 채팅창의 첫 작업 지시를 입력해 주세요" : "이 thread에서 이어서 진행할 작업을 입력해 주세요"}
             disabled={isInputDisabled}
           />
         </div>
