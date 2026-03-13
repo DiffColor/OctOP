@@ -982,7 +982,7 @@ function InlineIssueComposer({
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleSubmit}>
       <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-4 py-3">
+        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
           <div className="mb-1 text-[11px] text-slate-500">
             {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
           </div>
@@ -993,7 +993,7 @@ function InlineIssueComposer({
             onChange={handlePromptChange}
             placeholder=""
             disabled={!selectedProject || busy || disabled}
-            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 focus:ring-0"
+            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
           />
         </div>
         <button
