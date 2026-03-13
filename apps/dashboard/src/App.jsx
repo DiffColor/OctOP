@@ -1121,8 +1121,8 @@ function ProjectComposer({
           </button>
         </div>
 
-        <form className="mt-5 grid gap-0 xl:grid-cols-2" onSubmit={handleSubmit}>
-          <div className="min-w-0 border-b border-slate-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
+        <form className="mt-5 grid gap-0 xl:min-h-[34rem] xl:grid-cols-2" onSubmit={handleSubmit}>
+          <div className="min-w-0 border-b border-slate-800 pb-4 xl:h-[34rem] xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
             <div className="flex items-center justify-between gap-3 pb-3">
               <div>
                 <p className="mt-2 text-sm font-medium text-white">{copy.projectComposer.browserTitle}</p>
@@ -1134,7 +1134,7 @@ function ProjectComposer({
               </div>
             </div>
 
-            <div className="custom-scrollbar max-h-[34rem] space-y-1 overflow-y-auto pr-1">
+            <div className="custom-scrollbar h-[34rem] space-y-1 overflow-y-auto pr-1">
               {roots.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-800 px-3 py-4 text-xs text-slate-500">
                   {copy.projectComposer.noRoots}
@@ -1168,8 +1168,9 @@ function ProjectComposer({
             </div>
           </div>
 
-          <div className="min-w-0 space-y-4 pt-4 xl:pl-5 xl:pt-0">
-            <div className="grid gap-4">
+          <div className="min-w-0 pt-4 xl:h-[34rem] xl:pl-5 xl:pt-0">
+            <div className="flex h-full min-w-0 flex-col justify-between gap-4">
+              <div className="grid min-w-0 gap-4">
               <div className="min-w-0">
                 <p className="mb-2 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
                   {copy.projectComposer.workspacePath}
@@ -1178,7 +1179,7 @@ function ProjectComposer({
                   value={selectedWorkspacePath || "-"}
                   className="rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-sm text-slate-300"
                   mono
-                  truncateAt="start"
+                  truncateAt="end"
                 />
               </div>
 
@@ -1210,23 +1211,24 @@ function ProjectComposer({
                   className="w-full min-w-0 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
                 />
               </div>
-            </div>
+              </div>
 
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
-              >
-                {copy.projectComposer.cancel}
-              </button>
-              <button
-                type="submit"
-                disabled={busy || !selectedWorkspacePath}
-                className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {busy ? copy.projectComposer.submitting : copy.projectComposer.submit}
-              </button>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+                >
+                  {copy.projectComposer.cancel}
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy || !selectedWorkspacePath}
+                  className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busy ? copy.projectComposer.submitting : copy.projectComposer.submit}
+                </button>
+              </div>
             </div>
           </div>
         </form>
