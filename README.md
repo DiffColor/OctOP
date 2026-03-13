@@ -65,6 +65,8 @@
 - 실행 인자로 `-id`, `-name`을 넘기면 각각 owner loginId, 표시 이름으로 환경값보다 우선 적용됩니다.
 - 브릿지 프로세스를 띄우고, 필요하면 bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
 - Codex 실행 권한은 `OCTOP_CODEX_APPROVAL_POLICY`, `OCTOP_CODEX_SANDBOX`로 제어합니다.
+- running 이슈 watchdog는 `OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS`, stale 판정은 `OCTOP_RUNNING_ISSUE_STALE_MS`로 제어합니다.
+- 기본값은 `15000ms / 120000ms`입니다.
 - `git push` 같은 외부 동작이 필요하면 bridge 쪽 approval/sandbox를 더 완화하고, 별도로 로컬 Git 인증도 준비되어 있어야 합니다.
 
 app-server 런처 동작:
