@@ -254,6 +254,14 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function getRealtimeProgressText(entity) {
   const status = entity?.status ?? "queued";
   const lastEvent = entity?.last_event ?? "";
