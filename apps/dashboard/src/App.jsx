@@ -1804,7 +1804,15 @@ function MainPage({
   );
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [forceBoardScrollbar, setForceBoardScrollbar] = useState(false);
+  const [boardScrollbarVisible, setBoardScrollbarVisible] = useState(false);
+  const [boardScrollState, setBoardScrollState] = useState({
+    clientWidth: 0,
+    scrollWidth: 0,
+    scrollLeft: 0
+  });
   const languageMenuRef = useRef(null);
+  const boardScrollRef = useRef(null);
+  const boardScrollbarTrackRef = useRef(null);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1875,6 +1883,87 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
+
+  useEffect(() => {
+    const syncBoardScrollbarState = () => {
+      const scrollNode = boardScrollRef.current;
+
+      if (!scrollNode) {
+        setBoardScrollbarVisible(false);
+        setBoardScrollState({
+          clientWidth: 0,
+          scrollWidth: 0,
+          scrollLeft: 0
+        });
+        return;
+      }
+
+      const nextState = {
+        clientWidth: scrollNode.clientWidth,
+        scrollWidth: scrollNode.scrollWidth,
+        scrollLeft: scrollNode.scrollLeft
+      };
+
+      setBoardScrollbarVisible(nextState.scrollWidth > nextState.clientWidth + 1);
+      setBoardScrollState(nextState);
+    };
+
+    const scrollNode = boardScrollRef.current;
+
+    syncBoardScrollbarState();
+
+    if (!scrollNode) {
+      return undefined;
+    }
+
+    scrollNode.addEventListener("scroll", syncBoardScrollbarState, { passive: true });
+
+    if (typeof window === "undefined" || typeof window.ResizeObserver !== "function") {
+      window.addEventListener("resize", syncBoardScrollbarState);
+      return () => {
+        scrollNode.removeEventListener("scroll", syncBoardScrollbarState);
+        window.removeEventListener("resize", syncBoardScrollbarState);
+      };
+    }
+
+    const resizeObserver = new window.ResizeObserver(() => {
+      syncBoardScrollbarState();
+    });
+
+    resizeObserver.observe(scrollNode);
+
+    return () => {
+      scrollNode.removeEventListener("scroll", syncBoardScrollbarState);
+      resizeObserver.disconnect();
+    };
+  }, [boardContentWidth]);
+
+  const scrollbarTrackWidth = boardScrollState.clientWidth;
+  const scrollbarThumbWidth = boardScrollbarVisible
+    ? Math.max((boardScrollState.clientWidth / boardScrollState.scrollWidth) * scrollbarTrackWidth, 56)
+    : 0;
+  const scrollbarThumbMaxOffset = Math.max(scrollbarTrackWidth - scrollbarThumbWidth, 0);
+  const scrollbarMaxScrollLeft = Math.max(boardScrollState.scrollWidth - boardScrollState.clientWidth, 1);
+  const scrollbarThumbOffset = boardScrollbarVisible
+    ? (boardScrollState.scrollLeft / scrollbarMaxScrollLeft) * scrollbarThumbMaxOffset
+    : 0;
+
+  const handleBoardScrollbarPointerDown = (event) => {
+    const scrollNode = boardScrollRef.current;
+    const trackNode = boardScrollbarTrackRef.current;
+
+    if (!scrollNode || !trackNode) {
+      return;
+    }
+
+    const rect = trackNode.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const boundedX = Math.max(0, Math.min(rect.width, pointerX));
+    const maxScrollLeft = Math.max(scrollNode.scrollWidth - scrollNode.clientWidth, 0);
+    const nextScrollLeft = rect.width > 0 ? (boundedX / rect.width) * maxScrollLeft : 0;
+
+    scrollNode.scrollLeft = nextScrollLeft;
+  };
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -2250,11 +2339,10 @@ function MainPage({
               </div>
             </div>
 
-            <div className="octop-board-page flex-1 min-h-0">
+            <div className="octop-board-page flex flex-1 min-h-0 flex-col">
               <div
-                className={`octop-board-scroll custom-scrollbar h-full min-h-0 ${
-                  forceBoardScrollbar ? "octop-board-page--force" : ""
-                }`}
+                ref={boardScrollRef}
+                className="octop-board-scroll h-full min-h-0 flex-1"
               >
                 <section
                   className="octop-board-frame flex h-full min-h-0"
@@ -2362,6 +2450,29 @@ function MainPage({
                   </div>
                 </section>
               </div>
+              {boardScrollbarVisible ? (
+                <div
+                  className={`octop-board-scrollbar custom-scrollbar ${
+                    forceBoardScrollbar ? "octop-board-scrollbar--force" : ""
+                  }`}
+                >
+                  <button
+                    ref={boardScrollbarTrackRef}
+                    type="button"
+                    onPointerDown={handleBoardScrollbarPointerDown}
+                    className="octop-board-scrollbar-track"
+                    aria-label="가로 스크롤 이동"
+                  >
+                    <span
+                      className="octop-board-scrollbar-thumb"
+                      style={{
+                        width: `${scrollbarThumbWidth}px`,
+                        transform: `translateX(${scrollbarThumbOffset}px)`
+                      }}
+                    />
+                  </button>
+                </div>
+              ) : null}
             </div>
             
           </main>

@@ -100,25 +100,39 @@ code,
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-gutter: stable both-edges;
-  scrollbar-width: auto;
-  scrollbar-color: #475569 rgba(15, 23, 42, 0.92);
+  scrollbar-width: none;
 }
 
 .octop-board-scroll::-webkit-scrollbar {
-  -webkit-appearance: none;
+  display: none;
+}
+
+.octop-board-scrollbar {
+  flex: 0 0 auto;
+  padding: 6px 12px 8px;
+  border-top: 1px solid rgba(30, 41, 59, 0.9);
+  background: rgba(2, 6, 23, 0.96);
+}
+
+.octop-board-scrollbar-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.98);
+  padding: 0;
+}
+
+.octop-board-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   height: 10px;
-  max-height: 10px;
-}
-
-.octop-board-scroll::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.92);
-}
-
-.octop-board-scroll::-webkit-scrollbar-thumb {
-  background: #475569;
   border-radius: 999px;
+  background: #64748b;
 }
 
 .octop-board-page--force {
@@ -141,6 +155,14 @@ code,
   background: #64748b;
   border-radius: 999px;
   border: 2px solid rgba(15, 23, 42, 0.98);
+}
+
+.octop-board-scrollbar--force .octop-board-scrollbar-track {
+  background: rgba(15, 23, 42, 1);
+}
+
+.octop-board-scrollbar--force .octop-board-scrollbar-thumb {
+  background: #94a3b8;
 }
 
 .octop-board-frame,
