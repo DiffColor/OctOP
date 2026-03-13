@@ -2544,6 +2544,7 @@ export default function App() {
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
   const pendingUpdateActivatorRef = useRef(null);
   const threadLoadRequestIdRef = useRef(0);
+  const threadReloadTimerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
@@ -2559,6 +2560,15 @@ export default function App() {
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    return () => {
+      if (threadReloadTimerRef.current) {
+        window.clearTimeout(threadReloadTimerRef.current);
+        threadReloadTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const loadThreadMessages = useCallback(
     async (threadId, { force = false, version = null } = {}) => {
@@ -2638,6 +2648,10 @@ export default function App() {
           }
         }));
       } catch (error) {
+        if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+          return;
+        }
+
         setThreadDetails((current) => ({
           ...current,
           [threadId]: {
@@ -2650,6 +2664,24 @@ export default function App() {
     },
     [selectedBridgeId, session?.loginId, threads]
   );
+
+  const scheduleThreadMessagesReload = useCallback((threadId, options = {}) => {
+    if (!threadId) {
+      return;
+    }
+
+    const { delay = 180, ...loadOptions } = options;
+
+    if (threadReloadTimerRef.current) {
+      window.clearTimeout(threadReloadTimerRef.current);
+      threadReloadTimerRef.current = null;
+    }
+
+    threadReloadTimerRef.current = window.setTimeout(() => {
+      threadReloadTimerRef.current = null;
+      void loadThreadMessages(threadId, loadOptions);
+    }, delay);
+  }, [loadThreadMessages]);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -3023,7 +3055,14 @@ export default function App() {
           const threadId = payload.payload?.thread_id ?? "";
 
           if (threadId && threadId === selectedThreadId) {
-            void loadThreadMessages(threadId, { force: true });
+            setThreadDetails((current) => ({
+              ...current,
+              [threadId]: {
+                ...(current[threadId] ?? {}),
+                issues: payload.payload?.issues ?? current[threadId]?.issues ?? []
+              }
+            }));
+            scheduleThreadMessagesReload(threadId, { force: true });
           }
           return;
         }
@@ -3033,7 +3072,7 @@ export default function App() {
           eventThreadId === selectedThreadId &&
           (payload.type === "turn.completed" || payload.type === "thread.status.changed")
         ) {
-          void loadThreadMessages(eventThreadId, { force: true });
+          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0 });
           return;
         }
 
@@ -3066,7 +3105,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [loadThreadMessages, selectedBridgeId, selectedProjectId, selectedThreadId, session]);
+  }, [loadThreadMessages, scheduleThreadMessagesReload, selectedBridgeId, selectedProjectId, selectedThreadId, session]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -3118,14 +3157,14 @@ export default function App() {
     }
 
     if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
-      void loadThreadMessages(selectedThreadId, { version: selectedThreadUpdatedAt });
+      scheduleThreadMessagesReload(selectedThreadId, { version: selectedThreadUpdatedAt, delay: 0 });
     }
   }, [
     activeView,
     currentThreadDetailLoading,
     currentThreadDetailVersion,
     hasCurrentThreadDetail,
-    loadThreadMessages,
+    scheduleThreadMessagesReload,
     selectedBridgeId,
     selectedThreadId,
     selectedThreadUpdatedAt,
