@@ -580,6 +580,45 @@ app.MapGet("/api/issues/{issueId}", async (
     "application/json; charset=utf-8");
 });
 
+app.MapPatch("/api/issues/{issueId}", async (
+  string issueId,
+  HttpContext httpContext,
+  BridgeNatsClient bridgeNatsClient,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ThreadIssueUpdate,
+    new
+    {
+      user_id = userId,
+      login_id = userId,
+      bridge_id = bridgeId,
+      issue_id = issueId,
+      title = body?["title"]?.GetValue<string>(),
+      prompt = body?["prompt"]?.GetValue<string>()
+    },
+    cancellationToken
+  );
+
+  var accepted = payload?["accepted"]?.GetValue<bool?>() ?? true;
+  return Results.Text(
+    payload?.ToJsonString() ?? "{}",
+    "application/json; charset=utf-8",
+    statusCode: accepted ? StatusCodes.Status200OK : StatusCodes.Status502BadGateway
+  );
+});
+
 app.MapDelete("/api/issues/{issueId}", async (
   string issueId,
   HttpContext httpContext,
@@ -681,6 +720,7 @@ app.MapPost("/api/threads/{threadId}/issues/reorder", async (
     .Where(value => !string.IsNullOrWhiteSpace(value))
     .Cast<string>()
     .ToArray() ?? [];
+  var stage = body?["stage"]?.GetValue<string>()?.Trim();
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
@@ -691,7 +731,8 @@ app.MapPost("/api/threads/{threadId}/issues/reorder", async (
       login_id = userId,
       bridge_id = bridgeId,
       thread_id = threadId,
-      issue_ids = issueIds
+      issue_ids = issueIds,
+      stage = stage
     },
     cancellationToken
   );
