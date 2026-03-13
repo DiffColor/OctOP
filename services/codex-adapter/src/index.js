@@ -669,6 +669,13 @@ function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
     return currentStatus;
   }
 
+  if (
+    currentStatus === "staged" &&
+    ["queued", "idle"].includes(nextStatus)
+  ) {
+    return currentStatus;
+  }
+
   return nextStatus;
 }
 
@@ -1130,16 +1137,19 @@ class AppServerClient {
 }
 
 function buildThreadPatch(method, params) {
+  const threadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
+  const currentStatus = threadId ? threadStateById.get(threadId)?.status ?? "queued" : "queued";
+
   switch (method) {
     case "thread/started":
       return normalizeThreadRecord(params.thread, {
         progress: 5,
-        status: "queued",
+        status: currentStatus === "staged" ? "staged" : "queued",
         last_event: "thread.started"
       });
     case "thread/status/changed":
       return {
-        status: normalizeThreadStatus(params.status),
+        status: normalizeThreadStatus(params.status, currentStatus),
         last_event: "thread.status.changed"
       };
     case "turn/started":
