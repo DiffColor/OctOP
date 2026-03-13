@@ -14,6 +14,7 @@ const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
+const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -118,7 +119,7 @@ function isPwaPromptDismissed() {
     return false;
   }
 
-  return window.localStorage.getItem(PWA_PROMPT_DISMISSED_KEY) === "true";
+  return window.localStorage.getItem(PWA_PROMPT_DISMISSED_KEY) === PWA_PROMPT_DISMISSED_VALUE;
 }
 
 function dismissPwaPrompt() {
@@ -126,7 +127,7 @@ function dismissPwaPrompt() {
     return;
   }
 
-  window.localStorage.setItem(PWA_PROMPT_DISMISSED_KEY, "true");
+  window.localStorage.setItem(PWA_PROMPT_DISMISSED_KEY, PWA_PROMPT_DISMISSED_VALUE);
 }
 
 function formatDateTime(value) {
@@ -379,10 +380,10 @@ function BottomSheet({ open, title, description, onClose, children, variant = "b
 
   const isCenterDialog = variant === "center";
   const containerClassName = isCenterDialog
-    ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/78 px-4 py-6 backdrop-blur-sm"
+    ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/86 px-4 py-6 backdrop-blur-sm"
     : "fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 px-4 pb-4 pt-10 backdrop-blur-sm";
   const panelClassName = isCenterDialog
-    ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-telegram-soft"
+    ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/15 bg-[#0b1622] shadow-[0_30px_90px_rgba(0,0,0,0.65)] ring-1 ring-white/8"
     : "sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft";
 
   return (
@@ -399,9 +400,11 @@ function BottomSheet({ open, title, description, onClose, children, variant = "b
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
             >
-              닫기
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
             </button>
           </div>
         </div>
@@ -584,41 +587,55 @@ function UtilitySheet({
     <BottomSheet
       open={open}
       title="워크스페이스 설정"
-      description="bridge 연결과 프로젝트 관리 동작을 여기서 처리합니다."
       onClose={onClose}
       variant="center"
     >
       <div className="px-5 py-5">
-        <section className="border-b border-white/10 pb-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
-              {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
-              <p className="truncate text-xs text-slate-400">{session.loginId}</p>
-            </div>
+        <section className="flex items-center gap-3 border-b border-white/10 pb-4">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
+            {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
           </div>
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-slate-500">
-            <span>Bridge {bridges.length}</span>
-            <span>Project {projects.length}</span>
-            <span>Thread {threads.length}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${
+                  status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
+                }`}
+              />
+            </div>
+            <p className="truncate text-xs text-slate-400">{session.loginId}</p>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-3 gap-2 border-b border-white/10 py-4 text-center">
+          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Bridge</p>
+            <p className="mt-1 text-base font-semibold text-white">{bridges.length}</p>
+          </div>
+          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Project</p>
+            <p className="mt-1 text-base font-semibold text-white">{projects.length}</p>
+          </div>
+          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Thread</p>
+            <p className="mt-1 text-base font-semibold text-white">{threads.length}</p>
           </div>
         </section>
 
         <section className="py-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-white">연결 bridge</p>
+            <p className="text-sm font-semibold text-white">Bridge 선택</p>
             <span
               className={`text-[11px] ${
                 status.app_server?.connected ? "text-emerald-200" : "text-rose-200"
               }`}
             >
-              {status.app_server?.connected ? "연결됨" : "미연결"}
+              {status.app_server?.connected ? "온라인" : "오프라인"}
             </span>
           </div>
 
-          <div className="divide-y divide-white/10 rounded-[1.25rem] border border-white/10">
+          <div className="divide-y divide-white/10 overflow-hidden rounded-[1.1rem] border border-white/10 bg-black/10">
             {bridges.length === 0 ? (
               <div className="px-4 py-4 text-sm text-slate-400">연결된 bridge가 없습니다.</div>
             ) : (
@@ -644,7 +661,7 @@ function UtilitySheet({
                       </div>
                       <div className="shrink-0 text-right">
                         <p className="text-[11px] text-slate-400">{formatRelativeTime(bridge.last_seen_at)}</p>
-                        {active ? <p className="mt-0.5 text-[10px] text-telegram-200">선택됨</p> : null}
+                        {active ? <p className="mt-0.5 text-[10px] text-telegram-200">현재 선택</p> : null}
                       </div>
                     </div>
                   </button>
@@ -654,7 +671,7 @@ function UtilitySheet({
           </div>
         </section>
 
-        <section className="flex gap-2 border-t border-white/10 pt-4">
+        <section className="grid grid-cols-2 gap-2 border-t border-white/10 pt-4">
           <button
             type="button"
             onClick={() => {
@@ -1757,7 +1774,6 @@ export default function App() {
     const handleAppInstalled = () => {
       setDeferredInstallPrompt(null);
       setInstallPromptVisible(false);
-      dismissPwaPrompt();
     };
 
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
