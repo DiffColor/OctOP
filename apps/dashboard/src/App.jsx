@@ -4,6 +4,7 @@ const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const LANGUAGE_STORAGE_KEY = "octop.dashboard.language";
 const SIDEBAR_WIDTH_STORAGE_KEY = "octop.dashboard.sidebar.width";
+const ARCHIVE_STORAGE_KEY = "octop.dashboard.archives";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -18,6 +19,8 @@ const COLUMN_ORDER = [
   { id: "review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
   { id: "done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
 ];
+
+const MULTI_SELECTABLE_COLUMNS = new Set(["prep", "review", "done"]);
 
 const STATUS_META = {
   staged: {
@@ -182,6 +185,12 @@ const COPY = {
       emptyColumn: "No issues in this state.",
       moveSelectedToTodo: (count) => `Move to To Do${count > 0 ? ` (${count})` : ""}`,
       moving: "Moving...",
+      archiveSelected: (count) => `Archive${count > 0 ? ` (${count})` : ""}`,
+      archivedHidden: (count) => `Archived ${count}`,
+      archivedListTitle: "Archived Issues",
+      archivedEmpty: "No archived issues.",
+      restore: "Restore",
+      restoreAll: "Restore all",
       bridge: "Bridge",
       project: "Project",
       drag: "Drag",
@@ -320,6 +329,12 @@ const COPY = {
       emptyColumn: "해당 상태의 이슈가 없습니다.",
       moveSelectedToTodo: (count) => `선택 항목 할 일로 이동${count > 0 ? ` (${count})` : ""}`,
       moving: "이동 중...",
+      archiveSelected: (count) => `선택 항목 보관${count > 0 ? ` (${count})` : ""}`,
+      archivedHidden: (count) => `보관됨 ${count}`,
+      archivedListTitle: "보관된 이슈",
+      archivedEmpty: "보관 중인 항목이 없습니다.",
+      restore: "복원",
+      restoreAll: "모두 복원",
       bridge: "브릿지",
       project: "프로젝트",
       drag: "드래그",
@@ -422,6 +437,68 @@ function storeSession(session, rememberDevice) {
 function clearSessionStorage() {
   window.localStorage.removeItem(LOCAL_STORAGE_KEY);
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function readStoredArchives() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ARCHIVE_STORAGE_KEY);
+
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    const normalized = {};
+
+    for (const [bridgeId, bridgeValue] of Object.entries(parsed)) {
+      if (!bridgeId || typeof bridgeValue !== "object" || bridgeValue === null) {
+        continue;
+      }
+
+      const threadMap = {};
+
+      for (const [threadId, ids] of Object.entries(bridgeValue)) {
+        if (!threadId || !Array.isArray(ids)) {
+          continue;
+        }
+
+        const filtered = ids.filter((id) => typeof id === "string" && id.length > 0);
+
+        if (filtered.length > 0) {
+          threadMap[threadId] = filtered;
+        }
+      }
+
+      if (Object.keys(threadMap).length > 0) {
+        normalized[bridgeId] = threadMap;
+      }
+    }
+
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+function storeArchivedIssuesState(state) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore storage errors
+  }
 }
 
 function getCopy(language) {
@@ -2067,9 +2144,17 @@ function PrepThreadCard({
   onDelete,
   onDragStart,
   onDrop,
-  onEdit
+  onEdit,
+  onSelectionGesture
 }) {
   const copy = getCopy(language);
+  const handleCardClick = (event) => {
+    if (onSelectionGesture?.(event, "prep", thread.id)) {
+      return;
+    }
+
+    onSelect(thread.id);
+  };
   return (
     <div
       draggable
@@ -2095,7 +2180,7 @@ function PrepThreadCard({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
-            <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
+            <button type="button" onClick={handleCardClick} className="min-w-0 flex-1 text-left">
               <OverflowRevealText value={getIssueTitle(thread, language)} className="text-sm font-medium text-slate-100" />
               <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
             </button>
@@ -2214,17 +2299,25 @@ function getColumnDotClassName(columnId) {
   }
 }
 
-function ThreadCard({ language, thread, selected, onSelect }) {
+function ThreadCard({ language, thread, active, multiSelected, columnId, onSelect, onSelectionGesture }) {
   const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
   const progressText = getRealtimeProgressText(thread, language);
+  const highlighted = active || multiSelected;
+  const handleClick = (event) => {
+    if (onSelectionGesture?.(event, columnId, thread.id)) {
+      return;
+    }
+
+    onSelect(thread.id);
+  };
 
   return (
     <button
       type="button"
-      onClick={() => onSelect(thread.id)}
+      onClick={handleClick}
       className={`w-full rounded-xl border px-3.5 py-3 text-left transition ${
-        selected ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
+        highlighted ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
@@ -2251,15 +2344,32 @@ function ThreadCard({ language, thread, selected, onSelect }) {
   );
 }
 
-function CompletedThreadCard({ language, thread, selected, onSelect, onOpen }) {
+function CompletedThreadCard({
+  language,
+  thread,
+  active,
+  multiSelected,
+  onSelect,
+  onOpen,
+  onSelectionGesture,
+  columnId
+}) {
   const copy = getCopy(language);
+  const highlighted = active || multiSelected;
+  const handleClick = (event) => {
+    if (onSelectionGesture?.(event, columnId ?? "done", thread.id)) {
+      return;
+    }
+
+    onSelect(thread.id);
+  };
   return (
     <button
       type="button"
-      onClick={() => onSelect(thread.id)}
+      onClick={handleClick}
       onDoubleClick={() => onOpen(thread.id)}
       className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
-        selected ? "border-emerald-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-900/65 hover:border-slate-700"
+        highlighted ? "border-emerald-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-900/65 hover:border-slate-700"
       }`}
     >
       <div className="flex items-center gap-3">
@@ -2289,7 +2399,9 @@ function MainPage({
   selectedProjectId,
   selectedProjectThreadId,
   selectedIssueId,
+  onUpdateIssueSelection,
   selectedIssueIds,
+  archivedIssueIds,
   issueQueueOrderIds,
   prepIssueOrderIds,
   detailState,
@@ -2310,6 +2422,8 @@ function MainPage({
   onSelectProjectThread,
   onSelectIssue,
   onToggleIssueSelection,
+  onArchiveIssues,
+  onRestoreArchivedIssues,
   onStartSelectedIssues,
   onOpenCompletedIssue,
   onDeleteIssue,
@@ -2353,6 +2467,10 @@ function MainPage({
     scrollWidth: 0,
     scrollLeft: 0
   });
+  const [selectionAnchor, setSelectionAnchor] = useState({
+    threadId: "",
+    columnId: ""
+  });
   const languageMenuRef = useRef(null);
   const boardScrollRef = useRef(null);
   const boardScrollbarTrackRef = useRef(null);
@@ -2361,6 +2479,8 @@ function MainPage({
     pointerId: null,
     pointerOffsetX: 0
   });
+  const archiveViewerRef = useRef(null);
+  const [archiveViewerOpen, setArchiveViewerOpen] = useState(false);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -2369,14 +2489,61 @@ function MainPage({
     (thread) => !selectedProjectId || thread.project_id === selectedProjectId
   );
   const keyword = search.trim().toLowerCase();
+  const archivedHiddenSet = useMemo(() => new Set(archivedIssueIds), [archivedIssueIds]);
   const filteredIssues = issues.filter((thread) => {
+    const columnId = getStatusMeta(thread.status).column;
+
+    if ((columnId === "review" || columnId === "done") && archivedHiddenSet.has(thread.id)) {
+      return false;
+    }
+
+    if (!keyword) {
+      return true;
+    }
+
     return (
-      !keyword ||
       thread.title.toLowerCase().includes(keyword) ||
       String(thread.prompt ?? "").toLowerCase().includes(keyword) ||
       String(thread.last_message ?? "").toLowerCase().includes(keyword)
     );
   });
+  const archivedIssuesList = useMemo(() => {
+    if (!selectedProjectThreadId) {
+      return [];
+    }
+
+    return archivedIssueIds
+      .map((threadId) =>
+        issues.find(
+          (issue) =>
+            issue.id === threadId &&
+            issue.thread_id === selectedProjectThreadId &&
+            (getStatusMeta(issue.status).column === "review" || getStatusMeta(issue.status).column === "done")
+        )
+      )
+      .filter(Boolean);
+  }, [archivedIssueIds, issues, selectedProjectThreadId]);
+  const archivedCounts = useMemo(
+    () =>
+      archivedIssuesList.reduce(
+        (acc, thread) => {
+          const columnId = getStatusMeta(thread.status).column;
+
+          if (columnId === "review" || columnId === "done") {
+            acc[columnId] += 1;
+          }
+
+          return acc;
+        },
+        { review: 0, done: 0 }
+      ),
+    [archivedIssuesList]
+  );
+  const archivedSelectedCount = filteredIssues.filter(
+    (thread) =>
+      selectedIssueIds.includes(thread.id) &&
+      (getStatusMeta(thread.status).column === "review" || getStatusMeta(thread.status).column === "done")
+  ).length;
   const selectedProjectThread =
     scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
     null;
@@ -2436,10 +2603,94 @@ function MainPage({
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
   }).filter((column) => column.id !== "review" || column.threads.length > 0);
+  const columnThreadOrder = useMemo(() => {
+    const map = new Map();
+
+    for (const column of columns) {
+      map.set(
+        column.id,
+        column.threads.map((thread) => thread.id)
+      );
+    }
+
+    return map;
+  }, [columns]);
   const boardContentWidth = Math.max(columns.length * 320 + Math.max(columns.length - 1, 0) * 24 + 128, 0);
   const prepSelectedCount = filteredIssues.filter(
     (thread) => selectedIssueIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
+  const handleIssueSelectionGesture = useCallback(
+    (event, columnId, threadId) => {
+      if (!event || !threadId || !MULTI_SELECTABLE_COLUMNS.has(columnId)) {
+        return false;
+      }
+
+      const metaKey = event.metaKey || event.ctrlKey;
+      const shiftKey = event.shiftKey;
+
+      if (!metaKey && !shiftKey) {
+        return false;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      onUpdateIssueSelection((currentSelection) => {
+        if (shiftKey && selectionAnchor.threadId && selectionAnchor.columnId === columnId) {
+          const order = columnThreadOrder.get(columnId) ?? [];
+          const anchorIndex = order.indexOf(selectionAnchor.threadId);
+          const targetIndex = order.indexOf(threadId);
+
+          if (anchorIndex === -1 || targetIndex === -1) {
+            return currentSelection;
+          }
+
+          const [start, end] =
+            anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+          const idsInRange = order.slice(start, end + 1);
+          const combined = new Set(currentSelection);
+
+          for (const id of idsInRange) {
+            combined.add(id);
+          }
+
+          return [...combined];
+        }
+
+        if (metaKey) {
+          return currentSelection.includes(threadId)
+            ? currentSelection.filter((id) => id !== threadId)
+            : [...currentSelection, threadId];
+        }
+
+        return currentSelection;
+      });
+
+      setSelectionAnchor((current) => {
+        if (shiftKey && current.threadId && current.columnId === columnId) {
+          return current;
+        }
+
+        return {
+          threadId,
+          columnId
+        };
+      });
+
+      return true;
+    },
+    [columnThreadOrder, onUpdateIssueSelection, selectionAnchor]
+  );
+  const handleTogglePrepSelection = useCallback(
+    (threadId) => {
+      setSelectionAnchor({
+        threadId,
+        columnId: "prep"
+      });
+      onToggleIssueSelection(threadId);
+    },
+    [onToggleIssueSelection]
+  );
   const [editingThreadId, setEditingThreadId] = useState("");
   const [editingThreadName, setEditingThreadName] = useState("");
 
@@ -2464,6 +2715,28 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
+  useEffect(() => {
+    if (!archiveViewerOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (!archiveViewerRef.current?.contains(event.target)) {
+        setArchiveViewerOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [archiveViewerOpen]);
+  useEffect(() => {
+    if (archivedIssuesList.length === 0) {
+      setArchiveViewerOpen(false);
+    }
+  }, [archivedIssuesList.length]);
 
   useEffect(() => {
     setExpandedProjectIds((current) => {
@@ -2942,6 +3215,83 @@ function MainPage({
                   {copy.board.refresh}
                 </button>
 
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setArchiveViewerOpen((open) => !open)}
+                    disabled={archivedIssuesList.length === 0}
+                    className="rounded-lg border border-violet-500/20 px-3 py-2 text-sm font-medium text-violet-200 transition hover:border-violet-400/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {copy.board.archivedHidden(archivedIssuesList.length)}
+                  </button>
+                  {archiveViewerOpen ? (
+                    <div
+                      ref={archiveViewerRef}
+                      className="absolute right-0 z-20 mt-2 w-80 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl"
+                    >
+                      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                        <p className="text-xs font-semibold text-slate-200">{copy.board.archivedListTitle}</p>
+                        <button
+                          type="button"
+                          onClick={() => setArchiveViewerOpen(false)}
+                          className="text-[10px] lowercase text-slate-500 transition hover:text-slate-200"
+                        >
+                          {copy.detail.close}
+                        </button>
+                      </div>
+                      <div className="custom-scrollbar max-h-72 space-y-3 overflow-y-auto px-4 py-3">
+                        {archivedIssuesList.length === 0 ? (
+                          <p className="text-xs text-slate-500">{copy.board.archivedEmpty}</p>
+                        ) : (
+                          archivedIssuesList.map((thread) => {
+                            const columnId = getStatusMeta(thread.status).column;
+                            return (
+                              <div key={`archived-${thread.id}`} className="rounded-xl border border-slate-800/80 bg-slate-900/80 px-3 py-3">
+                                <p className="text-sm font-medium text-white">
+                                  <OverflowRevealText value={getIssueTitle(thread, language)} />
+                                </p>
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  {copy.columns[columnId]} • {formatRelativeTime(thread.updated_at, language)}
+                                </p>
+                                <div className="mt-3 flex items-center justify-between">
+                                  <span className="text-[11px] text-slate-500">{copy.status[getStatusMeta(thread.status).labelKey]}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => onRestoreArchivedIssues([thread.id])}
+                                    className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
+                                  >
+                                    {copy.board.restore}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                      {archivedIssuesList.length > 0 ? (
+                        <div className="border-t border-slate-800 px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={() => onRestoreArchivedIssues(archivedIssuesList.map((thread) => thread.id))}
+                            className="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 transition hover:border-emerald-400/40 hover:text-emerald-200"
+                          >
+                            {copy.board.restoreAll}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onArchiveIssues(selectedIssueIds)}
+                  disabled={archivedSelectedCount === 0}
+                  className="rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-semibold text-violet-200 transition hover:border-violet-400/40 hover:bg-violet-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {copy.board.archiveSelected(archivedSelectedCount)}
+                </button>
+
                 <button
                   type="button"
                   onClick={onStartSelectedIssues}
@@ -3073,6 +3423,17 @@ function MainPage({
                           {column.threads.length}
                         </span>
                       </h3>
+                      {((column.id === "review" || column.id === "done") && archivedCounts[column.id] > 0) ? (
+                        <button
+                          type="button"
+                          onClick={() => setArchiveViewerOpen(true)}
+                          className="text-[10px] text-slate-500 underline-offset-2 transition hover:text-slate-200 hover:underline"
+                        >
+                          {copy.board.archivedHidden(archivedCounts[column.id])}
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-transparent">–</span>
+                      )}
                     </div>
 
                     <div className="space-y-3">
@@ -3084,19 +3445,20 @@ function MainPage({
                         column.threads.map((thread) => {
                           if (column.id === "prep") {
                             return (
-                              <PrepThreadCard
-                                key={thread.id}
-                                language={language}
-                                thread={thread}
-                                selected={selectedIssueIds.includes(thread.id)}
-                                active={thread.id === selectedIssueId}
-                                onSelect={onSelectIssue}
-                                onToggle={onToggleIssueSelection}
-                                onDelete={onDeleteIssue}
-                                onDragStart={onDragPrepIssues.start}
-                                onDrop={onDragPrepIssues.reorder}
-                                onEdit={onEditPrepIssue}
-                              />
+                            <PrepThreadCard
+                              key={thread.id}
+                              language={language}
+                              thread={thread}
+                              selected={selectedIssueIds.includes(thread.id)}
+                              active={thread.id === selectedIssueId}
+                              onSelect={onSelectIssue}
+                              onToggle={handleTogglePrepSelection}
+                              onDelete={onDeleteIssue}
+                              onDragStart={onDragPrepIssues.start}
+                              onDrop={onDragPrepIssues.reorder}
+                              onEdit={onEditPrepIssue}
+                              onSelectionGesture={handleIssueSelectionGesture}
+                            />
                             );
                           }
 
@@ -3122,9 +3484,12 @@ function MainPage({
                                 key={thread.id}
                                 language={language}
                                 thread={thread}
-                                selected={thread.id === selectedIssueId}
+                                active={thread.id === selectedIssueId}
+                                multiSelected={selectedIssueIds.includes(thread.id)}
+                                columnId={column.id}
                                 onSelect={onSelectIssue}
                                 onOpen={onOpenCompletedIssue}
+                                onSelectionGesture={handleIssueSelectionGesture}
                               />
                             );
                           }
@@ -3134,8 +3499,11 @@ function MainPage({
                               key={thread.id}
                               language={language}
                               thread={thread}
-                              selected={thread.id === selectedIssueId}
+                              active={thread.id === selectedIssueId}
+                              multiSelected={selectedIssueIds.includes(thread.id)}
+                              columnId={column.id}
                               onSelect={onSelectIssue}
+                              onSelectionGesture={handleIssueSelectionGesture}
                             />
                           );
                         })
@@ -3355,6 +3723,7 @@ export default function App() {
   const [prepIssueOrderIds, setPrepIssueOrderIds] = useState([]);
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
+  const [archivedIssuesState, setArchivedIssuesState] = useState(() => readStoredArchives());
   const [threadMenuState, setThreadMenuState] = useState({
     open: false,
     x: 0,
@@ -3417,6 +3786,13 @@ export default function App() {
     const trailing = prepIssues.filter((issueId) => !normalized.includes(issueId));
     return [...normalized, ...trailing];
   }, [issues, prepIssueOrderIds]);
+  const archivedIssueIds = useMemo(() => {
+    if (!selectedBridgeId || !selectedProjectThreadId) {
+      return [];
+    }
+
+    return archivedIssuesState[selectedBridgeId]?.[selectedProjectThreadId] ?? [];
+  }, [archivedIssuesState, selectedBridgeId, selectedProjectThreadId]);
   const editingIssue = useMemo(() => {
     if (!issueEditorOpen || !editingIssueId) {
       return null;
@@ -3424,6 +3800,13 @@ export default function App() {
 
     return issues.find((issue) => issue.id === editingIssueId) ?? null;
   }, [issueEditorOpen, editingIssueId, issues]);
+  const updateArchivedIssuesState = useCallback((updater) => {
+    setArchivedIssuesState((current) => {
+      const nextState = typeof updater === "function" ? updater(current) : updater;
+      storeArchivedIssuesState(nextState);
+      return nextState;
+    });
+  }, []);
 
   const updateStatusCounts = useCallback((nextCounts) => {
     setStatus((current) => ({
@@ -3914,14 +4297,62 @@ export default function App() {
       current.filter((threadId) =>
         issues.some(
           (thread) =>
-            thread.id === threadId &&
-            thread.thread_id === selectedProjectThreadId &&
-            getStatusMeta(thread.status).column === "prep"
+            thread.id === threadId && thread.thread_id === selectedProjectThreadId
         )
       )
     );
     setSelectedIssueId((current) => (current && issues.some((issue) => issue.id === current) ? current : ""));
   }, [selectedProjectThreadId, issues]);
+  useEffect(() => {
+    setSelectionAnchor({
+      threadId: "",
+      columnId: ""
+    });
+  }, [selectedProjectThreadId]);
+  useEffect(() => {
+    if (!selectedBridgeId || !selectedProjectThreadId) {
+      return;
+    }
+
+    updateArchivedIssuesState((current) => {
+      const bridgeMap = current[selectedBridgeId];
+
+      if (!bridgeMap) {
+        return current;
+      }
+
+      const archived = bridgeMap[selectedProjectThreadId];
+
+      if (!archived?.length) {
+        return current;
+      }
+
+      const validIds = archived.filter((threadId) =>
+        issues.some((issue) => issue.id === threadId && issue.thread_id === selectedProjectThreadId)
+      );
+
+      if (validIds.length === archived.length) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        [selectedBridgeId]: { ...bridgeMap }
+      };
+
+      if (validIds.length === 0) {
+        delete next[selectedBridgeId][selectedProjectThreadId];
+
+        if (Object.keys(next[selectedBridgeId]).length === 0) {
+          delete next[selectedBridgeId];
+        }
+      } else {
+        next[selectedBridgeId][selectedProjectThreadId] = validIds;
+      }
+
+      return next;
+    });
+  }, [issues, selectedBridgeId, selectedProjectThreadId, updateArchivedIssuesState]);
 
   useEffect(() => {
     if (!issueEditorOpen || !editingIssueId) {
@@ -4048,6 +4479,85 @@ export default function App() {
     setSelectedIssueIds((current) =>
       current.includes(threadId) ? current.filter((item) => item !== threadId) : [...current, threadId]
     );
+  };
+
+  const handleArchiveIssues = (threadIds) => {
+    if (!selectedBridgeId || !selectedProjectThreadId || threadIds.length === 0) {
+      return;
+    }
+
+    const archiveableIds = threadIds.filter((threadId) => {
+      const thread = issues.find((item) => item.id === threadId);
+
+      if (!thread) {
+        return false;
+      }
+
+      const columnId = getStatusMeta(thread.status).column;
+      return columnId === "review" || columnId === "done";
+    });
+
+    if (archiveableIds.length === 0) {
+      return;
+    }
+
+    updateArchivedIssuesState((current) => {
+      const next = { ...current };
+      const bridgeMap = { ...(next[selectedBridgeId] ?? {}) };
+      const currentThreadIds = new Set(bridgeMap[selectedProjectThreadId] ?? []);
+
+      for (const archiveId of archiveableIds) {
+        currentThreadIds.add(archiveId);
+      }
+
+      bridgeMap[selectedProjectThreadId] = Array.from(currentThreadIds);
+      next[selectedBridgeId] = bridgeMap;
+      return next;
+    });
+    setSelectedIssueIds((current) => current.filter((threadId) => !archiveableIds.includes(threadId)));
+  };
+
+  const handleRestoreArchivedIssues = (threadIds) => {
+    if (!selectedBridgeId || !selectedProjectThreadId || threadIds.length === 0) {
+      return;
+    }
+
+    updateArchivedIssuesState((current) => {
+      const bridgeMap = current[selectedBridgeId];
+
+      if (!bridgeMap) {
+        return current;
+      }
+
+      const archived = bridgeMap[selectedProjectThreadId];
+
+      if (!archived?.length) {
+        return current;
+      }
+
+      const remaining = archived.filter((threadId) => !threadIds.includes(threadId));
+
+      if (remaining.length === archived.length) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        [selectedBridgeId]: { ...bridgeMap }
+      };
+
+      if (remaining.length === 0) {
+        delete next[selectedBridgeId][selectedProjectThreadId];
+
+        if (Object.keys(next[selectedBridgeId]).length === 0) {
+          delete next[selectedBridgeId];
+        }
+      } else {
+        next[selectedBridgeId][selectedProjectThreadId] = remaining;
+      }
+
+      return next;
+    });
   };
 
   const handleStartSelectedIssues = async () => {
@@ -4771,9 +5281,13 @@ export default function App() {
       onSelectProject={setSelectedProjectId}
       onSelectProjectThread={setSelectedProjectThreadId}
       onSelectIssue={setSelectedIssueId}
+      onUpdateIssueSelection={setSelectedIssueIds}
       selectedIssueIds={selectedIssueIds}
+      archivedIssueIds={archivedIssueIds}
       detailState={detailState}
       onToggleIssueSelection={handleToggleIssueSelection}
+      onArchiveIssues={handleArchiveIssues}
+      onRestoreArchivedIssues={handleRestoreArchivedIssues}
       onStartSelectedIssues={() => void handleStartSelectedIssues()}
       onOpenCompletedIssue={(threadId) => void handleOpenCompletedIssue(threadId)}
       onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
