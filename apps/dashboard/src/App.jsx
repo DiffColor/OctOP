@@ -973,41 +973,65 @@ function ProjectComposer({
 
 function ThreadCard({ thread, selected, onSelect }) {
   const status = getStatusMeta(thread.status);
+  const sourceLabel = thread.source === "appServer" ? "AI Suggested" : "Manual";
+  const priorityLabel =
+    thread.status === "failed"
+      ? "Critical"
+      : thread.status === "running"
+        ? "High"
+        : thread.status === "awaiting_input"
+          ? "Review"
+          : thread.progress >= 100
+            ? "Done"
+            : "Med";
+  const priorityClassName =
+    priorityLabel === "Critical"
+      ? "bg-rose-500/10 text-rose-300"
+      : priorityLabel === "High"
+        ? "bg-orange-500/10 text-orange-300"
+        : priorityLabel === "Review"
+          ? "bg-violet-500/10 text-violet-300"
+          : priorityLabel === "Done"
+            ? "bg-emerald-500/10 text-emerald-300"
+            : "bg-sky-500/10 text-sky-300";
 
   return (
     <button
       type="button"
       onClick={() => onSelect(thread.id)}
-      className={`w-full rounded-2xl border px-4 py-3.5 text-left transition ${
+      className={`w-full rounded-xl border p-4 text-left transition ${
         selected
-          ? "border-sky-400/40 bg-slate-900"
-          : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:bg-slate-900/80"
+          ? "border-sky-400/35 bg-slate-800/95 shadow-lg shadow-sky-950/10"
+          : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
-      <div className="flex items-center justify-between gap-3">
-        <span
-          className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.18em] ${status.chipClassName}`}
-        >
-          <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-          {status.label}
+      <div className="flex items-start justify-between gap-3">
+        <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight ${priorityClassName}`}>
+          {priorityLabel}
         </span>
         <span className="font-mono text-[11px] text-slate-500">{thread.id.slice(0, 8)}</span>
       </div>
 
-      <h4 className="mt-4 line-clamp-2 text-sm font-semibold leading-6 text-white">{thread.title}</h4>
+      <h4 className="mt-4 line-clamp-2 text-sm font-medium leading-6 text-slate-200">{thread.title}</h4>
 
       <div className="mt-4">
         <div className="mb-2 flex items-center justify-between text-[11px] text-slate-400">
-          <span>{thread.last_event ?? "thread.started"}</span>
+          <span className={`inline-flex items-center gap-2 rounded-full px-2 py-1 ${status.chipClassName}`}>
+            <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+            {status.label}
+          </span>
           <span>{thread.progress}%</span>
         </div>
         <div className="h-1.5 rounded-full bg-slate-800">
-          <div className="h-1.5 rounded-full bg-sky-400" style={{ width: `${thread.progress}%` }} />
+          <div
+            className="h-1.5 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
+            style={{ width: `${thread.progress}%` }}
+          />
         </div>
       </div>
 
       <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500">
-        <span>{thread.source === "appServer" ? "app-server" : thread.source}</span>
+        <span>{sourceLabel}</span>
         <span>{formatRelativeTime(thread.updated_at)}</span>
       </div>
     </button>
@@ -1091,333 +1115,262 @@ function MainPage({
     ...column,
     threads: filteredThreads.filter((thread) => getStatusMeta(thread.status).column === column.id)
   }));
-  const highlightedEvents = recentEvents.slice(0, 4);
+  const projectCountLabel = selectedProject ? `${projectScopedThreads.length} issues` : `${projects.length} projects`;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col">
         <div className="flex flex-1 overflow-hidden">
-          <aside className="hidden w-72 shrink-0 border-r border-slate-800 bg-[#0b1220] lg:flex lg:flex-col">
-            <div className="border-b border-slate-800 px-5 py-5">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-800 bg-slate-950">
-                  <svg className="h-5 w-5 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP</p>
-                  <h1 className="mt-1 text-sm font-semibold text-white">Project Explorer</h1>
-                </div>
+          <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-[#0f172a] md:flex md:flex-col">
+            <div className="flex items-center space-x-3 px-6 py-6">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-violet-500">
+                <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
               </div>
+              <span className="text-xl font-bold tracking-tight text-white">OctOP</span>
             </div>
 
-            <div className="border-b border-slate-800 px-5 py-4">
-              <label className="block">
-                <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
-                <select
-                  value={selectedBridgeId}
-                  onChange={(event) => onSelectBridge(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                >
-                  {bridges.length === 0 ? (
-                    <option value="">연결된 bridge 없음</option>
+            <nav className="mt-4 flex-1 space-y-1 px-4">
+              <button
+                type="button"
+                className="flex w-full items-center rounded-md bg-slate-800 px-3 py-2 text-left text-sm font-medium text-white shadow-[0_0_15px_rgba(14,165,233,0.08)]"
+              >
+                <svg className="mr-3 h-5 w-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+                Projects
+              </button>
+
+              <div className="pt-5">
+                <div className="mb-3 flex items-center justify-between px-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Workspace</p>
+                    <p className="mt-2 text-sm font-medium text-white">{projectCountLabel}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenProjectComposer}
+                    disabled={!selectedBridge}
+                    className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                <div className="custom-scrollbar max-h-[calc(100vh-18rem)] space-y-1 overflow-y-auto px-2">
+                  {projectTree.length === 0 ? (
+                    <div className="rounded-md px-3 py-3 text-xs text-slate-500">프로젝트가 없습니다.</div>
                   ) : (
-                    bridges.map((bridge) => (
-                      <option key={bridge.bridge_id} value={bridge.bridge_id}>
-                        {bridge.device_name ?? bridge.bridge_id}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-            </div>
+                    projectTree.map((project) => {
+                      const active = project.id === selectedProjectId;
 
-            <div className="flex items-center justify-between px-5 py-4">
-              <div>
-                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Projects</p>
-                <p className="mt-2 text-sm font-semibold text-white">{summarizeProjects(projects)}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={onOpenProjectComposer}
-                  disabled={!selectedBridge}
-                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  프로젝트 등록
-                </button>
-                <button
-                  type="button"
-                  onClick={onRefresh}
-                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-700 hover:text-white"
-                >
-                  새로고침
-                </button>
-              </div>
-            </div>
+                      return (
+                        <div key={project.id}>
+                          <button
+                            type="button"
+                            onClick={() => onSelectProject(project.id)}
+                            className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition ${
+                              active
+                                ? "bg-slate-800 text-white"
+                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                            }`}
+                          >
+                            <span className="truncate">{project.name}</span>
+                            <span className="ml-3 rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
+                              {project.totalThreads}
+                            </span>
+                          </button>
 
-            <div className="custom-scrollbar flex-1 overflow-y-auto px-3 pb-5">
-              {projectTree.length === 0 ? (
-                <div className="mx-2 rounded-2xl border border-dashed border-slate-800 px-4 py-5 text-sm text-slate-500">
-                  현재 선택된 bridge에 연결된 프로젝트가 없습니다.
-                </div>
-              ) : (
-                projectTree.map((project) => {
-                  const active = project.id === selectedProjectId;
-
-                  return (
-                    <div key={project.id} className="mb-2">
-                      <button
-                        type="button"
-                        onClick={() => onSelectProject(project.id)}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                          active
-                            ? "border-sky-400/30 bg-sky-500/10"
-                            : "border-transparent bg-transparent hover:border-slate-800 hover:bg-slate-900/60"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-white">{project.name}</p>
-                            <p className="mt-1 truncate text-[11px] text-slate-500">{project.key}</p>
-                          </div>
-                          <span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] text-slate-400">
-                            {project.totalThreads}
-                          </span>
-                        </div>
-                      </button>
-
-                      {active ? (
-                        <div className="mt-1 space-y-1 pl-4">
-                          {project.latestThreads.length === 0 ? (
-                            <div className="rounded-xl px-3 py-3 text-xs text-slate-500">
-                              아직 등록된 이슈가 없습니다.
+                          {active && project.latestThreads.length > 0 ? (
+                            <div className="mt-1 space-y-1 pl-4">
+                              {project.latestThreads.map((thread) => (
+                                <button
+                                  key={thread.id}
+                                  type="button"
+                                  onClick={() => onSelectThread(thread.id)}
+                                  className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs transition ${
+                                    thread.id === selectedThreadId
+                                      ? "bg-slate-900 text-white"
+                                      : "text-slate-500 hover:bg-slate-900/70 hover:text-slate-200"
+                                  }`}
+                                >
+                                  <span className={`h-2 w-2 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
+                                  <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                                </button>
+                              ))}
                             </div>
-                          ) : (
-                            project.latestThreads.map((thread) => (
-                              <button
-                                key={thread.id}
-                                type="button"
-                                onClick={() => onSelectThread(thread.id)}
-                                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
-                                  thread.id === selectedThreadId
-                                    ? "bg-slate-900 text-white"
-                                    : "text-slate-400 hover:bg-slate-900/70 hover:text-white"
-                                }`}
-                              >
-                                <span className={`h-2 w-2 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
-                                <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                              </button>
-                            ))
-                          )}
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
-                  );
-                })
-              )}
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </nav>
+
+            <div className="mt-auto border-t border-slate-800 p-4">
+              <div className="mb-3">
+                <label className="block">
+                  <span className="mb-2 block text-[10px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
+                  <select
+                    value={selectedBridgeId}
+                    onChange={(event) => onSelectBridge(event.target.value)}
+                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                  >
+                    {bridges.length === 0 ? (
+                      <option value="">연결된 bridge 없음</option>
+                    ) : (
+                      bridges.map((bridge) => (
+                        <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                          {bridge.device_name ?? bridge.bridge_id}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+              </div>
+
+              <div className="flex items-center">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-sky-500/20 bg-slate-900 text-[11px] font-semibold text-white">
+                  {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
+                </div>
+                <div className="ml-3 min-w-0">
+                  <p className="truncate text-xs font-semibold text-white">{session.displayName || session.loginId}</p>
+                  <p className="truncate text-[10px] uppercase tracking-wider text-slate-500">
+                    {status.app_server?.account?.plan_type ?? "Unknown Plan"}
+                  </p>
+                </div>
+              </div>
             </div>
           </aside>
 
           <main className="flex min-h-screen min-w-0 flex-1 flex-col pb-14">
-            <header className="border-b border-slate-800 bg-slate-950/80 px-4 py-4 backdrop-blur md:px-6 lg:px-8">
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                  <div className="min-w-0">
-                    <p className="text-[11px] uppercase tracking-[0.34em] text-slate-500">Projects / Board</p>
-                    <div className="mt-2 flex min-w-0 items-center gap-3">
-                      <h2 className="truncate text-2xl font-semibold text-white">
-                        {selectedProject?.name ?? "프로젝트 선택 필요"}
-                      </h2>
-                      {selectedThread ? (
-                        <span className="hidden rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-400 sm:inline-flex">
-                          {getStatusMeta(selectedThread.status).label}
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="mt-2 text-sm text-slate-400">
-                      {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 선택 필요"} · 선택한 프로젝트의 이슈만 표시됩니다.
-                    </p>
-                  </div>
+            <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
+              <div className="flex items-center space-x-2 text-sm">
+                <span className="text-slate-500">Projects</span>
+                <span className="text-slate-700">/</span>
+                <span className="font-medium text-white">{selectedProject?.name ?? "선택 필요"}</span>
+              </div>
 
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-                    <label className="relative block w-full lg:w-72">
-                      <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-500">
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                        </svg>
-                      </span>
-                      <input
-                        type="text"
-                        value={search}
-                        onChange={(event) => onSearchChange(event.target.value)}
-                        placeholder="thread 제목, 이벤트 검색"
-                        className="w-full rounded-2xl border border-slate-800 bg-slate-900 py-3 pl-11 pr-4 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                      />
-                    </label>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={onOpenProjectComposer}
-                        disabled={!selectedBridge}
-                        className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        새 프로젝트
-                      </button>
-                      <button
-                        type="button"
-                        onClick={onOpenComposer}
-                        disabled={projects.length === 0}
-                        className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path d="M12 4v16m8-8H4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                        </svg>
-                        이슈 등록
-                      </button>
-                    </div>
+              <div className="flex items-center space-x-3 md:space-x-6">
+                <div className="relative hidden sm:block">
+                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                    <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
                   </div>
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(event) => onSearchChange(event.target.value)}
+                    placeholder="Search tasks..."
+                    className="w-64 rounded-lg border-transparent bg-slate-800 py-2 pl-10 pr-4 text-sm text-slate-300 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                  />
                 </div>
 
-                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Selected Bridge</p>
-                      <p className="mt-2 truncate text-sm font-medium text-white">
-                        {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "연결된 bridge 없음"}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Threads</p>
-                      <p className="mt-2 text-sm font-medium text-white">{projectScopedThreads.length}개 이슈</p>
-                    </div>
-                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Updated</p>
-                      <p className="mt-2 text-sm font-medium text-white">
-                        {loadingState === "loading" ? "동기화 중" : formatRelativeTime(status.updated_at)}
-                      </p>
-                    </div>
-                  </div>
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  className="hidden rounded-lg border border-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white md:inline-flex"
+                >
+                  새로고침
+                </button>
 
-                  <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Current Focus</p>
-                    {selectedThread ? (
-                      <div className="mt-2">
-                        <p className="truncate text-sm font-medium text-white">{selectedThread.title}</p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {selectedThread.last_event} · {formatRelativeTime(selectedThread.updated_at)}
-                        </p>
-                      </div>
-                    ) : (
-                      <p className="mt-2 text-sm text-slate-500">선택된 thread가 없습니다.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid gap-3 lg:hidden">
-                  <label className="block">
-                    <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
-                    <select
-                      value={selectedBridgeId}
-                      onChange={(event) => onSelectBridge(event.target.value)}
-                      className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                    >
-                      {bridges.length === 0 ? (
-                        <option value="">연결된 bridge 없음</option>
-                      ) : (
-                        bridges.map((bridge) => (
-                          <option key={bridge.bridge_id} value={bridge.bridge_id}>
-                            {bridge.device_name ?? bridge.bridge_id}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Project</span>
-                    <select
-                      value={selectedProjectId}
-                      onChange={(event) => onSelectProject(event.target.value)}
-                      className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                    >
-                      {projects.length === 0 ? (
-                        <option value="">프로젝트 없음</option>
-                      ) : (
-                        projects.map((project) => (
-                          <option key={project.id} value={project.id}>
-                            {project.name}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
-                </div>
+                <button
+                  type="button"
+                  onClick={onOpenComposer}
+                  disabled={projects.length === 0}
+                  className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 4v16m8-8H4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
+                    New Issue
+                  </span>
+                </button>
               </div>
             </header>
 
-            {highlightedEvents.length > 0 ? (
-              <section className="border-b border-slate-800 bg-slate-950/60 px-4 py-3 md:px-6 lg:px-8">
-                <div className="flex flex-wrap gap-2">
-                  {highlightedEvents.map((event) => (
-                    <div
-                      key={event.id}
-                      className="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs text-slate-400"
-                    >
-                      <span className="font-medium text-slate-200">{event.type}</span>
-                      <span className="mx-2 text-slate-600">/</span>
-                      <span>{summarizeEvent(event)}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            <section className="min-w-0 flex-1 overflow-x-auto px-4 py-6 md:px-6 lg:px-8">
-              <div className="flex min-h-full gap-5 pb-3">
-                {columns.map((column) => (
-                  <div
-                    key={column.id}
-                    className="w-[19.5rem] shrink-0 rounded-[24px] border border-slate-800 bg-[#0f1726] p-4"
+            <div className="border-b border-slate-800 px-4 py-3 md:hidden">
+              <div className="grid gap-3">
+                <label className="block">
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
+                  <select
+                    value={selectedBridgeId}
+                    onChange={(event) => onSelectBridge(event.target.value)}
+                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                   >
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`h-2.5 w-2.5 rounded-full ${
-                              column.accent === "slate"
-                                ? "bg-slate-400"
-                                : column.accent === "blue"
-                                  ? "bg-sky-400"
-                                  : column.accent === "violet"
-                                    ? "bg-violet-400"
-                                    : "bg-emerald-400"
-                            }`}
-                          />
-                          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-300">
-                            {column.label}
-                          </h3>
-                        </div>
-                        <p className="mt-2 text-xs text-slate-500">
-                          {column.id === "todo"
-                            ? "새로 등록된 작업"
+                    {bridges.length === 0 ? (
+                      <option value="">연결된 bridge 없음</option>
+                    ) : (
+                      bridges.map((bridge) => (
+                        <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                          {bridge.device_name ?? bridge.bridge_id}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Project</span>
+                  <select
+                    value={selectedProjectId}
+                    onChange={(event) => onSelectProject(event.target.value)}
+                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                  >
+                    {projects.length === 0 ? (
+                      <option value="">프로젝트 없음</option>
+                    ) : (
+                      projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div className="custom-scrollbar flex-1 overflow-x-auto p-4 md:p-8">
+	              <div className="flex h-full min-w-max space-x-6">
+	                {columns.map((column) => (
+                  <section key={column.id} className="flex w-80 flex-col">
+                    <div className="mb-4 flex items-center justify-between">
+                      <h3
+                        className={`flex items-center text-sm font-bold uppercase tracking-widest ${
+                          column.id === "todo"
+                            ? "text-slate-400"
                             : column.id === "running"
-                              ? "현재 처리 중인 작업"
+                              ? "text-sky-400"
                               : column.id === "review"
-                                ? "입력 또는 검토가 필요한 작업"
-                                : "완료된 작업"}
-                        </p>
-                      </div>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${column.countClassName}`}>
-                        {column.threads.length}
-                      </span>
+                                ? "text-violet-400"
+                                : "text-emerald-400"
+                        }`}
+                      >
+                        <span
+                          className={`mr-2 h-2 w-2 rounded-full ${
+                            column.id === "todo"
+                              ? "bg-slate-400"
+                              : column.id === "running"
+                                ? "bg-sky-400"
+                                : column.id === "review"
+                                  ? "bg-violet-400"
+                                  : "bg-emerald-400"
+                          } ${column.id === "running" ? "animate-pulse" : ""}`}
+                        />
+                        {column.label}
+                        <span className="ml-2 rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300">
+                          {column.threads.length}
+                        </span>
+                      </h3>
                     </div>
 
-                    <div className="custom-scrollbar flex max-h-[calc(100vh-19rem)] flex-col gap-3 overflow-y-auto pr-1">
+                    <div className="space-y-4">
                       {column.threads.length === 0 ? (
-                        <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-6 text-sm text-slate-500">
+                        <div className="rounded-xl border border-dashed border-slate-800 px-4 py-5 text-sm text-slate-500">
                           해당 상태의 thread가 없습니다.
                         </div>
                       ) : (
@@ -1431,12 +1384,12 @@ function MainPage({
                         ))
                       )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </main>
-        </div>
+                  </section>
+	                ))}
+	              </div>
+	            </div>
+	          </main>
+	        </div>
 
         <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
