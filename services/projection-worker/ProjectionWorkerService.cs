@@ -295,12 +295,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       thread["bridge_id"] = bridgeId;
       thread["last_event_type"] = eventType;
       thread["projected_at"] = projectedAt;
-
-      await _r.Db(_rethinkDb)
-        .Table(ThreadTable)
-        .Insert(thread)
-        .OptArg("conflict", "update")
-        .RunResultAsync<object>(connection);
+      await UpsertThreadDocumentAsync(connection, thread, projectedAt);
     }
 
     if (eventType != "bridge.threads.updated")
@@ -327,12 +322,55 @@ public sealed class ProjectionWorkerService : BackgroundService
       item["bridge_id"] = bridgeId;
       item["last_event_type"] = eventType;
       item["projected_at"] = projectedAt;
-
-      await _r.Db(_rethinkDb)
-        .Table(ThreadTable)
-        .Insert(item)
-        .OptArg("conflict", "update")
-        .RunResultAsync<object>(connection);
+      await UpsertThreadDocumentAsync(connection, item, projectedAt);
     }
+  }
+
+  private async Task UpsertThreadDocumentAsync(RethinkConnection connection, JObject thread, string? projectedAt)
+  {
+    var threadId = thread.Value<string>("id");
+
+    if (string.IsNullOrWhiteSpace(threadId))
+    {
+      return;
+    }
+
+    var existing = await _r.Db(_rethinkDb)
+      .Table(ThreadTable)
+      .Get(threadId)
+      .RunResultAsync<JObject?>(connection);
+
+    if (!ShouldReplaceThreadProjection(existing, projectedAt))
+    {
+      return;
+    }
+
+    await _r.Db(_rethinkDb)
+      .Table(ThreadTable)
+      .Insert(thread)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  private static bool ShouldReplaceThreadProjection(JObject? existing, string? incomingProjectedAt)
+  {
+    if (existing is null)
+    {
+      return true;
+    }
+
+    var existingProjectedAt = existing.Value<string>("projected_at");
+
+    if (!DateTimeOffset.TryParse(existingProjectedAt, out var existingTime))
+    {
+      return true;
+    }
+
+    if (!DateTimeOffset.TryParse(incomingProjectedAt, out var incomingTime))
+    {
+      return true;
+    }
+
+    return incomingTime >= existingTime;
   }
 }
