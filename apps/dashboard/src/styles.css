@@ -108,6 +108,19 @@ code,
   background: #475569;
 }
 
+.octop-board-shell {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.octop-board-scroll {
+  min-height: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable both-edges;
+}
+
 .kanban-column {
   min-height: calc(100vh - 20rem);
 }

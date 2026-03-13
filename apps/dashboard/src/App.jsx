@@ -2108,7 +2108,7 @@ function MainPage({
             aria-hidden="true"
           />
 
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
               <div className="min-w-0 flex-1 pr-4">
                 <div className="flex items-center gap-2 text-sm">
@@ -2234,11 +2234,12 @@ function MainPage({
               </div>
             </div>
 
-            <div
-              className="board-scrollbar min-h-0 flex-1 overflow-x-scroll overflow-y-hidden p-4 pb-2 md:p-8 md:pb-3"
-              style={{ scrollbarGutter: "stable both-edges" }}
-            >
-              <div className="flex h-full min-w-max space-x-6 pr-4">
+            <div className="octop-board-shell flex-1 min-h-0 px-4 py-4 md:px-8 md:py-6">
+              <div
+                className="board-scrollbar octop-board-scroll h-full min-h-0 overflow-x-auto overflow-y-hidden"
+                style={{ scrollbarGutter: "stable both-edges" }}
+              >
+                <div className="flex h-full min-w-max space-x-6 pb-3 pr-4">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -2337,6 +2338,7 @@ function MainPage({
                     </div>
                   </section>
                 ))}
+                </div>
               </div>
             </div>
           </main>
