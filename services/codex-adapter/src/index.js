@@ -345,9 +345,47 @@ function restoreThreadCentricState(loginId, stored) {
   }
 
   for (const [threadId, issueId] of Object.entries(stored.active_issue_ids ?? {})) {
-    if (issueCardsById.has(issueId)) {
-      activeIssueByThreadId.set(threadId, issueId);
+    const issue = issueCardsById.get(issueId);
+    const thread = threadStateById.get(threadId);
+
+    if (!issue || !thread) {
+      continue;
     }
+
+    if (!["running", "awaiting_input"].includes(issue.status)) {
+      continue;
+    }
+
+    activeIssueByThreadId.set(threadId, issueId);
+    markRunningIssueActivity(threadId, {
+      startedAt: issue.updated_at ?? thread.updated_at ?? now(),
+      lastActivityAt: issue.updated_at ?? thread.updated_at ?? now(),
+      reconcileAttempts: 0,
+      lastReconciledAt: null
+    });
+  }
+
+  for (const threadId of threadIds) {
+    if (activeIssueByThreadId.has(threadId)) {
+      continue;
+    }
+
+    const runningIssue = getThreadIssueIds(threadId)
+      .map((issueId) => issueCardsById.get(issueId))
+      .find((issue) => issue && ["running", "awaiting_input"].includes(issue.status));
+    const thread = threadStateById.get(threadId);
+
+    if (!runningIssue || !thread) {
+      continue;
+    }
+
+    activeIssueByThreadId.set(threadId, runningIssue.id);
+    markRunningIssueActivity(threadId, {
+      startedAt: runningIssue.updated_at ?? thread.updated_at ?? now(),
+      lastActivityAt: runningIssue.updated_at ?? thread.updated_at ?? now(),
+      reconcileAttempts: 0,
+      lastReconciledAt: null
+    });
   }
 
   return threadIds;

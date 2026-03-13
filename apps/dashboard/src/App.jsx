@@ -3831,6 +3831,8 @@ export default function App() {
   const [issueEditorBusy, setIssueEditorBusy] = useState(false);
   const [editingIssueId, setEditingIssueId] = useState("");
   const issuesRef = useRef([]);
+  const issueLoadRequestIdRef = useRef(0);
+  const selectedProjectThreadIdRef = useRef("");
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -3908,6 +3910,10 @@ export default function App() {
   useEffect(() => {
     issuesRef.current = issues;
   }, [issues]);
+
+  useEffect(() => {
+    selectedProjectThreadIdRef.current = selectedProjectThreadId;
+  }, [selectedProjectThreadId]);
 
   useEffect(() => {
     detailStateRef.current = detailState;
@@ -4011,10 +4017,19 @@ export default function App() {
       return [];
     }
 
+    const requestId = issueLoadRequestIdRef.current + 1;
+    issueLoadRequestIdRef.current = requestId;
+    setIssues([]);
+
     const payload = await apiRequest(
       `/api/threads/${encodeURIComponent(threadId)}/issues?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
     );
     const nextIssues = mergeIssues([], payload?.issues ?? []);
+
+    if (issueLoadRequestIdRef.current !== requestId || selectedProjectThreadIdRef.current !== threadId) {
+      return nextIssues;
+    }
+
     setIssues(nextIssues);
     return nextIssues;
   }
@@ -4313,6 +4328,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+      issueLoadRequestIdRef.current += 1;
       setIssues([]);
       return;
     }
