@@ -835,27 +835,27 @@ function ProjectComposer({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-6xl rounded-[28px] border border-slate-800 bg-slate-950 p-6 shadow-2xl shadow-slate-950/60">
+      <div className="w-full max-w-5xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">New Project</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">새 프로젝트 등록</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">
+            <h2 className="mt-2 text-xl font-semibold text-white">새 프로젝트 등록</h2>
+            <p className="mt-1.5 text-sm leading-6 text-slate-400">
               로컬 bridge가 노출한 폴더를 탐색해 workspace와 프로젝트 메타데이터를 연결합니다.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
             닫기
           </button>
         </div>
 
-        <form className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]" onSubmit={handleSubmit}>
-          <div className="rounded-[24px] border border-slate-800 bg-slate-950/70 p-4">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-4">
+        <form className="mt-5 grid gap-0 xl:grid-cols-[minmax(0,1.35fr)_340px]" onSubmit={handleSubmit}>
+          <div className="min-w-0 border-b border-slate-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
+            <div className="flex items-center justify-between gap-3 pb-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Folder Browser</p>
                 <p className="mt-2 text-sm font-medium text-white">프로젝트 위치 선택</p>
@@ -867,27 +867,27 @@ function ProjectComposer({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
-              <div className="custom-scrollbar max-h-[34rem] space-y-1 overflow-y-auto pr-1">
-                {folderState.parent_path ? (
-                  <button
-                    type="button"
-                    onClick={() => onBrowseFolder(folderState.parent_path)}
-                    className="flex w-full items-center gap-2 rounded-2xl border border-slate-800/80 bg-slate-900/30 px-3 py-2.5 text-left text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
-                  >
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/70 text-slate-400">
-                      ..
-                    </span>
-                    <span>상위 폴더</span>
-                  </button>
-                ) : null}
+            <div className="custom-scrollbar max-h-[34rem] space-y-1 overflow-y-auto pr-1">
+              {roots.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-800 px-3 py-4 text-xs text-slate-500">
+                  탐색 가능한 root가 없습니다.
+                </div>
+              ) : (
+                <>
+                  {folderState.parent_path ? (
+                    <button
+                      type="button"
+                      onClick={() => onBrowseFolder(folderState.parent_path)}
+                      className="flex w-full items-center gap-2 rounded-xl border border-slate-800 px-3 py-2.5 text-left text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+                    >
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-800 text-slate-400">
+                        ..
+                      </span>
+                      <span>상위 폴더</span>
+                    </button>
+                  ) : null}
 
-                {roots.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                    탐색 가능한 root가 없습니다.
-                  </div>
-                ) : (
-                  roots.map((root) =>
+                  {roots.map((root) =>
                     renderTreeNode({
                       name: root.name,
                       path: root.path,
@@ -895,19 +895,19 @@ function ProjectComposer({
                       is_registered: root.is_registered,
                       project_id: root.project_id
                     })
-                  )
-                )}
-              </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
-          <div className="space-y-4 rounded-[24px] border border-slate-800 bg-slate-950/70 p-5">
+          <div className="space-y-4 pt-4 xl:pl-5 xl:pt-0">
             <div>
               <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Project Meta</p>
               <h3 className="mt-2 text-lg font-semibold text-white">프로젝트 정보</h3>
             </div>
 
-            <div>
+            <div className="grid gap-4">
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
                 프로젝트 이름
               </label>
@@ -918,7 +918,7 @@ function ProjectComposer({
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="예: LicenseHub 운영 자동화"
-                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
@@ -932,7 +932,7 @@ function ProjectComposer({
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
                 placeholder="비워두면 이름 기준으로 자동 생성"
-                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
@@ -946,26 +946,26 @@ function ProjectComposer({
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
-                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/20 px-4 py-3 text-xs leading-6 text-slate-400">
+            <p className="text-xs leading-6 text-slate-500">
               선택한 폴더가 실제 Codex 실행의 작업 디렉터리로 사용됩니다.
-            </div>
+            </p>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+                className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
               >
                 취소
               </button>
               <button
                 type="submit"
                 disabled={busy || !selectedWorkspacePath}
-                className="rounded-2xl bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy ? "등록 중..." : "프로젝트 등록"}
               </button>
