@@ -50,6 +50,13 @@ const STATUS_META = {
   }
 };
 
+const KANBAN_FILTERS = [
+  { id: "todo", label: "todo" },
+  { id: "in_progress", label: "in progress" },
+  { id: "review", label: "review" },
+  { id: "done", label: "done" }
+];
+
 function readStoredSession() {
   for (const key of [
     LOCAL_STORAGE_KEY,
@@ -180,6 +187,22 @@ function clampProgress(value) {
 
 function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
+}
+
+function getLaneByStatus(status) {
+  if (status === "running") {
+    return "in_progress";
+  }
+
+  if (status === "awaiting_input" || status === "failed") {
+    return "review";
+  }
+
+  if (status === "completed") {
+    return "done";
+  }
+
+  return "todo";
 }
 
 function parseResponseBody(response, text) {
@@ -582,110 +605,65 @@ function UtilitySheet({
   );
 }
 
-function IssueComposerSheet({ open, busy, projects, selectedProjectId, onClose, onSubmit }) {
-  const [title, setTitle] = useState("");
+function InlineIssueComposer({ busy, selectedProject, onSubmit }) {
   const [prompt, setPrompt] = useState("");
-  const [projectId, setProjectId] = useState(selectedProjectId ?? projects[0]?.id ?? "");
-
-  useEffect(() => {
-    if (!open) {
-      setTitle("");
-      setPrompt("");
-      return;
-    }
-
-    setProjectId(selectedProjectId ?? projects[0]?.id ?? "");
-  }, [open, projects, selectedProjectId]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
 
     const normalizedPrompt = prompt.trim();
-    const normalizedTitle = title.trim() || createThreadTitleFromPrompt(normalizedPrompt);
+    const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
 
-    if (!normalizedPrompt || !normalizedTitle || !projectId) {
+    if (!normalizedPrompt || !normalizedTitle || !selectedProject?.id) {
       return;
     }
 
-    await onSubmit({
+    const accepted = await onSubmit({
       title: normalizedTitle,
       prompt: normalizedPrompt,
-      project_id: projectId
+      project_id: selectedProject.id
     });
+
+    if (accepted !== false) {
+      setPrompt("");
+    }
   };
 
   return (
-    <BottomSheet
-      open={open}
-      title="새 thread 보내기"
-      description="메시지를 보내듯 이슈를 등록하면 Codex turn이 생성됩니다."
-      onClose={onClose}
-    >
-      <form className="space-y-4 px-5 py-5" onSubmit={handleSubmit}>
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-title">
-            제목
-          </label>
-          <input
-            id="issue-title"
-            type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="비워두면 프롬프트 앞부분으로 자동 생성됩니다."
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-project">
-            프로젝트
-          </label>
-          <select
-            id="issue-project"
-            value={projectId}
-            onChange={(event) => setProjectId(event.target.value)}
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          >
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-prompt">
-            프롬프트
-          </label>
+    <form className="pointer-events-auto w-full" onSubmit={handleSubmit}>
+      <div className="flex items-end gap-3">
+        <div className="min-w-0 flex-1 rounded-[1.4rem] bg-white/6 px-4 py-3">
+          <div className="mb-1 text-[11px] text-slate-500">
+            {selectedProject ? `${selectedProject.name} · 프롬프트` : "프로젝트를 선택해 주세요"}
+          </div>
           <textarea
-            id="issue-prompt"
-            rows="5"
+            rows="1"
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder="수행할 작업을 입력해 주세요. 제목은 비워두셔도 됩니다."
-            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            placeholder={
+              selectedProject
+                ? "채팅처럼 작업 지시를 입력하세요"
+                : "먼저 프로젝트를 선택해 주세요"
+            }
+            disabled={!selectedProject || busy}
+            className="max-h-32 min-h-[24px] w-full resize-none border-none bg-transparent p-0 text-sm leading-6 text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
           />
         </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/10"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-2xl bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "전송 중..." : "전송"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
+        <button
+          type="submit"
+          disabled={busy || !selectedProject || !prompt.trim()}
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {busy ? (
+            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          ) : (
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          )}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -977,7 +955,7 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
   );
 }
 
-function ThreadDetail({ thread, project, onBack, onOpenComposer }) {
+function ThreadDetail({ thread, project, onBack }) {
   const status = getStatusMeta(thread.status);
 
   return (
@@ -1003,13 +981,6 @@ function ThreadDetail({ thread, project, onBack, onOpenComposer }) {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onOpenComposer}
-            className="rounded-full bg-telegram-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-telegram-400"
-          >
-            새 이슈
-          </button>
         </div>
       </header>
 
@@ -1064,18 +1035,17 @@ function MainPage({
   issueBusy,
   utilityOpen,
   projectComposerOpen,
-  composerOpen,
+  laneFilter,
   activeView,
   onSearchChange,
+  onChangeLaneFilter,
   onSelectBridge,
   onSelectProject,
   onSelectThread,
   onOpenUtility,
   onOpenProjectComposer,
-  onOpenComposer,
   onCloseUtility,
   onCloseProjectComposer,
-  onCloseComposer,
   onBrowseWorkspaceRoot,
   onBrowseFolder,
   onSelectWorkspace,
@@ -1092,14 +1062,15 @@ function MainPage({
   const filteredThreads = useMemo(() => {
     return threads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
+      const matchesLane = getLaneByStatus(thread.status) === laneFilter;
       const matchesSearch =
         !searchKeyword ||
         thread.title.toLowerCase().includes(searchKeyword) ||
         thread.last_message.toLowerCase().includes(searchKeyword);
 
-      return matchesProject && matchesSearch;
+      return matchesProject && matchesLane && matchesSearch;
     });
-  }, [searchKeyword, selectedProjectId, threads]);
+  }, [laneFilter, searchKeyword, selectedProjectId, threads]);
   const bridgeLabel =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ??
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.bridge_id ??
@@ -1114,15 +1085,6 @@ function MainPage({
           thread={selectedThread}
           project={threadProject}
           onBack={onBackToInbox}
-          onOpenComposer={onOpenComposer}
-        />
-        <IssueComposerSheet
-          open={composerOpen}
-          busy={issueBusy}
-          projects={projects}
-          selectedProjectId={selectedThread.project_id ?? selectedProjectId}
-          onClose={onCloseComposer}
-          onSubmit={onSubmitIssue}
         />
       </div>
     );
@@ -1156,19 +1118,41 @@ function MainPage({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onOpenComposer}
-              disabled={projects.length === 0}
-              className="rounded-full bg-telegram-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              새 이슈
-            </button>
+            <div className="text-right text-[11px] text-slate-500">
+              {selectedProject ? selectedProject.name : "프로젝트 선택"}
+            </div>
           </div>
         </header>
 
         <main className="flex-1 px-4 pb-24 pt-2">
           <div className="border-b border-white/10 pb-3">
+            <div className="flex gap-2 overflow-x-auto pb-2">
+              {KANBAN_FILTERS.map((filter) => {
+                const count = threads.filter((thread) => {
+                  const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
+                  return matchesProject && getLaneByStatus(thread.status) === filter.id;
+                }).length;
+
+                return (
+                  <button
+                    key={filter.id}
+                    type="button"
+                    onClick={() => onChangeLaneFilter(filter.id)}
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition ${
+                      laneFilter === filter.id
+                        ? "bg-white text-slate-900"
+                        : "bg-transparent text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    {filter.label}
+                    <span className={`ml-1.5 text-[11px] ${laneFilter === filter.id ? "text-slate-500" : "text-slate-500"}`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="flex items-center gap-3 px-1 py-2">
               <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
@@ -1234,25 +1218,11 @@ function MainPage({
 
         <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
           <div className="pointer-events-auto flex w-full items-center gap-3 px-1 py-1">
-            <button
-              type="button"
-              onClick={onOpenComposer}
-              disabled={projects.length === 0}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M12 5v14m7-7H5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </button>
-
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-white">
-                {selectedProject?.name ?? "프로젝트를 선택하거나 새로 등록해 주세요"}
-              </p>
-              <p className="truncate text-xs text-slate-400">
-                프롬프트를 보내면 바로 thread가 생성됩니다.
-              </p>
-            </div>
+            <InlineIssueComposer
+              busy={issueBusy}
+              selectedProject={selectedProject}
+              onSubmit={onSubmitIssue}
+            />
             <button
               type="button"
               onClick={onRefresh}
@@ -1291,14 +1261,6 @@ function MainPage({
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
       />
-      <IssueComposerSheet
-        open={composerOpen}
-        busy={issueBusy}
-        projects={projects}
-        selectedProjectId={selectedProjectId}
-        onClose={onCloseComposer}
-        onSubmit={onSubmitIssue}
-      />
     </div>
   );
 }
@@ -1327,10 +1289,10 @@ export default function App() {
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
+  const [laneFilter, setLaneFilter] = useState("todo");
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
-  const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
 
@@ -1630,7 +1592,6 @@ export default function App() {
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
-    setComposerOpen(false);
     setActiveView("inbox");
   };
 
@@ -1642,25 +1603,42 @@ export default function App() {
     setIssueBusy(true);
 
     try {
-      const response = await apiRequest(
-        `/api/commands/ping?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+      const created = await apiRequest(
+        `/api/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
         }
       );
 
-      if (response?.thread) {
-        setThreads((current) => upsertThread(current, response.thread));
-        setSelectedThreadId(response.thread.id);
+      if (created?.thread?.id) {
+        setThreads((current) => upsertThread(current, created.thread));
+        setSelectedThreadId(created.thread.id);
+
+        const started = await apiRequest(
+          `/api/threads/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              thread_ids: [created.thread.id]
+            })
+          }
+        );
+
+        if (Array.isArray(started?.threads)) {
+          setThreads((current) => mergeThreads(current, started.threads));
+        }
+
+        setLaneFilter("todo");
       }
 
-      setComposerOpen(false);
       setActiveView("inbox");
+      return true;
     } catch (error) {
       if (typeof window !== "undefined") {
         window.alert(error.message);
       }
+      return false;
     } finally {
       setIssueBusy(false);
     }
@@ -1792,18 +1770,17 @@ export default function App() {
       projectBusy={projectBusy}
       issueBusy={issueBusy}
       projectComposerOpen={projectComposerOpen}
-      composerOpen={composerOpen}
+      laneFilter={laneFilter}
       activeView={activeView}
       onSearchChange={setSearch}
+      onChangeLaneFilter={setLaneFilter}
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={handleSelectProject}
       onSelectThread={handleSelectThread}
       onOpenUtility={() => setUtilityOpen(true)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
-      onOpenComposer={() => setComposerOpen(true)}
       onCloseUtility={() => setUtilityOpen(false)}
       onCloseProjectComposer={handleCloseProjectComposer}
-      onCloseComposer={() => setComposerOpen(false)}
       onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
       onBrowseFolder={(path) => browseWorkspacePath(path)}
       onSelectWorkspace={setSelectedWorkspacePath}
