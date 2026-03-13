@@ -525,7 +525,7 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
             <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Issue</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">새 이슈 등록</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              제목이 비어 있으면 작업 설명 앞부분이 자동으로 제목으로 사용됩니다.
+              제목은 선택 입력입니다. 비워두면 프롬프트 앞부분이 자동으로 제목으로 사용됩니다.
             </p>
           </div>
           <button
@@ -540,14 +540,14 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
         <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-title">
-              이슈 제목
+              이슈 제목 <span className="text-slate-500">(선택)</span>
             </label>
             <input
               id="issue-title"
               type="text"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="비워두면 작업 설명 앞부분으로 자동 생성"
+              placeholder="비워두면 프롬프트 앞부분으로 자동 생성"
               className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
@@ -572,14 +572,14 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
 
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-prompt">
-              작업 설명
+              프롬프트
             </label>
             <textarea
               id="issue-prompt"
               rows="5"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="필요한 작업 내용이나 확인하고 싶은 내용을 입력해 주세요."
+              placeholder="수행할 작업을 구체적으로 입력해 주세요."
               className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
@@ -1084,7 +1084,7 @@ function TodoThreadCard({
         event.preventDefault();
         onDrop(thread.id);
       }}
-      className={`rounded-2xl border px-4 py-4 transition ${
+      className={`rounded-xl border px-3.5 py-3 transition ${
         active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
@@ -1093,14 +1093,14 @@ function TodoThreadCard({
           type="checkbox"
           checked={selected}
           onChange={() => onToggle(thread.id)}
-          className="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
+          className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
         />
 
         <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="line-clamp-2 text-sm font-medium leading-6 text-slate-100">{thread.title}</p>
-              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{buildMessagePreview(thread)}</p>
+              <p className="truncate text-sm font-medium text-slate-100">{thread.title}</p>
+              <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {thread.queue_position ? (
@@ -1108,14 +1108,15 @@ function TodoThreadCard({
                   #{thread.queue_position}
                 </span>
               ) : null}
-              <span className="cursor-grab rounded-lg border border-slate-700 px-2 py-1 text-[10px] text-slate-400">
-                순서
+              <span className="cursor-grab rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400">
+                drag
               </span>
             </div>
           </div>
 
-          <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500">
+          <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
             <span>{formatRelativeTime(thread.updated_at)}</span>
+            <span className="text-slate-700">•</span>
             <span className="font-mono">{thread.id.slice(0, 8)}</span>
           </div>
         </button>
@@ -1131,7 +1132,7 @@ function ThreadCard({ thread, selected, onSelect }) {
     <button
       type="button"
       onClick={() => onSelect(thread.id)}
-      className={`w-full rounded-2xl border px-4 py-4 text-left transition ${
+      className={`w-full rounded-xl border px-3.5 py-3 text-left transition ${
         selected ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
@@ -1142,13 +1143,18 @@ function ThreadCard({ thread, selected, onSelect }) {
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
-      <h4 className="mt-4 line-clamp-2 text-sm font-medium leading-6 text-slate-100">{thread.title}</h4>
-      <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{buildMessagePreview(thread)}</p>
-      <div className="mt-4 h-1.5 rounded-full bg-slate-900">
+      <h4 className="mt-3 truncate text-sm font-medium text-slate-100">{thread.title}</h4>
+      <p className="mt-1 truncate text-xs text-slate-500">{buildMessagePreview(thread)}</p>
+      <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
-          className="h-1.5 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
+          className="h-1 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
           style={{ width: `${thread.progress}%` }}
         />
+      </div>
+      <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+        <span>{formatRelativeTime(thread.updated_at)}</span>
+        <span className="text-slate-700">•</span>
+        <span className="font-mono">{thread.id.slice(0, 8)}</span>
       </div>
     </button>
   );

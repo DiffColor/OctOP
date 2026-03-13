@@ -616,6 +616,22 @@ function listThreadMessages(threadId) {
   return [...(threadMessagesById.get(threadId) ?? [])];
 }
 
+function buildExecutionPrompt(prompt = "") {
+  const normalizedPrompt = String(prompt ?? "").trim();
+  const instruction = [
+    "아래 프롬프트를 최우선 지시로 따르십시오.",
+    "질문 없이 작업을 순차적으로 끝까지 진행하십시오.",
+    "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
+    "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
+  ].join(" ");
+
+  if (!normalizedPrompt) {
+    return instruction;
+  }
+
+  return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
+}
+
 function ensurePendingQueue(userId) {
   const normalized = sanitizeUserId(userId);
 
@@ -1138,7 +1154,9 @@ async function startThreadTurn(userId, threadId) {
       input: [
         {
           type: "text",
-          text: current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
+          text: buildExecutionPrompt(
+            current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
+          )
         }
       ]
     });
