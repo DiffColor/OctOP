@@ -20,8 +20,6 @@ const COLUMN_ORDER = [
   { id: "done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
 ];
 
-const MULTI_SELECTABLE_COLUMNS = new Set(["prep", "review", "done"]);
-
 const STATUS_META = {
   staged: {
     column: "prep",
@@ -2148,6 +2146,7 @@ function PrepThreadCard({
   onSelectionGesture
 }) {
   const copy = getCopy(language);
+  const highlighted = active || selected;
   const handleCardClick = (event) => {
     if (onSelectionGesture?.(event, "prep", thread.id)) {
       return;
@@ -2168,7 +2167,7 @@ function PrepThreadCard({
         onDrop(thread.id);
       }}
       className={`rounded-xl border px-3.5 py-3 transition ${
-        active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
+        highlighted ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
       <div className="flex items-start gap-3">
@@ -2208,14 +2207,25 @@ function TodoThreadCard({
   language,
   thread,
   active,
+  multiSelected,
+  columnId = "todo",
   onSelect,
   onDelete,
+  onSelectionGesture,
   onDragStart,
   onDragOver,
   onDrop
 }) {
   const copy = getCopy(language);
   const progressText = getRealtimeProgressText(thread, language);
+  const highlighted = active || multiSelected;
+  const handleCardClick = (event) => {
+    if (onSelectionGesture?.(event, columnId, thread.id)) {
+      return;
+    }
+
+    onSelect(thread.id);
+  };
   return (
     <div
       draggable
@@ -2229,11 +2239,11 @@ function TodoThreadCard({
         onDrop(thread.id);
       }}
       className={`rounded-xl border px-3.5 py-3 transition ${
-        active ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
+        highlighted ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
+        <button type="button" onClick={handleCardClick} className="min-w-0 flex-1 text-left">
           <OverflowRevealText value={getIssueTitle(thread, language)} className="text-sm font-medium text-slate-100" />
           <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
         </button>
@@ -2652,9 +2662,30 @@ function MainPage({
   const prepSelectedCount = filteredIssues.filter(
     (thread) => selectedIssueIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
+  const handleExclusiveIssueSelection = useCallback(
+    (threadId, columnId = "") => {
+      if (!threadId) {
+        onUpdateIssueSelection([]);
+        setSelectionAnchor({
+          threadId: "",
+          columnId: ""
+        });
+        onSelectIssue("");
+        return;
+      }
+
+      onUpdateIssueSelection([threadId]);
+      setSelectionAnchor({
+        threadId,
+        columnId
+      });
+      onSelectIssue(threadId);
+    },
+    [onSelectIssue, onUpdateIssueSelection]
+  );
   const handleIssueSelectionGesture = useCallback(
     (event, columnId, threadId) => {
-      if (!event || !threadId || !MULTI_SELECTABLE_COLUMNS.has(columnId)) {
+      if (!event || !threadId) {
         return false;
       }
 
@@ -2668,35 +2699,43 @@ function MainPage({
       event.preventDefault();
       event.stopPropagation();
 
+      let computedSelection = [];
       onUpdateIssueSelection((currentSelection) => {
-        if (shiftKey && selectionAnchor.threadId && selectionAnchor.columnId === columnId) {
+        let nextSelection = currentSelection;
+
+        if (shiftKey) {
           const order = columnThreadOrder.get(columnId) ?? [];
-          const anchorIndex = order.indexOf(selectionAnchor.threadId);
-          const targetIndex = order.indexOf(threadId);
+          const anchorId = selectionAnchor.threadId;
 
-          if (anchorIndex === -1 || targetIndex === -1) {
-            return currentSelection;
+          if (!anchorId || selectionAnchor.columnId !== columnId) {
+            nextSelection = [threadId];
+          } else {
+            const anchorIndex = order.indexOf(anchorId);
+            const targetIndex = order.indexOf(threadId);
+
+            if (anchorIndex === -1 || targetIndex === -1) {
+              nextSelection = [threadId];
+            } else {
+              const [start, end] =
+                anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+              const idsInRange = order.slice(start, end + 1);
+              const combined = new Set(currentSelection);
+
+              for (const id of idsInRange) {
+                combined.add(id);
+              }
+
+              nextSelection = Array.from(combined);
+            }
           }
-
-          const [start, end] =
-            anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-          const idsInRange = order.slice(start, end + 1);
-          const combined = new Set(currentSelection);
-
-          for (const id of idsInRange) {
-            combined.add(id);
-          }
-
-          return [...combined];
-        }
-
-        if (metaKey) {
-          return currentSelection.includes(threadId)
+        } else if (metaKey) {
+          nextSelection = currentSelection.includes(threadId)
             ? currentSelection.filter((id) => id !== threadId)
             : [...currentSelection, threadId];
         }
 
-        return currentSelection;
+        computedSelection = nextSelection;
+        return nextSelection;
       });
 
       setSelectionAnchor((current) => {
@@ -2710,9 +2749,17 @@ function MainPage({
         };
       });
 
+      if (computedSelection.length === 0) {
+        onSelectIssue("");
+      } else if (computedSelection.includes(threadId)) {
+        onSelectIssue(threadId);
+      } else {
+        onSelectIssue(computedSelection[computedSelection.length - 1]);
+      }
+
       return true;
     },
-    [columnThreadOrder, onUpdateIssueSelection, selectionAnchor]
+    [columnThreadOrder, onSelectIssue, onUpdateIssueSelection, selectionAnchor]
   );
   const handleTogglePrepSelection = useCallback(
     (threadId) => {
@@ -3465,7 +3512,7 @@ function MainPage({
                               thread={thread}
                               selected={selectedIssueIds.includes(thread.id)}
                               active={thread.id === selectedIssueId}
-                              onSelect={onSelectIssue}
+                              onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                               onToggle={handleTogglePrepSelection}
                               onDelete={onDeleteIssue}
                               onDragStart={onDragPrepIssues.start}
@@ -3483,8 +3530,11 @@ function MainPage({
                                 language={language}
                                 thread={thread}
                                 active={thread.id === selectedIssueId}
-                                onSelect={onSelectIssue}
+                                multiSelected={selectedIssueIds.includes(thread.id)}
+                                columnId={column.id}
+                                onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                                 onDelete={onDeleteIssue}
+                                onSelectionGesture={handleIssueSelectionGesture}
                                 onDragStart={onDragQueueIssue.start}
                                 onDragOver={onDragQueueIssue.over}
                                 onDrop={onDragQueueIssue.drop}
@@ -3501,7 +3551,7 @@ function MainPage({
                                 active={thread.id === selectedIssueId}
                                 multiSelected={selectedIssueIds.includes(thread.id)}
                                 columnId={column.id}
-                                onSelect={onSelectIssue}
+                                onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                                 onOpen={onOpenCompletedIssue}
                                 onSelectionGesture={handleIssueSelectionGesture}
                                 onDragStart={onDragArchiveIssues.start}
@@ -3518,7 +3568,7 @@ function MainPage({
                               active={thread.id === selectedIssueId}
                               multiSelected={selectedIssueIds.includes(thread.id)}
                               columnId={column.id}
-                              onSelect={onSelectIssue}
+                              onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                               onSelectionGesture={handleIssueSelectionGesture}
                               onDragStart={column.id === "review" ? onDragArchiveIssues.start : undefined}
                               onDragEnd={column.id === "review" ? onDragArchiveIssues.clear : undefined}
