@@ -1768,6 +1768,22 @@ function ThreadDetail({
     return chatTimeline;
   }, [chatTimeline, messageFilter]);
 
+  const recomputePinnedState = useCallback(() => {
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
+    const nearBottom = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+    const shouldPin = nearBottom && !userInteractingRef.current;
+
+    if (shouldPin !== pinnedToLatestRef.current) {
+      pinnedToLatestRef.current = shouldPin;
+      setIsPinnedToLatest(shouldPin);
+    }
+  }, []);
   const clearUserInteractionTimeout = useCallback(() => {
     if (userInteractionTimeoutRef.current) {
       clearTimeout(userInteractionTimeoutRef.current);
@@ -1785,15 +1801,17 @@ function ThreadDetail({
   const beginUserInteraction = useCallback(() => {
     clearUserInteractionTimeout();
     setUserInteractingState(true);
-  }, [clearUserInteractionTimeout, setUserInteractingState]);
+    recomputePinnedState();
+  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
   const scheduleUserInteractionEnd = useCallback(() => {
     clearUserInteractionTimeout();
 
     userInteractionTimeoutRef.current = setTimeout(() => {
       userInteractionTimeoutRef.current = null;
       setUserInteractingState(false);
+      recomputePinnedState();
     }, 350);
-  }, [clearUserInteractionTimeout, setUserInteractingState]);
+  }, [clearUserInteractionTimeout, recomputePinnedState, setUserInteractingState]);
 
   useEffect(() => {
     pinnedToLatestRef.current = true;
@@ -1801,7 +1819,8 @@ function ThreadDetail({
     userInteractingRef.current = false;
     setIsUserInteracting(false);
     clearUserInteractionTimeout();
-  }, [clearUserInteractionTimeout, thread?.id, viewMode]);
+    recomputePinnedState();
+  }, [clearUserInteractionTimeout, recomputePinnedState, thread?.id, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat") {
@@ -1814,16 +1833,6 @@ function ThreadDetail({
       return;
     }
 
-    const syncPinnedState = () => {
-      const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
-      const nearBottom = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-
-      if (nearBottom !== pinnedToLatestRef.current) {
-        pinnedToLatestRef.current = nearBottom;
-        setIsPinnedToLatest(nearBottom);
-      }
-    };
-
     let rafId = null;
 
     const handleScroll = () => {
@@ -1831,10 +1840,12 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
 
-      rafId = window.requestAnimationFrame(syncPinnedState);
+      rafId = window.requestAnimationFrame(() => {
+        recomputePinnedState();
+      });
     };
 
-    syncPinnedState();
+    recomputePinnedState();
     const handlePointerDown = () => {
       beginUserInteraction();
     };
@@ -1865,7 +1876,7 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [beginUserInteraction, scheduleUserInteractionEnd, viewMode]);
+  }, [beginUserInteraction, recomputePinnedState, scheduleUserInteractionEnd, viewMode]);
 
   useLayoutEffect(() => {
     if (viewMode !== "chat" || !isPinnedToLatest || isUserInteracting) {
