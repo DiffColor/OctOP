@@ -89,8 +89,10 @@ code,
 }
 
 .octop-board-shell {
+  padding: 0;
   min-height: 0;
-  height: 100%;
+  min-height: calc(100dvh - 64px - 46px - 42px);
+  height: calc(100dvh - 64px - 46px - 42px);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-gutter: auto;
@@ -135,7 +137,13 @@ code,
 
 .octop-board-shell-inner {
   min-height: 100%;
-  width: max-content;
+}
+
+@media (max-width: 767px) {
+  .octop-board-shell {
+    min-height: calc(100dvh - 64px - 46px - 42px - 164px);
+    height: calc(100dvh - 64px - 46px - 42px - 164px);
+  }
 }
 
 .kanban-column {

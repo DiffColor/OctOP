@@ -1849,6 +1849,7 @@ function MainPage({
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
   }).filter((column) => column.id !== "review" || column.threads.length > 0);
+  const boardContentWidth = Math.max(columns.length * 320 + Math.max(columns.length - 1, 0) * 24 + 128, 0);
   const prepSelectedCount = filteredIssues.filter(
     (thread) => selectedIssueIds.includes(thread.id) && getStatusMeta(thread.status).column === "prep"
   ).length;
@@ -1876,49 +1877,6 @@ function MainPage({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [languageMenuOpen]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const shell = boardShellRef.current;
-    const inner = boardInnerRef.current;
-
-    if (!shell || !inner) {
-      return undefined;
-    }
-
-    const logBoardMetrics = () => {
-      const payload = {
-        forceBoardScrollbar,
-        shellClientWidth: shell.clientWidth,
-        shellScrollWidth: shell.scrollWidth,
-        shellOffsetWidth: shell.offsetWidth,
-        innerClientWidth: inner.clientWidth,
-        innerScrollWidth: inner.scrollWidth,
-        innerOffsetWidth: inner.offsetWidth,
-        hasHorizontalOverflow: shell.scrollWidth > shell.clientWidth
-      };
-
-      console.info("[OctOP board]", payload);
-    };
-
-    logBoardMetrics();
-
-    const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(logBoardMetrics);
-    });
-
-    resizeObserver.observe(shell);
-    resizeObserver.observe(inner);
-    window.addEventListener("resize", logBoardMetrics);
-
-    return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", logBoardMetrics);
-    };
-  }, [columns.length, filteredIssues.length, forceBoardScrollbar, selectedProjectThreadId, sidebarWidth]);
 
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
@@ -2303,6 +2261,7 @@ function MainPage({
               <div
                 ref={boardInnerRef}
                 className="octop-board-shell-inner flex h-full min-w-max space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12"
+                style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
               >
                 {columns.map((column) => (
                   <section
