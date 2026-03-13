@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
+const LANGUAGE_STORAGE_KEY = "octop.dashboard.language";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -10,57 +11,343 @@ const DEFAULT_API_BASE_URL =
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
 
 const COLUMN_ORDER = [
-  { id: "prep", label: "준비", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
-  { id: "todo", label: "To Do", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
-  { id: "running", label: "In Progress", accent: "blue", countClassName: "bg-sky-500/10 text-sky-300" },
-  { id: "review", label: "Review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
-  { id: "done", label: "Done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
+  { id: "prep", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
+  { id: "todo", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
+  { id: "running", accent: "blue", countClassName: "bg-sky-500/10 text-sky-300" },
+  { id: "review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
+  { id: "done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
 ];
 
 const STATUS_META = {
   staged: {
     column: "prep",
-    label: "준비",
+    labelKey: "staged",
     chipClassName: "bg-slate-800 text-slate-300",
     dotClassName: "bg-slate-400"
   },
   queued: {
     column: "todo",
-    label: "Queued",
+    labelKey: "queued",
     chipClassName: "bg-slate-800 text-slate-300",
     dotClassName: "bg-slate-400"
   },
   idle: {
     column: "todo",
-    label: "Idle",
+    labelKey: "idle",
     chipClassName: "bg-slate-800 text-slate-300",
     dotClassName: "bg-slate-400"
   },
   awaiting_input: {
     column: "review",
-    label: "Need Input",
+    labelKey: "awaiting_input",
     chipClassName: "bg-amber-500/10 text-amber-300",
     dotClassName: "bg-amber-400"
   },
   running: {
     column: "running",
-    label: "Running",
+    labelKey: "running",
     chipClassName: "bg-sky-500/10 text-sky-300",
     dotClassName: "bg-sky-400"
   },
   failed: {
     column: "review",
-    label: "Failed",
+    labelKey: "failed",
     chipClassName: "bg-rose-500/10 text-rose-300",
     dotClassName: "bg-rose-400"
   },
   completed: {
     column: "done",
-    label: "Done",
+    labelKey: "completed",
     chipClassName: "bg-emerald-500/10 text-emerald-300",
     dotClassName: "bg-emerald-400"
   }
 };
+
+const COPY = {
+  en: {
+    locale: "en-US",
+    columns: {
+      prep: "Prep",
+      todo: "To Do",
+      running: "In Progress",
+      review: "Review",
+      done: "Done"
+    },
+    status: {
+      staged: "Prep",
+      queued: "Queued",
+      idle: "Idle",
+      awaiting_input: "Need Input",
+      running: "Running",
+      failed: "Failed",
+      completed: "Done"
+    },
+    fallback: {
+      untitledIssue: "Untitled issue",
+      noPrompt: "No prompt yet.",
+      noProjects: "No projects yet.",
+      noBridges: "No connected bridge.",
+      bridgeUpdated: "Bridge state updated.",
+      justNow: "just now",
+      noSelection: "Select a project",
+      noBridge: "No bridge"
+    },
+    alerts: {
+      requestFailed: (status) => `Request failed. (${status})`,
+      sseReconnect: "Realtime event stream is reconnecting."
+    },
+    login: {
+      eyebrow: "OctOP Workspace",
+      title: "Sign in",
+      subtitle: "Use your LicenseHub login ID to open the project board.",
+      loginId: "Login ID",
+      loginIdPlaceholder: "Enter your account ID",
+      password: "Password",
+      passwordHint: "LicenseHub password",
+      rememberDevice: "Keep me signed in on this device",
+      submitting: "Signing in...",
+      submit: "Sign in",
+      helper: "After sign-in, your connected bridge, projects, and thread board sync automatically."
+    },
+    issueComposer: {
+      eyebrow: "New Issue",
+      title: "Create issue",
+      subtitle: "Title is optional. If empty, the prompt opening line becomes the issue title.",
+      issueTitle: "Issue title",
+      optional: "optional",
+      titlePlaceholder: "Auto-filled from the prompt if left blank",
+      project: "Project",
+      prompt: "Prompt",
+      promptPlaceholder: "Describe the work to be completed.",
+      cancel: "Cancel",
+      submit: "Create issue",
+      submitting: "Creating..."
+    },
+    projectComposer: {
+      eyebrow: "New Project",
+      title: "Create project",
+      subtitle: "Browse a local workspace exposed by the bridge and connect it to project metadata.",
+      close: "Close",
+      browserEyebrow: "Folder Browser",
+      browserTitle: "Select workspace",
+      foldersLoading: "Loading folders",
+      noRoots: "No browsable roots are available.",
+      parentFolder: "Up",
+      workspace: "Workspace",
+      registered: "Added",
+      selected: "Selected",
+      noChildren: "No subfolders.",
+      metaEyebrow: "Project Meta",
+      metaTitle: "Project details",
+      name: "Project name",
+      namePlaceholder: "Example: LicenseHub operations automation",
+      key: "Project key",
+      keyPlaceholder: "Auto-generated from the name if left blank",
+      description: "Description",
+      descriptionPlaceholder: "Describe the project scope briefly.",
+      helper: "The selected folder is used as the Codex working directory.",
+      cancel: "Cancel",
+      submit: "Create project",
+      submitting: "Creating..."
+    },
+    detail: {
+      eyebrow: "Issue History",
+      emptyTitle: "Completed issue",
+      close: "Close",
+      loading: "Loading thread history.",
+      empty: "No conversation history to display.",
+      request: "Request",
+      response: "Response"
+    },
+    board: {
+      sidebarEyebrow: "Projects",
+      projectsCount: (count) => `${count} projects`,
+      addProject: "Add",
+      noProjects: "No projects.",
+      queuedCount: (count) => `Queued ${count}`,
+      searchPlaceholder: "Search issues",
+      refresh: "Refresh",
+      newIssue: "New Issue",
+      noBridgeOption: "No connected bridge",
+      noProjectOption: "No project",
+      issueCount: (count) => `${count} issues`,
+      selectProject: "Select a project.",
+      prepHint:
+        "Select issues in Prep and move them to To Do. Items in To Do run sequentially, and you can reorder them by drag and drop.",
+      syncing: "Syncing",
+      updatedAt: (value) => `Updated ${value}`,
+      emptyColumn: "No issues in this state.",
+      moveSelectedToTodo: (count) => `Move to To Do${count > 0 ? ` (${count})` : ""}`,
+      moving: "Moving...",
+      bridge: "Bridge",
+      project: "Project",
+      drag: "Drag",
+      prep: "Prep",
+      queue: "Queue",
+      delete: "Delete",
+      logout: "Sign out",
+      bridgeOk: "Bridge OK",
+      bridgeDown: "Bridge Down",
+      projectsChip: (count) => `Projects ${count}`,
+      threadsChip: (count) => `Threads ${count}`,
+      deleteProjectConfirm: "Delete this project? Its issues will be removed as well."
+    },
+    footer: {
+      languageKorean: "한국어",
+      languageEnglish: "영어"
+    }
+  },
+  ko: {
+    locale: "ko-KR",
+    columns: {
+      prep: "준비",
+      todo: "할 일",
+      running: "진행 중",
+      review: "검토",
+      done: "완료"
+    },
+    status: {
+      staged: "준비",
+      queued: "대기",
+      idle: "대기",
+      awaiting_input: "입력 필요",
+      running: "진행 중",
+      failed: "실패",
+      completed: "완료"
+    },
+    fallback: {
+      untitledIssue: "제목 없는 이슈",
+      noPrompt: "프롬프트가 아직 없습니다.",
+      noProjects: "프로젝트가 아직 없습니다.",
+      noBridges: "연결된 브릿지가 없습니다.",
+      bridgeUpdated: "브릿지 상태가 갱신되었습니다.",
+      justNow: "방금 전",
+      noSelection: "프로젝트를 선택해 주세요",
+      noBridge: "브릿지 없음"
+    },
+    alerts: {
+      requestFailed: (status) => `요청에 실패했습니다. (${status})`,
+      sseReconnect: "실시간 이벤트 스트림이 재연결을 시도하고 있습니다."
+    },
+    login: {
+      eyebrow: "OctOP Workspace",
+      title: "로그인",
+      subtitle: "LicenseHub 로그인 아이디로 프로젝트 보드를 엽니다.",
+      loginId: "로그인 아이디",
+      loginIdPlaceholder: "계정 아이디를 입력해 주세요",
+      password: "비밀번호",
+      passwordHint: "LicenseHub 비밀번호",
+      rememberDevice: "이 기기에서 로그인 상태 유지",
+      submitting: "로그인 중...",
+      submit: "로그인",
+      helper: "로그인 후 연결된 브릿지, 프로젝트, 스레드 보드가 자동으로 동기화됩니다."
+    },
+    issueComposer: {
+      eyebrow: "새 이슈",
+      title: "이슈 등록",
+      subtitle: "제목은 선택 입력입니다. 비워두면 프롬프트 앞부분이 이슈 제목이 됩니다.",
+      issueTitle: "이슈 제목",
+      optional: "선택",
+      titlePlaceholder: "비워두면 프롬프트 앞부분으로 자동 생성됩니다",
+      project: "프로젝트",
+      prompt: "프롬프트",
+      promptPlaceholder: "수행할 작업을 구체적으로 입력해 주세요.",
+      cancel: "취소",
+      submit: "이슈 등록",
+      submitting: "등록 중..."
+    },
+    projectComposer: {
+      eyebrow: "새 프로젝트",
+      title: "프로젝트 등록",
+      subtitle: "브릿지가 노출한 로컬 워크스페이스를 선택하고 프로젝트 메타데이터를 연결합니다.",
+      close: "닫기",
+      browserEyebrow: "폴더 브라우저",
+      browserTitle: "프로젝트 위치 선택",
+      foldersLoading: "폴더 불러오는 중",
+      noRoots: "탐색 가능한 루트가 없습니다.",
+      parentFolder: "상위",
+      workspace: "워크스페이스",
+      registered: "등록됨",
+      selected: "선택됨",
+      noChildren: "하위 폴더가 없습니다.",
+      metaEyebrow: "프로젝트 메타",
+      metaTitle: "프로젝트 정보",
+      name: "프로젝트 이름",
+      namePlaceholder: "예: LicenseHub 운영 자동화",
+      key: "프로젝트 키",
+      keyPlaceholder: "비워두면 이름 기준으로 자동 생성됩니다",
+      description: "설명",
+      descriptionPlaceholder: "프로젝트 목적과 관리 범위를 간단히 적어 주세요.",
+      helper: "선택한 폴더가 실제 Codex 작업 디렉터리로 사용됩니다.",
+      cancel: "취소",
+      submit: "프로젝트 등록",
+      submitting: "등록 중..."
+    },
+    detail: {
+      eyebrow: "이슈 기록",
+      emptyTitle: "완료된 이슈",
+      close: "닫기",
+      loading: "작업 기록을 불러오는 중입니다.",
+      empty: "표시할 대화 기록이 없습니다.",
+      request: "요청",
+      response: "응답"
+    },
+    board: {
+      sidebarEyebrow: "프로젝트",
+      projectsCount: (count) => `${count}개 프로젝트`,
+      addProject: "추가",
+      noProjects: "프로젝트가 없습니다.",
+      queuedCount: (count) => `대기 ${count}`,
+      searchPlaceholder: "이슈 검색",
+      refresh: "새로고침",
+      newIssue: "새 이슈",
+      noBridgeOption: "연결된 브릿지 없음",
+      noProjectOption: "프로젝트 없음",
+      issueCount: (count) => `${count}개 이슈`,
+      selectProject: "프로젝트를 선택해 주세요.",
+      prepHint:
+        "준비 컬럼에서 이슈를 선택해 할 일로 옮기면 순차 진행됩니다. 할 일 컬럼에서는 드래그로 순서를 조정할 수 있습니다.",
+      syncing: "동기화 중",
+      updatedAt: (value) => `마지막 갱신 ${value}`,
+      emptyColumn: "해당 상태의 이슈가 없습니다.",
+      moveSelectedToTodo: (count) => `선택 항목 할 일로 이동${count > 0 ? ` (${count})` : ""}`,
+      moving: "이동 중...",
+      bridge: "브릿지",
+      project: "프로젝트",
+      drag: "드래그",
+      prep: "준비",
+      queue: "대기열",
+      delete: "삭제",
+      logout: "로그아웃",
+      bridgeOk: "브릿지 연결",
+      bridgeDown: "브릿지 끊김",
+      projectsChip: (count) => `프로젝트 ${count}`,
+      threadsChip: (count) => `이슈 ${count}`,
+      deleteProjectConfirm: "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다."
+    },
+    footer: {
+      languageKorean: "한국어",
+      languageEnglish: "영어"
+    }
+  }
+};
+
+function readStoredLanguage() {
+  try {
+    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    return stored === "ko" || stored === "en" ? stored : "en";
+  } catch {
+    return "en";
+  }
+}
+
+function storeLanguage(language) {
+  try {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function readStoredSession() {
   for (const key of [LOCAL_STORAGE_KEY, SESSION_STORAGE_KEY]) {
@@ -103,6 +390,10 @@ function clearSessionStorage() {
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
+function getCopy(language) {
+  return COPY[language] ?? COPY.en;
+}
+
 function createId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -111,7 +402,7 @@ function createId() {
   return `octop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function formatDateTime(value) {
+function formatDateTime(value, language) {
   if (!value) {
     return "-";
   }
@@ -122,25 +413,27 @@ function formatDateTime(value) {
     return "-";
   }
 
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(getCopy(language).locale, {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
 }
 
-function formatRelativeTime(value) {
+function formatRelativeTime(value, language) {
+  const copy = getCopy(language);
+
   if (!value) {
-    return "방금 전";
+    return copy.fallback.justNow;
   }
 
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
-    return "방금 전";
+    return copy.fallback.justNow;
   }
 
   const diffSeconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const formatter = new Intl.RelativeTimeFormat("ko-KR", { numeric: "auto" });
+  const formatter = new Intl.RelativeTimeFormat(copy.locale, { numeric: "auto" });
   const ranges = [
     { limit: 60, unit: "second" },
     { limit: 3600, unit: "minute" },
@@ -244,7 +537,7 @@ async function apiRequest(path, options = {}) {
       payload?.error ??
       payload?.message ??
       payload?.title ??
-      `요청에 실패했습니다. (${response.status})`;
+      getCopy("en").alerts.requestFailed(response.status);
     throw new Error(message);
   }
 
@@ -258,7 +551,7 @@ function normalizeThread(thread, fallbackProjectId = null) {
 
   return {
     id: thread.id,
-    title: thread.title ?? thread.name ?? "제목 없는 이슈",
+    title: thread.title ?? thread.name ?? "",
     project_id: thread.project_id ?? fallbackProjectId,
     status: thread.status ?? "queued",
     progress: clampProgress(thread.progress),
@@ -329,37 +622,45 @@ function reorderIds(items, draggedId, targetId) {
   return next;
 }
 
-function buildMessagePreview(thread) {
+function buildMessagePreview(thread, language) {
+  const copy = getCopy(language);
   const prompt = String(thread.prompt ?? "").trim();
   const lastMessage = String(thread.last_message ?? "").trim();
-  return lastMessage || prompt || "작업 설명이 아직 없습니다.";
+  return lastMessage || prompt || copy.fallback.noPrompt;
 }
 
-function summarizeProjects(projects) {
+function getThreadTitle(thread, language) {
+  return String(thread?.title ?? "").trim() || getCopy(language).fallback.untitledIssue;
+}
+
+function summarizeProjects(projects, language) {
+  const copy = getCopy(language);
   if (projects.length === 0) {
-    return "프로젝트가 아직 없습니다.";
+    return copy.fallback.noProjects;
   }
 
   if (projects.length === 1) {
-    return `${projects[0].name} 1개 프로젝트`;
+    return `${projects[0].name} · ${copy.board.projectsCount(1)}`;
   }
 
-  return `${projects[0].name} 외 ${projects.length - 1}개 프로젝트`;
+  return `${projects[0].name} +${projects.length - 1}`;
 }
 
-function summarizeBridges(bridges) {
+function summarizeBridges(bridges, language) {
+  const copy = getCopy(language);
   if (bridges.length === 0) {
-    return "연결된 bridge가 없습니다.";
+    return copy.fallback.noBridges;
   }
 
   if (bridges.length === 1) {
-    return `${bridges[0].device_name ?? bridges[0].bridge_id} 1대 연결`;
+    return `${bridges[0].device_name ?? bridges[0].bridge_id}`;
   }
 
-  return `${bridges[0].device_name ?? bridges[0].bridge_id} 외 ${bridges.length - 1}대 연결`;
+  return `${bridges[0].device_name ?? bridges[0].bridge_id} +${bridges.length - 1}`;
 }
 
-function summarizeEvent(event) {
+function summarizeEvent(event, language) {
+  const copy = getCopy(language);
   return (
     event?.summary ??
     event?.payload?.thread?.title ??
@@ -367,11 +668,12 @@ function summarizeEvent(event) {
     event?.payload?.projects?.[0]?.name ??
     event?.payload?.threads?.[0]?.title ??
     event?.type ??
-    "브릿지 상태가 갱신되었습니다."
+    copy.fallback.bridgeUpdated
   );
 }
 
-function LoginPage({ initialLoginId, loading, error, onSubmit }) {
+function LoginPage({ language, initialLoginId, loading, error, onSubmit }) {
+  const copy = getCopy(language);
   const [loginId, setLoginId] = useState(initialLoginId ?? "");
   const [password, setPassword] = useState("");
   const [rememberDevice, setRememberDevice] = useState(Boolean(initialLoginId));
@@ -410,18 +712,16 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
                 <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
             </div>
-            <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP Workspace</p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">로그인</h1>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              LicenseHub의 <span className="font-medium text-slate-200">로그인 ID</span>로 접속해 프로젝트 보드를 엽니다.
-            </p>
+            <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">{copy.login.eyebrow}</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">{copy.login.title}</h1>
+            <p className="mt-3 text-sm leading-6 text-slate-400">{copy.login.subtitle}</p>
           </header>
 
           <section className="rounded-[28px] border border-white/8 bg-slate-950/72 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
             <form className="space-y-6" onSubmit={handleSubmit}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
-                  Login ID
+                  {copy.login.loginId}
                 </label>
                 <input
                   id="loginId"
@@ -429,7 +729,7 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
                   type="text"
                   autoComplete="username"
                   required
-                  placeholder="관리자 ID를 입력하세요"
+                  placeholder={copy.login.loginIdPlaceholder}
                   value={loginId}
                   onChange={(event) => setLoginId(event.target.value)}
                   className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
@@ -439,9 +739,9 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
               <div>
                 <div className="mb-2 flex items-center justify-between">
                   <label className="block text-sm font-medium text-slate-300" htmlFor="password">
-                    Password
+                    {copy.login.password}
                   </label>
-                  <span className="text-xs text-slate-500">LicenseHub 비밀번호</span>
+                  <span className="text-xs text-slate-500">{copy.login.passwordHint}</span>
                 </div>
                 <input
                   id="password"
@@ -465,7 +765,7 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
                   checked={rememberDevice}
                   onChange={(event) => setRememberDevice(event.target.checked)}
                 />
-                이 기기에서 로그인 상태 유지
+                {copy.login.rememberDevice}
               </label>
 
               {error ? (
@@ -482,16 +782,16 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
                 {loading ? (
                   <>
                     <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-950/25 border-t-slate-950" />
-                    로그인 중...
+                    {copy.login.submitting}
                   </>
                 ) : (
-                  "로그인"
+                  copy.login.submit
                 )}
               </button>
             </form>
 
             <div className="mt-6 border-t border-slate-800 pt-4 text-xs leading-6 text-slate-500">
-              로그인 후 연결된 bridge, 프로젝트 트리, thread 칸반이 자동으로 동기화됩니다.
+              {copy.login.helper}
             </div>
           </section>
         </main>
@@ -500,7 +800,8 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
   );
 }
 
-function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSubmit }) {
+function IssueComposer({ language, open, busy, projects, selectedProjectId, onClose, onSubmit }) {
+  const copy = getCopy(language);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [projectId, setProjectId] = useState(selectedProjectId ?? projects[0]?.id ?? "");
@@ -543,39 +844,37 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
       <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Issue</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">새 이슈 등록</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">
-              제목은 선택 입력입니다. 비워두면 프롬프트 앞부분이 자동으로 제목으로 사용됩니다.
-            </p>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">{copy.issueComposer.eyebrow}</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">{copy.issueComposer.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">{copy.issueComposer.subtitle}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
-            닫기
+            {copy.projectComposer.close}
           </button>
         </div>
 
         <form className="mt-6 space-y-5" onSubmit={handleSubmit}>
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-title">
-              이슈 제목 <span className="text-slate-500">(선택)</span>
+              {copy.issueComposer.issueTitle} <span className="text-slate-500">({copy.issueComposer.optional})</span>
             </label>
             <input
               id="issue-title"
               type="text"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="비워두면 프롬프트 앞부분으로 자동 생성"
+              placeholder={copy.issueComposer.titlePlaceholder}
               className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
 
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-project">
-              프로젝트
+              {copy.issueComposer.project}
             </label>
             <select
               id="issue-project"
@@ -593,14 +892,14 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
 
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="issue-prompt">
-              프롬프트
+              {copy.issueComposer.prompt}
             </label>
             <textarea
               id="issue-prompt"
               rows="5"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="수행할 작업을 구체적으로 입력해 주세요."
+              placeholder={copy.issueComposer.promptPlaceholder}
               className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
@@ -611,14 +910,14 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
               onClick={onClose}
               className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
             >
-              취소
+              {copy.issueComposer.cancel}
             </button>
             <button
               type="submit"
               disabled={busy}
               className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {busy ? "등록 중..." : "이슈 등록"}
+              {busy ? copy.issueComposer.submitting : copy.issueComposer.submit}
             </button>
           </div>
         </form>
@@ -628,6 +927,7 @@ function IssueComposer({ open, busy, projects, selectedProjectId, onClose, onSub
 }
 
 function ProjectComposer({
+  language,
   open,
   busy,
   roots,
@@ -640,6 +940,7 @@ function ProjectComposer({
   onClose,
   onSubmit
 }) {
+  const copy = getCopy(language);
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
@@ -750,7 +1051,7 @@ function ProjectComposer({
             type="button"
             onClick={() => void togglePath(entry.path)}
             className="flex h-7 w-7 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/70 text-slate-400 transition hover:border-slate-700 hover:text-white"
-            aria-label={expanded ? "폴더 접기" : "폴더 펼치기"}
+              aria-label={expanded ? copy.projectComposer.parentFolder : copy.projectComposer.browserTitle}
           >
             <svg
               className={`h-3.5 w-3.5 transition ${expanded ? "rotate-90" : ""}`}
@@ -783,19 +1084,13 @@ function ProjectComposer({
 
           <div className="flex shrink-0 flex-wrap items-center gap-1">
             {entry.is_workspace ? (
-              <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] text-sky-300">
-                workspace
-              </span>
+              <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] text-sky-300">{copy.projectComposer.workspace}</span>
             ) : null}
             {entry.is_registered ? (
-              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">
-                등록됨
-              </span>
+              <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">{copy.projectComposer.registered}</span>
             ) : null}
             {selected ? (
-              <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] text-white">
-                선택됨
-              </span>
+              <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] text-white">{copy.projectComposer.selected}</span>
             ) : null}
           </div>
         </div>
@@ -806,7 +1101,7 @@ function ProjectComposer({
               className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/20 px-3 py-3 text-[11px] text-slate-500"
               style={{ marginLeft: `${(depth + 1) * 12 + 36}px` }}
             >
-              하위 폴더가 없습니다.
+              {copy.projectComposer.noChildren}
             </div>
           ) : (
             <div className="space-y-1">
@@ -838,18 +1133,16 @@ function ProjectComposer({
       <div className="w-full max-w-5xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">New Project</p>
-            <h2 className="mt-2 text-xl font-semibold text-white">새 프로젝트 등록</h2>
-            <p className="mt-1.5 text-sm leading-6 text-slate-400">
-              로컬 bridge가 노출한 폴더를 탐색해 workspace와 프로젝트 메타데이터를 연결합니다.
-            </p>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">{copy.projectComposer.eyebrow}</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">{copy.projectComposer.title}</h2>
+            <p className="mt-1.5 text-sm leading-6 text-slate-400">{copy.projectComposer.subtitle}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-lg border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
-            닫기
+            {copy.projectComposer.close}
           </button>
         </div>
 
@@ -857,12 +1150,12 @@ function ProjectComposer({
           <div className="min-w-0 border-b border-slate-800 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-5">
             <div className="flex items-center justify-between gap-3 pb-3">
               <div>
-                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Folder Browser</p>
-                <p className="mt-2 text-sm font-medium text-white">프로젝트 위치 선택</p>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.projectComposer.browserEyebrow}</p>
+                <p className="mt-2 text-sm font-medium text-white">{copy.projectComposer.browserTitle}</p>
               </div>
               <div className="flex items-center gap-2">
                 {folderLoading ? (
-                  <span className="text-[11px] text-slate-500">폴더 불러오는 중</span>
+                  <span className="text-[11px] text-slate-500">{copy.projectComposer.foldersLoading}</span>
                 ) : null}
               </div>
             </div>
@@ -870,7 +1163,7 @@ function ProjectComposer({
             <div className="custom-scrollbar max-h-[34rem] space-y-1 overflow-y-auto pr-1">
               {roots.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-800 px-3 py-4 text-xs text-slate-500">
-                  탐색 가능한 root가 없습니다.
+                  {copy.projectComposer.noRoots}
                 </div>
               ) : (
                 <>
@@ -883,7 +1176,7 @@ function ProjectComposer({
                       <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-800 text-slate-400">
                         ..
                       </span>
-                      <span>상위 폴더</span>
+                      <span>{copy.projectComposer.parentFolder}</span>
                     </button>
                   ) : null}
 
@@ -903,13 +1196,13 @@ function ProjectComposer({
 
           <div className="space-y-4 pt-4 xl:pl-5 xl:pt-0">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Project Meta</p>
-              <h3 className="mt-2 text-lg font-semibold text-white">프로젝트 정보</h3>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.projectComposer.metaEyebrow}</p>
+              <h3 className="mt-2 text-lg font-semibold text-white">{copy.projectComposer.metaTitle}</h3>
             </div>
 
             <div className="grid gap-4">
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
-                프로젝트 이름
+                {copy.projectComposer.name}
               </label>
               <input
                 id="project-name"
@@ -917,41 +1210,41 @@ function ProjectComposer({
                 required
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="예: LicenseHub 운영 자동화"
+                placeholder={copy.projectComposer.namePlaceholder}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-key">
-                프로젝트 Key
+                {copy.projectComposer.key}
               </label>
               <input
                 id="project-key"
                 type="text"
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
-                placeholder="비워두면 이름 기준으로 자동 생성"
+                placeholder={copy.projectComposer.keyPlaceholder}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
-                설명
+                {copy.projectComposer.description}
               </label>
               <textarea
                 id="project-description"
                 rows="5"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
+                placeholder={copy.projectComposer.descriptionPlaceholder}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2.5 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
             <p className="text-xs leading-6 text-slate-500">
-              선택한 폴더가 실제 Codex 실행의 작업 디렉터리로 사용됩니다.
+              {copy.projectComposer.helper}
             </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">
@@ -960,14 +1253,14 @@ function ProjectComposer({
                 onClick={onClose}
                 className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
               >
-                취소
+                {copy.projectComposer.cancel}
               </button>
               <button
                 type="submit"
                 disabled={busy || !selectedWorkspacePath}
                 className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {busy ? "등록 중..." : "프로젝트 등록"}
+                {busy ? copy.projectComposer.submitting : copy.projectComposer.submit}
               </button>
             </div>
           </div>
@@ -977,7 +1270,8 @@ function ProjectComposer({
   );
 }
 
-function ThreadDetailModal({ open, loading, thread, messages, onClose }) {
+function ThreadDetailModal({ language, open, loading, thread, messages, onClose }) {
+  const copy = getCopy(language);
   if (!open) {
     return null;
   }
@@ -987,26 +1281,28 @@ function ThreadDetailModal({ open, loading, thread, messages, onClose }) {
       <div className="flex h-[min(80vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-slate-800 bg-slate-950 shadow-2xl shadow-slate-950/60">
         <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
           <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">Issue History</p>
-            <h2 className="mt-2 truncate text-lg font-semibold text-white">{thread?.title ?? "완료 작업"}</h2>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.detail.eyebrow}</p>
+            <h2 className="mt-2 truncate text-lg font-semibold text-white">
+              {thread ? getThreadTitle(thread, language) : copy.detail.emptyTitle}
+            </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-xl border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
-            닫기
+            {copy.detail.close}
           </button>
         </div>
 
         <div className="custom-scrollbar flex-1 overflow-y-auto px-6 py-5">
           {loading ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
-              작업 기록을 불러오는 중입니다.
+              {copy.detail.loading}
             </div>
           ) : messages.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
-              표시할 대화 기록이 없습니다.
+              {copy.detail.empty}
             </div>
           ) : (
             <div className="space-y-4">
@@ -1024,10 +1320,10 @@ function ThreadDetailModal({ open, loading, thread, messages, onClose }) {
                     >
                       <div className="mb-2 flex items-center gap-2 text-[11px]">
                         <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
-                          {userMessage ? "요청" : "응답"}
+                          {userMessage ? copy.detail.request : copy.detail.response}
                         </span>
                         <span className={userMessage ? "text-slate-950/60" : "text-slate-500"}>
-                          {formatDateTime(message.timestamp)}
+                          {formatDateTime(message.timestamp, language)}
                         </span>
                       </div>
                       <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p>
@@ -1044,6 +1340,7 @@ function ThreadDetailModal({ open, loading, thread, messages, onClose }) {
 }
 
 function PrepThreadCard({
+  language,
   thread,
   selected,
   active,
@@ -1051,6 +1348,7 @@ function PrepThreadCard({
   onToggle,
   onDelete
 }) {
+  const copy = getCopy(language);
   return (
     <div
       className={`rounded-xl border px-3.5 py-3 transition ${
@@ -1067,22 +1365,22 @@ function PrepThreadCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-              <OverflowRevealText value={thread.title} className="text-sm font-medium text-slate-100" />
-              <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
+              <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium text-slate-100" />
+              <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
             </button>
             <button
               type="button"
               onClick={() => onDelete(thread.id)}
               className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
             >
-              삭제
+              {copy.board.delete}
             </button>
           </div>
 
           <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-            <span>{formatRelativeTime(thread.updated_at)}</span>
+            <span>{formatRelativeTime(thread.updated_at, language)}</span>
             <span className="text-slate-700">•</span>
-            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">준비</span>
+            <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{copy.board.prep}</span>
           </div>
         </div>
       </div>
@@ -1091,6 +1389,7 @@ function PrepThreadCard({
 }
 
 function TodoThreadCard({
+  language,
   thread,
   active,
   onSelect,
@@ -1099,6 +1398,7 @@ function TodoThreadCard({
   onDragOver,
   onDrop
 }) {
+  const copy = getCopy(language);
   return (
     <div
       draggable
@@ -1117,8 +1417,8 @@ function TodoThreadCard({
     >
       <div className="flex items-start justify-between gap-3">
         <button type="button" onClick={() => onSelect(thread.id)} className="min-w-0 flex-1 text-left">
-          <OverflowRevealText value={thread.title} className="text-sm font-medium text-slate-100" />
-          <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
+          <OverflowRevealText value={getThreadTitle(thread, language)} className="text-sm font-medium text-slate-100" />
+          <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
         </button>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -1126,7 +1426,7 @@ function TodoThreadCard({
             onClick={() => onDelete(thread.id)}
             className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
           >
-            삭제
+            {copy.board.delete}
           </button>
           {thread.queue_position ? (
             <span className="rounded-full bg-sky-500/10 px-2 py-1 text-[10px] font-semibold text-sky-300">
@@ -1134,15 +1434,15 @@ function TodoThreadCard({
             </span>
           ) : null}
           <span className="cursor-grab rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400">
-            drag
+            {copy.board.drag}
           </span>
         </div>
       </div>
 
       <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-        <span>{formatRelativeTime(thread.updated_at)}</span>
+        <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
-        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">대기열</span>
+        <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{copy.board.queue}</span>
       </div>
     </div>
   );
@@ -1180,7 +1480,8 @@ function getColumnDotClassName(columnId) {
   }
 }
 
-function ThreadCard({ thread, selected, onSelect }) {
+function ThreadCard({ language, thread, selected, onSelect }) {
+  const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
 
   return (
@@ -1194,12 +1495,12 @@ function ThreadCard({ thread, selected, onSelect }) {
       <div className="flex items-center justify-between gap-3">
         <span className={`inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] ${status.chipClassName}`}>
           <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-          {status.label}
+          {copy.status[status.labelKey] ?? copy.status.queued}
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
-      <OverflowRevealText value={thread.title} className="mt-3 text-sm font-medium text-slate-100" />
-      <OverflowRevealText value={buildMessagePreview(thread)} className="mt-1 text-xs text-slate-500" />
+      <OverflowRevealText value={getThreadTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
+      <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
       <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
           className="h-1 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
@@ -1207,7 +1508,7 @@ function ThreadCard({ thread, selected, onSelect }) {
         />
       </div>
       <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-        <span>{formatRelativeTime(thread.updated_at)}</span>
+        <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
         <span className="font-mono">{thread.id.slice(0, 8)}</span>
       </div>
@@ -1215,7 +1516,8 @@ function ThreadCard({ thread, selected, onSelect }) {
   );
 }
 
-function CompletedThreadCard({ thread, selected, onSelect, onOpen }) {
+function CompletedThreadCard({ language, thread, selected, onSelect, onOpen }) {
+  const copy = getCopy(language);
   return (
     <button
       type="button"
@@ -1227,15 +1529,17 @@ function CompletedThreadCard({ thread, selected, onSelect, onOpen }) {
     >
       <div className="flex items-center gap-3">
         <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-        <OverflowRevealText value={thread.title} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
-        <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">Done</span>
-        <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
+        <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
+        <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">{copy.status.completed}</span>
+        <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at, language)}</span>
       </div>
     </button>
   );
 }
 
 function MainPage({
+  language,
+  onChangeLanguage,
   session,
   bridges,
   status,
@@ -1281,6 +1585,7 @@ function MainPage({
   onLogout,
   onCloseDetail
 }) {
+  const copy = getCopy(language);
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -1343,8 +1648,8 @@ function MainPage({
             <div className="mt-4 flex-1 px-4">
               <div className="mb-4 flex items-center justify-between px-3">
                 <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Projects</p>
-                  <p className="mt-2 text-sm font-medium text-white">{projects.length}개 프로젝트</p>
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.sidebarEyebrow}</p>
+                  <p className="mt-2 text-sm font-medium text-white">{copy.board.projectsCount(projects.length)}</p>
                 </div>
                 <button
                   type="button"
@@ -1352,13 +1657,13 @@ function MainPage({
                   disabled={!selectedBridge}
                   className="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Add
+                  {copy.board.addProject}
                 </button>
               </div>
 
               <div className="custom-scrollbar max-h-[calc(100vh-15rem)] space-y-1 overflow-y-auto px-2">
                 {projects.length === 0 ? (
-                  <div className="rounded-md px-3 py-3 text-xs text-slate-500">프로젝트가 없습니다.</div>
+                  <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
                 ) : (
                   projects.map((project) => {
                     const active = project.id === selectedProjectId;
@@ -1394,14 +1699,14 @@ function MainPage({
                               }}
                               className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
                             >
-                              삭제
+                              {copy.board.delete}
                             </button>
                           </div>
                         </div>
                         <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">
                           <span>{project.key}</span>
                           <span className="text-slate-700">•</span>
-                          <span>Queued {queuedCount}</span>
+                          <span>{copy.board.queuedCount(queuedCount)}</span>
                         </div>
                       </div>
                     );
@@ -1415,12 +1720,12 @@ function MainPage({
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="text-slate-500">Projects</span>
+                  <span className="text-slate-500">{copy.board.project}</span>
                   <span className="text-slate-700">/</span>
-                  <OverflowRevealText value={selectedProject?.name ?? "선택 필요"} className="font-medium text-white" />
+                  <OverflowRevealText value={selectedProject?.name ?? copy.fallback.noSelection} className="font-medium text-white" />
                 </div>
                 <OverflowRevealText
-                  value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 없음"}
+                  value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge}
                   className="mt-1 text-[11px] text-slate-500"
                 />
               </div>
@@ -1436,7 +1741,7 @@ function MainPage({
                     type="text"
                     value={search}
                     onChange={(event) => onSearchChange(event.target.value)}
-                    placeholder="이슈 검색"
+                    placeholder={copy.board.searchPlaceholder}
                     className="w-64 rounded-lg border-transparent bg-slate-800 py-2 pl-10 pr-4 text-sm text-slate-300 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                   />
                 </div>
@@ -1447,7 +1752,7 @@ function MainPage({
                   className="hidden rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400 md:block"
                 >
                   {bridges.length === 0 ? (
-                    <option value="">연결된 bridge 없음</option>
+                    <option value="">{copy.board.noBridgeOption}</option>
                   ) : (
                     bridges.map((bridge) => (
                       <option key={bridge.bridge_id} value={bridge.bridge_id}>
@@ -1462,7 +1767,7 @@ function MainPage({
                   onClick={onRefresh}
                   className="hidden rounded-lg border border-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white md:inline-flex"
                 >
-                  새로고침
+                  {copy.board.refresh}
                 </button>
 
                 <button
@@ -1471,7 +1776,7 @@ function MainPage({
                   disabled={prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {startBusy ? "이동 중..." : `선택 항목 To Do로 이동${prepSelectedCount > 0 ? ` (${prepSelectedCount})` : ""}`}
+                  {startBusy ? copy.board.moving : copy.board.moveSelectedToTodo(prepSelectedCount)}
                 </button>
 
                 <button
@@ -1480,7 +1785,7 @@ function MainPage({
                   disabled={projects.length === 0}
                   className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  새 이슈
+                  {copy.board.newIssue}
                 </button>
               </div>
             </header>
@@ -1488,14 +1793,14 @@ function MainPage({
             <div className="border-b border-slate-800 px-4 py-3 md:hidden">
               <div className="grid gap-3">
                 <label className="block">
-                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.bridge}</span>
                   <select
                     value={selectedBridgeId}
                     onChange={(event) => onSelectBridge(event.target.value)}
                     className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                   >
                     {bridges.length === 0 ? (
-                      <option value="">연결된 bridge 없음</option>
+                      <option value="">{copy.board.noBridgeOption}</option>
                     ) : (
                       bridges.map((bridge) => (
                         <option key={bridge.bridge_id} value={bridge.bridge_id}>
@@ -1506,14 +1811,14 @@ function MainPage({
                   </select>
                 </label>
                 <label className="block">
-                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Project</span>
+                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</span>
                   <select
                     value={selectedProjectId}
                     onChange={(event) => onSelectProject(event.target.value)}
                     className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                   >
                     {projects.length === 0 ? (
-                      <option value="">프로젝트 없음</option>
+                      <option value="">{copy.board.noProjectOption}</option>
                     ) : (
                       projects.map((project) => (
                         <option key={project.id} value={project.id}>
@@ -1528,12 +1833,12 @@ function MainPage({
 
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-xs text-slate-500 md:px-8">
               <div className="flex items-center gap-3">
-                <span>{selectedProject ? `${projectScopedThreads.length} issues` : "프로젝트를 선택해 주세요."}</span>
+                <span>{selectedProject ? copy.board.issueCount(projectScopedThreads.length) : copy.board.selectProject}</span>
                 <span className="text-slate-700">•</span>
-                <span>준비 컬럼에서 선택한 이슈를 To Do로 옮기면 순차 진행됩니다. To Do에서는 드래그로 순서를 조정할 수 있습니다.</span>
+                <span>{copy.board.prepHint}</span>
               </div>
               <div className="hidden items-center gap-2 md:flex">
-                <span>{loadingState === "loading" ? "동기화 중" : `마지막 갱신 ${formatRelativeTime(status.updated_at)}`}</span>
+                <span>{loadingState === "loading" ? copy.board.syncing : copy.board.updatedAt(formatRelativeTime(status.updated_at, language))}</span>
               </div>
             </div>
 
@@ -1548,7 +1853,7 @@ function MainPage({
                         <span
                           className={`mr-2 h-2 w-2 rounded-full ${getColumnDotClassName(column.id)} ${column.id === "running" ? "animate-pulse" : ""}`}
                         />
-                        {column.label}
+                        {copy.columns[column.id]}
                         <span className="ml-2 rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300">
                           {column.threads.length}
                         </span>
@@ -1558,7 +1863,7 @@ function MainPage({
                     <div className="space-y-3">
                       {column.threads.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-slate-800 px-4 py-5 text-sm text-slate-500">
-                          해당 상태의 이슈가 없습니다.
+                          {copy.board.emptyColumn}
                         </div>
                       ) : (
                         column.threads.map((thread) => {
@@ -1566,6 +1871,7 @@ function MainPage({
                             return (
                               <PrepThreadCard
                                 key={thread.id}
+                                language={language}
                                 thread={thread}
                                 selected={selectedThreadIds.includes(thread.id)}
                                 active={thread.id === selectedThreadId}
@@ -1580,6 +1886,7 @@ function MainPage({
                             return (
                               <TodoThreadCard
                                 key={thread.id}
+                                language={language}
                                 thread={thread}
                                 active={thread.id === selectedThreadId}
                                 onSelect={onSelectThread}
@@ -1595,6 +1902,7 @@ function MainPage({
                             return (
                               <CompletedThreadCard
                                 key={thread.id}
+                                language={language}
                                 thread={thread}
                                 selected={thread.id === selectedThreadId}
                                 onSelect={onSelectThread}
@@ -1606,6 +1914,7 @@ function MainPage({
                           return (
                             <ThreadCard
                               key={thread.id}
+                              language={language}
                               thread={thread}
                               selected={thread.id === selectedThreadId}
                               onSelect={onSelectThread}
@@ -1624,12 +1933,38 @@ function MainPage({
         <footer className="sticky bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 px-4 py-2.5 backdrop-blur md:px-6 lg:px-8">
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
+              <div className="mr-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onChangeLanguage("ko")}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full border px-1 text-[9px] font-semibold leading-tight transition ${
+                    language === "ko"
+                      ? "border-sky-400 bg-sky-500/15 text-sky-200"
+                      : "border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-200"
+                  }`}
+                  title={copy.footer.languageKorean}
+                >
+                  {copy.footer.languageKorean}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeLanguage("en")}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full border px-1 text-[9px] font-semibold leading-tight transition ${
+                    language === "en"
+                      ? "border-sky-400 bg-sky-500/15 text-sky-200"
+                      : "border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-200"
+                  }`}
+                  title={copy.footer.languageEnglish}
+                >
+                  {copy.footer.languageEnglish}
+                </button>
+              </div>
               <span className="font-medium text-slate-200">{session.displayName || session.loginId}</span>
               <span className="text-slate-600">/</span>
               <span>{session.loginId}</span>
               <span className="text-slate-600">/</span>
               <OverflowRevealText
-                value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "No Bridge"}
+                value={selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? copy.fallback.noBridge}
                 className="max-w-[18rem]"
               />
             </div>
@@ -1641,16 +1976,16 @@ function MainPage({
                 }`}
               >
                 <span className={`h-2 w-2 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
-                {status.app_server?.connected ? "Bridge OK" : "Bridge Down"}
+                {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
               </span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">Projects {projects.length}</span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">Threads {threads.length}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.projectsChip(projects.length)}</span>
+              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">{copy.board.threadsChip(threads.length)}</span>
               <button
                 type="button"
                 onClick={onLogout}
                 className="rounded-xl border border-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
               >
-                로그아웃
+                {copy.board.logout}
               </button>
             </div>
           </div>
@@ -1658,6 +1993,7 @@ function MainPage({
       </div>
 
       <IssueComposer
+        language={language}
         open={composerOpen}
         busy={issueBusy}
         projects={projects}
@@ -1666,6 +2002,7 @@ function MainPage({
         onSubmit={onSubmitIssue}
       />
       <ProjectComposer
+        language={language}
         open={projectComposerOpen}
         busy={projectBusy}
         roots={workspaceRoots}
@@ -1679,6 +2016,7 @@ function MainPage({
         onSubmit={onSubmitProject}
       />
       <ThreadDetailModal
+        language={language}
         open={detailState.open}
         loading={detailState.loading}
         thread={detailState.thread}
@@ -1690,6 +2028,7 @@ function MainPage({
 }
 
 export default function App() {
+  const [language, setLanguage] = useState(() => (typeof window === "undefined" ? "en" : readStoredLanguage()));
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
@@ -1728,6 +2067,11 @@ export default function App() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
+  const copy = getCopy(language);
+
+  useEffect(() => {
+    storeLanguage(language);
+  }, [language]);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -1941,13 +2285,13 @@ export default function App() {
     });
 
     eventSource.addEventListener("error", () => {
-      appendEvent("sse.error", "실시간 이벤트 스트림이 재연결을 시도하고 있습니다.");
+      appendEvent("sse.error", copy.alerts.sseReconnect);
     });
 
     return () => {
       eventSource.close();
     };
-  }, [session, selectedBridgeId]);
+  }, [copy.alerts.sseReconnect, session, selectedBridgeId]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -2406,7 +2750,7 @@ export default function App() {
       return;
     }
 
-    if (!window.confirm("프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.")) {
+    if (!window.confirm(copy.board.deleteProjectConfirm)) {
       return;
     }
 
@@ -2493,6 +2837,7 @@ export default function App() {
   if (!session) {
     return (
       <LoginPage
+        language={language}
         initialLoginId=""
         loading={loginState.loading}
         error={loginState.error}
@@ -2503,6 +2848,8 @@ export default function App() {
 
   return (
     <MainPage
+      language={language}
+      onChangeLanguage={setLanguage}
       session={session}
       bridges={bridges}
       status={status}
