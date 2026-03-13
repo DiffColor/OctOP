@@ -351,159 +351,103 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
     <div className="relative min-h-screen overflow-hidden bg-brand-dark text-slate-200">
       <div className="fixed inset-0 -z-10 overflow-hidden">
         <div className="bg-mesh absolute inset-0" />
-        <div className="absolute left-[-10%] top-[-8%] h-[24rem] w-[24rem] rounded-full bg-brand-accent/10 blur-[120px]" />
-        <div className="absolute bottom-[-12%] right-[-12%] h-[28rem] w-[28rem] rounded-full bg-emerald-500/10 blur-[160px]" />
+        <div className="absolute left-[-6%] top-[-8%] h-[22rem] w-[22rem] rounded-full bg-sky-500/8 blur-[140px]" />
+        <div className="absolute bottom-[-14%] right-[-10%] h-[26rem] w-[26rem] rounded-full bg-emerald-500/8 blur-[160px]" />
       </div>
 
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4 py-10 lg:px-8">
-        <div className="grid w-full gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
-          <section className="hidden rounded-[2rem] border border-white/8 bg-slate-950/55 p-8 shadow-2xl shadow-slate-950/40 backdrop-blur xl:block">
-            <div className="mb-10 flex items-center gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
-                <svg className="h-7 w-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </div>
+      <div className="mx-auto flex min-h-screen max-w-5xl items-center justify-center px-4 py-10 lg:px-8">
+        <main className="w-full max-w-md">
+          <header className="mb-10 text-center">
+            <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border border-white/10 bg-slate-950/70">
+              <svg className="h-8 w-8 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </div>
+            <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP Workspace</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">로그인</h1>
+            <p className="mt-3 text-sm leading-6 text-slate-400">
+              LicenseHub의 <span className="font-medium text-slate-200">로그인 ID</span>로 접속해 프로젝트 보드를 엽니다.
+            </p>
+          </header>
+
+          <section className="rounded-[28px] border border-white/8 bg-slate-950/72 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
+            <form className="space-y-6" onSubmit={handleSubmit}>
               <div>
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">OctOP Control Plane</p>
-                <h1 className="mt-2 text-3xl font-semibold text-white">AI orchestration workspace</h1>
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
+                  Login ID
+                </label>
+                <input
+                  id="loginId"
+                  name="loginId"
+                  type="text"
+                  autoComplete="username"
+                  required
+                  placeholder="관리자 ID를 입력하세요"
+                  value={loginId}
+                  onChange={(event) => setLoginId(event.target.value)}
+                  className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                />
               </div>
-            </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Runtime</p>
-                <p className="mt-3 text-3xl font-semibold text-white">24/7</p>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  숨겨진 로컬 bridge와 app-server 상태를 원격 보드에서 계속 추적합니다.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Threads</p>
-                <p className="mt-3 text-3xl font-semibold text-white">Live</p>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  실행 중인 turn, diff, 마지막 메시지를 칸반과 모바일 체크리스트에서 동시에 확인합니다.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-8 rounded-3xl border border-slate-800 bg-slate-900/70 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Workspace Snapshot</p>
-                  <h2 className="mt-2 text-xl font-semibold text-white">운영 팀을 위한 단일 관제 화면</h2>
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="block text-sm font-medium text-slate-300" htmlFor="password">
+                    Password
+                  </label>
+                  <span className="text-xs text-slate-500">LicenseHub 비밀번호</span>
                 </div>
-                <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-300">
-                  Bridge Online Ready
-                </span>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                />
               </div>
-              <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                {[
-                  ["Issue intake", "보드에서 바로 등록하고 즉시 thread 생성"],
-                  ["Event stream", "SSE 기반으로 plan/diff/완료 상태 반영"],
-                  ["Agent runtime", "Codex app-server 상태와 계정 정보를 한 곳에서 확인"]
-                ].map(([title, description]) => (
-                  <div key={title} className="rounded-2xl border border-slate-800 bg-slate-950/75 p-4">
-                    <p className="text-sm font-medium text-white">{title}</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-400">{description}</p>
-                  </div>
-                ))}
-              </div>
+
+              <label className="flex items-center gap-3 text-sm text-slate-400">
+                <input
+                  id="remember-device"
+                  name="remember-device"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
+                  checked={rememberDevice}
+                  onChange={(event) => setRememberDevice(event.target.checked)}
+                />
+                이 기기에서 로그인 상태 유지
+              </label>
+
+              {error ? (
+                <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                  {error}
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading ? (
+                  <>
+                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-950/25 border-t-slate-950" />
+                    로그인 중...
+                  </>
+                ) : (
+                  "로그인"
+                )}
+              </button>
+            </form>
+
+            <div className="mt-6 border-t border-slate-800 pt-4 text-xs leading-6 text-slate-500">
+              로그인 후 연결된 bridge, 프로젝트 트리, thread 칸반이 자동으로 동기화됩니다.
             </div>
           </section>
-
-          <main className="mx-auto w-full max-w-md">
-            <header className="mb-10 text-center">
-              <div className="inline-flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-tr from-brand-accent to-violet-500 shadow-lg shadow-brand-accent/20">
-                <svg className="h-9 w-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </div>
-              <h1 className="mt-6 text-3xl font-semibold tracking-tight text-white">OctOP</h1>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                LicenseHub 계정의 <span className="font-medium text-slate-200">ID</span>로 로그인해 작업 보드를 여십시오.
-              </p>
-            </header>
-
-            <section className="glass-effect rounded-[2rem] p-8 shadow-2xl shadow-slate-950/35">
-              <form className="space-y-6" onSubmit={handleSubmit}>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
-                    Login ID
-                  </label>
-                  <input
-                    id="loginId"
-                    name="loginId"
-                    type="text"
-                    autoComplete="username"
-                    required
-                    placeholder="관리자 ID를 입력하세요"
-                    value={loginId}
-                    onChange={(event) => setLoginId(event.target.value)}
-                    className="w-full rounded-2xl border border-slate-700 bg-brand-dark px-4 py-3 text-white outline-none transition duration-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/40"
-                  />
-                </div>
-
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <label className="block text-sm font-medium text-slate-300" htmlFor="password">
-                      Password
-                    </label>
-                    <span className="text-xs text-slate-500">LicenseHub 계정 비밀번호</span>
-                  </div>
-                  <input
-                    id="password"
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                    required
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="w-full rounded-2xl border border-slate-700 bg-brand-dark px-4 py-3 text-white outline-none transition duration-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-400/40"
-                  />
-                </div>
-
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
-                  <input
-                    id="remember-device"
-                    name="remember-device"
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-slate-700 bg-brand-dark text-sky-400 focus:ring-sky-400"
-                    checked={rememberDevice}
-                    onChange={(event) => setRememberDevice(event.target.checked)}
-                  />
-                  이 기기에서 로그인 상태 유지
-                </label>
-
-                {error ? (
-                  <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                    {error}
-                  </div>
-                ) : null}
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-accent px-4 py-3 text-base font-semibold text-white shadow-lg shadow-brand-accent/20 transition duration-200 hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {loading ? (
-                    <>
-                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                      로그인 중...
-                    </>
-                  ) : (
-                    "Sign In"
-                  )}
-                </button>
-              </form>
-
-              <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-4 text-sm leading-6 text-slate-400">
-                로그인 후 project 목록, thread 진행 상태, app-server 연결 상태가 자동으로 동기화됩니다.
-              </div>
-            </section>
-          </main>
-        </div>
+        </main>
       </div>
     </div>
   );
@@ -839,30 +783,30 @@ function ProjectComposer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-6xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-6xl rounded-[28px] border border-slate-800 bg-slate-950 p-6 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">New Project</p>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-slate-500">New Project</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">새 프로젝트 등록</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              로컬 bridge가 노출한 허용 폴더를 트리로 탐색하고, 선택한 workspace에 프로젝트를 연결합니다.
+              로컬 bridge가 노출한 폴더를 탐색해 workspace와 프로젝트 메타데이터를 연결합니다.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+            className="rounded-xl border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
             닫기
           </button>
         </div>
 
-        <form className="mt-6 grid gap-5 xl:grid-cols-[1.15fr_0.85fr]" onSubmit={handleSubmit}>
-          <div className="rounded-[1.75rem] border border-slate-800 bg-slate-950/70 p-4">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+        <form className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]" onSubmit={handleSubmit}>
+          <div className="rounded-[24px] border border-slate-800 bg-slate-950/70 p-4">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Folder Tree</p>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Folder Browser</p>
                 <p className="mt-2 text-sm font-medium text-white">프로젝트 위치 선택</p>
               </div>
               <div className="flex items-center gap-2">
@@ -873,16 +817,16 @@ function ProjectComposer({
                   type="button"
                   onClick={() => onBrowseFolder(folderState.parent_path)}
                   disabled={!folderState.parent_path}
-                  className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  상위
-                </button>
+                    className="rounded-xl border border-slate-800 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    상위
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[0.34fr_0.66fr]">
-              <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/30 p-3">
-                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
+            <div className="mt-4 grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
+              <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
                   Roots
                 </p>
                 {roots.length === 0 ? (
@@ -904,7 +848,7 @@ function ProjectComposer({
                         className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
                           active
                             ? "border-sky-400/40 bg-sky-500/10"
-                            : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+                            : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
                         }`}
                       >
                         <p className="truncate text-sm font-medium text-white">{root.name}</p>
@@ -915,12 +859,12 @@ function ProjectComposer({
                 )}
               </div>
 
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/30 p-3">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">
-                  현재 위치: <span className="font-mono text-slate-200">{shortenPath(folderState.path)}</span>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/20 p-3">
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-3 py-3 text-xs text-slate-400">
+                  현재 위치 <span className="ml-2 font-mono text-slate-200">{shortenPath(folderState.path)}</span>
                 </div>
-                <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-3 py-3 text-xs text-slate-400">
-                  선택 경로: <span className="font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
+                <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/70 px-3 py-3 text-xs text-slate-400">
+                  선택 경로 <span className="ml-2 font-mono text-slate-200">{shortenPath(selectedWorkspacePath)}</span>
                 </div>
 
                 <div className="custom-scrollbar mt-4 max-h-[28rem] space-y-1 overflow-y-auto pr-1">
@@ -944,14 +888,14 @@ function ProjectComposer({
             </div>
           </div>
 
-          <div className="space-y-4 rounded-[1.75rem] border border-slate-800 bg-slate-950/70 p-5">
+          <div className="space-y-4 rounded-[24px] border border-slate-800 bg-slate-950/70 p-5">
             <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Project Meta</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Project Meta</p>
               <h3 className="mt-2 text-lg font-semibold text-white">프로젝트 정보</h3>
             </div>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Workspace Path</p>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/20 p-4">
+              <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Workspace Path</p>
               <p className="mt-2 break-all font-mono text-sm text-slate-200">
                 {selectedWorkspacePath || "왼쪽 트리에서 폴더를 선택해 주세요."}
               </p>
@@ -968,7 +912,7 @@ function ProjectComposer({
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="예: LicenseHub 운영 자동화"
-                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
@@ -982,7 +926,7 @@ function ProjectComposer({
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
                 placeholder="비워두면 이름 기준으로 자동 생성"
-                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
@@ -996,11 +940,11 @@ function ProjectComposer({
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 placeholder="프로젝트 목적과 관리 범위를 간단히 적어 주세요."
-                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
               />
             </div>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/30 px-4 py-3 text-xs leading-6 text-slate-400">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/20 px-4 py-3 text-xs leading-6 text-slate-400">
               선택한 폴더가 실제 Codex 실행의 작업 디렉터리로 사용됩니다.
             </div>
 
@@ -1034,21 +978,23 @@ function ThreadCard({ thread, selected, onSelect }) {
     <button
       type="button"
       onClick={() => onSelect(thread.id)}
-      className={`issue-card w-full rounded-2xl border p-4 text-left transition ${
+      className={`w-full rounded-2xl border px-4 py-3.5 text-left transition ${
         selected
-          ? "border-sky-400/50 bg-slate-900 shadow-lg shadow-sky-950/20"
-          : "border-slate-800 bg-slate-900/90 hover:border-slate-700"
+          ? "border-sky-400/40 bg-slate-900"
+          : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:bg-slate-900/80"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <span className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] font-medium ${status.chipClassName}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span
+          className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.18em] ${status.chipClassName}`}
+        >
           <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
           {status.label}
         </span>
         <span className="font-mono text-[11px] text-slate-500">{thread.id.slice(0, 8)}</span>
       </div>
 
-      <h4 className="mt-4 text-sm font-semibold leading-6 text-white">{thread.title}</h4>
+      <h4 className="mt-4 line-clamp-2 text-sm font-semibold leading-6 text-white">{thread.title}</h4>
 
       <div className="mt-4">
         <div className="mb-2 flex items-center justify-between text-[11px] text-slate-400">
@@ -1056,7 +1002,7 @@ function ThreadCard({ thread, selected, onSelect }) {
           <span>{thread.progress}%</span>
         </div>
         <div className="h-1.5 rounded-full bg-slate-800">
-          <div className="h-1.5 rounded-full bg-gradient-to-r from-sky-400 to-violet-400" style={{ width: `${thread.progress}%` }} />
+          <div className="h-1.5 rounded-full bg-sky-400" style={{ width: `${thread.progress}%` }} />
         </div>
       </div>
 
@@ -1145,228 +1091,323 @@ function MainPage({
     ...column,
     threads: filteredThreads.filter((thread) => getStatusMeta(thread.status).column === column.id)
   }));
+  const highlightedEvents = recentEvents.slice(0, 4);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col">
-        <div className="flex flex-1 flex-col lg:flex-row">
-          <aside className="border-b border-slate-800 bg-slate-950/95 px-4 py-5 lg:w-80 lg:border-b-0 lg:border-r lg:px-5">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-500 shadow-lg shadow-sky-500/20">
-                <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-slate-500">OctOP IDE</p>
-                <h1 className="text-xl font-semibold text-white">Projects</h1>
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <div className="mb-4 flex items-center justify-between">
+        <div className="flex flex-1 overflow-hidden">
+          <aside className="hidden w-72 shrink-0 border-r border-slate-800 bg-[#0b1220] lg:flex lg:flex-col">
+            <div className="border-b border-slate-800 px-5 py-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-800 bg-slate-950">
+                  <svg className="h-5 w-5 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                </div>
                 <div>
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
-                  <h2 className="mt-2 text-lg font-semibold text-white">{summarizeProjects(projects)}</h2>
+                  <p className="text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP</p>
+                  <h1 className="mt-1 text-sm font-semibold text-white">Project Explorer</h1>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={onOpenProjectComposer}
-                    disabled={!selectedBridge}
-                    className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs text-sky-300 transition hover:border-sky-400/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    프로젝트 등록
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onRefresh}
-                    className="rounded-full border border-slate-800 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-700 hover:text-white"
-                  >
-                    새로고침
-                  </button>
-                </div>
-              </div>
-
-              <div className="custom-scrollbar space-y-3 overflow-y-auto pr-1 lg:max-h-[calc(100vh-8.75rem)]">
-                <section>
-                  <div className="mb-3">
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Projects</p>
-                  <p className="mt-2 text-base font-semibold text-white">Project Tree</p>
-                </div>
-                {projectTree.length === 0 ? (
-                  <div className="rounded-[1.5rem] border border-dashed border-slate-800 bg-slate-900/30 px-4 py-5 text-sm text-slate-500">
-                    현재 선택된 bridge에 연결된 프로젝트가 없습니다.
-                  </div>
-                ) : (
-                  projectTree.map((project) => {
-                    const active = project.id === selectedProjectId;
-
-                    return (
-                      <div
-                        key={project.id}
-                        className={`rounded-[1.5rem] border transition ${
-                          active
-                            ? "border-sky-400/40 bg-sky-500/10"
-                            : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => onSelectProject(project.id)}
-                          className="w-full px-4 py-4 text-left"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className={`text-sm font-semibold ${active ? "text-white" : "text-slate-200"}`}>
-                                {project.name}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">{project.key}</p>
-                            </div>
-                            <span className="rounded-full bg-slate-950/70 px-2 py-1 text-[11px] text-slate-400">
-                              {project.totalThreads}
-                            </span>
-                          </div>
-
-                          <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
-                            <span className="rounded-full bg-slate-950/80 px-2 py-1 text-slate-400">
-                              전체 {project.totalThreads}
-                            </span>
-                            <span className="rounded-full bg-sky-500/10 px-2 py-1 text-sky-300">
-                              실행 {project.runningThreads}
-                            </span>
-                            <span className="rounded-full bg-violet-500/10 px-2 py-1 text-violet-300">
-                              검토 {project.reviewThreads}
-                            </span>
-                          </div>
-                        </button>
-
-                        {active ? (
-                          <div className="border-t border-white/6 px-4 py-4">
-                            <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                              Project Tree
-                            </p>
-                            <div className="space-y-2">
-                              {project.latestThreads.length === 0 ? (
-                                <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-3 py-4 text-xs text-slate-500">
-                                  아직 등록된 이슈가 없습니다.
-                                </div>
-                              ) : (
-                                project.latestThreads.map((thread) => (
-                                  <button
-                                    key={thread.id}
-                                    type="button"
-                                    onClick={() => onSelectThread(thread.id)}
-                                    className={`flex w-full items-start gap-3 rounded-2xl px-3 py-3 text-left transition ${
-                                      thread.id === selectedThreadId
-                                        ? "bg-slate-950/90 text-white"
-                                        : "bg-slate-950/50 text-slate-300 hover:bg-slate-950/80"
-                                    }`}
-                                  >
-                                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="block truncate text-sm font-medium">{thread.title}</span>
-                                      <span className="mt-1 block font-mono text-[11px] text-slate-500">
-                                        {thread.last_event}
-                                      </span>
-                                    </span>
-                                  </button>
-                                ))
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })
-                )}
-                </section>
               </div>
             </div>
-          </aside>
 
-          <main className="flex min-h-screen flex-1 flex-col pb-14">
-          <header className="border-b border-slate-800 bg-slate-950/70 px-4 py-5 backdrop-blur md:px-6 lg:px-8">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="border-b border-slate-800 px-5 py-4">
+              <label className="block">
+                <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
+                <select
+                  value={selectedBridgeId}
+                  onChange={(event) => onSelectBridge(event.target.value)}
+                  className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                >
+                  {bridges.length === 0 ? (
+                    <option value="">연결된 bridge 없음</option>
+                  ) : (
+                    bridges.map((bridge) => (
+                      <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                        {bridge.device_name ?? bridge.bridge_id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between px-5 py-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Project Board</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{selectedProject?.name ?? "프로젝트 선택 필요"}</h2>
-                <p className="mt-2 text-sm text-slate-400">
-                  {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 선택 필요"} · 선택한 프로젝트의 thread만 칸반에 표시됩니다. 마지막 갱신 {formatRelativeTime(status.updated_at)}
-                </p>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Projects</p>
+                <p className="mt-2 text-sm font-semibold text-white">{summarizeProjects(projects)}</p>
               </div>
-
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <label className="block w-full sm:w-60">
-                  <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                    Bridge
-                  </span>
-                  <select
-                    value={selectedBridgeId}
-                    onChange={(event) => onSelectBridge(event.target.value)}
-                    className="w-full rounded-2xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                  >
-                    {bridges.length === 0 ? (
-                      <option value="">연결된 bridge 없음</option>
-                    ) : (
-                      bridges.map((bridge) => (
-                        <option key={bridge.bridge_id} value={bridge.bridge_id}>
-                          {bridge.device_name ?? bridge.bridge_id}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
-
-                <label className="relative block w-full sm:w-72">
-                  <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-500">
-                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                    </svg>
-                  </span>
-                  <input
-                    type="text"
-                    value={search}
-                    onChange={(event) => onSearchChange(event.target.value)}
-                    placeholder="thread 제목, 이벤트 검색"
-                    className="w-full rounded-2xl border border-slate-800 bg-slate-900/80 py-3 pl-11 pr-4 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-                  />
-                </label>
-
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={onOpenComposer}
-                  disabled={projects.length === 0}
-                  className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={onOpenProjectComposer}
+                  disabled={!selectedBridge}
+                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 4v16m8-8H4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                  이슈 등록
+                  프로젝트 등록
+                </button>
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  className="rounded-xl border border-slate-800 px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-700 hover:text-white"
+                >
+                  새로고침
                 </button>
               </div>
             </div>
-          </header>
 
-          <div className="flex flex-1 flex-col xl:flex-row">
+            <div className="custom-scrollbar flex-1 overflow-y-auto px-3 pb-5">
+              {projectTree.length === 0 ? (
+                <div className="mx-2 rounded-2xl border border-dashed border-slate-800 px-4 py-5 text-sm text-slate-500">
+                  현재 선택된 bridge에 연결된 프로젝트가 없습니다.
+                </div>
+              ) : (
+                projectTree.map((project) => {
+                  const active = project.id === selectedProjectId;
+
+                  return (
+                    <div key={project.id} className="mb-2">
+                      <button
+                        type="button"
+                        onClick={() => onSelectProject(project.id)}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                          active
+                            ? "border-sky-400/30 bg-sky-500/10"
+                            : "border-transparent bg-transparent hover:border-slate-800 hover:bg-slate-900/60"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-white">{project.name}</p>
+                            <p className="mt-1 truncate text-[11px] text-slate-500">{project.key}</p>
+                          </div>
+                          <span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] text-slate-400">
+                            {project.totalThreads}
+                          </span>
+                        </div>
+                      </button>
+
+                      {active ? (
+                        <div className="mt-1 space-y-1 pl-4">
+                          {project.latestThreads.length === 0 ? (
+                            <div className="rounded-xl px-3 py-3 text-xs text-slate-500">
+                              아직 등록된 이슈가 없습니다.
+                            </div>
+                          ) : (
+                            project.latestThreads.map((thread) => (
+                              <button
+                                key={thread.id}
+                                type="button"
+                                onClick={() => onSelectThread(thread.id)}
+                                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
+                                  thread.id === selectedThreadId
+                                    ? "bg-slate-900 text-white"
+                                    : "text-slate-400 hover:bg-slate-900/70 hover:text-white"
+                                }`}
+                              >
+                                <span className={`h-2 w-2 rounded-full ${getStatusMeta(thread.status).dotClassName}`} />
+                                <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </aside>
+
+          <main className="flex min-h-screen min-w-0 flex-1 flex-col pb-14">
+            <header className="border-b border-slate-800 bg-slate-950/80 px-4 py-4 backdrop-blur md:px-6 lg:px-8">
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[11px] uppercase tracking-[0.34em] text-slate-500">Projects / Board</p>
+                    <div className="mt-2 flex min-w-0 items-center gap-3">
+                      <h2 className="truncate text-2xl font-semibold text-white">
+                        {selectedProject?.name ?? "프로젝트 선택 필요"}
+                      </h2>
+                      {selectedThread ? (
+                        <span className="hidden rounded-full border border-slate-800 bg-slate-900 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-400 sm:inline-flex">
+                          {getStatusMeta(selectedThread.status).label}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-2 text-sm text-slate-400">
+                      {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "bridge 선택 필요"} · 선택한 프로젝트의 이슈만 표시됩니다.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                    <label className="relative block w-full lg:w-72">
+                      <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-slate-500">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                        </svg>
+                      </span>
+                      <input
+                        type="text"
+                        value={search}
+                        onChange={(event) => onSearchChange(event.target.value)}
+                        placeholder="thread 제목, 이벤트 검색"
+                        className="w-full rounded-2xl border border-slate-800 bg-slate-900 py-3 pl-11 pr-4 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                      />
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={onOpenProjectComposer}
+                        disabled={!selectedBridge}
+                        className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        새 프로젝트
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onOpenComposer}
+                        disabled={projects.length === 0}
+                        className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path d="M12 4v16m8-8H4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                        </svg>
+                        이슈 등록
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Selected Bridge</p>
+                      <p className="mt-2 truncate text-sm font-medium text-white">
+                        {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "연결된 bridge 없음"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Threads</p>
+                      <p className="mt-2 text-sm font-medium text-white">{projectScopedThreads.length}개 이슈</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Updated</p>
+                      <p className="mt-2 text-sm font-medium text-white">
+                        {loadingState === "loading" ? "동기화 중" : formatRelativeTime(status.updated_at)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Current Focus</p>
+                    {selectedThread ? (
+                      <div className="mt-2">
+                        <p className="truncate text-sm font-medium text-white">{selectedThread.title}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {selectedThread.last_event} · {formatRelativeTime(selectedThread.updated_at)}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-slate-500">선택된 thread가 없습니다.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:hidden">
+                  <label className="block">
+                    <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Bridge</span>
+                    <select
+                      value={selectedBridgeId}
+                      onChange={(event) => onSelectBridge(event.target.value)}
+                      className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                    >
+                      {bridges.length === 0 ? (
+                        <option value="">연결된 bridge 없음</option>
+                      ) : (
+                        bridges.map((bridge) => (
+                          <option key={bridge.bridge_id} value={bridge.bridge_id}>
+                            {bridge.device_name ?? bridge.bridge_id}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">Project</span>
+                    <select
+                      value={selectedProjectId}
+                      onChange={(event) => onSelectProject(event.target.value)}
+                      className="w-full rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+                    >
+                      {projects.length === 0 ? (
+                        <option value="">프로젝트 없음</option>
+                      ) : (
+                        projects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </header>
+
+            {highlightedEvents.length > 0 ? (
+              <section className="border-b border-slate-800 bg-slate-950/60 px-4 py-3 md:px-6 lg:px-8">
+                <div className="flex flex-wrap gap-2">
+                  {highlightedEvents.map((event) => (
+                    <div
+                      key={event.id}
+                      className="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1.5 text-xs text-slate-400"
+                    >
+                      <span className="font-medium text-slate-200">{event.type}</span>
+                      <span className="mx-2 text-slate-600">/</span>
+                      <span>{summarizeEvent(event)}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <section className="min-w-0 flex-1 overflow-x-auto px-4 py-6 md:px-6 lg:px-8">
               <div className="flex min-h-full gap-5 pb-3">
                 {columns.map((column) => (
-                  <div key={column.id} className="kanban-column w-[20rem] shrink-0 rounded-[1.75rem] border border-slate-800 bg-slate-950/60 p-4">
+                  <div
+                    key={column.id}
+                    className="w-[19.5rem] shrink-0 rounded-[24px] border border-slate-800 bg-[#0f1726] p-4"
+                  >
                     <div className="mb-4 flex items-center justify-between gap-3">
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className={`h-2.5 w-2.5 rounded-full ${column.accent === "slate" ? "bg-slate-400" : column.accent === "blue" ? "bg-sky-400" : column.accent === "violet" ? "bg-violet-400" : "bg-emerald-400"}`} />
-                          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-300">{column.label}</h3>
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full ${
+                              column.accent === "slate"
+                                ? "bg-slate-400"
+                                : column.accent === "blue"
+                                  ? "bg-sky-400"
+                                  : column.accent === "violet"
+                                    ? "bg-violet-400"
+                                    : "bg-emerald-400"
+                            }`}
+                          />
+                          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-300">
+                            {column.label}
+                          </h3>
                         </div>
                         <p className="mt-2 text-xs text-slate-500">
                           {column.id === "todo"
-                            ? "등록되었지만 아직 실행이 시작되지 않은 항목"
+                            ? "새로 등록된 작업"
                             : column.id === "running"
-                              ? "turn이 실행 중이거나 agent 응답이 들어오는 항목"
+                              ? "현재 처리 중인 작업"
                               : column.id === "review"
-                                ? "실패 또는 사용자 입력이 필요한 항목"
-                                : "완료된 thread"}
+                                ? "입력 또는 검토가 필요한 작업"
+                                : "완료된 작업"}
                         </p>
                       </div>
                       <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${column.countClassName}`}>
@@ -1374,9 +1415,9 @@ function MainPage({
                       </span>
                     </div>
 
-                    <div className="custom-scrollbar flex max-h-[calc(100vh-20rem)] flex-col gap-3 overflow-y-auto pr-1">
+                    <div className="custom-scrollbar flex max-h-[calc(100vh-19rem)] flex-col gap-3 overflow-y-auto pr-1">
                       {column.threads.length === 0 ? (
-                        <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
+                        <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-6 text-sm text-slate-500">
                           해당 상태의 thread가 없습니다.
                         </div>
                       ) : (
@@ -1394,97 +1435,6 @@ function MainPage({
                 ))}
               </div>
             </section>
-
-            <aside className="border-t border-slate-800 bg-slate-950/90 px-4 py-6 xl:w-[22rem] xl:border-l xl:border-t-0">
-              <div className="rounded-[1.75rem] border border-slate-800 bg-slate-900/70 p-5">
-                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Thread Detail</p>
-                {selectedThread ? (
-                  <div className="mt-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-semibold text-white">{selectedThread.title}</h3>
-                        <p className="mt-2 font-mono text-xs text-slate-500">{selectedThread.id}</p>
-                      </div>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${getStatusMeta(selectedThread.status).chipClassName}`}>
-                        {getStatusMeta(selectedThread.status).label}
-                      </span>
-                    </div>
-
-                    <div className="mt-6 space-y-4 text-sm">
-                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                        <div className="flex items-center justify-between text-slate-400">
-                          <span>진행률</span>
-                          <span>{selectedThread.progress}%</span>
-                        </div>
-                        <div className="mt-3 h-2 rounded-full bg-slate-800">
-                          <div
-                            className="h-2 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
-                            style={{ width: `${selectedThread.progress}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Project</p>
-                          <p className="mt-2 text-sm font-medium text-white">
-                            {projects.find((project) => project.id === selectedThread.project_id)?.name ?? "미지정"}
-                          </p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Last Event</p>
-                          <p className="mt-2 text-sm font-medium text-white">{selectedThread.last_event}</p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Created</p>
-                          <p className="mt-2 text-sm font-medium text-white">{formatDateTime(selectedThread.created_at)}</p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Updated</p>
-                          <p className="mt-2 text-sm font-medium text-white">{formatDateTime(selectedThread.updated_at)}</p>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                        <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Last Message</p>
-                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">
-                          {selectedThread.last_message || "아직 agent 메시지가 수신되지 않았습니다."}
-                        </p>
-                      </div>
-
-                      <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Recent Events</p>
-                          <span className="text-[11px] text-slate-500">{loadingState === "loading" ? "동기화 중" : "실시간"}</span>
-                        </div>
-                        <div className="custom-scrollbar mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
-                          {recentEvents.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-3 py-4 text-xs text-slate-500">
-                              아직 수신된 이벤트가 없습니다.
-                            </div>
-                          ) : (
-                            recentEvents.map((event) => (
-                              <div key={event.id} className="rounded-2xl border border-slate-800 bg-slate-900/50 px-3 py-3">
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-medium text-white">{event.type}</p>
-                                  <span className="text-[10px] text-slate-500">{formatRelativeTime(event.timestamp)}</span>
-                                </div>
-                                <p className="mt-1 text-xs leading-5 text-slate-400">{summarizeEvent(event)}</p>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-800 bg-slate-950/50 px-4 py-8 text-sm leading-6 text-slate-500">
-                    좌측 보드에서 thread를 선택하면 상세 정보가 여기에 표시됩니다.
-                  </div>
-                )}
-              </div>
-            </aside>
-          </div>
           </main>
         </div>
 
