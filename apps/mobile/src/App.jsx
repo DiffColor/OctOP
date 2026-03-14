@@ -1073,6 +1073,8 @@ function UtilitySheet({
   onRefresh,
   onLogout
 }) {
+  const currentBridge = bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null;
+
   return (
     <BottomSheet
       open={open}
@@ -1081,7 +1083,7 @@ function UtilitySheet({
       variant="center"
     >
       <div className="px-5 py-5">
-        <section className="flex items-center gap-3 border-b border-white/10 pb-4">
+        <section className="flex items-start gap-3 border-b border-white/10 pb-4">
           <div className="flex h-11 w-11 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
             {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
           </div>
@@ -1095,41 +1097,16 @@ function UtilitySheet({
               />
             </div>
             <p className="truncate text-xs text-slate-400">{session.loginId}</p>
-          </div>
-        </section>
-
-        <section className="grid grid-cols-3 gap-2 border-b border-white/10 py-4 text-center">
-          <div className="col-span-3 overflow-hidden rounded-[1rem] border border-white/10 bg-black/15">
-            {[
-              {
-                label: "Bridge",
-                value: bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ?? selectedBridgeId ?? "-",
-                meta: `${bridges.length}개 연결`
-              },
-              {
-                label: "Project",
-                value: selectedProject?.name ?? "프로젝트 미선택",
-                meta: `${projects.length}개 등록`
-              },
-              {
-                label: "Thread",
-                value: selectedThread?.title ?? "채팅창 미선택",
-                meta: `${threads.length}개 표시`
-              }
-            ].map((item, index) => (
-              <div
-                key={item.label}
-                className={`flex items-center justify-between gap-3 px-3 py-2.5 ${
-                  index === 0 ? "" : "border-t border-white/10"
-                }`}
-              >
-                <div className="min-w-0">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{item.label}</p>
-                  <p className="mt-1 truncate text-sm font-semibold text-white">{item.value}</p>
-                </div>
-                <span className="shrink-0 text-[11px] text-slate-400">{item.meta}</span>
-              </div>
-            ))}
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-5 text-slate-400">
+              <span className="truncate">Bridge {currentBridge?.device_name ?? selectedBridgeId ?? "-"}</span>
+              <span className="text-slate-600">·</span>
+              <span>Project {projects.length}</span>
+              <span className="text-slate-600">·</span>
+              <span>Thread {threads.length}</span>
+            </div>
+            <p className="mt-1 truncate text-[11px] leading-5 text-slate-500">
+              {selectedProject?.name ?? "프로젝트 미선택"} / {selectedThread?.title ?? "채팅창 미선택"}
+            </p>
           </div>
         </section>
 
