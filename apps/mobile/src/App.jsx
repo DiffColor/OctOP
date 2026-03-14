@@ -408,6 +408,46 @@ function formatThreadContextUsage(thread) {
   return `사용률 ${usage.percent}%`;
 }
 
+function getVoiceTranscriptDelta(nextTranscript, previousTranscript) {
+  const next = String(nextTranscript ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const previous = String(previousTranscript ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!next) {
+    return "";
+  }
+
+  if (!previous) {
+    return next;
+  }
+
+  if (next === previous || previous.startsWith(next)) {
+    return "";
+  }
+
+  if (next.startsWith(previous)) {
+    return next.slice(previous.length).trim();
+  }
+
+  const previousTokens = previous.split(" ");
+  const nextTokens = next.split(" ");
+  const maxOverlap = Math.min(previousTokens.length, nextTokens.length);
+
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const previousSuffix = previousTokens.slice(-size).join(" ");
+    const nextPrefix = nextTokens.slice(0, size).join(" ");
+
+    if (previousSuffix === nextPrefix) {
+      return nextTokens.slice(size).join(" ").trim();
+    }
+  }
+
+  return next;
+}
+
 function parseResponseBody(response, text) {
   if (!text) {
     return {};
@@ -1172,6 +1212,7 @@ function InlineIssueComposer({
   const shouldKeepRecordingRef = useRef(false);
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
+  const lastFinalTranscriptRef = useRef("");
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
@@ -1216,6 +1257,7 @@ function InlineIssueComposer({
     shouldKeepRecordingRef.current = false;
     processedFinalResultKeysRef.current = new Set();
     lastVoiceAppendRef.current = { text: "", at: 0 };
+    lastFinalTranscriptRef.current = "";
     clearLongPressTimer();
     clearVoiceRestartTimer();
 
@@ -1326,7 +1368,15 @@ function InlineIssueComposer({
           }
 
           processedFinalResultKeysRef.current.add(resultKey);
-          collected += collected ? ` ${transcript}` : transcript;
+          const delta = getVoiceTranscriptDelta(transcript, lastFinalTranscriptRef.current);
+
+          if (!delta) {
+            lastFinalTranscriptRef.current = transcript;
+            continue;
+          }
+
+          lastFinalTranscriptRef.current = transcript;
+          collected += collected ? ` ${delta}` : delta;
         }
       }
 
