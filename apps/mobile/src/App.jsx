@@ -1154,9 +1154,6 @@ function UtilitySheet({
             className="rounded-[1rem] bg-sky-500 px-3 py-3 text-left text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
           >
             <p className="text-[11px] font-semibold">일반지침</p>
-            <p className="mt-1 text-[11px] leading-5 text-sky-50/90">
-              {selectedProject?.base_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
-            </p>
           </button>
           <button
             type="button"
@@ -1165,9 +1162,6 @@ function UtilitySheet({
             className="rounded-[1rem] bg-emerald-500 px-3 py-3 text-left text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
           >
             <p className="text-[11px] font-semibold">개발지침</p>
-            <p className="mt-1 text-[11px] leading-5 text-emerald-50/90">
-              {selectedProject?.developer_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
-            </p>
           </button>
         </section>
 
