@@ -1066,8 +1066,8 @@ function InlineIssueComposer({
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const longPressTimerRef = useRef(null);
-  const longPressTriggeredRef = useRef(false);
   const suppressClickRef = useRef(false);
+  const isRecordingRef = useRef(false);
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
@@ -1109,6 +1109,10 @@ function InlineIssueComposer({
   }, []);
 
   useEffect(() => () => stopVoiceCapture(), [stopVoiceCapture]);
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
   const appendVoiceTranscript = useCallback(
     (text) => {
@@ -1181,6 +1185,8 @@ function InlineIssueComposer({
     }
   }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
 
+  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+
   const handlePromptSubmit = useCallback(async () => {
     const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
@@ -1215,6 +1221,22 @@ function InlineIssueComposer({
     }
   }, []);
 
+  const toggleVoiceCapture = useCallback(() => {
+    if (isRecordingRef.current) {
+      stopVoiceCapture();
+      return;
+    }
+
+    if (!supportsSpeechRecognition) {
+      if (typeof window !== "undefined") {
+        window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
+      }
+      return;
+    }
+
+    startVoiceCapture();
+  }, [startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
+
   const handleSendPointerDown = useCallback(
     (event) => {
       if (!selectedProject || busy || disabled) {
@@ -1225,50 +1247,24 @@ function InlineIssueComposer({
         return;
       }
 
-      longPressTriggeredRef.current = false;
       suppressClickRef.current = false;
       clearLongPressTimer();
 
       longPressTimerRef.current = window.setTimeout(() => {
-        if (!supportsSpeechRecognition) {
-          if (typeof window !== "undefined") {
-            window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
-          }
-          longPressTriggeredRef.current = false;
-          suppressClickRef.current = false;
-          return;
-        }
-
-        longPressTriggeredRef.current = true;
         suppressClickRef.current = true;
-        startVoiceCapture();
+        toggleVoiceCapture();
       }, LONG_PRESS_THRESHOLD_MS);
     },
-    [busy, clearLongPressTimer, disabled, selectedProject, startVoiceCapture, supportsSpeechRecognition]
+    [busy, clearLongPressTimer, disabled, selectedProject, toggleVoiceCapture]
   );
-
-  const stopLongPressCapture = useCallback(() => {
-    if (!longPressTriggeredRef.current) {
-      return;
-    }
-
-    longPressTriggeredRef.current = false;
-    suppressClickRef.current = true;
-    stopVoiceCapture();
-  }, [stopVoiceCapture]);
 
   const handleSendPointerUp = useCallback(() => {
     clearLongPressTimer();
-    stopLongPressCapture();
-  }, [clearLongPressTimer, stopLongPressCapture]);
+  }, [clearLongPressTimer]);
 
   const handleSendPointerLeave = useCallback(() => {
     clearLongPressTimer();
-
-    if (longPressTriggeredRef.current) {
-      stopLongPressCapture();
-    }
-  }, [clearLongPressTimer, stopLongPressCapture]);
+  }, [clearLongPressTimer]);
 
   const handleSendClick = useCallback(
     (event) => {
@@ -1289,31 +1285,40 @@ function InlineIssueComposer({
   );
 
   return (
-    <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
-      <div className="flex items-end gap-3">
-        <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
-          <div className="mb-1 text-[11px] text-slate-500">
-            {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+    <>
+      {isRecording ? (
+        <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex justify-center">
+          <div className="flex items-center gap-2 rounded-full bg-rose-500/95 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/40">
+            <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" />
+            <span>음성 입력 중 · 길게 눌러 종료하세요</span>
           </div>
-          <textarea
-            rows="1"
-            ref={textareaRef}
-            value={prompt}
-            onChange={handlePromptChange}
-            placeholder=""
-            disabled={!selectedProject || busy || disabled}
-            className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
-          />
         </div>
-        <button
-          type="button"
+      ) : null}
+      <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
+        <div className="flex items-end gap-3">
+          <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
+            <div className="mb-1 text-[11px] text-slate-500">
+              {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+            </div>
+            <textarea
+              rows="1"
+              ref={textareaRef}
+              value={prompt}
+              onChange={handlePromptChange}
+              placeholder=""
+              disabled={!selectedProject || busy || disabled}
+              className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
+            />
+          </div>
+          <button
+            type="button"
           onPointerDown={handleSendPointerDown}
           onPointerUp={handleSendPointerUp}
           onPointerLeave={handleSendPointerLeave}
           onPointerCancel={handleSendPointerLeave}
           onClick={handleSendClick}
           onContextMenu={(event) => event.preventDefault()}
-          disabled={busy || !selectedProject || (!prompt.trim() && !isRecording) || disabled}
+          disabled={busy || !selectedProject || disabled}
           aria-pressed={isRecording}
           className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
             isRecording
@@ -1345,6 +1350,7 @@ function InlineIssueComposer({
         </button>
       </div>
     </form>
+    </>
   );
 }
 
