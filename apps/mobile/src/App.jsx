@@ -1062,6 +1062,10 @@ function InlineIssueComposer({
 }) {
   const [prompt, setPrompt] = useState("");
   const textareaRef = useRef(null);
+  const speechRecognitionRef = useRef(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const supportsSpeechRecognition =
+    typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
   const syncPromptHeight = useCallback((element) => {
     const textarea = element ?? textareaRef.current;
@@ -1085,6 +1089,109 @@ function InlineIssueComposer({
     },
     [syncPromptHeight]
   );
+
+  const stopVoiceCapture = useCallback(() => {
+    const recognition = speechRecognitionRef.current;
+
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.stop();
+      speechRecognitionRef.current = null;
+    }
+
+    setIsRecording(false);
+  }, []);
+
+  useEffect(() => () => stopVoiceCapture(), [stopVoiceCapture]);
+
+  const appendVoiceTranscript = useCallback(
+    (text) => {
+      const transcript = String(text ?? "").trim();
+
+      if (!transcript) {
+        return;
+      }
+
+      setPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
+
+      if (typeof window !== "undefined") {
+        window.setTimeout(() => syncPromptHeight(), 0);
+      }
+    },
+    [syncPromptHeight]
+  );
+
+  const startVoiceCapture = useCallback(() => {
+    if (!supportsSpeechRecognition || typeof window === "undefined" || speechRecognitionRef.current) {
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "ko-KR";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => setIsRecording(true);
+    recognition.onresult = (event) => {
+      let collected = "";
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+
+        if (!result) {
+          continue;
+        }
+
+        if (result.isFinal) {
+          collected += result[0]?.transcript ?? "";
+        }
+      }
+
+      appendVoiceTranscript(collected);
+    };
+    recognition.onerror = () => {
+      stopVoiceCapture();
+    };
+    recognition.onend = () => {
+      stopVoiceCapture();
+    };
+    recognition.start();
+    speechRecognitionRef.current = recognition;
+  }, [appendVoiceTranscript, stopVoiceCapture, supportsSpeechRecognition]);
+
+  useEffect(() => {
+    if (!isRecording) {
+      return;
+    }
+
+    if (busy || disabled || !selectedProject) {
+      stopVoiceCapture();
+    }
+  }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
+
+  const handleVoiceButtonClick = useCallback(() => {
+    if (!supportsSpeechRecognition) {
+      if (typeof window !== "undefined") {
+        window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
+      }
+      return;
+    }
+
+    if (isRecording) {
+      stopVoiceCapture();
+      return;
+    }
+
+    startVoiceCapture();
+  }, [isRecording, startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1124,6 +1231,33 @@ function InlineIssueComposer({
             className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
           />
         </div>
+        {supportsSpeechRecognition ? (
+          <button
+            type="button"
+            onClick={handleVoiceButtonClick}
+            disabled={!selectedProject || busy || disabled}
+            aria-pressed={isRecording}
+            className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition ${
+              isRecording
+                ? "border-rose-400 bg-rose-500/20 text-rose-100"
+                : "border-white/15 bg-transparent text-white hover:bg-white/5 disabled:text-white/40"
+            } disabled:cursor-not-allowed disabled:opacity-45`}
+          >
+            {isRecording ? (
+              <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-300 shadow-[0_0_0_6px_rgba(244,63,94,0.35)]" />
+            ) : null}
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+              />
+              <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+        ) : null}
         <button
           type="submit"
           disabled={busy || !selectedProject || !prompt.trim() || disabled}
