@@ -174,7 +174,8 @@ issue는 여전히 root thread 소속으로 보이되, 실제 실행 출처는 p
 {
   "id": "issue-1",
   "root_thread_id": "thread-root-1",
-  "physical_thread_id": "pth-2",
+  "created_physical_thread_id": "pth-2",
+  "executed_physical_thread_id": "pth-3",
   "project_id": "project-1",
   "title": "로그인 화면 수정",
   "prompt": "모바일 로그인 UI를 정리해줘",
@@ -193,7 +194,9 @@ issue는 여전히 root thread 소속으로 보이되, 실제 실행 출처는 p
 핵심 규칙:
 
 - 대시보드와 모바일은 `root_thread_id` 기준으로 issue를 본다.
-- 실행/출력 provenance는 `physical_thread_id`로 추적한다.
+- 생성 provenance는 `created_physical_thread_id`로 추적한다.
+- 실제 실행 provenance는 `executed_physical_thread_id`로 추적한다.
+- `executed_physical_thread_id`는 실행 전까지 null일 수 있다.
 
 ## 4.4 Issue message
 
@@ -204,7 +207,7 @@ issue는 여전히 root thread 소속으로 보이되, 실제 실행 출처는 p
   "id": "msg-1",
   "issue_id": "issue-1",
   "root_thread_id": "thread-root-1",
-  "physical_thread_id": "pth-2",
+  "physical_thread_id": "pth-3",
   "role": "assistant",
   "kind": "message",
   "message_class": "assistant",
@@ -269,19 +272,31 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 
 ## 5.2 읽기 모델의 역할
 
-읽기 모델은 projection이 담당합니다.
+읽기 모델은 브리지와 projection을 혼합합니다.
 
 대상:
 
-- 대시보드 칸반용 root thread issue board
-- 모바일 채팅용 root thread merged timeline
+- 현재 active physical thread의 live 상태
+- 과거 physical thread의 issue/message/history
 - 운영자 디버깅용 continuity view
 
 원칙:
 
-- projection은 읽기 전용
+- 현재 active physical thread의 실시간 상태는 반드시 브리지에서 읽는다.
+- projection은 현재 root thread 전체의 최종 권위자가 아니라, 과거 physical thread 이력을 붙이는 읽기 전용 캐시다.
+- projection은 이미 닫힌 physical thread와 과거 issue/message/summary만 담당한다.
+- 현재 active physical thread의 running status, live delta, token usage는 projection에서 읽지 않는다.
 - projection이 실행 라우팅 결정을 해서는 안 됨
 - 삭제/복구 기준은 항상 쓰기 모델의 `root_thread_id`
+
+권장 조회 전략:
+
+1. 현재 active physical thread 상태
+   브리지 메모리에서 직접 조회
+2. 과거 physical thread 이력
+   projection에서 조회
+3. API 응답
+   브리지 또는 API 계층에서 두 결과를 병합해 반환
 
 ---
 
@@ -368,7 +383,8 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 ### `thread_issue_cards`
 
 - `root_thread_id`
-- `physical_thread_id`
+- `created_physical_thread_id`
+- `executed_physical_thread_id`
 - `status`
 - `updated_at`
 - `deleted_at`
@@ -396,9 +412,10 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 3. active physical thread는 root thread당 정확히 1개여야 한다.
 4. 새 physical thread의 `sequence`는 기존 최대값 + 1이어야 한다.
 5. issue는 반드시 `root_thread_id`를 가져야 한다.
-6. issue의 `physical_thread_id`는 반드시 같은 `root_thread_id` 소속이어야 한다.
+6. issue의 `created_physical_thread_id`, `executed_physical_thread_id`는 반드시 같은 `root_thread_id` 소속이어야 한다.
 7. handoff summary는 반드시 target physical thread와 1:1 또는 1:0 관계여야 한다.
 8. 삭제된 root thread 아래 활성 physical thread가 남아 있으면 안 된다.
+9. 닫히거나 삭제된 physical thread의 이벤트는 상태 반영 전에 차단되어야 한다.
 
 ---
 
@@ -423,7 +440,8 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 생성 시점:
 
 - `root_thread_id = 선택한 사용자 thread`
-- `physical_thread_id = 현재 active physical thread`
+- `created_physical_thread_id = 현재 active physical thread`
+- `executed_physical_thread_id = null`
 
 의미:
 
@@ -439,6 +457,7 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 3. 해당 physical thread의 `codex_thread_id`를 resolve
 4. 없으면 `thread/start`
 5. `turn/start`는 항상 active physical thread에 보냄
+6. 실행 시작 시 `executed_physical_thread_id`를 현재 active physical thread로 기록
 
 핵심:
 
@@ -480,7 +499,13 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 
 ### 대시보드
 
-`/api/threads/{rootThreadId}/issues`는 root thread 기준으로 모든 physical thread의 issue를 합쳐 내려줍니다.
+`/api/threads/{rootThreadId}/issues`는 root thread 기준 merged issue board를 내려주되, 데이터 소스는 다음처럼 분리합니다.
+
+1. 현재 active physical thread에 속한 live issue 상태
+   브리지 메모리에서 직접 조회
+2. 이미 닫힌 physical thread에 속한 과거 issue
+   projection에서 조회
+3. 응답 직전 병합
 
 정렬 원칙:
 
@@ -491,7 +516,13 @@ summary는 issue가 아니라 별도 엔티티로 둡니다.
 
 ### 모바일
 
-root thread merged timeline을 내려줍니다.
+root thread merged timeline을 내려주되, 데이터 소스는 다음처럼 분리합니다.
+
+1. 현재 active physical thread의 live message
+   브리지 메모리에서 직접 조회
+2. 이미 닫힌 physical thread의 과거 message와 handoff summary
+   projection에서 조회
+3. 응답 직전 병합
 
 정렬 원칙:
 
@@ -545,7 +576,8 @@ row 예시:
 {
   "id": "issue-1",
   "root_thread_id": "thread-root-1",
-  "physical_thread_id": "pth-2",
+  "created_physical_thread_id": "pth-2",
+  "executed_physical_thread_id": "pth-3",
   "project_id": "project-1",
   "title": "로그인 화면 수정",
   "status": "completed",
@@ -626,6 +658,7 @@ row 예시:
 
 - `threadId`는 root thread id
 - root thread 기준 merged issue board 반환
+- 현재 active physical thread의 issue는 브리지 live state에서 읽고, 닫힌 physical thread의 issue는 projection에서 읽는다.
 
 추가 권장 응답:
 
@@ -659,6 +692,11 @@ issue detail은 유지하되 message provenance를 포함합니다.
 목적:
 
 - 모바일 merged chat 전용
+
+읽기 규칙:
+
+- active physical thread의 live message는 브리지 메모리 우선
+- closed physical thread의 과거 message와 summary는 projection 우선
 
 응답:
 
@@ -731,6 +769,9 @@ const rootThreadPhysicalThreadIdsById = new Map();
 const handoffSummariesById = new Map();
 const rolloverLocksByRootThreadId = new Map();
 const rolloverCooldownByRootThreadId = new Map();
+const codexThreadToPhysicalThreadId = new Map();
+const closedPhysicalThreadTombstonesById = new Map();
+const deletedRootThreadTombstonesById = new Map();
 ```
 
 ## 11.2 `threadStateById`의 의미 재정의
@@ -774,7 +815,8 @@ const rolloverCooldownByRootThreadId = new Map();
 
 - `thread_id`는 root thread id로 계속 수용
 - issue 저장 시 `root_thread_id = threadId`
-- `physical_thread_id = getActivePhysicalThread(threadId).id`
+- `created_physical_thread_id = getActivePhysicalThread(threadId).id`
+- `executed_physical_thread_id = null`
 
 호환성:
 
@@ -797,14 +839,41 @@ const rolloverCooldownByRootThreadId = new Map();
 주의:
 
 - 대기열 issue가 오래전에 만들어졌더라도 실행 시점에는 항상 최신 physical thread에서 돌아야 합니다.
-- 따라서 issue의 `physical_thread_id`는 "생성 출처"이고, `executed_physical_thread_id`를 별도 두는 편이 더 정확합니다.
+- 따라서 필드는 초기에 분리해서 고정합니다.
 
-권장 필드 추가:
+필수 필드:
 
 - `created_physical_thread_id`
 - `executed_physical_thread_id`
 
-1차 구현에서는 단순화를 위해 `physical_thread_id`를 실행 시점 기준으로 업데이트해도 되지만, 운영 추적을 생각하면 둘을 나누는 편이 낫습니다.
+규칙:
+
+- issue 생성 시 `created_physical_thread_id`만 채움
+- issue 실행 시작 시 `executed_physical_thread_id`를 active physical thread로 확정
+- 이후 assistant delta/message는 반드시 `executed_physical_thread_id` 기준으로 기록
+
+## 11.6.1 이벤트 귀속과 late event 차단
+
+rollover 후 늦은 이벤트는 구조상 거의 없어야 하지만, 운영 안정성을 위해 브리지에서 차단합니다.
+
+필수 규칙:
+
+1. app-server notification 수신 시 `codex_thread_id -> physical_thread_id`를 먼저 resolve
+2. `physical_thread_id`가 `closedPhysicalThreadTombstonesById`에 있으면 즉시 drop
+3. `root_thread_id`가 `deletedRootThreadTombstonesById`에 있으면 즉시 drop
+4. 델타/상태 이벤트는 현재 root thread 전체가 아니라, 해당 `physical_thread_id`에 귀속된 실행 issue에만 반영
+
+최소 수정 방향:
+
+- 기존 `codexThreadToThreadId`는 유지
+- `codexThreadToPhysicalThreadId`를 추가해 이벤트 귀속을 physical thread까지 내린다
+- `activeIssueByThreadId` 단일 매핑만으로는 부족하므로 `activeIssueByPhysicalThreadId`를 추가한다
+
+권장 신규 맵:
+
+```js
+const activeIssueByPhysicalThreadId = new Map();
+```
 
 ## 11.7 rollover orchestrator
 
@@ -831,6 +900,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
 
     bindCodexThreadToPhysicalThread(targetPhysicalThread.id, codexThreadId);
     closePhysicalThread(sourcePhysicalThread.id, "rolled_over");
+    markPhysicalThreadClosedForEventDrop(sourcePhysicalThread.id);
     activatePhysicalThread(rootThreadId, targetPhysicalThread.id);
     persistRootThreadState(rootThreadId);
     publishRolloverEvents(userId, rootThreadId, sourcePhysicalThread.id, targetPhysicalThread.id);
@@ -862,6 +932,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
 
 - 브리지 로컬 저장에서는 hard delete
 - projection/RethinkDB에서는 `deleted_at` soft delete 후 background purge
+- 브리지는 삭제 직후 `deletedRootThreadTombstonesById`에 tombstone을 남겨 late event를 drop
 
 ---
 
@@ -894,6 +965,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
 3. merged issue board projection 유지
 4. merged timeline projection 유지
 5. delete event 수신 시 cascade soft delete
+6. 현재 active physical thread의 live 상태를 대신하지 않음
 
 ## 12.3 out-of-order event 보호
 
@@ -909,6 +981,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
 
 - 더 오래된 이벤트가 나중에 도착하면 projection을 덮어쓰지 않음
 - 삭제 이벤트 이후 늦게 온 update는 무시
+- closed physical thread에 대한 update는 projection에 반영하지 않음
 
 ## 12.4 projection 일관성 점검
 
@@ -941,6 +1014,7 @@ worker는 주기적으로 다음 invariant 검사를 할 수 있어야 합니다
 단점:
 
 - API 왕복 수가 많음
+- 현재 active physical thread의 live message는 projection이 아니라 브리지 응답을 써야 함
 
 ## 13.2 2차 방식
 
@@ -997,7 +1071,21 @@ worker는 주기적으로 다음 invariant 검사를 할 수 있어야 합니다
 - lock이 있으면 새 rollover 거절
 - 일정 시간 이상 오래된 lock은 stale로 판단 후 복구
 
-## 15.2 cooldown
+## 15.2 late event 차단
+
+late event는 구조상 거의 없어야 하지만, 다음 최소 차단 장치를 반드시 둡니다.
+
+1. physical thread가 rollover로 닫히는 순간 tombstone 기록
+2. root thread가 삭제되는 순간 tombstone 기록
+3. app-server notification 수신 시 tombstone 우선 검사
+4. tombstone 대상 이벤트는 로그만 남기고 상태 반영하지 않음
+
+권장 보존 시간:
+
+- `closedPhysicalThreadTombstonesById`: 10분
+- `deletedRootThreadTombstonesById`: 30분
+
+## 15.3 cooldown
 
 threshold 이벤트가 여러 번 와도 반복 rollover를 막습니다.
 
@@ -1005,7 +1093,7 @@ threshold 이벤트가 여러 번 와도 반복 rollover를 막습니다.
 
 - `OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS=30000`
 
-## 15.3 idempotency
+## 15.4 idempotency
 
 idempotency key:
 
@@ -1013,7 +1101,7 @@ idempotency key:
 
 동일 key의 rollover는 한 번만 성공해야 합니다.
 
-## 15.4 새 physical thread 생성 실패
+## 15.5 새 physical thread 생성 실패
 
 대응:
 
@@ -1023,13 +1111,13 @@ idempotency key:
 4. 경고 이벤트 발행
 5. 수동 rollover 가능 상태 유지
 
-## 15.5 app-server 일시 장애
+## 15.6 app-server 일시 장애
 
 rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포인터를 바꾸지 않습니다.
 
 즉 부분 성공이 남더라도 작업 대상이 잘못 바뀌는 일은 없어야 합니다.
 
-## 15.6 delete 도중 실패
+## 15.7 delete 도중 실패
 
 삭제도 root thread lock 하에서 수행합니다.
 
@@ -1055,7 +1143,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 1. 기존 사용자 thread를 전부 root thread로 간주
 2. 각 root thread마다 physical thread `sequence = 1` 자동 생성
 3. 기존 `codex_thread_id`, usage 정보는 sequence 1 physical thread로 이관
-4. 기존 issue는 모두 `root_thread_id = 기존 thread id`, `physical_thread_id = sequence 1`
+4. 기존 issue는 모두 `root_thread_id = 기존 thread id`, `created_physical_thread_id = sequence 1`, `executed_physical_thread_id = sequence 1`
 
 적용 위치:
 
@@ -1090,6 +1178,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 검증:
 
 - 삭제 시 관련 데이터 전부 정리
+- 현재 active physical thread live 상태는 projection이 아니라 브리지 응답을 계속 사용
 
 ## 17.3 Phase 3
 
@@ -1109,6 +1198,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 검증:
 
 - 모바일에서 과거 thread 이력이 현재 thread 안에 있는 것처럼 보임
+- 현재 active physical thread의 live delta는 여전히 브리지에서 읽음
 
 ---
 
@@ -1125,6 +1215,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 5. 동일 source thread에 threshold 이벤트 10번 와도 1회만 rollover
 6. rollover 실패 시 active thread 유지
 7. root thread 삭제 시 모든 physical thread/issue/message/summary 정리
+8. closed physical thread의 late event는 tombstone으로 drop
 
 ## 18.2 통합 테스트
 
@@ -1138,6 +1229,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 6. `/api/threads/{root}/issues`가 두 physical thread의 issue를 함께 반환
 7. `/api/threads/{root}/timeline`이 handoff summary를 포함해 반환
 8. root thread 삭제 시 projection까지 정리
+9. rollover 후 source physical thread에서 온 notification은 반영되지 않음
 
 ## 18.3 장애 테스트
 
@@ -1179,15 +1271,17 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 
 1. 사용자가 보는 thread는 최초 생성된 `root thread` 하나로 고정
 2. 실제 실행은 `root thread` 아래 가장 마지막 `physical thread`
-3. rollover는 새 physical thread를 추가하는 방식으로만 수행
-4. 과거 physical thread는 projection에서 읽기 전용으로 합성
-5. 삭제는 `root_thread_id` 기준 cascade delete
+3. 브리지가 최종 권위자이며 현재 active physical thread의 live 상태는 항상 브리지에서 직접 읽음
+4. rollover는 새 physical thread를 추가하는 방식으로만 수행
+5. 과거 physical thread는 projection에서 읽기 전용으로 합성
+6. rollover 후 닫힌 physical thread와 삭제된 root thread의 이벤트는 tombstone으로 차단
+7. 삭제는 `root_thread_id` 기준 cascade delete
 
 즉 이 기능의 본질은 linked list가 아니라 아래입니다.
 
 - `root thread`는 사용자 정체성
 - `physical thread`는 실행 세대
-- `projection merge`는 읽기 연속성
+- `bridge live + projection history merge`는 읽기 연속성
 - `cascade delete`는 운영 안정성
 
 이 구조가 현재 코드, 현재 UI, 현재 projection worker, 현재 app-server 연동 방식에 가장 맞고 서비스 운영 리스크도 가장 낮습니다.
