@@ -3486,18 +3486,20 @@ function MainPage({
           <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
               <div className="min-w-0 flex-1 pr-4">
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex min-w-0 items-center gap-2 text-sm">
                   {selectedProject ? (
                     <>
-                      <span className="text-slate-500">{copy.board.project}</span>
-                      <span className="text-slate-700">/</span>
-                      <OverflowRevealText value={selectedProject.name} className="font-medium text-white" />
+                      <div className="max-w-[14rem] shrink-0 md:max-w-[18rem] lg:max-w-[22rem]">
+                        <OverflowRevealText value={selectedProject.name} className="font-medium text-white" />
+                      </div>
                     </>
                   ) : null}
                   {selectedProject && selectedProjectThread ? (
                     <>
                       <span className="text-slate-700">/</span>
-                      <OverflowRevealText value={selectedProjectThread.name} className="font-medium text-sky-200" />
+                      <div className="min-w-0 flex-1">
+                        <OverflowRevealText value={selectedProjectThread.name} className="font-medium text-sky-200" />
+                      </div>
                     </>
                   ) : null}
                 </div>
