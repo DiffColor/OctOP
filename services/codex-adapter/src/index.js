@@ -557,13 +557,19 @@ function normalizeTokenUsageBreakdown(breakdown = null, fallback = {}) {
     : Number.isFinite(Number(fallback.total_tokens))
       ? Number(fallback.total_tokens)
       : null;
+  const hasPositiveComponent =
+    (inputTokens ?? 0) > 0 ||
+    (cachedInputTokens ?? 0) > 0 ||
+    (outputTokens ?? 0) > 0 ||
+    (reasoningOutputTokens ?? 0) > 0;
+  const normalizedTotalTokens = totalTokens === 0 && hasPositiveComponent ? null : totalTokens;
 
   if (
     inputTokens === null &&
     cachedInputTokens === null &&
     outputTokens === null &&
     reasoningOutputTokens === null &&
-    totalTokens === null
+    normalizedTotalTokens === null
   ) {
     return null;
   }
@@ -573,7 +579,7 @@ function normalizeTokenUsageBreakdown(breakdown = null, fallback = {}) {
     cached_input_tokens: cachedInputTokens ?? 0,
     output_tokens: outputTokens ?? 0,
     reasoning_output_tokens: reasoningOutputTokens ?? 0,
-    total_tokens: totalTokens ?? 0
+    total_tokens: normalizedTotalTokens
   };
 }
 
@@ -581,6 +587,15 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
   const fallbackTokenUsage = fallback.token_usage ?? fallback.tokenUsage ?? null;
   const last = normalizeTokenUsageBreakdown(tokenUsage?.last, fallbackTokenUsage?.last);
   const total = normalizeTokenUsageBreakdown(tokenUsage?.total, fallbackTokenUsage?.total);
+  const hasTokenUsageActivity =
+    (last?.input_tokens ?? 0) > 0 ||
+    (last?.cached_input_tokens ?? 0) > 0 ||
+    (last?.output_tokens ?? 0) > 0 ||
+    (last?.reasoning_output_tokens ?? 0) > 0 ||
+    (total?.input_tokens ?? 0) > 0 ||
+    (total?.cached_input_tokens ?? 0) > 0 ||
+    (total?.output_tokens ?? 0) > 0 ||
+    (total?.reasoning_output_tokens ?? 0) > 0;
   const rawModelContextWindow =
     tokenUsage?.modelContextWindow ??
     tokenUsage?.model_context_window ??
@@ -592,14 +607,21 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
       : Number.isFinite(Number(rawModelContextWindow))
         ? Number(rawModelContextWindow)
         : null;
-  const rawContextUsedTokens = total?.total_tokens ?? fallback.context_used_tokens;
+  const rawFallbackContextUsedTokens =
+    Number(fallback.context_used_tokens) === 0 && hasTokenUsageActivity
+      ? null
+      : fallback.context_used_tokens;
+  const rawContextUsedTokens = total?.total_tokens ?? rawFallbackContextUsedTokens;
   const contextUsedTokens =
     rawContextUsedTokens === null || rawContextUsedTokens === undefined
       ? null
       : Number.isFinite(Number(rawContextUsedTokens))
         ? Number(rawContextUsedTokens)
         : null;
-  const rawContextUsagePercent = fallback.context_usage_percent;
+  const rawContextUsagePercent =
+    Number(fallback.context_usage_percent) === 0 && hasTokenUsageActivity
+      ? null
+      : fallback.context_usage_percent;
   const contextUsagePercent =
     modelContextWindow && contextUsedTokens !== null
       ? Math.max(0, Math.min(100, Math.round((contextUsedTokens / modelContextWindow) * 100)))
