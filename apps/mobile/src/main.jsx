@@ -9,6 +9,7 @@ if ("serviceWorker" in navigator) {
   const VERSION_METADATA_URL = "/version.json";
   const SKIP_WAITING_MESSAGE = { type: "SKIP_WAITING" };
   const UPDATE_CHECK_MIN_INTERVAL_MS = 3_000;
+  const UPDATE_CHECK_POLL_INTERVAL_MS = 5_000;
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
   let pendingActivationWorker = null;
@@ -203,6 +204,12 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("focus", () => {
     checkForServiceWorkerUpdate();
   });
+
+  window.setInterval(() => {
+    if (document.visibilityState === "visible") {
+      checkForServiceWorkerUpdate();
+    }
+  }, UPDATE_CHECK_POLL_INTERVAL_MS);
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(
