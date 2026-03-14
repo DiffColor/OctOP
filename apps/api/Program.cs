@@ -279,7 +279,11 @@ app.MapPatch("/api/projects/{projectId}", async (
       user_id = userId,
       bridge_id = bridgeId,
       project_id = projectId,
-      name = body?["name"]?.GetValue<string>()
+      name = body?["name"]?.GetValue<string>(),
+      base_instructions = body?["base_instructions"]?.GetValue<string>(),
+      developer_instructions = body?["developer_instructions"]?.GetValue<string>(),
+      update_base_instructions = body?["update_base_instructions"]?.GetValue<bool?>() ?? false,
+      update_developer_instructions = body?["update_developer_instructions"]?.GetValue<bool?>() ?? false
     },
     cancellationToken
   );

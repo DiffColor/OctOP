@@ -484,6 +484,10 @@ function buildDefaultProject(loginId) {
   });
 }
 
+function normalizeInstructionText(value) {
+  return String(value ?? "").trim();
+}
+
 function normalizeProject(loginId, project = {}) {
   const sanitizedLoginId = sanitizeUserId(loginId);
   const resolvedWorkspacePath = project.workspace_path
@@ -499,6 +503,10 @@ function normalizeProject(loginId, project = {}) {
     key: String(project.key ?? fallbackName).trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_"),
     name: String(project.name ?? fallbackName).trim() || fallbackName,
     description: String(project.description ?? "").trim(),
+    base_instructions: normalizeInstructionText(project.base_instructions ?? project.baseInstructions),
+    developer_instructions: normalizeInstructionText(
+      project.developer_instructions ?? project.developerInstructions
+    ),
     bridge_id: BRIDGE_ID,
     workspace_path: resolvedWorkspacePath || null,
     source: project.source ?? (resolvedWorkspacePath ? "workspace" : "manual"),
@@ -1225,13 +1233,24 @@ async function createProject(loginId, payload = {}) {
 async function updateProject(loginId, payload = {}) {
   const state = ensureUserState(loginId);
   const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+  const hasNameUpdate = payload.name !== undefined && payload.name !== null;
+  const hasBaseInstructionsUpdate =
+    Object.prototype.hasOwnProperty.call(payload, "update_base_instructions") &&
+    Boolean(payload.update_base_instructions);
+  const hasDeveloperInstructionsUpdate =
+    Object.prototype.hasOwnProperty.call(payload, "update_developer_instructions") &&
+    Boolean(payload.update_developer_instructions);
   const name = String(payload.name ?? "").trim();
 
   if (!projectId) {
     throw new Error("변경할 프로젝트 id가 필요합니다.");
   }
 
-  if (!name) {
+  if (!hasNameUpdate && !hasBaseInstructionsUpdate && !hasDeveloperInstructionsUpdate) {
+    throw new Error("변경할 프로젝트 값이 필요합니다.");
+  }
+
+  if (hasNameUpdate && !name) {
     throw new Error("프로젝트 이름이 필요합니다.");
   }
 
@@ -1241,9 +1260,11 @@ async function updateProject(loginId, payload = {}) {
     throw new Error("프로젝트를 찾을 수 없습니다.");
   }
 
-  const duplicateName = state.projects.some(
-    (item, index) => index !== projectIndex && item.name.trim().toLowerCase() === name.toLowerCase()
-  );
+  const duplicateName = hasNameUpdate
+    ? state.projects.some(
+        (item, index) => index !== projectIndex && item.name.trim().toLowerCase() === name.toLowerCase()
+      )
+    : false;
 
   if (duplicateName) {
     throw new Error("같은 이름의 프로젝트가 이미 있습니다.");
@@ -1252,7 +1273,21 @@ async function updateProject(loginId, payload = {}) {
   const currentProject = state.projects[projectIndex];
   const updatedProject = {
     ...currentProject,
-    name,
+    ...(hasNameUpdate ? { name } : {}),
+    ...(hasBaseInstructionsUpdate
+      ? {
+          base_instructions: normalizeInstructionText(
+            payload.base_instructions ?? payload.baseInstructions
+          )
+        }
+      : {}),
+    ...(hasDeveloperInstructionsUpdate
+      ? {
+          developer_instructions: normalizeInstructionText(
+            payload.developer_instructions ?? payload.developerInstructions
+          )
+        }
+      : {}),
     updated_at: now()
   };
 
@@ -1298,6 +1333,26 @@ function resolveWorkspaceFromPayload(loginId, payload = {}) {
 
 function listProjectState(userId) {
   return ensureUserState(userId).projects;
+}
+
+function getProjectInstructionOverrides(userId, projectId) {
+  if (!projectId) {
+    return {};
+  }
+
+  const project = ensureUserState(userId).projects.find((item) => item.id === projectId);
+
+  if (!project) {
+    return {};
+  }
+
+  const baseInstructions = normalizeInstructionText(project.base_instructions);
+  const developerInstructions = normalizeInstructionText(project.developer_instructions);
+
+  return {
+    ...(baseInstructions ? { baseInstructions } : {}),
+    ...(developerInstructions ? { developerInstructions } : {})
+  };
 }
 
 async function createProjectThread(userId, payload = {}) {
@@ -1601,13 +1656,15 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, thread.project_id);
+  const instructionOverrides = getProjectInstructionOverrides(userId, thread.project_id);
   await appServer.ensureReady();
   const threadResponse = await appServer.request("thread/start", {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: "gpt-5-codex",
-    personality: "pragmatic"
+    personality: "pragmatic",
+    ...instructionOverrides
   });
   const codexThread = threadResponse.result?.thread;
 
@@ -3304,6 +3361,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const cwd = resolveProjectWorkspace(userId, projectId);
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
+  const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
   await appServer.ensureReady();
 
   const threadResponse = await appServer.request("thread/start", {
@@ -3311,7 +3369,8 @@ async function createQueuedIssue(userId, payload = {}) {
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: "gpt-5-codex",
-    personality: "pragmatic"
+    personality: "pragmatic",
+    ...instructionOverrides
   });
   const thread = threadResponse.result?.thread;
 
