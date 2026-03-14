@@ -63,6 +63,7 @@ const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?
 const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT ?? 2
 );
+const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 
 function now() {
   return new Date().toISOString();
@@ -520,6 +521,7 @@ function normalizeProjectThread(loginId, thread = {}) {
     progress: Number.isFinite(Number(thread.progress)) ? Number(thread.progress) : 0,
     last_event: String(thread.last_event ?? "thread.ready").trim(),
     last_message: String(thread.last_message ?? "").trim(),
+    turn_id: thread.turn_id ? String(thread.turn_id).trim() : null,
     token_usage: tokenUsageState.token_usage,
     context_window_tokens: tokenUsageState.context_window_tokens,
     context_used_tokens: tokenUsageState.context_used_tokens,
@@ -1395,8 +1397,8 @@ async function deleteProjectThread(userId, payload = {}) {
     throw new Error("thread를 찾을 수 없습니다.");
   }
 
-  if (activeIssueByThreadId.has(threadId)) {
-    throw new Error("실행 중인 thread는 삭제할 수 없습니다.");
+  if (activeIssueByThreadId.has(threadId) || current.status === "running") {
+    await stopProjectThreadExecutionForDelete(current);
   }
 
   for (const issueId of getThreadIssueIds(threadId)) {
@@ -1433,6 +1435,74 @@ async function deleteProjectThread(userId, payload = {}) {
     thread_id: threadId,
     threads: listProjectThreads(userId, current.project_id)
   };
+}
+
+async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DELETE_STOP_TIMEOUT_MS) {
+  if (!appServer.connected || !appServer.initialized || appServer.socket?.readyState !== WebSocket.OPEN) {
+    return {
+      ok: false,
+      error: new Error("app-server not connected")
+    };
+  }
+
+  const requestPromise = appServer.requestInternal(method, params);
+  requestPromise.catch(() => {});
+
+  try {
+    const response = await Promise.race([
+      requestPromise,
+      sleep(timeoutMs).then(() => {
+        throw new Error(`${method} timed out`);
+      })
+    ]);
+
+    return {
+      ok: true,
+      response
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error
+    };
+  }
+}
+
+async function stopProjectThreadExecutionForDelete(thread) {
+  const codexThreadId = String(thread?.codex_thread_id ?? "").trim();
+
+  if (!codexThreadId) {
+    return;
+  }
+
+  const stopErrors = [];
+
+  if (thread.turn_id) {
+    const interruptResult = await requestAppServerBestEffort("turn/interrupt", {
+      threadId: codexThreadId,
+      turnId: String(thread.turn_id)
+    });
+
+    if (!interruptResult.ok) {
+      stopErrors.push(`turn/interrupt: ${interruptResult.error?.message ?? "unknown error"}`);
+    }
+  }
+
+  const realtimeStopResult = await requestAppServerBestEffort("thread/realtime/stop", {
+    threadId: codexThreadId
+  });
+
+  if (!realtimeStopResult.ok) {
+    stopErrors.push(`thread/realtime/stop: ${realtimeStopResult.error?.message ?? "unknown error"}`);
+  }
+
+  if (stopErrors.length > 0) {
+    console.warn("[OctOP bridge] thread delete proceeded after stop attempt errors", {
+      threadId: thread.id,
+      codexThreadId,
+      errors: stopErrors
+    });
+  }
 }
 
 function getIssueDetail(userId, issueId) {
@@ -2111,6 +2181,7 @@ function normalizeThreadRecord(thread, fallback = {}) {
     progress: fallback.progress ?? current.progress ?? 0,
     last_event: fallback.last_event ?? current.last_event ?? lastEvent?.type ?? "thread.synced",
     last_message: fallback.last_message ?? current.last_message ?? "",
+    turn_id: fallback.turn_id ?? current.turn_id ?? null,
     prompt: fallback.prompt ?? current.prompt ?? "",
     token_usage: tokenUsageState.token_usage,
     context_window_tokens: tokenUsageState.context_window_tokens,
@@ -2708,7 +2779,8 @@ function buildThreadPatch(method, params) {
     case "thread/status/changed":
       return {
         status: normalizeThreadStatus(params.status, currentStatus),
-        last_event: "thread.status.changed"
+        last_event: "thread.status.changed",
+        turn_id: ["idle", "error"].includes(params.status?.type ?? "") ? null : currentThread?.turn_id ?? null
       };
     case "thread/tokenUsage/updated":
       return {
@@ -2719,7 +2791,8 @@ function buildThreadPatch(method, params) {
       return {
         status: "running",
         progress: 20,
-        last_event: "turn.started"
+        last_event: "turn.started",
+        turn_id: params.turn?.id ?? currentThread?.turn_id ?? null
       };
     case "turn/plan/updated":
       return {
@@ -2744,7 +2817,8 @@ function buildThreadPatch(method, params) {
       return {
         status: params.turn?.status === "completed" ? "idle" : "failed",
         progress: params.turn?.status === "completed" ? 100 : 0,
-        last_event: "turn.completed"
+        last_event: "turn.completed",
+        turn_id: null
       };
     default:
       return null;
