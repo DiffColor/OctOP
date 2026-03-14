@@ -331,6 +331,41 @@ function normalizeNullableInteger(value) {
   return Number.isFinite(numeric) ? Math.round(numeric) : null;
 }
 
+function normalizeLiveTokenUsagePayload(tokenUsage = null, currentThread = null) {
+  const hasTokenUsageActivity =
+    Number(tokenUsage?.total?.inputTokens ?? tokenUsage?.total?.input_tokens ?? 0) > 0 ||
+    Number(tokenUsage?.total?.cachedInputTokens ?? tokenUsage?.total?.cached_input_tokens ?? 0) > 0 ||
+    Number(tokenUsage?.total?.outputTokens ?? tokenUsage?.total?.output_tokens ?? 0) > 0 ||
+    Number(tokenUsage?.total?.reasoningOutputTokens ?? tokenUsage?.total?.reasoning_output_tokens ?? 0) > 0;
+  const fallbackUsedTokens =
+    Number(currentThread?.context_used_tokens) === 0 && hasTokenUsageActivity
+      ? null
+      : currentThread?.context_used_tokens;
+  const fallbackPercent =
+    Number(currentThread?.context_usage_percent) === 0 && hasTokenUsageActivity
+      ? null
+      : currentThread?.context_usage_percent;
+  const usedTokens = normalizeNullableInteger(
+    tokenUsage?.total?.totalTokens ??
+      tokenUsage?.total?.total_tokens ??
+      fallbackUsedTokens
+  );
+  const windowTokens = normalizeNullableInteger(
+    tokenUsage?.modelContextWindow ??
+      tokenUsage?.model_context_window ??
+      currentThread?.context_window_tokens
+  );
+  const percent = windowTokens && usedTokens !== null
+    ? normalizeNullableInteger((usedTokens / windowTokens) * 100)
+    : normalizeNullableInteger(fallbackPercent);
+
+  return {
+    context_usage_percent: percent,
+    context_used_tokens: usedTokens,
+    context_window_tokens: windowTokens
+  };
+}
+
 function getThreadContextUsage(thread) {
   if (!thread) {
     return null;
@@ -512,22 +547,15 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "thread.tokenUsage.updated":
+      {
+        const nextUsage = normalizeLiveTokenUsagePayload(payload.tokenUsage ?? payload.token_usage ?? null, currentThread);
       return {
         id: threadId,
         project_id: projectId || currentThread?.project_id || null,
-        context_usage_percent: normalizeNullableInteger(
-          payload.tokenUsage?.modelContextWindow
-            ? (Number(payload.tokenUsage.total?.totalTokens ?? 0) / Number(payload.tokenUsage.modelContextWindow)) * 100
-            : currentThread?.context_usage_percent
-        ),
-        context_used_tokens: normalizeNullableInteger(
-          payload.tokenUsage?.total?.totalTokens ?? currentThread?.context_used_tokens
-        ),
-        context_window_tokens: normalizeNullableInteger(
-          payload.tokenUsage?.modelContextWindow ?? currentThread?.context_window_tokens
-        ),
+        ...nextUsage,
         updated_at: currentThread?.updated_at ?? new Date().toISOString()
       };
+      }
     case "turn.started":
       return {
         id: threadId,
