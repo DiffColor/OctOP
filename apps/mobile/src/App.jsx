@@ -1062,8 +1062,11 @@ function UtilitySheet({
   status,
   bridges,
   selectedBridgeId,
+  selectedProject,
+  selectedThread,
   projects,
   threads,
+  onOpenProjectInstructionDialog,
   onClose,
   onSelectBridge,
   onOpenProjectComposer,
@@ -1096,18 +1099,71 @@ function UtilitySheet({
         </section>
 
         <section className="grid grid-cols-3 gap-2 border-b border-white/10 py-4 text-center">
-          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Bridge</p>
-            <p className="mt-1 text-base font-semibold text-white">{bridges.length}</p>
+          <div className="col-span-3 overflow-hidden rounded-[1rem] border border-white/10 bg-black/15">
+            {[
+              {
+                label: "Bridge",
+                value: bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ?? selectedBridgeId ?? "-",
+                meta: `${bridges.length}개 연결`
+              },
+              {
+                label: "Project",
+                value: selectedProject?.name ?? "프로젝트 미선택",
+                meta: `${projects.length}개 등록`
+              },
+              {
+                label: "Thread",
+                value: selectedThread?.title ?? "채팅창 미선택",
+                meta: `${threads.length}개 표시`
+              }
+            ].map((item, index) => (
+              <div
+                key={item.label}
+                className={`flex items-center justify-between gap-3 px-3 py-2.5 ${
+                  index === 0 ? "" : "border-t border-white/10"
+                }`}
+              >
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{item.label}</p>
+                  <p className="mt-1 truncate text-sm font-semibold text-white">{item.value}</p>
+                </div>
+                <span className="shrink-0 text-[11px] text-slate-400">{item.meta}</span>
+              </div>
+            ))}
           </div>
-          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Project</p>
-            <p className="mt-1 text-base font-semibold text-white">{projects.length}</p>
-          </div>
-          <div className="rounded-[1rem] border border-white/10 bg-black/15 px-3 py-3">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Thread</p>
-            <p className="mt-1 text-base font-semibold text-white">{threads.length}</p>
-          </div>
+        </section>
+
+        <section className="grid grid-cols-2 gap-2 border-b border-white/10 py-4">
+          <button
+            type="button"
+            disabled={!selectedProject}
+            onClick={() => onOpenProjectInstructionDialog("base")}
+            className={`rounded-[1rem] border px-3 py-3 text-left transition ${
+              selectedProject?.base_instructions?.trim()
+                ? "border-telegram-400/30 bg-telegram-500/10 text-white"
+                : "border-white/10 bg-black/15 text-white"
+            } disabled:cursor-not-allowed disabled:opacity-45`}
+          >
+            <p className="text-[11px] font-semibold">일반지침</p>
+            <p className="mt-1 text-[11px] leading-5 text-slate-300">
+              {selectedProject?.base_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
+            </p>
+          </button>
+          <button
+            type="button"
+            disabled={!selectedProject}
+            onClick={() => onOpenProjectInstructionDialog("developer")}
+            className={`rounded-[1rem] border px-3 py-3 text-left transition ${
+              selectedProject?.developer_instructions?.trim()
+                ? "border-emerald-400/30 bg-emerald-500/10 text-white"
+                : "border-white/10 bg-black/15 text-white"
+            } disabled:cursor-not-allowed disabled:opacity-45`}
+          >
+            <p className="text-[11px] font-semibold">개발지침</p>
+            <p className="mt-1 text-[11px] leading-5 text-slate-300">
+              {selectedProject?.developer_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
+            </p>
+          </button>
         </section>
 
         <section className="py-4">
@@ -1865,6 +1921,89 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
             className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? "변경 중..." : "저장"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
+function ProjectInstructionDialog({ open, busy, project, instructionType, onClose, onSubmit }) {
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setValue("");
+      return;
+    }
+
+    if (instructionType === "developer") {
+      setValue(project?.developer_instructions ?? "");
+      return;
+    }
+
+    setValue(project?.base_instructions ?? "");
+  }, [instructionType, open, project]);
+
+  if (!open || !project) {
+    return null;
+  }
+
+  const isDeveloperInstruction = instructionType === "developer";
+
+  return (
+    <BottomSheet
+      open={open}
+      title={isDeveloperInstruction ? "개발지침" : "일반지침"}
+      description={`${project.name} 프로젝트에 저장하고 새 thread 시작 시 app-server에 주입합니다.`}
+      onClose={onClose}
+      variant="center"
+    >
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await onSubmit({
+            instructionType,
+            value
+          });
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-instruction-input">
+            {isDeveloperInstruction ? "개발지침 본문" : "일반지침 본문"}
+          </label>
+          <textarea
+            id="project-instruction-input"
+            rows="10"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={
+              isDeveloperInstruction
+                ? "예: 코드 스타일, 테스트 기준, 금지사항 같은 개발 규칙을 입력해 주세요."
+                : "예: 작업 방식, 응답 톤, 우선순위 같은 기본 지침을 입력해 주세요."
+            }
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            비워 두고 저장하면 해당 지침은 제거됩니다.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "저장 중..." : "저장"}
           </button>
         </div>
       </form>
@@ -2669,6 +2808,7 @@ function MainPage({
   loadingState,
   projectBusy,
   threadBusy,
+  projectInstructionBusy,
   renameBusy,
   utilityOpen,
   projectComposerOpen,
@@ -2684,14 +2824,19 @@ function MainPage({
   onOpenNewThread,
   onOpenUtility,
   onOpenProjectComposer,
+  onOpenProjectInstructionDialog,
   onInstallPwa,
   onDismissInstallPrompt,
   onCloseUtility,
   onCloseProjectComposer,
+  projectInstructionDialogOpen,
+  projectInstructionType,
+  onCloseProjectInstructionDialog,
   onBrowseWorkspaceRoot,
   onBrowseFolder,
   onSelectWorkspace,
   onSubmitProject,
+  onSubmitProjectInstruction,
   onCreateThread,
   onAppendThreadMessage,
   onRenameThread,
@@ -2987,8 +3132,11 @@ function MainPage({
         status={status}
         bridges={bridges}
         selectedBridgeId={selectedBridgeId}
+        selectedProject={selectedProject}
+        selectedThread={selectedThread}
         projects={projects}
         threads={threads}
+        onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
         onClose={onCloseUtility}
         onSelectBridge={onSelectBridge}
         onOpenProjectComposer={onOpenProjectComposer}
@@ -3007,6 +3155,14 @@ function MainPage({
         onSelectWorkspace={onSelectWorkspace}
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
+      />
+      <ProjectInstructionDialog
+        open={projectInstructionDialogOpen}
+        busy={projectInstructionBusy}
+        project={selectedProject}
+        instructionType={projectInstructionType}
+        onClose={onCloseProjectInstructionDialog}
+        onSubmit={onSubmitProjectInstruction}
       />
     </div>
   );
@@ -3041,6 +3197,9 @@ export default function App() {
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
+  const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
+  const [projectInstructionType, setProjectInstructionType] = useState("base");
   const [threadBusy, setThreadBusy] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
@@ -4207,6 +4366,68 @@ export default function App() {
     }
   };
 
+  const handleOpenProjectInstructionDialog = (instructionType) => {
+    if (!selectedProjectId) {
+      return;
+    }
+
+    setProjectInstructionType(instructionType === "developer" ? "developer" : "base");
+    setProjectInstructionDialogOpen(true);
+  };
+
+  const handleCloseProjectInstructionDialog = () => {
+    if (projectInstructionBusy) {
+      return;
+    }
+
+    setProjectInstructionDialogOpen(false);
+  };
+
+  const handleSubmitProjectInstruction = async ({ instructionType, value }) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      return;
+    }
+
+    setProjectInstructionBusy(true);
+
+    try {
+      const isDeveloperInstruction = instructionType === "developer";
+      const response = await apiRequest(
+        `/api/projects/${encodeURIComponent(selectedProjectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(
+            isDeveloperInstruction
+              ? {
+                  developer_instructions: value,
+                  update_developer_instructions: true
+                }
+              : {
+                  base_instructions: value,
+                  update_base_instructions: true
+                }
+          )
+        }
+      );
+
+      if (Array.isArray(response?.projects)) {
+        setProjects(response.projects);
+      } else if (response?.project?.id) {
+        setProjects((current) =>
+          current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))
+        );
+      }
+
+      setProjectInstructionDialogOpen(false);
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+    } finally {
+      setProjectInstructionBusy(false);
+    }
+  };
+
   const handleRefresh = async () => {
     if (!session?.loginId) {
       return;
@@ -4350,9 +4571,12 @@ export default function App() {
         loadingState={loadingState}
         utilityOpen={utilityOpen}
         projectBusy={projectBusy}
+        projectInstructionBusy={projectInstructionBusy}
         threadBusy={threadBusy}
         renameBusy={renameBusy}
         projectComposerOpen={projectComposerOpen}
+        projectInstructionDialogOpen={projectInstructionDialogOpen}
+        projectInstructionType={projectInstructionType}
         installPromptVisible={installPromptVisible}
         installBusy={installBusy}
         activeView={activeView}
@@ -4366,14 +4590,17 @@ export default function App() {
         onOpenNewThread={handleOpenNewThread}
         onOpenUtility={() => setUtilityOpen(true)}
         onOpenProjectComposer={() => void handleOpenProjectComposer()}
+        onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
         onInstallPwa={() => void handleInstallPwa()}
         onDismissInstallPrompt={handleDismissInstallPrompt}
         onCloseUtility={() => setUtilityOpen(false)}
         onCloseProjectComposer={handleCloseProjectComposer}
+        onCloseProjectInstructionDialog={handleCloseProjectInstructionDialog}
         onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
         onBrowseFolder={(path) => browseWorkspacePath(path)}
         onSelectWorkspace={setSelectedWorkspacePath}
         onSubmitProject={handleCreateProject}
+        onSubmitProjectInstruction={handleSubmitProjectInstruction}
         onCreateThread={handleCreateThread}
         onAppendThreadMessage={handleAppendThreadMessage}
         onRenameThread={handleRenameThread}
