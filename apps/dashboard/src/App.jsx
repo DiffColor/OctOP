@@ -19,6 +19,7 @@ const COLUMN_ORDER = [
   { id: "review", accent: "violet", countClassName: "bg-violet-500/10 text-violet-300" },
   { id: "done", accent: "green", countClassName: "bg-emerald-500/10 text-emerald-300" }
 ];
+const HIDE_EMPTY_COLUMN_IDS = new Set(["prep", "running", "review"]);
 
 const STATUS_META = {
   staged: {
@@ -2845,7 +2846,7 @@ function MainPage({
       ...column,
       threads: [...columnThreads].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     };
-  }).filter((column) => column.id !== "review" || column.threads.length > 0);
+  }).filter((column) => !HIDE_EMPTY_COLUMN_IDS.has(column.id) || column.threads.length > 0);
   const columnThreadOrder = useMemo(() => {
     const map = new Map();
 
