@@ -1073,8 +1073,6 @@ function UtilitySheet({
   onRefresh,
   onLogout
 }) {
-  const currentBridge = bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null;
-
   return (
     <BottomSheet
       open={open}
@@ -1097,50 +1095,7 @@ function UtilitySheet({
               />
             </div>
             <p className="truncate text-xs text-slate-400">{session.loginId}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-5 text-slate-400">
-              <span className="truncate">Bridge {currentBridge?.device_name ?? selectedBridgeId ?? "-"}</span>
-              <span className="text-slate-600">·</span>
-              <span>Project {projects.length}</span>
-              <span className="text-slate-600">·</span>
-              <span>Thread {threads.length}</span>
-            </div>
-            <p className="mt-1 truncate text-[11px] leading-5 text-slate-500">
-              {selectedProject?.name ?? "프로젝트 미선택"} / {selectedThread?.title ?? "채팅창 미선택"}
-            </p>
           </div>
-        </section>
-
-        <section className="grid grid-cols-2 gap-2 border-b border-white/10 py-4">
-          <button
-            type="button"
-            disabled={!selectedProject}
-            onClick={() => onOpenProjectInstructionDialog("base")}
-            className={`rounded-[1rem] border px-3 py-3 text-left transition ${
-              selectedProject?.base_instructions?.trim()
-                ? "border-telegram-400/30 bg-telegram-500/10 text-white"
-                : "border-white/10 bg-black/15 text-white"
-            } disabled:cursor-not-allowed disabled:opacity-45`}
-          >
-            <p className="text-[11px] font-semibold">일반지침</p>
-            <p className="mt-1 text-[11px] leading-5 text-slate-300">
-              {selectedProject?.base_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
-            </p>
-          </button>
-          <button
-            type="button"
-            disabled={!selectedProject}
-            onClick={() => onOpenProjectInstructionDialog("developer")}
-            className={`rounded-[1rem] border px-3 py-3 text-left transition ${
-              selectedProject?.developer_instructions?.trim()
-                ? "border-emerald-400/30 bg-emerald-500/10 text-white"
-                : "border-white/10 bg-black/15 text-white"
-            } disabled:cursor-not-allowed disabled:opacity-45`}
-          >
-            <p className="text-[11px] font-semibold">개발지침</p>
-            <p className="mt-1 text-[11px] leading-5 text-slate-300">
-              {selectedProject?.developer_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
-            </p>
-          </button>
         </section>
 
         <section className="py-4">
@@ -1189,6 +1144,31 @@ function UtilitySheet({
               })
             )}
           </div>
+        </section>
+
+        <section className="grid grid-cols-2 gap-2 border-t border-white/10 py-4">
+          <button
+            type="button"
+            disabled={!selectedProject}
+            onClick={() => onOpenProjectInstructionDialog("base")}
+            className="rounded-[1rem] bg-sky-500 px-3 py-3 text-left text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
+          >
+            <p className="text-[11px] font-semibold">일반지침</p>
+            <p className="mt-1 text-[11px] leading-5 text-sky-50/90">
+              {selectedProject?.base_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
+            </p>
+          </button>
+          <button
+            type="button"
+            disabled={!selectedProject}
+            onClick={() => onOpenProjectInstructionDialog("developer")}
+            className="rounded-[1rem] bg-emerald-500 px-3 py-3 text-left text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
+          >
+            <p className="text-[11px] font-semibold">개발지침</p>
+            <p className="mt-1 text-[11px] leading-5 text-emerald-50/90">
+              {selectedProject?.developer_instructions?.trim() ? "입력됨 · 수정" : "비어 있음 · 입력"}
+            </p>
+          </button>
         </section>
 
         <section className="grid grid-cols-2 gap-2 border-t border-white/10 pt-4">
