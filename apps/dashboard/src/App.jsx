@@ -2176,13 +2176,10 @@ function SidebarThreadItem({
   return (
     <div
       onContextMenu={(event) => onContextMenu(event, thread)}
-      className={`group ml-5 flex items-center gap-2 rounded-md px-2 py-1.5 transition ${
+      className={`group ml-2.5 flex items-center rounded-md px-1.5 py-1.5 transition ${
         active ? "bg-sky-500/10 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
       }`}
     >
-      <svg className="h-4 w-4 shrink-0 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path d="M8 10h8M8 14h5m6 6H5a2 2 0 01-2-2V8a2 2 0 012-2h3l2-2h4l2 2h3a2 2 0 012 2v10a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      </svg>
       {editing ? (
         <input
           type="text"
@@ -3348,14 +3345,14 @@ function MainPage({
                     const expanded = expandedProjectIds[project.id] ?? active;
 
                     return (
-                      <div key={project.id} className="rounded-md px-1 py-0.5">
+                      <div key={project.id} className="rounded-md px-0.5 py-0.5">
                         <div
-                          className={`w-full rounded-md px-2.5 py-2 transition ${
+                          className={`w-full rounded-md px-1.5 py-1.5 transition ${
                             active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
                           }`}
                         >
                           <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
                               <button
                                 type="button"
                                 onClick={(event) => {
@@ -3368,7 +3365,13 @@ function MainPage({
                                 {expanded ? (
                                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path
-                                      d="M19 20H8a2 2 0 01-2-2V7m0 0V5a1 1 0 011-1h6.586a1 1 0 01.707.293l2.414 2.414A1 1 0 0117 7v1m-11 0h11a1 1 0 011 1v9a2 2 0 01-2 2"
+                                      d="M3 9.5A2.5 2.5 0 015.5 7H9l1.4-1.6a2 2 0 011.5-.7h2.8A2.3 2.3 0 0116.5 6H18a3 3 0 013 3v1.5a2.5 2.5 0 01-2.5 2.5H10"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth="1.8"
+                                    />
+                                    <path
+                                      d="M3.5 11.5h8.7a2.2 2.2 0 011.7.8l1.2 1.5h3.4a2 2 0 012 2v1.2A2.5 2.5 0 0118 19.5H6A2.5 2.5 0 013.5 17z"
                                       strokeLinecap="round"
                                       strokeLinejoin="round"
                                       strokeWidth="1.8"
@@ -3377,12 +3380,17 @@ function MainPage({
                                 ) : (
                                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path
-                                      d="M8 4h6.586a1 1 0 01.707.293l2.414 2.414A1 1 0 0118 7.414V19a1 1 0 01-1 1H8a2 2 0 01-2-2V6a2 2 0 012-2z"
+                                      d="M3.5 8.5A2.5 2.5 0 016 6h3.3l1.4-1.6a2 2 0 011.5-.7h5.3A2.5 2.5 0 0120 6.2V8"
                                       strokeLinecap="round"
                                       strokeLinejoin="round"
                                       strokeWidth="1.8"
                                     />
-                                    <path d="M14 4v4h4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                                    <path
+                                      d="M3.5 8.5h17v7A2.5 2.5 0 0118 18H6a2.5 2.5 0 01-2.5-2.5z"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth="1.8"
+                                    />
                                   </svg>
                                 )}
                               </button>
