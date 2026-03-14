@@ -499,6 +499,72 @@ function storeArchivedIssuesState(state) {
   }
 }
 
+function getArchivedIssueIdsForScope(state, bridgeId = "", threadId = "") {
+  if (!bridgeId || !threadId) {
+    return [];
+  }
+
+  return state?.[bridgeId]?.[threadId] ?? [];
+}
+
+function getArchivedIssueColumnId(issue) {
+  const columnId = getStatusMeta(issue?.status).column;
+  return columnId === "review" || columnId === "done" ? columnId : "";
+}
+
+function partitionIssuesByArchiveState(nextIssues, archivedState, bridgeId = "", threadId = "") {
+  const archivedIssueIds = new Set(getArchivedIssueIdsForScope(archivedState, bridgeId, threadId));
+  const visibleIssues = [];
+  const archivedIssues = [];
+
+  for (const issue of nextIssues) {
+    const archivedColumnId = getArchivedIssueColumnId(issue);
+
+    if (archivedColumnId && archivedIssueIds.has(issue.id)) {
+      archivedIssues.push(issue);
+      continue;
+    }
+
+    visibleIssues.push(issue);
+  }
+
+  return {
+    visibleIssues,
+    archivedIssues
+  };
+}
+
+function replaceArchivedIssuesForScope(currentState, bridgeId = "", threadId = "", issues = []) {
+  if (!bridgeId || !threadId) {
+    return currentState;
+  }
+
+  const nextBridgeState = {
+    ...(currentState?.[bridgeId] ?? {})
+  };
+
+  if (issues.length === 0) {
+    delete nextBridgeState[threadId];
+
+    if (Object.keys(nextBridgeState).length === 0) {
+      const nextState = { ...currentState };
+      delete nextState[bridgeId];
+      return nextState;
+    }
+
+    return {
+      ...currentState,
+      [bridgeId]: nextBridgeState
+    };
+  }
+
+  nextBridgeState[threadId] = issues;
+  return {
+    ...currentState,
+    [bridgeId]: nextBridgeState
+  };
+}
+
 function getCopy(language) {
   return COPY[language] ?? COPY.en;
 }
@@ -2459,7 +2525,7 @@ function MainPage({
   selectedIssueId,
   onUpdateIssueSelection,
   selectedIssueIds,
-  archivedIssueIds,
+  archivedIssues,
   issueQueueOrderIds,
   prepIssueOrderIds,
   detailState,
@@ -2548,14 +2614,7 @@ function MainPage({
     (thread) => !selectedProjectId || thread.project_id === selectedProjectId
   );
   const keyword = search.trim().toLowerCase();
-  const archivedHiddenSet = useMemo(() => new Set(archivedIssueIds), [archivedIssueIds]);
   const filteredIssues = issues.filter((thread) => {
-    const columnId = getStatusMeta(thread.status).column;
-
-    if ((columnId === "review" || columnId === "done") && archivedHiddenSet.has(thread.id)) {
-      return false;
-    }
-
     if (!keyword) {
       return true;
     }
@@ -2572,27 +2631,18 @@ function MainPage({
       done: []
     };
 
-    if (!selectedProjectThreadId) {
-      return grouped;
-    }
+    for (const issue of archivedIssues) {
+      const columnId = getArchivedIssueColumnId(issue);
 
-    for (const issueId of archivedIssueIds) {
-      const issue = issues.find(
-        (item) =>
-          item.id === issueId &&
-          item.thread_id === selectedProjectThreadId &&
-          (getStatusMeta(item.status).column === "review" || getStatusMeta(item.status).column === "done")
-      );
-
-      if (!issue) {
+      if (!columnId) {
         continue;
       }
 
-      grouped[getStatusMeta(issue.status).column].push(issue);
+      grouped[columnId].push(issue);
     }
 
     return grouped;
-  }, [archivedIssueIds, issues, selectedProjectThreadId]);
+  }, [archivedIssues]);
   const archivedCounts = useMemo(
     () => ({
       review: archivedIssuesByColumn.review.length,
@@ -3807,6 +3857,7 @@ export default function App() {
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
   const [draggingArchiveIssueIds, setDraggingArchiveIssueIds] = useState([]);
   const [archivedIssuesState, setArchivedIssuesState] = useState(() => readStoredArchives());
+  const [archivedIssueSnapshots, setArchivedIssueSnapshots] = useState({});
   const [threadMenuState, setThreadMenuState] = useState({
     open: false,
     x: 0,
@@ -3833,6 +3884,8 @@ export default function App() {
   const issuesRef = useRef([]);
   const issueLoadRequestIdRef = useRef(0);
   const selectedProjectThreadIdRef = useRef("");
+  const archivedIssuesStateRef = useRef(readStoredArchives());
+  const archivedIssueSnapshotsRef = useRef({});
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -3871,13 +3924,13 @@ export default function App() {
     const trailing = prepIssues.filter((issueId) => !normalized.includes(issueId));
     return [...normalized, ...trailing];
   }, [issues, prepIssueOrderIds]);
-  const archivedIssueIds = useMemo(() => {
+  const archivedIssues = useMemo(() => {
     if (!selectedBridgeId || !selectedProjectThreadId) {
       return [];
     }
 
-    return archivedIssuesState[selectedBridgeId]?.[selectedProjectThreadId] ?? [];
-  }, [archivedIssuesState, selectedBridgeId, selectedProjectThreadId]);
+    return archivedIssueSnapshots[selectedBridgeId]?.[selectedProjectThreadId] ?? [];
+  }, [archivedIssueSnapshots, selectedBridgeId, selectedProjectThreadId]);
   const editingIssue = useMemo(() => {
     if (!issueEditorOpen || !editingIssueId) {
       return null;
@@ -3889,9 +3942,31 @@ export default function App() {
     setArchivedIssuesState((current) => {
       const nextState = typeof updater === "function" ? updater(current) : updater;
       storeArchivedIssuesState(nextState);
+      archivedIssuesStateRef.current = nextState;
       return nextState;
     });
   }, []);
+  const replaceArchivedIssuesForCurrentScope = useCallback((bridgeId, threadId, nextIssues) => {
+    setArchivedIssueSnapshots((current) => replaceArchivedIssuesForScope(current, bridgeId, threadId, nextIssues));
+  }, []);
+  const applyIssueStateForScope = useCallback((bridgeId, threadId, nextIssues) => {
+    const normalizedIssues = mergeIssues([], nextIssues ?? []);
+    const { visibleIssues, archivedIssues: nextArchivedIssues } = partitionIssuesByArchiveState(
+      normalizedIssues,
+      archivedIssuesStateRef.current,
+      bridgeId,
+      threadId
+    );
+
+    replaceArchivedIssuesForCurrentScope(bridgeId, threadId, nextArchivedIssues);
+    setIssues(visibleIssues);
+
+    return {
+      visibleIssues,
+      archivedIssues: nextArchivedIssues,
+      allIssues: normalizedIssues
+    };
+  }, [replaceArchivedIssuesForCurrentScope]);
 
   const updateStatusCounts = useCallback((nextCounts) => {
     setStatus((current) => ({
@@ -3910,6 +3985,14 @@ export default function App() {
   useEffect(() => {
     issuesRef.current = issues;
   }, [issues]);
+
+  useEffect(() => {
+    archivedIssuesStateRef.current = archivedIssuesState;
+  }, [archivedIssuesState]);
+
+  useEffect(() => {
+    archivedIssueSnapshotsRef.current = archivedIssueSnapshots;
+  }, [archivedIssueSnapshots]);
 
   useEffect(() => {
     selectedProjectThreadIdRef.current = selectedProjectThreadId;
@@ -3945,6 +4028,7 @@ export default function App() {
       setProjects([]);
       setProjectThreads([]);
       setIssues([]);
+      setArchivedIssueSnapshots({});
       setStatus({
         app_server: {
           connected: false,
@@ -3982,6 +4066,7 @@ export default function App() {
       });
       setProjectThreads([]);
       setIssues([]);
+      setArchivedIssueSnapshots({});
       setLoadingState("ready");
     } catch (error) {
       setLoadingState("error");
@@ -4030,7 +4115,7 @@ export default function App() {
       return nextIssues;
     }
 
-    setIssues(nextIssues);
+    applyIssueStateForScope(bridgeId, threadId, nextIssues);
     return nextIssues;
   }
 
@@ -4212,7 +4297,7 @@ export default function App() {
           }
 
           const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
-          setIssues(nextIssues);
+          applyIssueStateForScope(selectedBridgeId, targetThreadId || selectedProjectThreadId, nextIssues);
           return;
         }
 
@@ -4222,7 +4307,36 @@ export default function App() {
         }
 
         if (payload.payload?.issue) {
-          setIssues((current) => upsertIssue(current, payload.payload.issue));
+          const nextIssue = normalizeIssue(payload.payload.issue);
+
+          if (!nextIssue) {
+            return;
+          }
+
+          const targetThreadId = nextIssue.thread_id ?? selectedProjectThreadId;
+          const archivedIds = new Set(
+            getArchivedIssueIdsForScope(archivedIssuesStateRef.current, selectedBridgeId, targetThreadId)
+          );
+          const isArchived = Boolean(getArchivedIssueColumnId(nextIssue)) && archivedIds.has(nextIssue.id);
+
+          if (isArchived) {
+            replaceArchivedIssuesForCurrentScope(
+              selectedBridgeId,
+              targetThreadId,
+              upsertIssue(archivedIssueSnapshotsRef.current[selectedBridgeId]?.[targetThreadId] ?? [], nextIssue)
+            );
+            setIssues((current) => current.filter((issue) => issue.id !== nextIssue.id));
+            return;
+          }
+
+          replaceArchivedIssuesForCurrentScope(
+            selectedBridgeId,
+            targetThreadId,
+            (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[targetThreadId] ?? []).filter(
+              (issue) => issue.id !== nextIssue.id
+            )
+          );
+          setIssues((current) => upsertIssue(current, nextIssue));
         }
       } catch {
         // ignore malformed event payload
@@ -4456,6 +4570,7 @@ export default function App() {
     setProjects([]);
     setProjectThreads([]);
     setIssues([]);
+    setArchivedIssueSnapshots({});
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -4500,6 +4615,13 @@ export default function App() {
 
       if (response?.issue) {
         setIssues((current) => upsertIssue(current, response.issue));
+        replaceArchivedIssuesForCurrentScope(
+          selectedBridgeId,
+          selectedProjectThreadId,
+          (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+            (issue) => issue.id !== response.issue.id
+          )
+        );
       }
 
       setComposerOpen(false);
@@ -4563,6 +4685,17 @@ export default function App() {
       next[selectedBridgeId] = bridgeMap;
       return next;
     });
+    replaceArchivedIssuesForCurrentScope(
+      selectedBridgeId,
+      selectedProjectThreadId,
+      mergeIssues(
+        archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? [],
+        archiveableIds
+          .map((threadId) => issues.find((item) => item.id === threadId))
+          .filter(Boolean)
+      )
+    );
+    setIssues((current) => current.filter((issue) => !archiveableIds.includes(issue.id)));
     setSelectedIssueIds((current) => current.filter((threadId) => !archiveableIds.includes(threadId)));
     setDraggingArchiveIssueIds([]);
   };
@@ -4608,6 +4741,17 @@ export default function App() {
 
       return next;
     });
+    const restoredIssues = (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter((issue) =>
+      threadIds.includes(issue.id)
+    );
+    replaceArchivedIssuesForCurrentScope(
+      selectedBridgeId,
+      selectedProjectThreadId,
+      (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+        (issue) => !threadIds.includes(issue.id)
+      )
+    );
+    setIssues((current) => mergeIssues(current, restoredIssues));
     setDraggingArchiveIssueIds([]);
   };
 
@@ -4693,6 +4837,13 @@ export default function App() {
 
       if (response?.issue) {
         setIssues((current) => upsertIssue(current, response.issue));
+        replaceArchivedIssuesForCurrentScope(
+          selectedBridgeId,
+          selectedProjectThreadId,
+          (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+            (issue) => issue.id !== response.issue.id
+          )
+        );
       }
 
       handleCloseIssueEditor();
@@ -4747,7 +4898,7 @@ export default function App() {
           );
 
           if (Array.isArray(response?.issues)) {
-            setIssues(mergeIssues([], response.issues));
+            applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, response.issues);
           }
         } catch (error) {
           setRecentEvents((current) => [
@@ -4804,7 +4955,7 @@ export default function App() {
       const nextThreads = Array.isArray(response?.issues) ? mergeIssues([], response.issues) : [];
 
       if (nextThreads.length > 0) {
-        setIssues(nextThreads);
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, nextThreads);
       }
 
       if (targetId && nextThreads.length > 0) {
@@ -4928,7 +5079,7 @@ export default function App() {
           );
 
           if (Array.isArray(response?.issues)) {
-            setIssues(mergeIssues([], response.issues));
+            applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, response.issues);
           }
         } catch (error) {
           setRecentEvents((current) => [
@@ -5246,9 +5397,16 @@ export default function App() {
       );
 
       if (Array.isArray(response?.issues)) {
-        setIssues(mergeIssues([], response.issues));
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, response.issues);
       } else {
         setIssues((current) => current.filter((issue) => issue.id !== issueId));
+        replaceArchivedIssuesForCurrentScope(
+          selectedBridgeId,
+          selectedProjectThreadId,
+          (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+            (issue) => issue.id !== issueId
+          )
+        );
       }
 
       setSelectedIssueIds((current) => current.filter((item) => item !== issueId));
@@ -5358,7 +5516,7 @@ export default function App() {
       onSelectIssue={setSelectedIssueId}
       onUpdateIssueSelection={setSelectedIssueIds}
       selectedIssueIds={selectedIssueIds}
-      archivedIssueIds={archivedIssueIds}
+      archivedIssues={archivedIssues}
       detailState={detailState}
       onToggleIssueSelection={handleToggleIssueSelection}
       onArchiveIssues={handleArchiveIssues}

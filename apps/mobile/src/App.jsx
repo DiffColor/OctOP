@@ -1664,6 +1664,7 @@ function ThreadDetail({
   thread,
   project,
   messages,
+  issues = [],
   messagesLoading,
   messagesError,
   onRefreshMessages,
@@ -1685,6 +1686,9 @@ function ThreadDetail({
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
+  const safeIssues = Array.isArray(issues) ? issues : [];
+  const hasRunningIssue = safeIssues.some((issue) => issue?.status === "running");
+  const isInputDisabled = thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
   const chatTimeline = useMemo(() => {
     const normalized = [];
     let lastPrompt = null;
@@ -1934,7 +1938,6 @@ function ThreadDetail({
   };
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
-  const isInputDisabled = thread?.status === "running";
   const showEmptyState = (() => {
     if (messagesLoading || messagesError) {
       return false;
@@ -2323,6 +2326,7 @@ function MainPage({
           thread={resolvedThread}
           project={threadProject}
           messages={resolvedThread ? threadDetailMessages : []}
+          issues={resolvedThread ? threadDetail?.issues ?? [] : []}
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}

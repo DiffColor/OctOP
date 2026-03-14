@@ -60,6 +60,9 @@ const codexThreadToThreadId = new Map();
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
+const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
+  process.env.OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT ?? 2
+);
 
 function now() {
   return new Date().toISOString();
@@ -2649,6 +2652,15 @@ function buildIssuePatch(method, params, issueId) {
         };
       }
 
+      if ((params.status?.type ?? "") === "idle") {
+        const terminalStatus = inferReconciledTerminalStatus(current);
+        return {
+          status: terminalStatus,
+          progress: terminalStatus === "completed" ? 100 : Math.max(current.progress ?? 0, 0),
+          last_event: "thread.status.changed"
+        };
+      }
+
       return null;
     case "turn/completed":
       return {
@@ -2810,14 +2822,38 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
   const reconciledStatus = remoteThread
     ? normalizeThreadStatus(remoteThread.status, thread.status ?? issue.status ?? "running")
     : null;
+  const reconcileAttempts = Number(meta.reconcileAttempts ?? 0) + 1;
 
   markRunningIssueActivity(threadId, {
     lastReconciledAt: now(),
-    reconcileAttempts: Number(meta.reconcileAttempts ?? 0) + 1,
+    reconcileAttempts,
     lastActivityAt: meta.lastActivityAt
   });
 
-  if (!reconciledStatus || reconciledStatus === "running") {
+  if (!reconciledStatus) {
+    if (reconcileAttempts < RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+      return;
+    }
+
+    const terminalStatus = inferReconciledTerminalStatus(issue);
+    updateIssueCard(activeIssueId, {
+      status: terminalStatus,
+      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
+      last_event: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
+      last_message:
+        terminalStatus === "failed" && !String(issue.last_message ?? "").trim()
+          ? "Codex thread를 찾지 못해 stale 실행을 종료했습니다."
+          : issue.last_message
+    });
+    clearRunningIssueTracking(threadId);
+    updateProjectThreadSnapshot(threadId);
+    persistThreadById(threadId);
+    await publishThreadState(userId, threadId);
+    void processIssueQueue(userId, threadId);
+    return;
+  }
+
+  if (reconciledStatus === "running") {
     return;
   }
 
