@@ -98,6 +98,50 @@ rollover는 조용히 일어나면 안 됩니다.
 
 ---
 
+## 책임 분리
+
+이 설계는 `bridge 공통 처리`와 `클라이언트별 UI 처리`를 명확히 분리해야 안전합니다.
+
+### bridge 공통 처리
+
+bridge가 책임지는 것은 아래로 제한합니다.
+
+- `codex_thread_id` rollover 판단 및 실행
+- `threadIssueIdsById`, `issueCardsById`, `issueMessagesById` 유지
+- `context_pressure` 계산
+- `thread.rollover.*` 이벤트 발행
+- `bridge.projectThreads.updated`, `bridge.threadIssues.updated` snapshot 정합성 유지
+- rollover summary 생성 및 저장
+
+즉 pressure 계산, rollover 시점 판단, summary 생성, 새 Codex thread 바인딩은 모두 bridge가 단일 source of truth로 가져야 합니다.
+
+대시보드나 모바일이 각자 threshold를 해석하거나 rollover를 임의로 추정하면 안 됩니다.
+
+### 대시보드 전용 처리
+
+대시보드는 카드/보관함/칸반 흐름을 유지하는 것이 목적입니다.
+
+- `Review`, `Done`, 보관함은 같은 `issue_id` 집합 기준으로 유지
+- rollover 이후에도 archived issue가 다시 나타났다 사라지면 안 됨
+- rollover summary는 카드 구조를 깨지 않는 범위에서 상태 정보로만 노출
+- `thread.rollover.*`는 상태 표시용
+- 실제 카드 정합성은 snapshot 이벤트를 기준으로 처리
+
+즉 대시보드는 “채팅 연결성”보다 “카드와 보관함 안정성”이 우선입니다.
+
+### 모바일 전용 처리
+
+모바일은 하나의 thread가 연속 대화처럼 보이는 것이 목적입니다.
+
+- rollover 전후 메시지가 한 타임라인에서 이어져 보여야 함
+- 사용자는 내부 Codex thread 교체를 느끼면 안 됨
+- rollover summary는 모바일 상세 타임라인에 실제 메시지처럼 보여야 함
+- 오래된 상세 응답이 새 session 상태를 덮으면 안 됨
+
+즉 모바일은 “카드 구조”보다 “대화 흐름 연속성”이 우선입니다.
+
+---
+
 ## 목표 동작
 
 ### 정상 흐름
@@ -355,9 +399,45 @@ rollover는 조용히 일어나면 안 됩니다.
 
 ---
 
-## 대시보드 / 모바일 반영
+## rollover summary 저장 및 노출
 
-### 대시보드
+현재 UI 구조를 기준으로 보면, rollover summary를 단순 메타에만 저장하면 모바일 채팅 타임라인에 자연스럽게 보이지 않을 수 있습니다.
+
+따라서 저장은 아래 2단계로 정의합니다.
+
+### 1. bridge 내부 저장
+
+내부 메타에는 아래를 저장합니다.
+
+- `threadStateById[threadId].rollover_summary`
+- `threadStateById[threadId].last_rollover_at`
+- `threadStateById[threadId].codex_thread_revision`
+
+이 저장소는 bridge의 판단과 복원용입니다.
+
+### 2. UI 노출용 저장
+
+UI 노출은 별도 메타 추론이 아니라, 명시적 메시지로 남깁니다.
+
+권장 방식:
+
+- `threadMessagesById` 같은 새 저장소를 추가
+- rollover summary를 `system` 타입 thread-level message로 저장
+
+이 방식을 택하는 이유:
+
+- 모바일은 이 메시지를 채팅 타임라인에 그대로 append 가능
+- 대시보드는 필요 시 thread 상세 상태 영역이나 최근 이벤트 영역에 노출 가능
+- issue 카드/보관함과 분리되어 issue id 안정성을 해치지 않음
+
+중요:
+
+- rollover summary를 synthetic issue로 만들지 않습니다.
+- issue id 집합을 늘리면 대시보드 보관함과 칸반 정합성이 흔들릴 수 있습니다.
+
+---
+
+## 대시보드 반영
 
 보여줄 정보:
 
@@ -371,6 +451,7 @@ rollover는 조용히 일어나면 안 됩니다.
 - `bridge.threadIssues.updated`는 항상 해당 UI thread의 전체 issue 목록을 기준으로 갱신되어야 함
 - rollover 이후에도 archive key는 기존 `thread_id + issue_id` 기준을 그대로 사용해야 함
 - `thread.rollover.*`는 상태 표시용 이벤트이고, 실제 카드 정합성은 snapshot 이벤트가 책임져야 함
+- rollover summary는 thread-level 상태 정보로만 보여주고, issue 카드로 만들지 않음
 
 표시 위치:
 
@@ -378,7 +459,7 @@ rollover는 조용히 일어나면 안 됩니다.
 - 최근 이벤트 목록
 - 필요 시 thread row badge
 
-### 모바일
+## 모바일 반영
 
 보여줄 정보:
 
@@ -395,9 +476,8 @@ rollover는 조용히 일어나면 안 됩니다.
 
 추가 규칙:
 
-- rollover summary는 내부 메타에만 저장하면 모바일 채팅창에 보이지 않을 수 있습니다.
-- 모바일에서는 이를 `system message` 또는 `rollover event message` 형태로 같은 타임라인에 append하는 방식을 명시적으로 택해야 합니다.
-- 즉 UI에서 보이는 대화 흐름 기준으로도 rollover 전후 연결점이 남아야 합니다.
+- 모바일은 `threadMessagesById`의 `system` message를 issue message와 함께 합쳐 하나의 타임라인으로 렌더링해야 합니다.
+- 즉 UI에서 보이는 대화 흐름 기준으로 rollover 전후 연결점이 명시적으로 남아야 합니다.
 
 ---
 
@@ -416,6 +496,30 @@ rollover는 조용히 일어나면 안 됩니다.
 - queue는 멈추지 않고 기존 thread에서 계속 진행 가능해야 함
 - 단, `rollover_failed` 상태와 마지막 에러는 남김
 
+### 부분 성공 후 복구 규칙
+
+아래 순서를 기준으로 복구 규칙을 고정합니다.
+
+1. 새 Codex thread 생성
+2. 새 Codex thread에 summary turn 입력
+3. summary turn 성공 확인
+4. local state / persist / mapping commit
+5. snapshot / raw event 발행
+
+복구 원칙:
+
+- 1 또는 2 실패:
+  - 기존 `codex_thread_id` 유지
+  - 새 thread는 폐기
+- 3 성공, 4 실패:
+  - `codex_thread_id` 교체를 커밋하지 않음
+  - 다음 watchdog 또는 복구 루틴에서 재시도 가능 상태로 남김
+- 4 성공, 5 실패:
+  - local state가 source of truth
+  - 이후 snapshot 재발행으로 복구
+
+즉 `codex_thread_id` 교체의 commit 시점은 local state / persist 성공 이후입니다.
+
 즉 rollover는 실패해도 작업 전체를 깨뜨리면 안 됩니다.
 
 ---
@@ -433,6 +537,7 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] `pushIssueMessage()`에서 prompt 길이 반영
 - [ ] `appendAssistantDeltaToIssue()`에서 assistant 길이 반영
 - [ ] `updateIssueCard()`에서 thread 메타 재계산
+- [ ] issue 삭제 / 수정 / 재시도 시 pressure 재계산
 - [ ] `computeThreadContextPressure(threadId)` 구현
 - [ ] pressure 계산은 `last_summary_issue_id` 이후 window만 사용
 
@@ -460,6 +565,8 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] summary turn 입력
 - [ ] 기존 `threadIssueIdsById`, `issueCardsById`, `issueMessagesById`를 절대 초기화하지 않음
 - [ ] `awaiting_input` 상태에서는 rollover 금지
+- [ ] `activeIssueByThreadId`가 남아 있으면 rollover 금지
+- [ ] partial success rollback 규칙 구현
 
 ### 6. queue 연동
 
@@ -483,13 +590,14 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] rollover 상태 텍스트 추가
 - [ ] 최근 이벤트에 rollover 이벤트 반영
 - [ ] 선택 thread 상세에 context pressure/요약 상태 표시
+- [ ] rollover summary는 issue 카드가 아닌 thread 상태 정보로만 노출
 - [ ] 보관함이 rollover 이후에도 같은 issue id 기준으로 유지되는지 검증
 - [ ] thread 재선택 시 archived review/done 이슈가 다시 보였다 사라지지 않는지 검증
 
 ### 9. mobile 반영
 
 - [ ] rollover 상태 문구 추가
-- [ ] 상세 뷰 타임라인에 rollover 이벤트 반영
+- [ ] `threadMessagesById`의 system message를 상세 뷰 타임라인에 반영
 - [ ] rollover 이후에도 기존 issue message가 같은 thread 상세에 누적되는지 검증
 - [ ] thread 상세 재조회 시 오래된 응답이 새 session 상태를 덮지 않는지 검증
 
