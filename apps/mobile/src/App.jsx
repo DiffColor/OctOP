@@ -1185,6 +1185,13 @@ function InlineIssueComposer({
     }
   }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
 
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
 
   const handlePromptSubmit = useCallback(async () => {
@@ -1213,13 +1220,6 @@ function InlineIssueComposer({
     },
     [handlePromptSubmit]
   );
-
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
 
   const toggleVoiceCapture = useCallback(() => {
     if (isRecordingRef.current) {
