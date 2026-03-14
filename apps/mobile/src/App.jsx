@@ -1060,10 +1060,14 @@ function InlineIssueComposer({
   label,
   disabled = false
 }) {
+  const LONG_PRESS_THRESHOLD_MS = 650;
   const [prompt, setPrompt] = useState("");
   const textareaRef = useRef(null);
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
+  const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
+  const suppressClickRef = useRef(false);
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
@@ -1177,25 +1181,7 @@ function InlineIssueComposer({
     }
   }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
 
-  const handleVoiceButtonClick = useCallback(() => {
-    if (!supportsSpeechRecognition) {
-      if (typeof window !== "undefined") {
-        window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
-      }
-      return;
-    }
-
-    if (isRecording) {
-      stopVoiceCapture();
-      return;
-    }
-
-    startVoiceCapture();
-  }, [isRecording, startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
+  const handlePromptSubmit = useCallback(async () => {
     const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
 
@@ -1212,10 +1198,98 @@ function InlineIssueComposer({
     if (accepted !== false) {
       setPrompt("");
     }
-  };
+  }, [disabled, onSubmit, prompt, selectedProject?.id]);
+
+  const handleFormSubmit = useCallback(
+    (event) => {
+      event.preventDefault();
+      void handlePromptSubmit();
+    },
+    [handlePromptSubmit]
+  );
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleSendPointerDown = useCallback(
+    (event) => {
+      if (!selectedProject || busy || disabled) {
+        return;
+      }
+
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      longPressTriggeredRef.current = false;
+      suppressClickRef.current = false;
+      clearLongPressTimer();
+
+      longPressTimerRef.current = window.setTimeout(() => {
+        if (!supportsSpeechRecognition) {
+          if (typeof window !== "undefined") {
+            window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
+          }
+          longPressTriggeredRef.current = false;
+          suppressClickRef.current = false;
+          return;
+        }
+
+        longPressTriggeredRef.current = true;
+        suppressClickRef.current = true;
+        startVoiceCapture();
+      }, LONG_PRESS_THRESHOLD_MS);
+    },
+    [busy, clearLongPressTimer, disabled, selectedProject, startVoiceCapture, supportsSpeechRecognition]
+  );
+
+  const stopLongPressCapture = useCallback(() => {
+    if (!longPressTriggeredRef.current) {
+      return;
+    }
+
+    longPressTriggeredRef.current = false;
+    suppressClickRef.current = true;
+    stopVoiceCapture();
+  }, [stopVoiceCapture]);
+
+  const handleSendPointerUp = useCallback(() => {
+    clearLongPressTimer();
+    stopLongPressCapture();
+  }, [clearLongPressTimer, stopLongPressCapture]);
+
+  const handleSendPointerLeave = useCallback(() => {
+    clearLongPressTimer();
+
+    if (longPressTriggeredRef.current) {
+      stopLongPressCapture();
+    }
+  }, [clearLongPressTimer, stopLongPressCapture]);
+
+  const handleSendClick = useCallback(
+    (event) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      if (busy || disabled || !selectedProject) {
+        return;
+      }
+
+      void handlePromptSubmit();
+    },
+    [busy, disabled, handlePromptSubmit, selectedProject]
+  );
 
   return (
-    <form className="pointer-events-auto w-full" onSubmit={handleSubmit}>
+    <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
       <div className="flex items-end gap-3">
         <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
           <div className="mb-1 text-[11px] text-slate-500">
@@ -1231,42 +1305,40 @@ function InlineIssueComposer({
             className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
           />
         </div>
-        {supportsSpeechRecognition ? (
-          <button
-            type="button"
-            onClick={handleVoiceButtonClick}
-            disabled={!selectedProject || busy || disabled}
-            aria-pressed={isRecording}
-            className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition ${
-              isRecording
-                ? "border-rose-400 bg-rose-500/20 text-rose-100"
-                : "border-white/15 bg-transparent text-white hover:bg-white/5 disabled:text-white/40"
-            } disabled:cursor-not-allowed disabled:opacity-45`}
-          >
-            {isRecording ? (
-              <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-300 shadow-[0_0_0_6px_rgba(244,63,94,0.35)]" />
-            ) : null}
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-              />
-              <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
-        ) : null}
         <button
-          type="submit"
-          disabled={busy || !selectedProject || !prompt.trim() || disabled}
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-telegram-500 text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+          type="button"
+          onPointerDown={handleSendPointerDown}
+          onPointerUp={handleSendPointerUp}
+          onPointerLeave={handleSendPointerLeave}
+          onPointerCancel={handleSendPointerLeave}
+          onClick={handleSendClick}
+          onContextMenu={(event) => event.preventDefault()}
+          disabled={busy || !selectedProject || (!prompt.trim() && !isRecording) || disabled}
+          aria-pressed={isRecording}
+          className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
+            isRecording
+              ? "border-rose-500 bg-rose-500/20 text-rose-50"
+              : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+          } disabled:cursor-not-allowed disabled:opacity-45`}
         >
-          {busy ? (
-            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          {isRecording ? (
+            <>
+              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                />
+                <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </>
+          ) : busy ? (
+            <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
           ) : (
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
             </svg>
           )}
