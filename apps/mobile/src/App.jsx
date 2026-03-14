@@ -370,7 +370,7 @@ function formatThreadContextUsage(thread) {
     return null;
   }
 
-  return `컨텍스트 ${usage.percent}%`;
+  return `사용률 ${usage.percent}%`;
 }
 
 function parseResponseBody(response, text) {
