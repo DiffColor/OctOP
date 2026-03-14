@@ -2656,6 +2656,7 @@ function MainPage({
   onSearchChange,
   onSelectBridge,
   onSelectProject,
+  onExpandProject,
   onSelectProjectThread,
   onSelectIssue,
   onToggleIssueSelection,
@@ -2805,11 +2806,20 @@ function MainPage({
     onSelectProjectThread(threadId);
   }, [markProjectsExpanded, onSelectProject, onSelectProjectThread, projectThreads, selectedProjectId]);
   const handleToggleProjectExpanded = useCallback((projectId) => {
-    setExpandedProjectIds((current) => ({
-      ...current,
-      [projectId]: !(current[projectId] ?? (projectId === selectedProjectId))
-    }));
-  }, [selectedProjectId]);
+    let nextExpanded = false;
+
+    setExpandedProjectIds((current) => {
+      nextExpanded = !(current[projectId] ?? (projectId === selectedProjectId));
+      return {
+        ...current,
+        [projectId]: nextExpanded
+      };
+    });
+
+    if (nextExpanded) {
+      void onExpandProject(projectId);
+    }
+  }, [onExpandProject, selectedProjectId]);
 
   const columns = COLUMN_ORDER.map((column) => {
     const columnThreads = filteredIssues.filter((thread) => getStatusMeta(thread.status).column === column.id);
@@ -4041,6 +4051,8 @@ export default function App() {
   const [editingIssueId, setEditingIssueId] = useState("");
   const issuesRef = useRef([]);
   const issueLoadRequestIdRef = useRef(0);
+  const loadedProjectThreadsRef = useRef({});
+  const pendingProjectThreadLoadsRef = useRef(new Map());
   const selectedBridgeIdRef = useRef("");
   const selectedProjectThreadIdRef = useRef("");
   const archivedIssuesStateRef = useRef(readStoredArchives());
@@ -4097,6 +4109,19 @@ export default function App() {
       archivedIssuesStateRef.current = nextState;
       return nextState;
     });
+  }, []);
+  const markProjectThreadsLoaded = useCallback((bridgeId, projectId) => {
+    if (!bridgeId || !projectId) {
+      return;
+    }
+
+    loadedProjectThreadsRef.current = {
+      ...loadedProjectThreadsRef.current,
+      [bridgeId]: {
+        ...(loadedProjectThreadsRef.current[bridgeId] ?? {}),
+        [projectId]: true
+      }
+    };
   }, []);
   const replaceArchivedIssuesForCurrentScope = useCallback((bridgeId, threadId, nextIssues) => {
     archivedIssueSnapshotsRef.current = replaceArchivedIssuesForScope(
@@ -4192,6 +4217,8 @@ export default function App() {
     if (!sessionArg?.loginId || !bridgeId) {
       setProjects([]);
       setProjectThreads([]);
+      loadedProjectThreadsRef.current = {};
+      pendingProjectThreadLoadsRef.current.clear();
       setIssues([]);
       archivedIssueSnapshotsRef.current = {};
       setArchivedIssues([]);
@@ -4231,6 +4258,8 @@ export default function App() {
         return nextProjects.projects?.[0]?.id || "";
       });
       setProjectThreads([]);
+      loadedProjectThreadsRef.current = {};
+      pendingProjectThreadLoadsRef.current.clear();
       setIssues([]);
       archivedIssueSnapshotsRef.current = {};
       setArchivedIssues([]);
@@ -4260,7 +4289,32 @@ export default function App() {
     );
     const nextThreads = mergeProjectThreads([], payload?.threads ?? []);
     setProjectThreads((current) => replaceProjectThreadsForProject(current, nextThreads, projectId));
+    markProjectThreadsLoaded(bridgeId, projectId);
     return nextThreads;
+  }
+
+  async function ensureProjectThreadsLoaded(sessionArg, bridgeId, projectId) {
+    if (!sessionArg?.loginId || !bridgeId || !projectId) {
+      return [];
+    }
+
+    if (loadedProjectThreadsRef.current[bridgeId]?.[projectId]) {
+      return [];
+    }
+
+    const cacheKey = `${bridgeId}:${projectId}`;
+    const pendingRequest = pendingProjectThreadLoadsRef.current.get(cacheKey);
+
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const request = loadProjectThreads(sessionArg, bridgeId, projectId).finally(() => {
+      pendingProjectThreadLoadsRef.current.delete(cacheKey);
+    });
+
+    pendingProjectThreadLoadsRef.current.set(cacheKey, request);
+    return request;
   }
 
   async function loadThreadIssues(sessionArg, bridgeId, threadId) {
@@ -4436,6 +4490,15 @@ export default function App() {
           const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? eventProjectId ?? "";
           const scope = payload.payload?.scope ?? "project";
           if (scope === "all") {
+            for (const thread of nextThreads) {
+              if (thread.project_id) {
+                markProjectThreadsLoaded(selectedBridgeId, thread.project_id);
+              }
+            }
+          } else if (projectId) {
+            markProjectThreadsLoaded(selectedBridgeId, projectId);
+          }
+          if (scope === "all") {
             updateStatusCounts({ threads: nextThreads.length });
           }
           setProjectThreads((current) =>
@@ -4561,6 +4624,8 @@ export default function App() {
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
     setProjectThreads([]);
+    loadedProjectThreadsRef.current = {};
+    pendingProjectThreadLoadsRef.current.clear();
     setIssues([]);
     setDetailState({
       open: false,
@@ -5680,6 +5745,7 @@ export default function App() {
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
       onSelectProject={setSelectedProjectId}
+      onExpandProject={(projectId) => ensureProjectThreadsLoaded(session, selectedBridgeId, projectId)}
       onSelectProjectThread={setSelectedProjectThreadId}
       onSelectIssue={setSelectedIssueId}
       onUpdateIssueSelection={setSelectedIssueIds}
