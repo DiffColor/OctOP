@@ -1166,8 +1166,10 @@ function InlineIssueComposer({
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const longPressTimerRef = useRef(null);
+  const voiceRestartTimerRef = useRef(null);
   const suppressClickRef = useRef(false);
   const isRecordingRef = useRef(false);
+  const shouldKeepRecordingRef = useRef(false);
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
@@ -1194,19 +1196,42 @@ function InlineIssueComposer({
     [syncPromptHeight]
   );
 
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const clearVoiceRestartTimer = useCallback(() => {
+    if (voiceRestartTimerRef.current) {
+      window.clearTimeout(voiceRestartTimerRef.current);
+      voiceRestartTimerRef.current = null;
+    }
+  }, []);
+
   const stopVoiceCapture = useCallback(() => {
+    shouldKeepRecordingRef.current = false;
+    clearLongPressTimer();
+    clearVoiceRestartTimer();
+
     const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
 
     if (recognition) {
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.onend = null;
-      recognition.stop();
-      speechRecognitionRef.current = null;
+
+      try {
+        recognition.stop();
+      } catch {
+        // ignore stop race errors from browser implementations
+      }
     }
 
     setIsRecording(false);
-  }, []);
+  }, [clearLongPressTimer, clearVoiceRestartTimer]);
 
   useEffect(() => () => stopVoiceCapture(), [stopVoiceCapture]);
 
@@ -1232,7 +1257,14 @@ function InlineIssueComposer({
   );
 
   const startVoiceCapture = useCallback(() => {
-    if (!supportsSpeechRecognition || typeof window === "undefined" || speechRecognitionRef.current) {
+    if (
+      !supportsSpeechRecognition ||
+      typeof window === "undefined" ||
+      speechRecognitionRef.current ||
+      busy ||
+      disabled ||
+      !selectedProject
+    ) {
       return;
     }
 
@@ -1244,9 +1276,10 @@ function InlineIssueComposer({
 
     const recognition = new SpeechRecognition();
     recognition.lang = "ko-KR";
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
+    shouldKeepRecordingRef.current = true;
     recognition.onstart = () => setIsRecording(true);
     recognition.onresult = (event) => {
       let collected = "";
@@ -1265,15 +1298,65 @@ function InlineIssueComposer({
 
       appendVoiceTranscript(collected);
     };
-    recognition.onerror = () => {
-      stopVoiceCapture();
+    recognition.onerror = (event) => {
+      speechRecognitionRef.current = null;
+
+      if (!shouldKeepRecordingRef.current) {
+        setIsRecording(false);
+        return;
+      }
+
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event?.error ?? "")) {
+        shouldKeepRecordingRef.current = false;
+        setIsRecording(false);
+        return;
+      }
+
+      clearVoiceRestartTimer();
+      voiceRestartTimerRef.current = window.setTimeout(() => {
+        voiceRestartTimerRef.current = null;
+
+        if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
+          startVoiceCapture();
+        }
+      }, 40);
     };
     recognition.onend = () => {
-      stopVoiceCapture();
+      speechRecognitionRef.current = null;
+
+      if (!shouldKeepRecordingRef.current) {
+        setIsRecording(false);
+        return;
+      }
+
+      clearVoiceRestartTimer();
+      voiceRestartTimerRef.current = window.setTimeout(() => {
+        voiceRestartTimerRef.current = null;
+
+        if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
+          startVoiceCapture();
+        }
+      }, 20);
     };
-    recognition.start();
     speechRecognitionRef.current = recognition;
-  }, [appendVoiceTranscript, stopVoiceCapture, supportsSpeechRecognition]);
+
+    try {
+      recognition.start();
+    } catch {
+      speechRecognitionRef.current = null;
+      clearVoiceRestartTimer();
+
+      if (shouldKeepRecordingRef.current) {
+        voiceRestartTimerRef.current = window.setTimeout(() => {
+          voiceRestartTimerRef.current = null;
+
+          if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
+            startVoiceCapture();
+          }
+        }, 40);
+      }
+    }
+  }, [appendVoiceTranscript, busy, clearVoiceRestartTimer, disabled, selectedProject, supportsSpeechRecognition]);
 
   useEffect(() => {
     if (!isRecording) {
@@ -1285,14 +1368,8 @@ function InlineIssueComposer({
     }
   }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
 
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
   useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  useEffect(() => () => clearVoiceRestartTimer(), [clearVoiceRestartTimer]);
 
   const handlePromptSubmit = useCallback(async () => {
     const normalizedPrompt = prompt.trim();
@@ -1350,13 +1427,6 @@ function InlineIssueComposer({
       suppressClickRef.current = false;
       clearLongPressTimer();
 
-      if (isRecordingRef.current) {
-        longPressTimerRef.current = window.setTimeout(() => {
-          toggleVoiceCapture();
-        }, LONG_PRESS_THRESHOLD_MS);
-        return;
-      }
-
       longPressTimerRef.current = window.setTimeout(() => {
         suppressClickRef.current = true;
         toggleVoiceCapture();
@@ -1405,7 +1475,7 @@ function InlineIssueComposer({
         <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex justify-center">
           <div className="flex items-center gap-2 rounded-full bg-rose-500/95 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/40">
             <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" />
-            <span>음성 입력 중 · 길게 눌러 종료하세요</span>
+            <span>음성 입력 중 · 버튼을 다시 누르면 종료됩니다</span>
           </div>
         </div>
       ) : null}
