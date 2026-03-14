@@ -11,3 +11,6 @@ coverage
 bin
 obj
 backend alias
+playwright-report
+blob-report
+test-results
