@@ -323,6 +323,56 @@ function getRealtimeProgressText(entity) {
   return "상태 동기화 중";
 }
 
+function normalizeNullableInteger(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.round(numeric) : null;
+}
+
+function getThreadContextUsage(thread) {
+  if (!thread) {
+    return null;
+  }
+
+  const percent = clampProgress(thread.context_usage_percent ?? thread.contextUsagePercent);
+  const hasPercent =
+    Number.isFinite(Number(thread.context_usage_percent)) || Number.isFinite(Number(thread.contextUsagePercent));
+  const usedTokens = normalizeNullableInteger(
+    thread.context_used_tokens ??
+      thread.contextUsedTokens ??
+      thread.token_usage?.total?.total_tokens ??
+      thread.tokenUsage?.total?.totalTokens
+  );
+  const windowTokens = normalizeNullableInteger(
+    thread.context_window_tokens ??
+      thread.contextWindowTokens ??
+      thread.token_usage?.model_context_window ??
+      thread.tokenUsage?.modelContextWindow
+  );
+
+  if (!hasPercent && usedTokens === null && windowTokens === null) {
+    return null;
+  }
+
+  return {
+    percent: hasPercent ? percent : null,
+    usedTokens,
+    windowTokens
+  };
+}
+
+function formatThreadContextUsage(thread) {
+  const usage = getThreadContextUsage(thread);
+
+  if (!usage || usage.percent === null) {
+    return null;
+  }
+
+  return `컨텍스트 ${usage.percent}%`;
+}
+
 function parseResponseBody(response, text) {
   if (!text) {
     return {};
@@ -368,6 +418,8 @@ function normalizeThread(thread, fallbackProjectId = null) {
     return null;
   }
 
+  const contextUsage = getThreadContextUsage(thread);
+
   return {
     id: thread.id,
     title: thread.title ?? thread.name ?? "제목 없는 이슈",
@@ -379,7 +431,10 @@ function normalizeThread(thread, fallbackProjectId = null) {
     created_at: thread.created_at ?? new Date().toISOString(),
     updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
     source: thread.source ?? "appServer",
-    turn_id: thread.turn_id ?? null
+    turn_id: thread.turn_id ?? null,
+    context_usage_percent: contextUsage?.percent ?? null,
+    context_used_tokens: contextUsage?.usedTokens ?? null,
+    context_window_tokens: contextUsage?.windowTokens ?? null
   };
 }
 
@@ -455,6 +510,23 @@ function buildLiveThreadPatch(event, currentThread = null) {
         status: normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus),
         last_event: "thread.status.changed",
         updated_at: new Date().toISOString()
+      };
+    case "thread.tokenUsage.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        context_usage_percent: normalizeNullableInteger(
+          payload.tokenUsage?.modelContextWindow
+            ? (Number(payload.tokenUsage.total?.totalTokens ?? 0) / Number(payload.tokenUsage.modelContextWindow)) * 100
+            : currentThread?.context_usage_percent
+        ),
+        context_used_tokens: normalizeNullableInteger(
+          payload.tokenUsage?.total?.totalTokens ?? currentThread?.context_used_tokens
+        ),
+        context_window_tokens: normalizeNullableInteger(
+          payload.tokenUsage?.modelContextWindow ?? currentThread?.context_window_tokens
+        ),
+        updated_at: currentThread?.updated_at ?? new Date().toISOString()
       };
     case "turn.started":
       return {
@@ -1620,6 +1692,7 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
 
 function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
   const status = getStatusMeta(thread.status);
+  const contextUsageLabel = formatThreadContextUsage(thread);
   const startPointRef = useRef(null);
   const baseOffsetRef = useRef(0);
   const pointerIdRef = useRef(null);
@@ -1785,14 +1858,19 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
 
           <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
 
-          <div className="mt-2 flex items-center gap-2">
-            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
-              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-              {status.label}
-            </span>
-          </div>
-        </div>
-      </button>
+	          <div className="mt-2 flex items-center gap-2">
+	            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
+	              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+	              {status.label}
+	            </span>
+	            {contextUsageLabel ? (
+	              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
+	                {contextUsageLabel}
+	              </span>
+	            ) : null}
+	          </div>
+	        </div>
+	      </button>
     </div>
   );
 }
@@ -1913,6 +1991,7 @@ function ThreadDetail({
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
+  const contextUsage = getThreadContextUsage(thread);
   const safeIssues = Array.isArray(issues) ? issues : [];
   const hasRunningIssue = safeIssues.some((issue) => issue?.status === "running");
   const isInputDisabled = thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
@@ -2205,11 +2284,17 @@ function ThreadDetail({
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{threadTitle}</p>
-            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-              <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
-              {status ? <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} /> : null}
-              <span>{status ? status.label : "새 채팅창"}</span>
-            </div>
+	            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+	              <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
+	              {status ? <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} /> : null}
+	              <span>{status ? status.label : "새 채팅창"}</span>
+	              {contextUsage?.percent !== null ? (
+	                <>
+	                  <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
+	                  <span>{formatThreadContextUsage(thread)}</span>
+	                </>
+	              ) : null}
+	            </div>
           </div>
 
           <button
@@ -2347,13 +2432,23 @@ function ThreadDetail({
               </div>
             </div>
           ) : null}
-          {thread ? (
-            <div className="flex justify-center">
-              <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
-                {getRealtimeProgressText(thread)}
-              </div>
-            </div>
-          ) : null}
+	          {thread ? (
+	            <div className="flex justify-center">
+	              <div className="flex flex-wrap items-center justify-center gap-2">
+	                <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
+	                  {getRealtimeProgressText(thread)}
+	                </div>
+	                {contextUsage?.percent !== null ? (
+	                  <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
+	                    {formatThreadContextUsage(thread)}
+	                    {contextUsage.usedTokens !== null && contextUsage.windowTokens !== null
+	                      ? ` · ${contextUsage.usedTokens.toLocaleString("ko-KR")} / ${contextUsage.windowTokens.toLocaleString("ko-KR")}`
+	                      : ""}
+	                  </div>
+	                ) : null}
+	              </div>
+	            </div>
+	          ) : null}
           <div ref={scrollAnchorRef} />
         </div>
       </div>

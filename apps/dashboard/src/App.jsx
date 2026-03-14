@@ -728,6 +728,56 @@ function clampProgress(value) {
   return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
+function normalizeNullableInteger(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.round(numeric) : null;
+}
+
+function getThreadContextUsage(thread) {
+  if (!thread) {
+    return null;
+  }
+
+  const percent = clampProgress(thread.context_usage_percent ?? thread.contextUsagePercent);
+  const hasPercent =
+    Number.isFinite(Number(thread.context_usage_percent)) || Number.isFinite(Number(thread.contextUsagePercent));
+  const usedTokens = normalizeNullableInteger(
+    thread.context_used_tokens ??
+      thread.contextUsedTokens ??
+      thread.token_usage?.total?.total_tokens ??
+      thread.tokenUsage?.total?.totalTokens
+  );
+  const windowTokens = normalizeNullableInteger(
+    thread.context_window_tokens ??
+      thread.contextWindowTokens ??
+      thread.token_usage?.model_context_window ??
+      thread.tokenUsage?.modelContextWindow
+  );
+
+  if (!hasPercent && usedTokens === null && windowTokens === null) {
+    return null;
+  }
+
+  return {
+    percent: hasPercent ? percent : null,
+    usedTokens,
+    windowTokens
+  };
+}
+
+function formatThreadContextUsage(thread, language = "en") {
+  const usage = getThreadContextUsage(thread);
+
+  if (!usage || usage.percent === null) {
+    return null;
+  }
+
+  return language === "ko" ? `컨텍스트 ${usage.percent}%` : `Context ${usage.percent}%`;
+}
+
 function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
@@ -837,6 +887,8 @@ function normalizeProjectThread(thread, fallbackProjectId = null) {
     return null;
   }
 
+  const contextUsage = getThreadContextUsage(thread);
+
   return {
     id: thread.id,
     name: thread.name ?? thread.title ?? "",
@@ -853,12 +905,23 @@ function normalizeProjectThread(thread, fallbackProjectId = null) {
     queue_position: null,
     issue_count: Number.isFinite(Number(thread.issue_count)) ? Number(thread.issue_count) : 0,
     queued_count: Number.isFinite(Number(thread.queued_count)) ? Number(thread.queued_count) : 0,
-    codex_thread_id: thread.codex_thread_id ?? null
+    codex_thread_id: thread.codex_thread_id ?? null,
+    context_usage_percent: contextUsage?.percent ?? null,
+    context_used_tokens: contextUsage?.usedTokens ?? null,
+    context_window_tokens: contextUsage?.windowTokens ?? null
   };
 }
 
 function mergeProjectThreads(currentThreads, nextThreads) {
   const nextById = new Map();
+
+  for (const thread of currentThreads) {
+    const normalized = normalizeProjectThread(thread);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
 
   for (const thread of nextThreads) {
     const normalized = normalizeProjectThread(thread);
@@ -1093,6 +1156,23 @@ function buildLiveThreadPatch(event, currentThread = null) {
         status: normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus),
         last_event: "thread.status.changed",
         updated_at: new Date().toISOString()
+      };
+    case "thread.tokenUsage.updated":
+      return {
+        id: threadId,
+        project_id: projectId || currentThread?.project_id || null,
+        context_usage_percent: normalizeNullableInteger(
+          payload.tokenUsage?.modelContextWindow
+            ? (Number(payload.tokenUsage.total?.totalTokens ?? 0) / Number(payload.tokenUsage.modelContextWindow)) * 100
+            : currentThread?.context_usage_percent
+        ),
+        context_used_tokens: normalizeNullableInteger(
+          payload.tokenUsage?.total?.totalTokens ?? currentThread?.context_used_tokens
+        ),
+        context_window_tokens: normalizeNullableInteger(
+          payload.tokenUsage?.modelContextWindow ?? currentThread?.context_window_tokens
+        ),
+        updated_at: currentThread?.updated_at ?? new Date().toISOString()
       };
     case "turn.started":
       return {
@@ -2145,6 +2225,8 @@ function SidebarThreadItem({
 
 function ThreadDetailModal({ language, open, loading, thread, messages, onClose }) {
   const copy = getCopy(language);
+  const contextUsageLabel = formatThreadContextUsage(thread, language);
+  const contextUsage = getThreadContextUsage(thread);
   if (!open) {
     return null;
   }
@@ -2158,6 +2240,21 @@ function ThreadDetailModal({ language, open, loading, thread, messages, onClose 
             <h2 className="mt-2 truncate text-lg font-semibold text-white">
               {thread ? getThreadTitle(thread, language) : copy.detail.emptyTitle}
             </h2>
+            {thread ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">
+                  {copy.status[getStatusMeta(thread.status).labelKey] ?? copy.status.queued}
+                </span>
+                {contextUsageLabel ? (
+                  <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">
+                    {contextUsageLabel}
+                    {contextUsage?.usedTokens !== null && contextUsage?.windowTokens !== null
+                      ? ` · ${contextUsage.usedTokens.toLocaleString(copy.locale)} / ${contextUsage.windowTokens.toLocaleString(copy.locale)}`
+                      : ""}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -2298,6 +2395,7 @@ function TodoThreadCard({
 }) {
   const copy = getCopy(language);
   const progressText = getRealtimeProgressText(thread, language);
+  const contextUsageLabel = formatThreadContextUsage(thread, language);
   const highlighted = active || multiSelected;
   const handleCardClick = (event) => {
     if (onSelectionGesture?.(event, columnId, thread.id)) {
@@ -2350,6 +2448,12 @@ function TodoThreadCard({
         <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
         <span className="truncate">{progressText}</span>
+        {contextUsageLabel ? (
+          <>
+            <span className="text-slate-700">•</span>
+            <span className="truncate">{contextUsageLabel}</span>
+          </>
+        ) : null}
         <span className="text-slate-700">•</span>
         <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">{copy.board.queue}</span>
       </div>
@@ -2393,6 +2497,7 @@ function ThreadCard({ language, thread, active, multiSelected, columnId, onSelec
   const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
   const progressText = getRealtimeProgressText(thread, language);
+  const contextUsageLabel = formatThreadContextUsage(thread, language);
   const highlighted = active || multiSelected;
   const handleClick = (event) => {
     if (onSelectionGesture?.(event, columnId, thread.id)) {
@@ -2432,6 +2537,12 @@ function ThreadCard({ language, thread, active, multiSelected, columnId, onSelec
         <span>{formatRelativeTime(thread.updated_at, language)}</span>
         <span className="text-slate-700">•</span>
         <span className="truncate">{progressText}</span>
+        {contextUsageLabel ? (
+          <>
+            <span className="text-slate-700">•</span>
+            <span className="truncate">{contextUsageLabel}</span>
+          </>
+        ) : null}
       </div>
     </button>
   );
@@ -2450,6 +2561,7 @@ function CompletedThreadCard({
   onDragEnd
 }) {
   const copy = getCopy(language);
+  const contextUsageLabel = formatThreadContextUsage(thread, language);
   const highlighted = active || multiSelected;
   const handleClick = (event) => {
     if (onSelectionGesture?.(event, columnId ?? "done", thread.id)) {
@@ -2473,6 +2585,9 @@ function CompletedThreadCard({
       <div className="flex items-center gap-3">
         <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
         <OverflowRevealText value={getIssueTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium text-slate-200" />
+        {contextUsageLabel ? (
+          <span className="shrink-0 rounded-full bg-slate-800 px-2 py-1 text-[10px] text-slate-300">{contextUsageLabel}</span>
+        ) : null}
         <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">{copy.status.completed}</span>
         <span className="shrink-0 text-[10px] text-slate-500">{formatRelativeTime(thread.updated_at, language)}</span>
       </div>
@@ -2652,21 +2767,45 @@ function MainPage({
   );
   const archiveViewerIssues = archiveViewerColumnId ? archivedIssuesByColumn[archiveViewerColumnId] ?? [] : [];
   const selectedProjectThread =
-    scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
-    null;
-  const handleSelectProject = useCallback((projectId) => {
-    onSelectProject(projectId);
+  scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
+  null;
+  const markProjectsExpanded = useCallback((projectIds = []) => {
     setExpandedProjectIds((current) => {
-      if (current[projectId] === true) {
-        return current;
+      let changed = false;
+      const next = { ...current };
+
+      for (const projectId of projectIds) {
+        if (!projectId || next[projectId] === true) {
+          continue;
+        }
+
+        next[projectId] = true;
+        changed = true;
       }
 
-      return {
-        ...current,
-        [projectId]: true
-      };
+      return changed ? next : current;
     });
-  }, [onSelectProject]);
+  }, []);
+  const handleSelectProject = useCallback((projectId) => {
+    onSelectProject(projectId);
+    markProjectsExpanded([selectedProjectId, projectId]);
+  }, [markProjectsExpanded, onSelectProject, selectedProjectId]);
+  const handleSelectSidebarThread = useCallback((threadId) => {
+    if (!threadId) {
+      onSelectProjectThread("");
+      return;
+    }
+
+    const thread = projectThreads.find((item) => item.id === threadId) ?? null;
+    const targetProjectId = thread?.project_id ?? "";
+
+    if (targetProjectId && targetProjectId !== selectedProjectId) {
+      onSelectProject(targetProjectId);
+    }
+
+    markProjectsExpanded([selectedProjectId, targetProjectId]);
+    onSelectProjectThread(threadId);
+  }, [markProjectsExpanded, onSelectProject, onSelectProjectThread, projectThreads, selectedProjectId]);
   const handleToggleProjectExpanded = useCallback((projectId) => {
     setExpandedProjectIds((current) => ({
       ...current,
@@ -2883,6 +3022,10 @@ function MainPage({
   }, [archiveViewerColumnId, archiveViewerIssues.length]);
 
   useEffect(() => {
+    markProjectsExpanded([selectedProjectId]);
+  }, [markProjectsExpanded, selectedProjectId]);
+
+  useEffect(() => {
     setExpandedProjectIds((current) => {
       let changed = false;
       const next = {};
@@ -2891,7 +3034,7 @@ function MainPage({
         if (Object.prototype.hasOwnProperty.call(current, project.id)) {
           next[project.id] = current[project.id];
         } else {
-          next[project.id] = project.id === selectedProjectId;
+          next[project.id] = false;
           changed = true;
         }
       }
@@ -2902,7 +3045,7 @@ function MainPage({
 
       return changed ? next : current;
     });
-  }, [projects, selectedProjectId]);
+  }, [projects]);
 
   useEffect(() => {
     const syncBoardScrollbarState = () => {
@@ -3297,7 +3440,7 @@ function MainPage({
                                 active={thread.id === selectedProjectThreadId}
                                 editing={editingThreadId === thread.id}
                                 editingName={editingThreadName}
-                                onSelect={onSelectProjectThread}
+                                onSelect={handleSelectSidebarThread}
                                 onBeginRename={beginThreadRename}
                                 onChangeRename={setEditingThreadName}
                                 onSubmitRename={submitThreadRename}

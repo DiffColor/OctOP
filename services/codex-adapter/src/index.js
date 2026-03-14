@@ -507,6 +507,7 @@ function normalizeProject(loginId, project = {}) {
 }
 
 function normalizeProjectThread(loginId, thread = {}) {
+  const tokenUsageState = normalizeThreadTokenUsage(thread.token_usage ?? thread.tokenUsage ?? null, thread);
   return {
     id: sanitizeBridgeId(thread.id ?? createThreadEntityId()),
     project_id: String(thread.project_id ?? "").trim(),
@@ -519,8 +520,116 @@ function normalizeProjectThread(loginId, thread = {}) {
     progress: Number.isFinite(Number(thread.progress)) ? Number(thread.progress) : 0,
     last_event: String(thread.last_event ?? "thread.ready").trim(),
     last_message: String(thread.last_message ?? "").trim(),
+    token_usage: tokenUsageState.token_usage,
+    context_window_tokens: tokenUsageState.context_window_tokens,
+    context_used_tokens: tokenUsageState.context_used_tokens,
+    context_usage_percent: tokenUsageState.context_usage_percent,
     created_at: thread.created_at ?? now(),
     updated_at: thread.updated_at ?? now()
+  };
+}
+
+function normalizeTokenUsageBreakdown(breakdown = null, fallback = {}) {
+  const inputTokens = Number.isFinite(Number(breakdown?.inputTokens ?? breakdown?.input_tokens))
+    ? Number(breakdown.inputTokens ?? breakdown.input_tokens)
+    : Number.isFinite(Number(fallback.input_tokens))
+      ? Number(fallback.input_tokens)
+      : null;
+  const cachedInputTokens = Number.isFinite(Number(breakdown?.cachedInputTokens ?? breakdown?.cached_input_tokens))
+    ? Number(breakdown.cachedInputTokens ?? breakdown.cached_input_tokens)
+    : Number.isFinite(Number(fallback.cached_input_tokens))
+      ? Number(fallback.cached_input_tokens)
+      : null;
+  const outputTokens = Number.isFinite(Number(breakdown?.outputTokens ?? breakdown?.output_tokens))
+    ? Number(breakdown.outputTokens ?? breakdown.output_tokens)
+    : Number.isFinite(Number(fallback.output_tokens))
+      ? Number(fallback.output_tokens)
+      : null;
+  const reasoningOutputTokens = Number.isFinite(
+    Number(breakdown?.reasoningOutputTokens ?? breakdown?.reasoning_output_tokens)
+  )
+    ? Number(breakdown.reasoningOutputTokens ?? breakdown.reasoning_output_tokens)
+    : Number.isFinite(Number(fallback.reasoning_output_tokens))
+      ? Number(fallback.reasoning_output_tokens)
+      : null;
+  const totalTokens = Number.isFinite(Number(breakdown?.totalTokens ?? breakdown?.total_tokens))
+    ? Number(breakdown.totalTokens ?? breakdown.total_tokens)
+    : Number.isFinite(Number(fallback.total_tokens))
+      ? Number(fallback.total_tokens)
+      : null;
+
+  if (
+    inputTokens === null &&
+    cachedInputTokens === null &&
+    outputTokens === null &&
+    reasoningOutputTokens === null &&
+    totalTokens === null
+  ) {
+    return null;
+  }
+
+  return {
+    input_tokens: inputTokens ?? 0,
+    cached_input_tokens: cachedInputTokens ?? 0,
+    output_tokens: outputTokens ?? 0,
+    reasoning_output_tokens: reasoningOutputTokens ?? 0,
+    total_tokens: totalTokens ?? 0
+  };
+}
+
+function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
+  const fallbackTokenUsage = fallback.token_usage ?? fallback.tokenUsage ?? null;
+  const last = normalizeTokenUsageBreakdown(tokenUsage?.last, fallbackTokenUsage?.last);
+  const total = normalizeTokenUsageBreakdown(tokenUsage?.total, fallbackTokenUsage?.total);
+  const rawModelContextWindow =
+    tokenUsage?.modelContextWindow ??
+    tokenUsage?.model_context_window ??
+    fallback.context_window_tokens ??
+    fallbackTokenUsage?.model_context_window;
+  const modelContextWindow =
+    rawModelContextWindow === null || rawModelContextWindow === undefined
+      ? null
+      : Number.isFinite(Number(rawModelContextWindow))
+        ? Number(rawModelContextWindow)
+        : null;
+  const rawContextUsedTokens = total?.total_tokens ?? fallback.context_used_tokens;
+  const contextUsedTokens =
+    rawContextUsedTokens === null || rawContextUsedTokens === undefined
+      ? null
+      : Number.isFinite(Number(rawContextUsedTokens))
+        ? Number(rawContextUsedTokens)
+        : null;
+  const rawContextUsagePercent = fallback.context_usage_percent;
+  const contextUsagePercent =
+    modelContextWindow && contextUsedTokens !== null
+      ? Math.max(0, Math.min(100, Math.round((contextUsedTokens / modelContextWindow) * 100)))
+      : rawContextUsagePercent === null || rawContextUsagePercent === undefined
+        ? null
+        : Number.isFinite(Number(rawContextUsagePercent))
+          ? Number(rawContextUsagePercent)
+        : null;
+
+  if (!last && !total && modelContextWindow === null && contextUsedTokens === null && contextUsagePercent === null) {
+    return {
+      token_usage: null,
+      context_window_tokens: null,
+      context_used_tokens: null,
+      context_usage_percent: null
+    };
+  }
+
+  return {
+    token_usage:
+      last || total || modelContextWindow !== null
+        ? {
+            last,
+            total,
+            model_context_window: modelContextWindow
+          }
+        : null,
+    context_window_tokens: modelContextWindow,
+    context_used_tokens: contextUsedTokens,
+    context_usage_percent: contextUsagePercent
   };
 }
 
@@ -1959,6 +2068,12 @@ function isIssueProgressEvent(method) {
 function normalizeThreadRecord(thread, fallback = {}) {
   const current = threadStateById.get(thread.id) ?? {};
   const lastEvent = threadEventsById.get(thread.id);
+  const tokenUsageState = normalizeThreadTokenUsage(thread.tokenUsage ?? thread.token_usage ?? null, {
+    token_usage: fallback.token_usage ?? current.token_usage ?? null,
+    context_window_tokens: fallback.context_window_tokens ?? current.context_window_tokens ?? null,
+    context_used_tokens: fallback.context_used_tokens ?? current.context_used_tokens ?? null,
+    context_usage_percent: fallback.context_usage_percent ?? current.context_usage_percent ?? null
+  });
 
   return {
     id: thread.id,
@@ -1975,6 +2090,10 @@ function normalizeThreadRecord(thread, fallback = {}) {
     last_event: fallback.last_event ?? current.last_event ?? lastEvent?.type ?? "thread.synced",
     last_message: fallback.last_message ?? current.last_message ?? "",
     prompt: fallback.prompt ?? current.prompt ?? "",
+    token_usage: tokenUsageState.token_usage,
+    context_window_tokens: tokenUsageState.context_window_tokens,
+    context_used_tokens: tokenUsageState.context_used_tokens,
+    context_usage_percent: tokenUsageState.context_usage_percent,
     created_at: fallback.created_at ?? current.created_at ?? unixSecondsToIso(thread.createdAt),
     updated_at: fallback.updated_at ?? current.updated_at ?? unixSecondsToIso(thread.updatedAt),
     source: thread.source ?? current.source ?? "appServer",
@@ -2402,6 +2521,7 @@ class AppServerClient {
       if (
         method === "thread/started" ||
         method === "thread/status/changed" ||
+        method === "thread/tokenUsage/updated" ||
         method === "turn/started" ||
         method === "turn/plan/updated" ||
         method === "turn/diff/updated" ||
@@ -2423,6 +2543,10 @@ class AppServerClient {
             ...eventPatch,
             updated_at: eventPatch.updated_at ?? now()
           });
+
+          if (method === "thread/tokenUsage/updated") {
+            persistThreadById(threadId);
+          }
         }
       }
 
@@ -2548,7 +2672,8 @@ class AppServerClient {
 function buildThreadPatch(method, params) {
   const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
   const threadId = resolveLocalThreadId(params.thread_id ?? codexThreadId);
-  const currentStatus = threadId ? threadStateById.get(threadId)?.status ?? "idle" : "idle";
+  const currentThread = threadId ? threadStateById.get(threadId) ?? null : null;
+  const currentStatus = currentThread?.status ?? "idle";
 
   switch (method) {
     case "thread/started":
@@ -2562,6 +2687,11 @@ function buildThreadPatch(method, params) {
       return {
         status: normalizeThreadStatus(params.status, currentStatus),
         last_event: "thread.status.changed"
+      };
+    case "thread/tokenUsage/updated":
+      return {
+        ...normalizeThreadTokenUsage(params.tokenUsage ?? params.token_usage ?? null, currentThread ?? {}),
+        updated_at: currentThread?.updated_at ?? now()
       };
     case "turn/started":
       return {
