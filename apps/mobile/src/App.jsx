@@ -2700,7 +2700,7 @@ function MainPage({
   return (
     <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
-        <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/88 px-4 py-3 backdrop-blur">
+        <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <button
               type="button"
