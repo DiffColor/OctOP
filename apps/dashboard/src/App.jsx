@@ -2202,13 +2202,8 @@ function SidebarThreadItem({
   onCancelRename,
   onContextMenu
 }) {
-  const contextUsage = getThreadContextUsage(thread);
   const compactUpdatedAt = formatCompactRelativeTime(thread.updated_at);
   const updatedAtTitle = formatRelativeTime(thread.updated_at, language);
-  const usageTitle =
-    contextUsage?.percent !== null
-      ? `${updatedAtTitle} · ${language === "ko" ? "사용률" : "Usage"} ${contextUsage.percent}%`
-      : updatedAtTitle;
 
   return (
     <div
@@ -2245,27 +2240,9 @@ function SidebarThreadItem({
           className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
         >
           <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
-          {contextUsage?.percent !== null ? (
-            <span
-              className="shrink-0 rounded-full p-[1px]"
-              title={usageTitle}
-              style={{
-                background: `conic-gradient(#38bdf8 ${contextUsage.percent * 3.6}deg, rgba(51, 65, 85, 0.75) 0deg)`
-              }}
-            >
-              <span
-                className={`inline-flex rounded-full px-2 py-0.5 text-[10px] ${
-                  active ? "bg-slate-900/95 text-sky-100" : "bg-slate-950/90 text-slate-400"
-                }`}
-              >
-                {compactUpdatedAt}
-              </span>
-            </span>
-          ) : (
-            <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
-              {compactUpdatedAt}
-            </span>
-          )}
+          <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
+            {compactUpdatedAt}
+          </span>
         </button>
       )}
     </div>
@@ -2819,6 +2796,25 @@ function MainPage({
   const selectedProjectThread =
   scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
   null;
+  const selectedThreadContextUsage = getThreadContextUsage(selectedProjectThread);
+  const selectedThreadUsageLabel =
+    selectedThreadContextUsage?.percent != null
+      ? language === "ko"
+        ? `사용률 ${selectedThreadContextUsage.percent}%`
+        : `Usage ${selectedThreadContextUsage.percent}%`
+      : "";
+  const selectedThreadUsageTitle =
+    selectedThreadContextUsage?.percent != null
+      ? [
+          selectedProjectThread ? getThreadTitle(selectedProjectThread, language) : "",
+          selectedThreadUsageLabel,
+          selectedThreadContextUsage.usedTokens !== null && selectedThreadContextUsage.windowTokens !== null
+            ? `${selectedThreadContextUsage.usedTokens.toLocaleString()} / ${selectedThreadContextUsage.windowTokens.toLocaleString()}`
+            : ""
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
   const markProjectsExpanded = useCallback((projectIds = []) => {
     setExpandedProjectIds((current) => {
       let changed = false;
@@ -3666,6 +3662,15 @@ function MainPage({
                 <span>{copy.board.prepHint}</span>
               </div>
               <div className="hidden items-center gap-2 md:flex">
+                {selectedProjectThread && selectedThreadContextUsage?.percent != null ? (
+                  <span
+                    className="inline-flex min-w-0 max-w-[16rem] items-center gap-2 rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-sky-200"
+                    title={selectedThreadUsageTitle}
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-sky-400" />
+                    <OverflowRevealText value={selectedThreadUsageLabel} className="min-w-0 max-w-[10rem]" />
+                  </span>
+                ) : null}
                 <span>{loadingState === "loading" ? copy.board.syncing : copy.board.updatedAt(formatRelativeTime(status.updated_at, language))}</span>
               </div>
             </div>
