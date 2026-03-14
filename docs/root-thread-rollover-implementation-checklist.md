@@ -1,4 +1,4 @@
-# Root Thread + Physical Thread Rollover + Projection Merge 설계
+# Root Thread Rollover 구현 체크리스트
 
 ## 1. 목적
 
@@ -1359,3 +1359,366 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 - `cascade delete`는 운영 안정성
 
 이 구조가 현재 코드, 현재 UI, 현재 projection worker, 현재 app-server 연동 방식에 가장 맞고 서비스 운영 리스크도 가장 낮습니다.
+
+---
+
+## 21. 구현 체크리스트
+
+이 섹션은 실제 구현 순서대로 작업을 빠짐없이 진행하기 위한 체크리스트입니다.
+
+### 21.1 작업 시작 전 고정 결정
+
+- [ ] `root thread`가 사용자에게 보이는 유일한 thread ID임을 확정한다.
+- [ ] `physical thread`는 내부 실행 세대이며 UI에 직접 노출하지 않음을 확정한다.
+- [ ] 브리지가 최종 권위자이고 projection은 과거 이력 캐시임을 팀 합의로 고정한다.
+- [ ] `created_physical_thread_id`, `executed_physical_thread_id` 2필드 모델을 최종 확정한다.
+- [ ] 현재 단계에서 제외할 범위를 고정한다.
+- [ ] 제외 범위: durable projection delivery
+- [ ] 제외 범위: rollover transaction journal
+
+### 21.2 브리지 저장 구조 확장
+
+- [ ] 파일: [`services/codex-adapter/src/index.js`](../services/codex-adapter/src/index.js)
+- [ ] 메모리 맵 추가
+- [ ] `physicalThreadStateById`
+- [ ] `rootThreadPhysicalThreadIdsById`
+- [ ] `handoffSummariesById`
+- [ ] `codexThreadToPhysicalThreadId`
+- [ ] `activeIssueByPhysicalThreadId`
+- [ ] `rolloverLocksByRootThreadId`
+- [ ] `rolloverCooldownByRootThreadId`
+- [ ] `recentlyClosedPhysicalThreadIdsByRootThreadId`
+- [ ] `closedPhysicalThreadTombstonesById`
+- [ ] `deletedRootThreadTombstonesById`
+- [ ] `persistThreadsForUser` 저장 포맷 확장
+- [ ] `physical_thread_ids`
+- [ ] `physical_threads`
+- [ ] `root_thread_physical_thread_ids`
+- [ ] `handoff_summary_ids`
+- [ ] `handoff_summaries`
+- [ ] `restoreThreadCentricState` 복구 로직 확장
+- [ ] `migrateLegacyThreadState`에서 root/physical lazy migration 처리
+- [ ] 재시작 후 `active_physical_thread_id`가 없으면 복구 규칙으로 재결정
+- [ ] 복구 규칙: 가장 큰 `sequence`이면서 `deleted_at == null`이고 `closed_at == null`인 physical thread를 active로 선택
+
+### 21.3 브리지 상태 파일 원자 저장
+
+- [ ] 파일: [`services/codex-adapter/src/index.js`](../services/codex-adapter/src/index.js)
+- [ ] `writeThreadStorage`를 원자 저장 방식으로 교체한다.
+- [ ] 같은 디렉터리에 temp 파일을 쓴다.
+- [ ] temp 파일에 전체 JSON을 기록한다.
+- [ ] flush/fsync를 수행한다.
+- [ ] rename으로 본 파일에 교체한다.
+- [ ] temp 파일 정리 실패 시 경고 로그를 남긴다.
+- [ ] 쓰기 실패 시 기존 파일을 손상시키지 않도록 보장한다.
+
+### 21.4 normalize 함수 확장
+
+- [ ] 파일: [`services/codex-adapter/src/index.js`](../services/codex-adapter/src/index.js)
+- [ ] `normalizeProjectThread`에 아래 필드 추가
+- [ ] `active_physical_thread_id`
+- [ ] `latest_physical_sequence`
+- [ ] `rollover_count`
+- [ ] `continuity_mode`
+- [ ] `continuity_status`
+- [ ] `deleted_at`
+- [ ] `normalizeIssueCard`에 아래 필드 추가
+- [ ] `root_thread_id`
+- [ ] `created_physical_thread_id`
+- [ ] `executed_physical_thread_id`
+- [ ] `deleted_at`
+- [ ] `normalizePhysicalThread` 신규 추가
+- [ ] `normalizeHandoffSummary` 신규 추가
+
+### 21.5 root thread 생성 경로 변경
+
+- [ ] 대상 함수: `createProjectThread`
+- [ ] 대상 함수: `ensureDefaultProjectThread`
+- [ ] root thread 생성 직후 `sequence = 1` physical thread를 함께 만든다.
+- [ ] `active_physical_thread_id = sequence1.id` 저장
+- [ ] `latest_physical_sequence = 1` 저장
+- [ ] `rollover_count = 0` 저장
+- [ ] `continuity_mode = "projection_merge"` 저장
+- [ ] `continuity_status = "healthy"` 저장
+- [ ] 첫 physical thread는 `codex_thread_id = null`로 시작
+- [ ] root thread 생성 이벤트와 별도로 physical thread 생성 이벤트를 정의한다.
+
+### 21.6 helper 함수 추가
+
+- [ ] `createPhysicalThreadId()`
+- [ ] `normalizePhysicalThread()`
+- [ ] `getRootThreadPhysicalThreadIds(rootThreadId)`
+- [ ] `setRootThreadPhysicalThreadIds(rootThreadId, ids)`
+- [ ] `listPhysicalThreads(rootThreadId)`
+- [ ] `getActivePhysicalThread(rootThreadId)`
+- [ ] `createPhysicalThread(rootThreadId, reason, sourcePhysicalThread)`
+- [ ] `activatePhysicalThread(rootThreadId, physicalThreadId)`
+- [ ] `closePhysicalThread(physicalThreadId, reason)`
+- [ ] `markPhysicalThreadClosedForEventDrop(physicalThreadId)`
+- [ ] `markRootThreadDeletedForEventDrop(rootThreadId)`
+- [ ] `cleanupExpiredEventDropTombstones()`
+- [ ] `syncRootThreadFromActivePhysicalThread(rootThreadId)`
+- [ ] `resolvePhysicalThreadIdByCodexThreadId(codexThreadId)`
+- [ ] `isPhysicalThreadClosed(physicalThreadId)`
+- [ ] `isRootThreadDeleted(rootThreadId)`
+
+### 21.7 issue 생성 경로 변경
+
+- [ ] 대상 함수: `createThreadIssue`
+- [ ] 입력 `thread_id`는 계속 root thread id로 받는다.
+- [ ] issue 저장 시 `root_thread_id = threadId`
+- [ ] issue 저장 시 `created_physical_thread_id = getActivePhysicalThread(threadId).id`
+- [ ] issue 저장 시 `executed_physical_thread_id = null`
+- [ ] 기존 `thread_id` 필드는 호환성을 위해 유지할지 제거할지 결정한다.
+- [ ] 호환성을 위해 유지한다면 `thread_id`는 root thread id와 같은 값으로 고정한다.
+- [ ] issue 생성 이벤트 payload에 `root_thread_id`, `created_physical_thread_id`를 포함한다.
+
+### 21.8 issue 실행 경로 변경
+
+- [ ] 대상 함수: `startIssueTurn`
+- [ ] issue 실행 시작 직전에 active physical thread를 다시 읽는다.
+- [ ] `executed_physical_thread_id`를 active physical thread로 기록한다.
+- [ ] `activeIssueByPhysicalThreadId.set(physicalThreadId, issueId)` 수행
+- [ ] 기존 `activeIssueByThreadId`는 하위 호환용으로 유지할지 제거할지 결정한다.
+- [ ] 유지 시 root thread에는 현재 active physical thread의 issue만 매핑한다.
+- [ ] `ensureCodexThreadForProjectThread`는 내부적으로 active physical thread 기준 함수 호출로 전환한다.
+- [ ] 신규 함수: `ensureCodexThreadForActivePhysicalThread(rootThreadId)`
+- [ ] 신규 함수: `ensureCodexThreadForPhysicalThread(physicalThreadId)`
+- [ ] root thread의 `codex_thread_id`는 active physical thread의 값을 mirror한다.
+- [ ] `turn/started`, `turn/completed`, `turn/plan/updated`, `turn/diff/updated`, `item/agentMessage/delta` 반영 시 `executed_physical_thread_id` 기준으로 issue를 갱신한다.
+
+### 21.9 notification 라우팅 전환
+
+- [ ] 파일: [`services/codex-adapter/src/index.js`](../services/codex-adapter/src/index.js)
+- [ ] 대상 함수: `resolveLocalThreadId`
+- [ ] 대상 함수: `resolveOwnerFromParams`
+- [ ] 대상 함수: `handleNotification`
+- [ ] 대상 함수: `buildThreadPatch`
+- [ ] 대상 함수: `buildIssuePatch`
+- [ ] notification 처리 1차 키를 `physical_thread_id`로 고정한다.
+- [ ] `codex_thread_id -> physical_thread_id` resolve를 먼저 수행한다.
+- [ ] `physical_thread_id -> root_thread_id` resolve를 그 다음 수행한다.
+- [ ] `activeIssueByPhysicalThreadId`를 먼저 조회한다.
+- [ ] `activeIssueByThreadId`에만 의존하는 로직을 제거하거나 호환계층으로 축소한다.
+- [ ] source physical thread가 `closed_at != null`이면 즉시 drop한다.
+- [ ] source physical thread가 tombstone에 있으면 즉시 drop한다.
+- [ ] root thread가 `deleted_at != null`이면 즉시 drop한다.
+- [ ] root thread가 tombstone에 있으면 즉시 drop한다.
+- [ ] drop된 이벤트는 warning 로그만 남기고 상태 반영하지 않는다.
+- [ ] 로그 필드에 `codex_thread_id`, `physical_thread_id`, `root_thread_id`, `event_type`, `drop_reason`를 포함한다.
+
+### 21.10 late event 차단 구현
+
+- [ ] 메모리 tombstone 추가
+- [ ] `closedPhysicalThreadTombstonesById`
+- [ ] `deletedRootThreadTombstonesById`
+- [ ] 영속 차단 기준 추가
+- [ ] `physical_thread.closed_at`
+- [ ] `physical_thread.deleted_at`
+- [ ] `root_thread.deleted_at`
+- [ ] notification 처리 시 tombstone 먼저 검사
+- [ ] tombstone miss 시 authoritative state를 재검사
+- [ ] 브리지 재시작 후에도 `closed_at` / `deleted_at`로 차단이 유지되는지 검증한다.
+- [ ] tombstone TTL 정책 구현
+- [ ] closed physical thread tombstone 10분
+- [ ] deleted root thread tombstone 30분
+
+### 21.11 rollover orchestration 구현
+
+- [ ] 대상 함수: `maybeTriggerContextRollover`
+- [ ] 대상 함수: `performContextRollover`
+- [ ] 대상 함수: `validateRolloverPreconditions`
+- [ ] 대상 함수: `buildDeterministicHandoffSummary`
+- [ ] 대상 함수: `buildHandoffPrompt`
+- [ ] 대상 함수: `publishRolloverEvents`
+- [ ] trigger 조건 구현
+- [ ] `context_usage_percent >= threshold`
+- [ ] 현재 active issue 존재
+- [ ] lock 없음
+- [ ] cooldown 경과
+- [ ] root thread lock 획득
+- [ ] threshold 재검증
+- [ ] source active physical thread 조회
+- [ ] deterministic handoff summary 생성
+- [ ] target physical thread 생성
+- [ ] target physical thread용 Codex thread 생성
+- [ ] target physical thread에 Codex binding 연결
+- [ ] source physical thread `closed_at` 기록
+- [ ] source physical thread tombstone 기록
+- [ ] root thread active pointer를 target으로 전환
+- [ ] root thread `latest_physical_sequence`, `rollover_count`, `codex_thread_id` 갱신
+- [ ] root thread/project thread 업데이트 이벤트 발행
+- [ ] issue board 업데이트 이벤트 발행
+- [ ] lock 해제
+
+### 21.12 projection lag grace window 구현
+
+- [ ] 최근 닫힌 physical thread를 추적하는 리스트/맵 추가
+- [ ] `recentlyClosedPhysicalThreadIdsByRootThreadId`
+- [ ] closed 시점 기록
+- [ ] `recently_closed_physical_thread_grace_window_ms` 환경 변수 추가
+- [ ] 기본값 60000ms
+- [ ] API 응답 병합 시 active thread는 브리지 live 사용
+- [ ] recently closed physical thread는 브리지 local + projection 병합 사용
+- [ ] 오래된 closed physical thread는 projection only 사용
+- [ ] projection catch-up 확인 신호를 정의한다.
+- [ ] 신호 예: `projected_at >= physical_thread.closed_at`
+- [ ] projection catch-up 확인 시 grace window 이전에도 브리지 fallback 제거 가능
+
+### 21.13 root thread 삭제 cascade 구현
+
+- [ ] 대상 함수: `deleteProjectThread`
+- [ ] 신규 함수: `deleteRootThreadCascade`
+- [ ] 신규 함수: `stopActivePhysicalThreadBestEffort`
+- [ ] 신규 함수: `deleteRootThreadIssues`
+- [ ] 신규 함수: `deleteRootThreadMessages`
+- [ ] 신규 함수: `deleteRootThreadSummaries`
+- [ ] 신규 함수: `softDeleteRootThreadState`
+- [ ] 삭제 시작 시 root thread lock 획득
+- [ ] root thread `deleted_at` 먼저 기록
+- [ ] root thread tombstone 기록
+- [ ] active physical thread 종료 시도
+- [ ] 모든 physical thread에 `deleted_at` 기록
+- [ ] 모든 issue/messages/summary 삭제 또는 soft delete
+- [ ] root thread/project thread projection 정리 이벤트 발행
+- [ ] lock 해제
+- [ ] 삭제 직후 late event가 와도 root thread resurrect되지 않는지 검증
+
+### 21.14 조회 경로 변경
+
+- [ ] 파일: [`apps/api/Program.cs`](../apps/api/Program.cs)
+- [ ] `GET /api/projects/{projectId}/threads`
+- [ ] root thread만 반환하는지 확인
+- [ ] `GET /api/threads/{threadId}/issues`
+- [ ] active physical thread live issue는 브리지에서 읽는다.
+- [ ] closed physical thread history는 projection 또는 브리지 fallback에서 읽는다.
+- [ ] 응답에 `continuity` 메타를 추가할지 결정한다.
+- [ ] `GET /api/issues/{issueId}`
+- [ ] provenance 필드를 응답에 포함한다.
+- [ ] `GET /api/threads/{threadId}/timeline` 신규 추가
+- [ ] active live message + projection history merge 응답 구현
+- [ ] `GET /api/threads/{threadId}/continuity` 신규 추가
+- [ ] `POST /api/threads/{threadId}/rollover` 신규 추가
+
+### 21.15 projection worker 변경
+
+- [ ] 파일: [`services/projection-worker/ProjectionWorkerService.cs`](../services/projection-worker/ProjectionWorkerService.cs)
+- [ ] 신규 테이블 추가
+- [ ] `root_threads`
+- [ ] `physical_threads`
+- [ ] `handoff_summaries`
+- [ ] `logical_thread_timeline`
+- [ ] `logical_thread_issue_board`
+- [ ] event 유형 추가
+- [ ] `rootThread.created`
+- [ ] `rootThread.updated`
+- [ ] `physicalThread.created`
+- [ ] `physicalThread.updated`
+- [ ] `physicalThread.closed`
+- [ ] `rootThread.rollover.started`
+- [ ] `rootThread.rollover.completed`
+- [ ] `rootThread.rollover.failed`
+- [ ] `rootThread.deleted`
+- [ ] `handoffSummary.created`
+- [ ] `logicalThread.timeline.updated`
+- [ ] closed physical thread update는 projection에 반영하지 않도록 필터 추가
+- [ ] deleted root thread 이후 늦게 온 update는 무시
+- [ ] `projected_at` 비교 로직 재사용
+
+### 21.16 모바일 변경
+
+- [ ] 파일: [`apps/mobile/src/App.jsx`](../apps/mobile/src/App.jsx)
+- [ ] 1차 구현은 기존 issue detail fan-out 구조 유지
+- [ ] `GET /api/threads/{threadId}/issues` 응답이 merged board여도 정상 동작하도록 확인
+- [ ] `GET /api/issues/{issueId}` provenance 필드 수용
+- [ ] active physical thread live delta는 브리지 응답 기반으로 계속 반영되는지 확인
+- [ ] 2차 구현에서 `GET /api/threads/{threadId}/timeline` 전환 준비
+- [ ] handoff summary를 system message로 렌더링할 UI 처리 추가
+
+### 21.17 대시보드 변경
+
+- [ ] 파일: [`apps/dashboard/src/App.jsx`](../apps/dashboard/src/App.jsx)
+- [ ] root thread만 계속 보이도록 유지
+- [ ] merged issue board 반환 시 칸반 정렬이 깨지지 않는지 확인
+- [ ] archived issue 기능이 root thread delete / rollover와 충돌하지 않는지 점검
+- [ ] continuity 메타 노출은 선택 사항으로 분리
+
+### 21.18 환경 변수 정리
+
+- [ ] `OCTOP_THREAD_CONTEXT_ROLLOVER_ENABLED`
+- [ ] `OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT`
+- [ ] `OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS`
+- [ ] `OCTOP_RECENTLY_CLOSED_PHYSICAL_THREAD_GRACE_WINDOW_MS`
+- [ ] 기본값 문서화
+- [ ] `.env.example` 반영 여부 결정
+
+### 21.19 로그와 메트릭
+
+- [ ] rollover 시작/완료/실패 로그 추가
+- [ ] late event drop 로그 추가
+- [ ] delete cascade 로그 추가
+- [ ] 로그 필드 통일
+- [ ] `root_thread_id`
+- [ ] `physical_thread_id`
+- [ ] `source_physical_thread_id`
+- [ ] `target_physical_thread_id`
+- [ ] `codex_thread_id`
+- [ ] `issue_id`
+- [ ] `event_type`
+- [ ] `drop_reason`
+- [ ] 메트릭 추가
+- [ ] `root_thread_rollover_total`
+- [ ] `root_thread_rollover_failed_total`
+- [ ] `root_thread_rollover_duration_ms`
+- [ ] `late_event_drop_total`
+- [ ] `root_thread_delete_total`
+- [ ] `root_thread_delete_failed_total`
+
+### 21.20 단위 테스트
+
+- [ ] 기존 thread 로딩 시 lazy migration
+- [ ] root thread 생성 시 sequence 1 physical thread 생성
+- [ ] issue 생성 시 `created_physical_thread_id` 설정
+- [ ] issue 실행 시 `executed_physical_thread_id` 설정
+- [ ] threshold 미만 rollover 미발생
+- [ ] threshold 이상 rollover 1회 발생
+- [ ] 동일 source thread에 중복 threshold 이벤트 와도 1회만 rollover
+- [ ] source physical thread close 후 tombstone 기록
+- [ ] deleted root thread tombstone 기록
+- [ ] `closed_at` / `deleted_at` 기반 late event 차단
+- [ ] 원자 저장 함수가 temp -> rename 순서로 동작
+
+### 21.21 통합 테스트
+
+- [ ] root thread 생성
+- [ ] issue 여러 개 생성
+- [ ] 하나 실행
+- [ ] threshold 이벤트 주입
+- [ ] target physical thread 생성 확인
+- [ ] source physical thread closed 확인
+- [ ] 이후 새 실행이 target physical thread로 가는지 확인
+- [ ] `/api/threads/{root}/issues`가 active + history를 병합해 반환하는지 확인
+- [ ] projection 지연 상태에서 grace window fallback이 동작하는지 확인
+- [ ] `/api/threads/{root}/timeline`이 handoff summary를 포함하는지 확인
+- [ ] root thread 삭제 시 cascade 정리되는지 확인
+- [ ] 삭제 후 late event가 와도 resurrect되지 않는지 확인
+
+### 21.22 장애 테스트
+
+- [ ] rollover 중 app-server down
+- [ ] delete 중 bridge 재시작
+- [ ] source physical thread close 직후 projection worker down
+- [ ] projection lag 상태에서 모바일/대시보드 조회
+- [ ] 브리지 재시작 후 tombstone miss 상황에서 `closed_at` / `deleted_at` 차단 동작
+- [ ] active physical thread binding invalidated 후 재바인딩
+
+### 21.23 배포 게이트
+
+- [ ] 원자 저장 구현 완료
+- [ ] `physical_thread_id` 우선 notification 처리 완료
+- [ ] late event 차단 완료
+- [ ] root thread delete cascade 완료
+- [ ] grace window fallback 완료
+- [ ] 최소 단위/통합 테스트 통과
+- [ ] 운영 로그 필드 검증
+- [ ] 롤백 절차 문서화
