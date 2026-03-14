@@ -3663,15 +3663,11 @@ function MainPage({
               </div>
               <div className="hidden items-center gap-2 md:flex">
                 {selectedProjectThread && selectedThreadContextUsage?.percent != null ? (
-                  <span
-                    className="inline-flex min-w-0 max-w-[16rem] items-center gap-2 rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-sky-200"
-                    title={selectedThreadUsageTitle}
-                  >
-                    <span className="h-2 w-2 shrink-0 rounded-full bg-sky-400" />
-                    <OverflowRevealText value={selectedThreadUsageLabel} className="min-w-0 max-w-[10rem]" />
+                  <span className="text-slate-500" title={selectedThreadUsageTitle}>
+                    {selectedThreadUsageLabel}
                   </span>
                 ) : null}
-                <span>{loadingState === "loading" ? copy.board.syncing : copy.board.updatedAt(formatRelativeTime(status.updated_at, language))}</span>
+                {loadingState === "loading" ? <span>{copy.board.syncing}</span> : null}
               </div>
             </div>
 
