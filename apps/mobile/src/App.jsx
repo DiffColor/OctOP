@@ -1170,6 +1170,8 @@ function InlineIssueComposer({
   const suppressClickRef = useRef(false);
   const isRecordingRef = useRef(false);
   const shouldKeepRecordingRef = useRef(false);
+  const processedFinalResultKeysRef = useRef(new Set());
+  const lastVoiceAppendRef = useRef({ text: "", at: 0 });
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
 
@@ -1212,6 +1214,8 @@ function InlineIssueComposer({
 
   const stopVoiceCapture = useCallback(() => {
     shouldKeepRecordingRef.current = false;
+    processedFinalResultKeysRef.current = new Set();
+    lastVoiceAppendRef.current = { text: "", at: 0 };
     clearLongPressTimer();
     clearVoiceRestartTimer();
 
@@ -1241,11 +1245,25 @@ function InlineIssueComposer({
 
   const appendVoiceTranscript = useCallback(
     (text) => {
-      const transcript = String(text ?? "").trim();
+      const transcript = String(text ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
 
       if (!transcript) {
         return;
       }
+
+      if (
+        lastVoiceAppendRef.current.text === transcript &&
+        Date.now() - lastVoiceAppendRef.current.at < 1200
+      ) {
+        return;
+      }
+
+      lastVoiceAppendRef.current = {
+        text: transcript,
+        at: Date.now()
+      };
 
       setPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
 
@@ -1279,6 +1297,7 @@ function InlineIssueComposer({
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
+    processedFinalResultKeysRef.current = new Set();
     shouldKeepRecordingRef.current = true;
     recognition.onstart = () => setIsRecording(true);
     recognition.onresult = (event) => {
@@ -1292,7 +1311,22 @@ function InlineIssueComposer({
         }
 
         if (result.isFinal) {
-          collected += result[0]?.transcript ?? "";
+          const transcript = String(result[0]?.transcript ?? "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!transcript) {
+            continue;
+          }
+
+          const resultKey = `${index}:${transcript}`;
+
+          if (processedFinalResultKeysRef.current.has(resultKey)) {
+            continue;
+          }
+
+          processedFinalResultKeysRef.current.add(resultKey);
+          collected += collected ? ` ${transcript}` : transcript;
         }
       }
 
