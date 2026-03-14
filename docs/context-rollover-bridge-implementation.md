@@ -118,13 +118,20 @@ rollover는 조용히 일어나면 안 됩니다.
 원칙:
 
 - `running` issue가 있을 때는 rollover 예약만 하고 즉시 실행하지 않음
-- `completed`, `failed`, `awaiting_input`, `idle` 시점에만 실제 rollover 수행
+- `completed`, `failed`, `idle` 시점에만 실제 rollover 수행
+- `awaiting_input` 상태에서는 rollover를 금지함
 
 즉 `running` 중에는 아래처럼 처리합니다.
 
 - `thread.rollover.requested`
 - `thread.rollover_pending = true`
 - active issue 종료 후 실제 rollover 수행
+
+주의:
+
+- `awaiting_input`은 기존 Codex thread의 continuation 입력을 기다리는 상태입니다.
+- 이 시점에 `codex_thread_id`를 교체하면 사용자의 후속 입력이 잘못된 thread로 들어갈 수 있습니다.
+- 따라서 `awaiting_input`은 rollover 가능 상태가 아니라, 입력 해결 전 전환 금지 상태로 봐야 합니다.
 
 ---
 
@@ -156,8 +163,12 @@ rollover는 조용히 일어나면 안 됩니다.
   - `assistant_chars`
   - `prompt_chars`
   - `issue_count`
+  - `window_message_chars`
+  - `window_assistant_chars`
+  - `window_issue_count`
   - `last_summarized_at`
   - `last_summary_issue_id`
+  - `summary_window_start_at`
 
 이 값은 정확한 token 수가 아니라 1차 추정치로 사용합니다.
 
@@ -167,18 +178,23 @@ rollover는 조용히 일어나면 안 됩니다.
 
 초기 구현은 token 계산기 없이 문자 수 기반으로 갑니다.
 
+중요:
+
+- 전체 UI thread 이력을 기준으로 pressure를 계산하면 안 됩니다.
+- rollover 이후에도 과거 issue / message는 같은 UI thread 아래 계속 남아 있어야 하므로, 전체 길이를 계속 누적하면 rollover 직후에도 다시 threshold를 넘게 됩니다.
+- 따라서 pressure 계산은 `마지막 summary 이후 window`만 기준으로 해야 합니다.
+
 계산 요소:
 
-- 최근 issue prompt 총 문자 수
-- 최근 assistant message 총 문자 수
-- thread 내 issue 개수
-- 최근 N개 issue 이후의 누적 길이
+- 마지막 summary 이후 issue prompt 총 문자 수
+- 마지막 summary 이후 assistant message 총 문자 수
+- 마지막 summary 이후 issue 개수
 
 권장 초기 기준:
 
-- `message_chars >= 120000`
-- 또는 `issue_count >= 24`
-- 또는 `assistant_chars >= 80000`
+- `window_message_chars >= 120000`
+- 또는 `window_issue_count >= 24`
+- 또는 `window_assistant_chars >= 80000`
 
 이 값은 운영 중 조정 가능하게 환경변수로 뺍니다.
 
@@ -221,6 +237,11 @@ rollover는 조용히 일어나면 안 됩니다.
 - `threadStateById[threadId].rollover_summary`
 - 필요하면 별도 `threadSummaryById`
 
+추가 규칙:
+
+- summary 생성이 끝나면 `last_summary_issue_id`, `last_summarized_at`, `summary_window_start_at`를 같이 갱신해야 합니다.
+- 이후 pressure 계산은 이 기준점 이후의 이력만 포함해야 합니다.
+
 ---
 
 ## rollover 상태 전이
@@ -240,7 +261,7 @@ rollover는 조용히 일어나면 안 됩니다.
   - active issue 있음 -> `pending`
 
 - rollover 성공 시:
-  - `codex_thread_id` 교체
+  - summary turn 성공 확인 후 `codex_thread_id` 교체
   - `codex_thread_revision += 1`
   - `rollover_pending = false`
 
@@ -306,6 +327,18 @@ rollover는 조용히 일어나면 안 됩니다.
 4. summary turn 입력
 5. 상태 저장 및 이벤트 발행
 
+중요:
+
+- 순서를 그대로 구현하면 안 됩니다.
+- 실제 구현은 아래처럼 2-phase로 해야 합니다.
+
+1. 새 Codex thread 생성
+2. 새 Codex thread에 summary turn 입력
+3. summary turn 성공 확인
+4. 그 다음 기존 UI thread의 `codex_thread_id`를 새 값으로 교체
+
+즉 바인딩은 summary turn 성공 후에만 커밋합니다.
+
 ### 5. queue와의 연동
 
 기존 `processIssueQueue()`와 충돌하지 않도록 조건을 추가합니다.
@@ -337,6 +370,7 @@ rollover는 조용히 일어나면 안 됩니다.
 - 같은 thread를 다시 클릭해도 rollover 이전 `Review`, `Done`, 보관 항목이 다시 나타났다 사라지면 안 됨
 - `bridge.threadIssues.updated`는 항상 해당 UI thread의 전체 issue 목록을 기준으로 갱신되어야 함
 - rollover 이후에도 archive key는 기존 `thread_id + issue_id` 기준을 그대로 사용해야 함
+- `thread.rollover.*`는 상태 표시용 이벤트이고, 실제 카드 정합성은 snapshot 이벤트가 책임져야 함
 
 표시 위치:
 
@@ -358,6 +392,12 @@ rollover는 조용히 일어나면 안 됩니다.
 - rollover 이후에도 과거 issue의 prompt / assistant message는 동일한 thread 상세 안에 남아 있어야 함
 - 사용자는 thread가 갈라졌다고 느끼면 안 됨
 - 새 Codex thread에서 이어진 응답도 같은 UI thread 대화 흐름에 append되어야 함
+
+추가 규칙:
+
+- rollover summary는 내부 메타에만 저장하면 모바일 채팅창에 보이지 않을 수 있습니다.
+- 모바일에서는 이를 `system message` 또는 `rollover event message` 형태로 같은 타임라인에 append하는 방식을 명시적으로 택해야 합니다.
+- 즉 UI에서 보이는 대화 흐름 기준으로도 rollover 전후 연결점이 남아야 합니다.
 
 ---
 
@@ -394,6 +434,7 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] `appendAssistantDeltaToIssue()`에서 assistant 길이 반영
 - [ ] `updateIssueCard()`에서 thread 메타 재계산
 - [ ] `computeThreadContextPressure(threadId)` 구현
+- [ ] pressure 계산은 `last_summary_issue_id` 이후 window만 사용
 
 ### 3. rollover 트리거
 
@@ -407,15 +448,18 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] thread 요약 생성 함수 구현
 - [ ] 요약 payload 저장
 - [ ] summary 생성 실패 처리
+- [ ] summary 생성 후 `last_summary_issue_id`, `summary_window_start_at` 갱신
+- [ ] 모바일/대시보드 타임라인용 system message 노출 규칙 정의
 
 ### 5. rollover 실행
 
 - [ ] `executeThreadRollover(userId, threadId)` 구현
 - [ ] 새 `codex_thread_id` 생성
-- [ ] `codexThreadToThreadId` 재바인딩
+- [ ] summary turn 성공 후에만 `codexThreadToThreadId` 재바인딩
 - [ ] `codex_thread_revision` 증가
 - [ ] summary turn 입력
 - [ ] 기존 `threadIssueIdsById`, `issueCardsById`, `issueMessagesById`를 절대 초기화하지 않음
+- [ ] `awaiting_input` 상태에서는 rollover 금지
 
 ### 6. queue 연동
 
@@ -431,6 +475,8 @@ rollover는 조용히 일어나면 안 됩니다.
 - [ ] `thread.rollover.failed`
 - [ ] `bridge.projectThreads.updated`에 rollover 메타 반영
 - [ ] `bridge.threadIssues.updated`는 rollover 전후 동일한 UI thread issue 목록을 유지
+- [ ] snapshot payload에 `codex_thread_revision`, `rollover_pending`, `last_rollover_at` 포함
+- [ ] raw `thread.rollover.*`와 snapshot 이벤트의 역할 분리
 
 ### 8. dashboard 반영
 
