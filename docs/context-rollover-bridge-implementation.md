@@ -1,635 +1,540 @@
-# Context Rollover Bridge 설계안
+# Context Rollover Bridge 운영 설계안
 
 ## 목적
 
-Codex thread의 context 한도에 가까워졌을 때, 현재 작업 흐름을 끊지 않고 새 Codex thread로 안전하게 넘기는 `context rollover`를 브릿지에 구현합니다.
+Codex thread의 문맥 한도에 가까워졌을 때 새 Codex thread로 안전하게 넘기는 `context rollover`를 구현합니다.
 
-핵심 목표는 아래와 같습니다.
+단, 이 문서는 rollover 기능 자체보다 아래 목표를 더 우선합니다.
 
-- 사용자는 같은 OctOP thread를 계속 사용한다고 느껴야 합니다.
-- 내부적으로는 새 `codex_thread_id`로 교체하여 context 압박을 줄여야 합니다.
-- rollover 이후에도 `Preparation`, `To Do`, `In Progress`, `Review`, `Done` 흐름이 깨지지 않아야 합니다.
-- rollover 이후에도 과거 issue 목록과 issue 메시지 이력은 모두 같은 UI thread 아래에 유지되어야 합니다.
-- 모바일 웹에서는 과거 issue/message가 하나의 연속된 채팅 타임라인처럼 보여야 합니다.
-- 대시보드에서는 `Review`, `Done`, 보관함이 같은 UI thread의 전체 issue 집합을 기준으로 일관되게 동작해야 합니다.
-- rollover는 추측이나 fallback이 아니라, 명시적 상태 전이와 검증 가능한 메타데이터로 동작해야 합니다.
+- `무한대기`가 절대 발생하지 않을 것
+- queue/active lock/awaiting_input이 서로 꼬이지 않을 것
+- 브릿지 재시작 후에도 상태가 복구 가능할 것
+- 대시보드와 모바일이 같은 source of truth를 서로 다른 UI로 안정적으로 소비할 것
 
----
-
-## 현재 구조 진단
-
-현재 브릿지 코드는 [services/codex-adapter/src/index.js](/Users/jazzlife/Documents/Workspaces/Products/OctOP/services/codex-adapter/src/index.js) 에서 각 UI thread를 내부 `codex_thread_id`와 연결합니다.
-
-현재 확인된 사실:
-
-- `turn/start`는 `buildExecutionPrompt(issue.prompt)`만 입력으로 보냅니다.
-- Codex의 실제 누적 context는 `codex_thread_id`가 들고 있습니다.
-- 브릿지는 `issueMessagesById`에 메시지를 저장하지만, 이 저장소는 UI/복원용이며 Codex context 축소에는 사용되지 않습니다.
-- context 사용량을 추적하는 메타는 현재 없습니다.
-- context 한도 도달 시 새 thread로 넘기는 로직도 없습니다.
-
-즉 현재는:
-
-- 같은 UI thread에서 Codex context가 계속 누적되고
-- 어느 시점 이후에는 응답 품질 저하, 실패, 지연이 발생할 수 있으며
-- 브릿지는 이를 구조적으로 완화하지 못합니다.
+즉 rollover는 `운영 안정성`을 만족하는 구조 위에서만 허용합니다.
 
 ---
 
-## 설계 원칙
+## 현재 코드 기준 진단
 
-### 1. UI thread와 Codex thread를 분리
+현재 기준 파일:
 
-사용자에게 보이는 thread와 실제 Codex 실행 thread는 분리합니다.
+- [services/codex-adapter/src/index.js](/Users/jazzlife/Documents/Workspaces/Products/OctOP/services/codex-adapter/src/index.js)
+- [apps/api/Program.cs](/Users/jazzlife/Documents/Workspaces/Products/OctOP/apps/api/Program.cs)
+- [services/projection-worker/ProjectionWorkerService.cs](/Users/jazzlife/Documents/Workspaces/Products/OctOP/services/projection-worker/ProjectionWorkerService.cs)
+- [apps/dashboard/src/App.jsx](/Users/jazzlife/Documents/Workspaces/Products/OctOP/apps/dashboard/src/App.jsx)
+- [apps/mobile/src/App.jsx](/Users/jazzlife/Documents/Workspaces/Products/OctOP/apps/mobile/src/App.jsx)
+
+현재 구조에서 확인된 사실:
+
+- 하나의 UI thread는 내부적으로 하나의 `codex_thread_id`를 오래 재사용합니다.
+- `issueMessagesById`는 UI/복원용 기록일 뿐, Codex context를 줄이지 않습니다.
+- `startIssueTurn()`은 queue에서 issue를 꺼낸 뒤 실행합니다.
+- `awaiting_input`은 active lock을 유지한 채 queue를 멈추는 상태입니다.
+- watchdog는 `running` stale만 일부 보정합니다.
+- legacy thread queue와 thread-centric issue queue가 같은 파일에 공존합니다.
+
+즉 지금 구조는 문맥 한도뿐 아니라 `무한대기`, `queue 유실`, `stale binding`, `상태 꼬임` 위험도 같이 가지고 있습니다.
+
+---
+
+## 최우선 운영 원칙
+
+### 1. 무한대기를 허용하지 않음
+
+어떤 상태도 복구 경로 없이 장시간 유지되면 안 됩니다.
+
+특히 아래는 모두 timeout / reconcile 대상입니다.
+
+- `leased`
+- `running`
+- `awaiting_input`
+- `rollover_pending`
+
+### 2. queue는 원자적으로 처리
+
+queue에서 꺼낸 작업은 아래 중 하나가 반드시 보장되어야 합니다.
+
+- 성공적으로 `running`에 진입
+- 다시 `queued`로 복귀
+- `failed`로 종료
+
+즉 조용히 사라지는 상태는 허용하지 않습니다.
+
+### 3. bridge가 단일 source of truth
+
+아래는 모두 bridge가 단일 기준으로 관리합니다.
+
+- queue 상태
+- active issue
+- rollover 상태
+- `codex_thread_id` binding
+- context pressure
+
+대시보드와 모바일은 이를 해석만 하고, 상태를 추론해서 보정하지 않습니다.
+
+### 4. UI thread와 Codex thread는 분리
 
 - UI thread
-  - OctOP에서 선택/표시/칸반 기준이 되는 장기 세션
+  - 사용자가 보는 장기 세션
 - Codex thread
-  - app-server에 실제 `turn/start`를 보내는 실행 세션
-  - context 한도에 따라 교체될 수 있음
+  - app-server에서 실제 turn이 실행되는 세션
 
-즉:
+rollover는 `codex_thread_id`만 교체합니다.
 
-- UI thread id는 유지
-- `codex_thread_id`는 rollover 시 교체
-- `issueCardsById`, `issueMessagesById`, `threadIssueIdsById`는 유지
-- 즉 rollover는 "실행 세션 교체"이지 "UI thread 초기화"가 아님
+절대 초기화하면 안 되는 것:
 
-### 2. rollover는 명시적 이벤트로 남김
-
-rollover는 조용히 일어나면 안 됩니다.
-
-브릿지는 최소한 아래 이벤트를 발행해야 합니다.
-
-- `thread.rollover.requested`
-- `thread.rollover.started`
-- `thread.rollover.completed`
-- `thread.rollover.failed`
-
-이 이벤트는 대시보드/모바일/로그에서 모두 추적 가능해야 합니다.
-
-### 3. 원문 context를 그대로 넘기지 않고 요약으로 넘김
-
-새 Codex thread를 만들 때 기존 메시지 전체를 그대로 다시 밀어 넣지 않습니다.
-
-넘기는 것은 아래 3개로 제한합니다.
-
-- 작업 요약
-- 현재 남은 작업
-- 현재 실행하려는 issue prompt
-
-### 4. 과거 issue / message 이력은 절대 분리하지 않음
-
-이 설계에서 rollover는 `codex_thread_id`만 교체합니다.
-
-유지되어야 하는 것:
-
-- 같은 UI thread id
-- 같은 `threadIssueIdsById[threadId]`
-- 같은 `issueCardsById`
-- 같은 `issueMessagesById`
-- 같은 보관함 상태
-
-즉 사용자가 보는 데이터 기준으로는:
-
-- 과거 `Done`, `Review` 이슈도 그대로 남아 있어야 하고
-- 모바일에서는 이전 issue의 prompt/assistant message도 연속된 채팅처럼 유지되어야 하며
-- 대시보드의 보관함도 rollover 전후로 같은 issue id를 계속 추적해야 합니다
+- `threadIssueIdsById`
+- `issueCardsById`
+- `issueMessagesById`
+- archive 기준이 되는 `issue_id`
 
 ---
 
-## 책임 분리
+## 운영 관점의 핵심 위험
 
-이 설계는 `bridge 공통 처리`와 `클라이언트별 UI 처리`를 명확히 분리해야 안전합니다.
+### 위험 1. queue dequeue 후 실행 실패
 
-### bridge 공통 처리
+현재 `processIssueQueue()`는 먼저 `queue.shift()`를 수행합니다.
 
-bridge가 책임지는 것은 아래로 제한합니다.
+위험:
 
-- `codex_thread_id` rollover 판단 및 실행
-- `threadIssueIdsById`, `issueCardsById`, `issueMessagesById` 유지
-- `context_pressure` 계산
-- `thread.rollover.*` 이벤트 발행
-- `bridge.projectThreads.updated`, `bridge.threadIssues.updated` snapshot 정합성 유지
-- rollover summary 생성 및 저장
+- `ensureCodexThreadForProjectThread()` 실패
+- `thread/start` 실패
+- `turn/start` 이전 예외
 
-즉 pressure 계산, rollover 시점 판단, summary 생성, 새 Codex thread 바인딩은 모두 bridge가 단일 source of truth로 가져야 합니다.
+이 경우 issue가 queue에서 이미 빠졌는데 실행도 안 되고 재삽입도 안 될 수 있습니다.
 
-대시보드나 모바일이 각자 threshold를 해석하거나 rollover를 임의로 추정하면 안 됩니다.
+이건 `무한대기`와 별개로 `조용한 유실`입니다.
 
-### 대시보드 전용 처리
+### 위험 2. awaiting_input 영구 정지
 
-대시보드는 카드/보관함/칸반 흐름을 유지하는 것이 목적입니다.
+현재 `awaiting_input`은 active lock을 유지한 채 queue를 정지시킵니다.
 
-- `Review`, `Done`, 보관함은 같은 `issue_id` 집합 기준으로 유지
-- rollover 이후에도 archived issue가 다시 나타났다 사라지면 안 됨
-- rollover summary는 카드 구조를 깨지 않는 범위에서 상태 정보로만 노출
-- `thread.rollover.*`는 상태 표시용
-- 실제 카드 정합성은 snapshot 이벤트를 기준으로 처리
+문제:
 
-즉 대시보드는 “채팅 연결성”보다 “카드와 보관함 안정성”이 우선입니다.
+- 입력이 오지 않으면 영구 정지 가능
+- rollover도 금지해야 하므로 복구 경로가 더 중요
 
-### 모바일 전용 처리
+즉 `awaiting_input`은 상태 이름이 아니라 운영 정책이 필요한 정지 상태입니다.
 
-모바일은 하나의 thread가 연속 대화처럼 보이는 것이 목적입니다.
+### 위험 3. running stale만으로는 부족
 
-- rollover 전후 메시지가 한 타임라인에서 이어져 보여야 함
-- 사용자는 내부 Codex thread 교체를 느끼면 안 됨
-- rollover summary는 모바일 상세 타임라인에 실제 메시지처럼 보여야 함
-- 오래된 상세 응답이 새 session 상태를 덮으면 안 됨
+현재 watchdog는 주로 `running` stale을 봅니다.
 
-즉 모바일은 “카드 구조”보다 “대화 흐름 연속성”이 우선입니다.
+하지만 실제로는 아래도 멈춤 원인입니다.
 
----
+- active issue는 없는데 queue가 남아 있음
+- active issue는 있는데 running meta가 없음
+- `rollover_pending`이 오래 지속
+- `leased` 상태에서 실행 진입 실패
 
-## 목표 동작
+즉 `running watchdog`만으로는 부족하고, `queue reconciliation`이 별도 필요합니다.
 
-### 정상 흐름
+### 위험 4. thread-level summary 저장 계약 부재
 
-1. 브릿지가 현재 thread의 context 압박을 감지
-2. active issue가 없거나 안전한 전환 시점인지 확인
-3. 기존 issue/history를 요약
-4. 새 `codex_thread_id` 생성
-5. UI thread의 `codex_thread_id`를 새 값으로 교체
-6. 새 Codex thread의 첫 turn에 rollover summary 입력
-7. 다음 issue부터 새 Codex thread에서 계속 실행
-8. 기존 issue 카드, 완료 기록, 보관 상태는 그대로 유지
+모바일은 채팅형 타임라인을 유지해야 하고, 대시보드는 issue 카드와 archive 일관성이 더 중요합니다.
 
-### 실행 중 rollover
+따라서 rollover summary를 issue로 만들면 안 되고, thread-level message로 다뤄야 합니다.
 
-`running` 상태에서 rollover를 바로 수행하면 위험합니다.
+하지만 이 저장소는 현재 코드에 없습니다.
 
-원칙:
+즉 아래 계약이 선행되어야 합니다.
 
-- `running` issue가 있을 때는 rollover 예약만 하고 즉시 실행하지 않음
-- `completed`, `failed`, `idle` 시점에만 실제 rollover 수행
-- `awaiting_input` 상태에서는 rollover를 금지함
+- `threadMessagesById`
+- persist / restore
+- gateway API
+- 모바일 merge 규칙
+- 대시보드 표시 규칙
 
-즉 `running` 중에는 아래처럼 처리합니다.
+### 위험 5. legacy queue 경로 공존
 
-- `thread.rollover.requested`
-- `thread.rollover_pending = true`
-- active issue 종료 후 실제 rollover 수행
+현재 bridge 파일에는
 
-주의:
+- thread-centric issue queue
+- legacy thread queue
 
-- `awaiting_input`은 기존 Codex thread의 continuation 입력을 기다리는 상태입니다.
-- 이 시점에 `codex_thread_id`를 교체하면 사용자의 후속 입력이 잘못된 thread로 들어갈 수 있습니다.
-- 따라서 `awaiting_input`은 rollover 가능 상태가 아니라, 입력 해결 전 전환 금지 상태로 봐야 합니다.
+가 공존합니다.
+
+이 상태로 rollover를 넣으면 상태 오염 가능성이 큽니다.
+
+즉 rollover 전에 `공식 실행 경로`를 한 개로 줄여야 합니다.
 
 ---
 
-## 브릿지 데이터 모델 추가
+## context rollover는 언제 필요한가
 
-현재 thread 메타에 아래 필드를 추가합니다.
+현재 구조상, 같은 UI thread에 issue를 계속 추가하면 내부 Codex thread의 문맥은 계속 누적됩니다.
 
-### `threadStateById[threadId]` 확장
+다음 사용 패턴이면 rollover가 필요합니다.
 
-- `codex_thread_id`
-- `codex_thread_revision`
+- 하나의 thread를 장기간 유지
+- 모바일에서 같은 thread를 채팅처럼 오래 사용
+- 대시보드에서 한 thread에 이슈를 계속 이어 붙임
+- assistant delta와 수정 이력이 많이 쌓임
+
+따라서 현재 제품 방향에서는 rollover 필요성이 높습니다.
+
+단, 아래 선행 조건 없이 바로 구현하면 운영 장애를 만들 가능성이 큽니다.
+
+---
+
+## 선행 구현 조건
+
+### 1. queue lease 모델 도입
+
+queue 상태를 아래처럼 분리합니다.
+
+- `staged`
+- `queued`
+- `leased`
+- `running`
+- `awaiting_input`
+- `completed`
+- `failed`
+
+의미:
+
+- `queued`
+  - 아직 실행 슬롯을 얻지 않음
+- `leased`
+  - 실행 시작을 시도하는 중
+  - 아직 실제 `turn/start` 성공 확정 아님
+- `running`
+  - app-server turn이 실제 시작됨
+
+규칙:
+
+- `processIssueQueue()`는 `shift` 대신 `lease`로 전환
+- `leased`에서 실패하면 다시 `queued` 복귀 또는 `failed`
+- `leased` timeout이 지나면 reconcile 대상
+
+### 2. awaiting_input 운영 정책 추가
+
+반드시 있어야 하는 정책:
+
+- `OCTOP_AWAITING_INPUT_STALE_MS`
+- `OCTOP_AWAITING_INPUT_FAIL_MS`
+
+권장 흐름:
+
+1. `awaiting_input` 진입
+2. 일정 시간 내 사용자 입력이 오면 기존 Codex thread로 continuation
+3. 일정 시간 경과 시 `review_required` 또는 `failed_input_timeout`
+4. active lock 해제 여부를 정책으로 명시
+
+즉 `awaiting_input`은 단순 상태가 아니라 SLA가 있는 정지 상태로 봅니다.
+
+### 3. queue reconciliation 추가
+
+watchdog 외에 별도 reconcile 루틴이 필요합니다.
+
+검사 항목:
+
+- active issue 없음 + queue 있음 + thread idle
+- active issue 있음 + running meta 없음
+- leased 상태인데 일정 시간 진전 없음
+- rollover_pending이 일정 시간 이상 유지
+- `codex_thread_id`는 있는데 remote thread를 못 찾음
+
+이 reconcile은 `무한대기 방지`의 핵심입니다.
+
+### 4. thread-level message 저장 계약 추가
+
+rollover summary와 thread-level 운영 이벤트는 `threadMessagesById`에 저장합니다.
+
+반드시 포함할 것:
+
+- persist
+- restore
+- thread 삭제 시 정리
+- gateway detail API 노출
+- 모바일 타임라인 merge
+- 대시보드 상세 노출
+
+중요:
+
+- synthetic issue 생성 금지
+- issue id 집합은 archive 정합성을 위해 유지
+
+### 5. legacy queue 제거 또는 비활성화
+
+rollover 구현 전에 아래 중 하나를 먼저 해야 합니다.
+
+- legacy thread queue 완전 제거
+- 또는 feature flag로 완전 비활성화
+
+`공식 실행 경로`는 thread-centric issue queue 하나만 남기는 것이 맞습니다.
+
+---
+
+## rollover 설계
+
+### 공통 원칙
+
+- rollover는 `UI thread`를 유지한 채 `codex_thread_id`만 교체
+- 과거 issue / issue messages / archive는 그대로 유지
+- rollover summary는 thread-level system message로 추가
+- summary turn 성공 전에는 binding 교체 금지
+
+### rollover 상태
+
 - `rollover_pending`
-- `rollover_reason`
-- `rollover_requested_at`
-- `last_rollover_at`
-- `context_pressure`
-- `context_summary_issue_id`
+- `rollover_running`
+- `rollover_failed`
+- `rollover_completed`
 
-주의:
+### rollover 금지 조건
 
-- 여기에 `archived_issue_ids`를 넣지 않습니다.
-- 보관 상태는 현재처럼 클라이언트/별도 저장소에서 관리하되, rollover로 인해 issue id가 바뀌지 않도록 하는 것이 핵심입니다.
+아래 중 하나라도 참이면 rollover 금지:
 
-### 신규 Map
+- `activeIssueByThreadId` 존재
+- `awaiting_input`
+- `leased`
+- bridge reconnect 중
+- app-server not ready
 
-- `threadContextMetaById`
-  - `message_count`
-  - `message_chars`
-  - `assistant_chars`
-  - `prompt_chars`
-  - `issue_count`
-  - `window_message_chars`
-  - `window_assistant_chars`
-  - `window_issue_count`
-  - `last_summarized_at`
-  - `last_summary_issue_id`
-  - `summary_window_start_at`
+즉 단순히 thread status 문자열만 보고 판단하지 않습니다.
 
-이 값은 정확한 token 수가 아니라 1차 추정치로 사용합니다.
+### rollover 허용 조건
+
+- active issue 없음
+- leased 없음
+- awaiting_input 아님
+- queue reconciliation 결과 정합성 확인됨
+- context pressure threshold 초과
 
 ---
 
 ## context pressure 계산
 
-초기 구현은 token 계산기 없이 문자 수 기반으로 갑니다.
+pressure 계산은 전체 이력이 아니라 `마지막 summary 이후 window`만 기준으로 합니다.
 
-중요:
+사용 값:
 
-- 전체 UI thread 이력을 기준으로 pressure를 계산하면 안 됩니다.
-- rollover 이후에도 과거 issue / message는 같은 UI thread 아래 계속 남아 있어야 하므로, 전체 길이를 계속 누적하면 rollover 직후에도 다시 threshold를 넘게 됩니다.
-- 따라서 pressure 계산은 `마지막 summary 이후 window`만 기준으로 해야 합니다.
+- `window_prompt_chars`
+- `window_assistant_chars`
+- `window_issue_count`
 
-계산 요소:
-
-- 마지막 summary 이후 issue prompt 총 문자 수
-- 마지막 summary 이후 assistant message 총 문자 수
-- 마지막 summary 이후 issue 개수
-
-권장 초기 기준:
-
-- `window_message_chars >= 120000`
-- 또는 `window_issue_count >= 24`
-- 또는 `window_assistant_chars >= 80000`
-
-이 값은 운영 중 조정 가능하게 환경변수로 뺍니다.
-
-### 환경변수
+환경변수:
 
 - `OCTOP_CONTEXT_ROLLOVER_ENABLED=true`
-- `OCTOP_CONTEXT_ROLLOVER_CHAR_THRESHOLD=120000`
-- `OCTOP_CONTEXT_ROLLOVER_ISSUE_THRESHOLD=24`
-- `OCTOP_CONTEXT_ROLLOVER_ASSISTANT_CHAR_THRESHOLD=80000`
+- `OCTOP_CONTEXT_ROLLOVER_CHAR_THRESHOLD`
+- `OCTOP_CONTEXT_ROLLOVER_ISSUE_THRESHOLD`
+- `OCTOP_CONTEXT_ROLLOVER_ASSISTANT_CHAR_THRESHOLD`
+
+재계산 트리거:
+
+- issue 생성
+- issue 수정
+- issue 삭제
+- issue 재시도
+- assistant delta 누적
+- turn 완료
+- thread restore
+- summary 생성 완료
+
+즉 pressure는 append 시점뿐 아니라 `삭제/편집`에서도 다시 계산되어야 합니다.
 
 ---
 
-## 요약 생성 방식
+## rollover summary 저장/노출 설계
 
-### 요약 입력 소스
+### bridge 내부 메타
 
-브릿지가 저장 중인 아래 데이터를 사용합니다.
+아래를 thread 메타로 저장:
 
-- `issueCardsById`
-- `issueMessagesById`
-- `threadStateById`
+- `rollover_summary`
+- `last_rollover_at`
+- `codex_thread_revision`
+- `last_summary_issue_id`
+- `summary_window_start_at`
 
-### 요약 내용
+### UI 노출용 저장
 
-새 Codex thread에 넘길 summary는 아래 형식을 권장합니다.
+새 저장소:
 
-1. 프로젝트/워크스페이스 정보
-2. 지금까지 완료한 작업
-3. 아직 유효한 결정사항
-4. 수정된 파일/핵심 경로
-5. 현재 남은 작업
-6. 지금 시작할 issue prompt
+- `threadMessagesById`
 
-### 요약 저장
+메시지 형식:
 
-요약은 별도 issue로 노출하지 않고 내부 메타로 먼저 저장합니다.
+- `role: "system"`
+- `kind: "rollover-summary"`
+- `content`
+- `timestamp`
+- `codex_thread_revision`
 
-권장 저장 위치:
+이 저장소를 택하는 이유:
 
-- `threadStateById[threadId].rollover_summary`
-- 필요하면 별도 `threadSummaryById`
-
-추가 규칙:
-
-- summary 생성이 끝나면 `last_summary_issue_id`, `last_summarized_at`, `summary_window_start_at`를 같이 갱신해야 합니다.
-- 이후 pressure 계산은 이 기준점 이후의 이력만 포함해야 합니다.
+- 모바일은 issue message와 thread message를 합쳐 채팅 타임라인 구성 가능
+- 대시보드는 thread 상태/상세에서만 노출 가능
+- issue id 집합을 건드리지 않음
 
 ---
 
-## rollover 상태 전이
+## 데이터 계약
 
-### 상태 머신
+### bridge 공통
 
-- `idle`
-- `pending`
-- `running`
-- `completed`
-- `failed`
+bridge가 source of truth로 발행:
 
-### 규칙
+- `bridge.projectThreads.updated`
+- `bridge.threadIssues.updated`
+- `thread.rollover.*`
 
-- context 압박 감지 시:
-  - active issue 없음 -> 즉시 `running`
-  - active issue 있음 -> `pending`
+snapshot payload에 포함:
 
-- rollover 성공 시:
-  - summary turn 성공 확인 후 `codex_thread_id` 교체
-  - `codex_thread_revision += 1`
-  - `rollover_pending = false`
+- `codex_thread_revision`
+- `rollover_pending`
+- `rollover_running`
+- `last_rollover_at`
+- `context_pressure`
 
-- rollover 실패 시:
-  - 기존 `codex_thread_id` 유지
-  - `rollover_pending = false`
-  - `last_event = thread.rollover.failed`
+### 대시보드 전용 계약
+
+- `bridge.threadIssues.updated`는 항상 같은 UI thread의 전체 issue 집합을 반환
+- issue id는 rollover 전후 절대 바뀌지 않음
+- archive key는 기존 `thread_id + issue_id`를 유지
+- rollover summary는 issue 카드가 아니라 thread 상태/상세 정보로만 노출
+
+### 모바일 전용 계약
+
+- thread detail API는 `thread messages + issue messages`를 시간순으로 합쳐 렌더할 수 있어야 함
+- rollover summary는 실제 타임라인 message로 들어가야 함
+- stale detail 응답이 최신 revision을 덮으면 안 됨
 
 ---
 
-## 실제 브릿지 구현 포인트
+## 실패 및 복구 설계
 
-### 1. context pressure 집계
+### 부분 성공 복구 규칙
 
-추가 위치:
-
-- `pushIssueMessage()`
-- `appendAssistantDeltaToIssue()`
-- `updateIssueCard()`
-- `restoreThreadCentricState()`
-
-해야 할 일:
-
-- issue/thread별 누적 길이 계산
-- 저장 시 thread context 메타 갱신
-
-### 2. rollover 필요 여부 판단
-
-추가 함수:
-
-- `computeThreadContextPressure(threadId)`
-- `shouldScheduleContextRollover(threadId)`
-
-호출 지점:
-
-- issue 생성 후
-- assistant delta 누적 후
-- turn 완료 후
-- thread 복원 후
-
-### 3. rollover 예약
-
-추가 함수:
-
-- `scheduleThreadRollover(userId, threadId, reason)`
-
-역할:
-
-- `running`이면 pending 표시
-- 아니면 즉시 `executeThreadRollover()`
-
-### 4. 실제 rollover 실행
-
-추가 함수:
-
-- `executeThreadRollover(userId, threadId)`
-
-절차:
-
-1. 요약 생성
-2. 새 Codex thread 생성
-3. 새 `codex_thread_id` 바인딩
-4. summary turn 입력
-5. 상태 저장 및 이벤트 발행
-
-중요:
-
-- 순서를 그대로 구현하면 안 됩니다.
-- 실제 구현은 아래처럼 2-phase로 해야 합니다.
+순서:
 
 1. 새 Codex thread 생성
-2. 새 Codex thread에 summary turn 입력
-3. summary turn 성공 확인
-4. 그 다음 기존 UI thread의 `codex_thread_id`를 새 값으로 교체
-
-즉 바인딩은 summary turn 성공 후에만 커밋합니다.
-
-### 5. queue와의 연동
-
-기존 `processIssueQueue()`와 충돌하지 않도록 조건을 추가합니다.
-
-- `rollover_pending`인데 active issue가 끝났으면 rollover 먼저
-- rollover 완료 후 다음 issue 시작
-
-즉:
-
-- `processIssueQueue()` 진입
-- `rollover_pending` 확인
-- 있으면 `executeThreadRollover()` 우선
-- 끝나면 다음 issue 실행
-
----
-
-## rollover summary 저장 및 노출
-
-현재 UI 구조를 기준으로 보면, rollover summary를 단순 메타에만 저장하면 모바일 채팅 타임라인에 자연스럽게 보이지 않을 수 있습니다.
-
-따라서 저장은 아래 2단계로 정의합니다.
-
-### 1. bridge 내부 저장
-
-내부 메타에는 아래를 저장합니다.
-
-- `threadStateById[threadId].rollover_summary`
-- `threadStateById[threadId].last_rollover_at`
-- `threadStateById[threadId].codex_thread_revision`
-
-이 저장소는 bridge의 판단과 복원용입니다.
-
-### 2. UI 노출용 저장
-
-UI 노출은 별도 메타 추론이 아니라, 명시적 메시지로 남깁니다.
-
-권장 방식:
-
-- `threadMessagesById` 같은 새 저장소를 추가
-- rollover summary를 `system` 타입 thread-level message로 저장
-
-이 방식을 택하는 이유:
-
-- 모바일은 이 메시지를 채팅 타임라인에 그대로 append 가능
-- 대시보드는 필요 시 thread 상세 상태 영역이나 최근 이벤트 영역에 노출 가능
-- issue 카드/보관함과 분리되어 issue id 안정성을 해치지 않음
-
-중요:
-
-- rollover summary를 synthetic issue로 만들지 않습니다.
-- issue id 집합을 늘리면 대시보드 보관함과 칸반 정합성이 흔들릴 수 있습니다.
-
----
-
-## 대시보드 반영
-
-보여줄 정보:
-
-- `Context rollover pending`
-- `Context rollover running`
-- `Context rollover completed`
-
-보장해야 할 조건:
-
-- 같은 thread를 다시 클릭해도 rollover 이전 `Review`, `Done`, 보관 항목이 다시 나타났다 사라지면 안 됨
-- `bridge.threadIssues.updated`는 항상 해당 UI thread의 전체 issue 목록을 기준으로 갱신되어야 함
-- rollover 이후에도 archive key는 기존 `thread_id + issue_id` 기준을 그대로 사용해야 함
-- `thread.rollover.*`는 상태 표시용 이벤트이고, 실제 카드 정합성은 snapshot 이벤트가 책임져야 함
-- rollover summary는 thread-level 상태 정보로만 보여주고, issue 카드로 만들지 않음
-
-표시 위치:
-
-- 선택 thread 상세
-- 최근 이벤트 목록
-- 필요 시 thread row badge
-
-## 모바일 반영
-
-보여줄 정보:
-
-- `요약 중`
-- `새 실행 세션 준비 중`
-
-모바일은 대화 흐름이 끊기지 않는 것이 핵심이므로, 상세 타임라인에 이벤트 한 줄만 보여줘도 충분합니다.
-
-보장해야 할 조건:
-
-- rollover 이후에도 과거 issue의 prompt / assistant message는 동일한 thread 상세 안에 남아 있어야 함
-- 사용자는 thread가 갈라졌다고 느끼면 안 됨
-- 새 Codex thread에서 이어진 응답도 같은 UI thread 대화 흐름에 append되어야 함
-
-추가 규칙:
-
-- 모바일은 `threadMessagesById`의 `system` message를 issue message와 함께 합쳐 하나의 타임라인으로 렌더링해야 합니다.
-- 즉 UI에서 보이는 대화 흐름 기준으로 rollover 전후 연결점이 명시적으로 남아야 합니다.
-
----
-
-## 실패 처리
-
-### 실패 케이스
-
-- 새 `thread/start` 실패
-- summary 생성 실패
-- summary turn 입력 실패
-- 새 `codex_thread_id` 바인딩 실패
-
-### 원칙
-
-- 실패 시 기존 `codex_thread_id` 유지
-- queue는 멈추지 않고 기존 thread에서 계속 진행 가능해야 함
-- 단, `rollover_failed` 상태와 마지막 에러는 남김
-
-### 부분 성공 후 복구 규칙
-
-아래 순서를 기준으로 복구 규칙을 고정합니다.
-
-1. 새 Codex thread 생성
-2. 새 Codex thread에 summary turn 입력
+2. 새 thread에 summary turn 전송
 3. summary turn 성공 확인
 4. local state / persist / mapping commit
 5. snapshot / raw event 발행
 
 복구 원칙:
 
-- 1 또는 2 실패:
-  - 기존 `codex_thread_id` 유지
-  - 새 thread는 폐기
-- 3 성공, 4 실패:
-  - `codex_thread_id` 교체를 커밋하지 않음
-  - 다음 watchdog 또는 복구 루틴에서 재시도 가능 상태로 남김
-- 4 성공, 5 실패:
+- 1 또는 2 실패
+  - 기존 binding 유지
+  - 새 thread 폐기
+- 3 성공, 4 실패
+  - binding 교체 커밋 금지
+  - 다음 reconcile에서 재시도 가능 상태로 유지
+- 4 성공, 5 실패
   - local state가 source of truth
-  - 이후 snapshot 재발행으로 복구
+  - snapshot 재발행으로 복구
 
-즉 `codex_thread_id` 교체의 commit 시점은 local state / persist 성공 이후입니다.
+### 무한대기 방지 복구 규칙
 
-즉 rollover는 실패해도 작업 전체를 깨뜨리면 안 됩니다.
+- `leased` stale
+  - 다시 `queued` 또는 `failed`
+- `running` stale
+  - remote 상태 재조회 후 `completed/failed/awaiting_input`
+- `awaiting_input` stale
+  - `review_required` 또는 `failed_input_timeout`
+- `rollover_pending` stale
+  - reason/attempt 기록 후 pending 해제 또는 실패 처리
 
 ---
 
-## 체크리스트
+## 실제 구현 체크리스트
 
-### 1. bridge 메타 추가
+### 1. 실행 경로 정리
 
-- [ ] `threadStateById`에 rollover 관련 필드 추가
+- [ ] legacy thread queue 제거 또는 비활성화
+- [ ] 공식 실행 경로를 thread-centric issue queue 하나로 고정
+
+### 2. queue lease 도입
+
+- [ ] issue 상태에 `leased` 추가
+- [ ] `processIssueQueue()`에서 `shift` 대신 lease 전환
+- [ ] `leased -> running` 승격 조건 구현
+- [ ] `leased` 실패 시 `queued` 복귀 또는 `failed` 처리
+- [ ] `leased` timeout reconcile 구현
+
+### 3. awaiting_input 운영 정책
+
+- [ ] `OCTOP_AWAITING_INPUT_STALE_MS` 추가
+- [ ] `OCTOP_AWAITING_INPUT_FAIL_MS` 추가
+- [ ] 입력 재개 API 정의
+- [ ] timeout 시 `review_required` 또는 `failed_input_timeout` 전환
+- [ ] active lock 해제 정책 명시
+
+### 4. queue reconciliation
+
+- [ ] active issue 없음 + queue 있음 + thread idle 검사
+- [ ] active issue 있음 + meta 없음 검사
+- [ ] leased stale 검사
+- [ ] rollover_pending stale 검사
+- [ ] remote thread missing 검사
+
+### 5. thread-level messages
+
+- [ ] `threadMessagesById` 추가
+- [ ] persist/restore 반영
+- [ ] thread 삭제 시 정리
+- [ ] gateway detail API에 포함
+- [ ] 모바일 merge 로직 추가
+- [ ] 대시보드 상세 표시 로직 추가
+
+### 6. context pressure
+
 - [ ] `threadContextMetaById` 저장소 추가
-- [ ] restore/persist 경로에 새 메타 저장 반영
+- [ ] issue 생성/수정/삭제/재시도 시 재계산
+- [ ] delta 누적 시 재계산
+- [ ] summary 이후 window 기준 계산
 
-### 2. context pressure 계산
+### 7. rollover 실행
 
-- [ ] `pushIssueMessage()`에서 prompt 길이 반영
-- [ ] `appendAssistantDeltaToIssue()`에서 assistant 길이 반영
-- [ ] `updateIssueCard()`에서 thread 메타 재계산
-- [ ] issue 삭제 / 수정 / 재시도 시 pressure 재계산
-- [ ] `computeThreadContextPressure(threadId)` 구현
-- [ ] pressure 계산은 `last_summary_issue_id` 이후 window만 사용
+- [ ] `scheduleThreadRollover()` 구현
+- [ ] `executeThreadRollover()` 구현
+- [ ] active/leased/awaiting_input에서는 rollover 금지
+- [ ] 2-phase binding 적용
+- [ ] partial success rollback 구현
 
-### 3. rollover 트리거
+### 8. snapshot/raw event
 
-- [ ] 환경변수 추가
-- [ ] `shouldScheduleContextRollover(threadId)` 구현
-- [ ] turn 완료 후 rollover 여부 검사
-- [ ] restore 직후 오래된 thread도 검사
-
-### 4. summary 생성
-
-- [ ] thread 요약 생성 함수 구현
-- [ ] 요약 payload 저장
-- [ ] summary 생성 실패 처리
-- [ ] summary 생성 후 `last_summary_issue_id`, `summary_window_start_at` 갱신
-- [ ] 모바일/대시보드 타임라인용 system message 노출 규칙 정의
-
-### 5. rollover 실행
-
-- [ ] `executeThreadRollover(userId, threadId)` 구현
-- [ ] 새 `codex_thread_id` 생성
-- [ ] summary turn 성공 후에만 `codexThreadToThreadId` 재바인딩
-- [ ] `codex_thread_revision` 증가
-- [ ] summary turn 입력
-- [ ] 기존 `threadIssueIdsById`, `issueCardsById`, `issueMessagesById`를 절대 초기화하지 않음
-- [ ] `awaiting_input` 상태에서는 rollover 금지
-- [ ] `activeIssueByThreadId`가 남아 있으면 rollover 금지
-- [ ] partial success rollback 규칙 구현
-
-### 6. queue 연동
-
-- [ ] `processIssueQueue()`에서 rollover pending 우선 처리
-- [ ] active issue 종료 직후 rollover 실행
-- [ ] rollover 후 다음 queued issue 재개
-
-### 7. 이벤트 발행
-
+- [ ] snapshot에 rollover 메타 포함
 - [ ] `thread.rollover.requested`
 - [ ] `thread.rollover.started`
 - [ ] `thread.rollover.completed`
 - [ ] `thread.rollover.failed`
-- [ ] `bridge.projectThreads.updated`에 rollover 메타 반영
-- [ ] `bridge.threadIssues.updated`는 rollover 전후 동일한 UI thread issue 목록을 유지
-- [ ] snapshot payload에 `codex_thread_revision`, `rollover_pending`, `last_rollover_at` 포함
-- [ ] raw `thread.rollover.*`와 snapshot 이벤트의 역할 분리
+- [ ] snapshot이 최종 정합성을 책임지도록 유지
 
-### 8. dashboard 반영
+### 9. 대시보드
 
-- [ ] rollover 상태 텍스트 추가
-- [ ] 최근 이벤트에 rollover 이벤트 반영
-- [ ] 선택 thread 상세에 context pressure/요약 상태 표시
-- [ ] rollover summary는 issue 카드가 아닌 thread 상태 정보로만 노출
-- [ ] 보관함이 rollover 이후에도 같은 issue id 기준으로 유지되는지 검증
-- [ ] thread 재선택 시 archived review/done 이슈가 다시 보였다 사라지지 않는지 검증
+- [ ] rollover 상태를 thread 상태 정보로 표시
+- [ ] archive가 rollover 전후 issue id 기준으로 유지되는지 검증
+- [ ] thread 재선택 시 archived review/done 재등장 방지 검증
 
-### 9. mobile 반영
+### 10. 모바일
 
-- [ ] rollover 상태 문구 추가
-- [ ] `threadMessagesById`의 system message를 상세 뷰 타임라인에 반영
-- [ ] rollover 이후에도 기존 issue message가 같은 thread 상세에 누적되는지 검증
-- [ ] thread 상세 재조회 시 오래된 응답이 새 session 상태를 덮지 않는지 검증
+- [ ] threadMessages system message를 타임라인에 합치기
+- [ ] rollover 이후에도 기존 issue message와 연속성 유지
+- [ ] stale detail 응답 방지
 
-### 10. 검증
+### 11. 운영 검증
 
-- [ ] 긴 thread에서 rollover pending 진입 확인
-- [ ] active issue 종료 후 rollover 실행 확인
-- [ ] 새 `codex_thread_id`로 재바인딩 확인
-- [ ] 이후 issue가 새 Codex thread에서 정상 실행되는지 확인
-- [ ] 실패 시 기존 thread로 계속 실행 가능한지 확인
+- [ ] bridge 재시작 후 active/queue 복원 검증
+- [ ] leased stale 복구 검증
+- [ ] awaiting_input timeout 복구 검증
+- [ ] rollover 실패 후 기존 thread 계속 사용 검증
+- [ ] 긴 thread에서 rollover 성공 검증
 
 ---
 
-## 구현 순서 제안
+## 완료 기준
 
-1. bridge 메타 / persist / restore 정리
-2. context pressure 계산 추가
-3. rollover pending / execute 함수 구현
-4. queue 연동
-5. 이벤트 발행
-6. dashboard 반영
-7. mobile 반영
-8. 실제 긴 thread로 검증
+아래를 만족해야 완료로 봅니다.
 
----
-
-## 완료 판정 기준
-
-아래 조건을 만족하면 완료로 봅니다.
-
-- 동일 UI thread에서 오래 작업해도 context overflow로 바로 깨지지 않음
-- 일정 압박 이상이면 자동으로 rollover pending 또는 running이 됨
-- 새 Codex thread로 자연스럽게 이어지고, 사용자 입장에서는 같은 thread를 계속 쓰는 것처럼 보임
-- rollover 실패 시에도 기존 작업 흐름이 멈추지 않음
-- rollover 전후로 과거 issue 목록, 보관함, 모바일 채팅 타임라인이 끊기지 않음
+- issue가 queue에서 조용히 사라지지 않음
+- `awaiting_input`, `leased`, `running`, `rollover_pending` 어느 상태도 영구 유지되지 않음
+- bridge 재시작 후에도 queue와 active 상태가 복구 가능
+- rollover 전후 대시보드의 issue/archive 정합성이 깨지지 않음
+- rollover 전후 모바일의 채팅 타임라인이 끊기지 않음
+- context 압박이 커져도 기존 UI thread를 유지한 채 Codex thread만 안전하게 교체 가능
