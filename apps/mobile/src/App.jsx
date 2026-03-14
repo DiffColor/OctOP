@@ -1250,6 +1250,13 @@ function InlineIssueComposer({
       suppressClickRef.current = false;
       clearLongPressTimer();
 
+      if (isRecordingRef.current) {
+        longPressTimerRef.current = window.setTimeout(() => {
+          toggleVoiceCapture();
+        }, LONG_PRESS_THRESHOLD_MS);
+        return;
+      }
+
       longPressTimerRef.current = window.setTimeout(() => {
         suppressClickRef.current = true;
         toggleVoiceCapture();
@@ -1268,6 +1275,14 @@ function InlineIssueComposer({
 
   const handleSendClick = useCallback(
     (event) => {
+      if (isRecordingRef.current) {
+        toggleVoiceCapture();
+        event.preventDefault();
+        event.stopPropagation();
+        suppressClickRef.current = false;
+        return;
+      }
+
       if (suppressClickRef.current) {
         suppressClickRef.current = false;
         event.preventDefault();
@@ -1281,7 +1296,7 @@ function InlineIssueComposer({
 
       void handlePromptSubmit();
     },
-    [busy, disabled, handlePromptSubmit, selectedProject]
+    [busy, disabled, handlePromptSubmit, selectedProject, toggleVoiceCapture]
   );
 
   return (
