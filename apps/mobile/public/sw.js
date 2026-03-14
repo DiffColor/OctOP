@@ -1,12 +1,11 @@
-const CACHE_NAME = "octop-pocket-v1";
+const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "dev";
+const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.svg", "/icon-512.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
   );
-
-  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

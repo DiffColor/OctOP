@@ -8,7 +8,7 @@ import {
   useRef,
   useState
 } from "react";
-import { PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
+import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -3177,11 +3177,20 @@ export default function App() {
       return undefined;
     }
 
-    const handleUpdateReady = (event) => {
-      pendingUpdateActivatorRef.current = event?.detail?.activate ?? null;
+    const syncPendingUpdateActivator = (activate = null) => {
+      pendingUpdateActivatorRef.current = typeof activate === "function" ? activate : null;
       setPwaUpdateBusy(false);
-      setPwaUpdateVisible(true);
+      setPwaUpdateVisible(Boolean(pendingUpdateActivatorRef.current));
     };
+
+    const handleUpdateReady = (event) => {
+      const activate = event?.detail?.activate ?? window[PWA_UPDATE_ACTIVATOR_KEY] ?? null;
+      syncPendingUpdateActivator(activate);
+    };
+
+    if (typeof window[PWA_UPDATE_ACTIVATOR_KEY] === "function") {
+      syncPendingUpdateActivator(window[PWA_UPDATE_ACTIVATOR_KEY]);
+    }
 
     window.addEventListener(PWA_UPDATE_READY_EVENT, handleUpdateReady);
 
@@ -4116,6 +4125,8 @@ export default function App() {
 
     setPwaUpdateBusy(true);
     const activate = pendingUpdateActivatorRef.current;
+    window[PWA_UPDATE_ACTIVATOR_KEY] = null;
+    pendingUpdateActivatorRef.current = null;
 
     if (typeof activate === "function") {
       activate();

@@ -2,9 +2,11 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import "./styles.css";
-import { PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
+import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 
 if ("serviceWorker" in navigator) {
+  const SERVICE_WORKER_BUILD_ID = typeof __APP_BUILD_ID__ === "string" ? __APP_BUILD_ID__ : "dev";
+  const SERVICE_WORKER_URL = `/sw.js?v=${encodeURIComponent(SERVICE_WORKER_BUILD_ID)}`;
   const SKIP_WAITING_MESSAGE = { type: "SKIP_WAITING" };
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
@@ -29,6 +31,7 @@ if ("serviceWorker" in navigator) {
       }
     };
 
+    window[PWA_UPDATE_ACTIVATOR_KEY] = activate;
     window.dispatchEvent(
       new CustomEvent(PWA_UPDATE_READY_EVENT, {
         detail: {
@@ -92,7 +95,7 @@ if ("serviceWorker" in navigator) {
 
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("/sw.js")
+      .register(SERVICE_WORKER_URL)
       .then((registration) => {
         registerUpdateListeners(registration);
       })
