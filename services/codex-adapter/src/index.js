@@ -2455,7 +2455,9 @@ class AppServerClient {
         name: "octop-bridge",
         version: "0.1.0"
       },
-      capabilities: {}
+      capabilities: {
+        experimentalApi: true
+      }
     });
     this.notify("initialized", {});
     const accountInfo = await this.requestInternal("account/read", { refreshToken: false });
