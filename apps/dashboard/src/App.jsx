@@ -2657,7 +2657,7 @@ function MainPage({
   const handleSelectProject = useCallback((projectId) => {
     onSelectProject(projectId);
     setExpandedProjectIds((current) => {
-      if (current[projectId] !== false) {
+      if (current[projectId] === true) {
         return current;
       }
 
@@ -3222,65 +3222,71 @@ function MainPage({
                                 className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
                                 aria-label={expanded ? "collapse project tree" : "expand project tree"}
                               >
-                                <svg
-                                  className={`h-3.5 w-3.5 transition ${expanded ? "rotate-90" : ""}`}
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                                </svg>
+                                {expanded ? (
+                                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path
+                                      d="M19 20H8a2 2 0 01-2-2V7m0 0V5a1 1 0 011-1h6.586a1 1 0 01.707.293l2.414 2.414A1 1 0 0117 7v1m-11 0h11a1 1 0 011 1v9a2 2 0 01-2 2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth="1.8"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path
+                                      d="M8 4h6.586a1 1 0 01.707.293l2.414 2.414A1 1 0 0118 7.414V19a1 1 0 01-1 1H8a2 2 0 01-2-2V6a2 2 0 012-2z"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth="1.8"
+                                    />
+                                    <path d="M14 4v4h4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                                  </svg>
+                                )}
                               </button>
-                              <svg className="h-4 w-4 shrink-0 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path d="M3 7h5l2 2h11v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-                              </svg>
-                          {editingProjectId === project.id ? (
-                            <input
-                              type="text"
-                              autoFocus
-                              value={editingProjectName}
-                              onChange={(event) => setEditingProjectName(event.target.value)}
-                              onBlur={() => void submitProjectRename(project)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                  event.preventDefault();
-                                  void submitProjectRename(project);
-                                }
+                              {editingProjectId === project.id ? (
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  value={editingProjectName}
+                                  onChange={(event) => setEditingProjectName(event.target.value)}
+                                  onBlur={() => void submitProjectRename(project)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                      event.preventDefault();
+                                      void submitProjectRename(project);
+                                    }
 
-                                if (event.key === "Escape") {
-                                  event.preventDefault();
-                                  cancelProjectRename();
-                                }
-                              }}
-                              className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
-                            />
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleSelectProject(project.id)}
-                              onDoubleClick={() => beginProjectRename(project)}
-                              className="min-w-0 flex-1 text-left"
-                            >
-                              <OverflowRevealText value={project.name} className="text-sm font-medium" />
-                            </button>
-                          )}
+                                    if (event.key === "Escape") {
+                                      event.preventDefault();
+                                      cancelProjectRename();
+                                    }
+                                  }}
+                                  className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
+                                />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectProject(project.id)}
+                                  onDoubleClick={() => beginProjectRename(project)}
+                                  className="min-w-0 flex-1 text-left"
+                                >
+                                  <OverflowRevealText value={project.name} className="text-sm font-medium" />
+                                </button>
+                              )}
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] text-slate-500">
-                                {sidebarThreads.length}
-                              </span>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onDeleteProject(project.id);
-                              }}
-                              className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
-                            >
-                              {copy.board.delete}
-                            </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onDeleteProject(project.id);
+                                }}
+                                className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
+                              >
+                                {copy.board.delete}
+                              </button>
+                            </div>
                           </div>
-                        </div>
                         {expanded ? (
                           <div className="mt-1.5 space-y-1">
                             {sidebarThreads.map((thread) => (
