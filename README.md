@@ -1,8 +1,7 @@
-<p align="center">
+<div align="center">
   <img src="./design/icon.png" alt="OctOP icon" width="120" />
-  <br />
-  <strong><font size="6">OctOP</font></strong>
-</p>
+  <h1>OctOP</h1>
+</div>
 
 <br />
 
