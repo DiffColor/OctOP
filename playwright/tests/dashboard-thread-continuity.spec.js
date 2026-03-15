@@ -508,7 +508,10 @@ test.describe('대시보드 continuity UI', () => {
     await expect(doneColumn.getByTestId('issue-card-issue-closed')).toHaveCount(0);
     await expect(api.getRemoteArchives()).toEqual({
       [bridgeId]: {
-        [rootThreadId]: ['issue-closed']
+        [rootThreadId]: {
+          issueIds: ['issue-closed'],
+          updatedAt: expect.any(String)
+        }
       }
     });
   });
@@ -558,7 +561,10 @@ test.describe('대시보드 continuity UI', () => {
     await expect(archivePutEvents.length).toBeGreaterThan(0);
     await expect(api.getRemoteArchives()).toEqual({
       [bridgeId]: {
-        [rootThreadId]: ['issue-closed']
+        [rootThreadId]: {
+          issueIds: ['issue-closed'],
+          updatedAt: expect.any(String)
+        }
       }
     });
   });
@@ -593,4 +599,5 @@ test.describe('대시보드 continuity UI', () => {
       await apiServer.stop();
     }
   });
+
 });

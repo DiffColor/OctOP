@@ -1774,7 +1774,23 @@ static JsonObject NormalizeDashboardArchiveState(JsonNode? node)
     {
       var normalizedThreadId = GetStringValue(JsonValue.Create(threadId));
 
-      if (string.IsNullOrWhiteSpace(normalizedThreadId) || idsNode is not JsonArray idsArray)
+      if (string.IsNullOrWhiteSpace(normalizedThreadId))
+      {
+        continue;
+      }
+
+      JsonArray? idsArray = idsNode as JsonArray;
+      string? updatedAt = null;
+
+      if (idsNode is JsonObject entryObject)
+      {
+        idsArray = entryObject["issueIds"] as JsonArray
+          ?? entryObject["ids"] as JsonArray
+          ?? entryObject["issue_ids"] as JsonArray;
+        updatedAt = GetStringValue(entryObject["updatedAt"] ?? entryObject["updated_at"]);
+      }
+
+      if (idsArray is null)
       {
         continue;
       }
@@ -1786,12 +1802,16 @@ static JsonObject NormalizeDashboardArchiveState(JsonNode? node)
         .Select(id => (JsonNode)JsonValue.Create(id)!)
         .ToArray();
 
-      if (normalizedIds.Length == 0)
+      if (normalizedIds.Length == 0 && string.IsNullOrWhiteSpace(updatedAt))
       {
         continue;
       }
 
-      normalizedThreads[normalizedThreadId] = new JsonArray(normalizedIds);
+      normalizedThreads[normalizedThreadId] = new JsonObject
+      {
+        ["issueIds"] = new JsonArray(normalizedIds),
+        ["updatedAt"] = updatedAt
+      };
     }
 
     if (normalizedThreads.Count > 0)

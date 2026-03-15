@@ -475,6 +475,60 @@ function clearSessionStorage() {
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
+function normalizeArchivedIssueIds(rawIds) {
+  if (!Array.isArray(rawIds)) {
+    return [];
+  }
+
+  return [...new Set(rawIds.filter((id) => typeof id === "string" && id.length > 0))];
+}
+
+function normalizeArchivedIssueTimestamp(rawTimestamp) {
+  if (typeof rawTimestamp !== "string" || rawTimestamp.trim().length === 0) {
+    return null;
+  }
+
+  const timestamp = Date.parse(rawTimestamp);
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
+}
+
+function normalizeArchivedIssuesEntry(rawEntry) {
+  if (Array.isArray(rawEntry)) {
+    const issueIds = normalizeArchivedIssueIds(rawEntry);
+    return issueIds.length > 0 ? { issueIds, updatedAt: null } : null;
+  }
+
+  if (!rawEntry || typeof rawEntry !== "object") {
+    return null;
+  }
+
+  const issueIds = normalizeArchivedIssueIds(rawEntry.issueIds ?? rawEntry.ids ?? rawEntry.issue_ids);
+  const updatedAt = normalizeArchivedIssueTimestamp(rawEntry.updatedAt ?? rawEntry.updated_at);
+
+  if (issueIds.length === 0 && !updatedAt) {
+    return null;
+  }
+
+  return {
+    issueIds,
+    updatedAt
+  };
+}
+
+function buildArchivedIssuesEntry(issueIds, updatedAt = new Date().toISOString(), preserveEmpty = true) {
+  const normalizedIds = normalizeArchivedIssueIds(issueIds);
+  const normalizedTimestamp = normalizeArchivedIssueTimestamp(updatedAt) ?? new Date().toISOString();
+
+  if (normalizedIds.length === 0 && !preserveEmpty) {
+    return null;
+  }
+
+  return {
+    issueIds: normalizedIds,
+    updatedAt: normalizedTimestamp
+  };
+}
+
 function normalizeArchivedIssuesState(rawState) {
   if (!rawState || typeof rawState !== "object") {
     return {};
@@ -489,15 +543,15 @@ function normalizeArchivedIssuesState(rawState) {
 
     const threadMap = {};
 
-    for (const [threadId, ids] of Object.entries(bridgeValue)) {
-      if (!threadId || !Array.isArray(ids)) {
+    for (const [threadId, rawEntry] of Object.entries(bridgeValue)) {
+      if (!threadId) {
         continue;
       }
 
-      const filtered = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+      const normalizedEntry = normalizeArchivedIssuesEntry(rawEntry);
 
-      if (filtered.length > 0) {
-        threadMap[threadId] = filtered;
+      if (normalizedEntry) {
+        threadMap[threadId] = normalizedEntry;
       }
     }
 
@@ -513,7 +567,7 @@ function isArchivedIssuesStateEmpty(state) {
   return Object.keys(normalizeArchivedIssuesState(state)).length === 0;
 }
 
-function readLegacyStoredArchives() {
+function readStoredArchivedIssuesState() {
   if (typeof window === "undefined") {
     return {};
   }
@@ -531,7 +585,19 @@ function readLegacyStoredArchives() {
   }
 }
 
-function clearLegacyStoredArchives() {
+function writeStoredArchivedIssuesState(state) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(normalizeArchivedIssuesState(state)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clearStoredArchivedIssuesState() {
   if (typeof window === "undefined") {
     return;
   }
@@ -548,7 +614,7 @@ function getArchivedIssueIdsForScope(state, bridgeId = "", threadId = "") {
     return [];
   }
 
-  return state?.[bridgeId]?.[threadId] ?? [];
+  return state?.[bridgeId]?.[threadId]?.issueIds ?? [];
 }
 
 function getArchivedIssueColumnId(issue) {
@@ -578,7 +644,110 @@ function partitionIssuesByArchiveState(nextIssues, archivedState, bridgeId = "",
   };
 }
 
-function replaceArchivedIssuesForScope(currentState, bridgeId = "", threadId = "", issues = []) {
+function resolveArchivedIssuesEntryByTimestamp(localEntry, remoteEntry) {
+  if (!localEntry) {
+    return remoteEntry;
+  }
+
+  if (!remoteEntry) {
+    return localEntry;
+  }
+
+  const localTimestamp = localEntry.updatedAt ? Date.parse(localEntry.updatedAt) : Number.NaN;
+  const remoteTimestamp = remoteEntry.updatedAt ? Date.parse(remoteEntry.updatedAt) : Number.NaN;
+
+  if (!Number.isNaN(localTimestamp) && !Number.isNaN(remoteTimestamp) && localTimestamp !== remoteTimestamp) {
+    return localTimestamp > remoteTimestamp ? localEntry : remoteEntry;
+  }
+
+  if (!Number.isNaN(localTimestamp) && Number.isNaN(remoteTimestamp)) {
+    return localEntry;
+  }
+
+  if (Number.isNaN(localTimestamp) && !Number.isNaN(remoteTimestamp)) {
+    return remoteEntry;
+  }
+
+  return remoteEntry ?? localEntry;
+}
+
+function mergeArchivedIssuesState(localState, remoteState) {
+  const normalizedLocalState = normalizeArchivedIssuesState(localState);
+  const normalizedRemoteState = normalizeArchivedIssuesState(remoteState);
+  const nextState = {};
+  const bridgeIds = new Set([
+    ...Object.keys(normalizedLocalState),
+    ...Object.keys(normalizedRemoteState)
+  ]);
+
+  for (const bridgeId of bridgeIds) {
+    const nextBridgeState = {};
+    const threadIds = new Set([
+      ...Object.keys(normalizedLocalState[bridgeId] ?? {}),
+      ...Object.keys(normalizedRemoteState[bridgeId] ?? {})
+    ]);
+
+    for (const threadId of threadIds) {
+      const nextEntry = resolveArchivedIssuesEntryByTimestamp(
+        normalizedLocalState[bridgeId]?.[threadId] ?? null,
+        normalizedRemoteState[bridgeId]?.[threadId] ?? null
+      );
+
+      if (nextEntry) {
+        nextBridgeState[threadId] = nextEntry;
+      }
+    }
+
+    if (Object.keys(nextBridgeState).length > 0) {
+      nextState[bridgeId] = nextBridgeState;
+    }
+  }
+
+  return nextState;
+}
+
+function replaceArchivedIssuesStateForScope(currentState, bridgeId = "", threadId = "", issueIds = [], updatedAt = null) {
+  if (!bridgeId || !threadId) {
+    return currentState;
+  }
+
+  const nextBridgeState = {
+    ...(currentState?.[bridgeId] ?? {})
+  };
+
+  const nextEntry = buildArchivedIssuesEntry(issueIds, updatedAt ?? new Date().toISOString(), true);
+
+  nextBridgeState[threadId] = nextEntry;
+  return {
+    ...currentState,
+    [bridgeId]: nextBridgeState
+  };
+}
+
+function removeArchivedIssuesStateScope(currentState, bridgeId = "", threadId = "") {
+  if (!bridgeId || !threadId) {
+    return currentState;
+  }
+
+  const nextBridgeState = {
+    ...(currentState?.[bridgeId] ?? {})
+  };
+
+  delete nextBridgeState[threadId];
+
+  if (Object.keys(nextBridgeState).length === 0) {
+    const nextState = { ...currentState };
+    delete nextState[bridgeId];
+    return nextState;
+  }
+
+  return {
+    ...currentState,
+    [bridgeId]: nextBridgeState
+  };
+}
+
+function replaceArchivedIssueSnapshotForScope(currentState, bridgeId = "", threadId = "", issues = []) {
   if (!bridgeId || !threadId) {
     return currentState;
   }
@@ -4291,7 +4460,6 @@ export default function App() {
   const selectedProjectThreadIdRef = useRef("");
   const archivedIssuesStateRef = useRef({});
   const archivedIssueSnapshotsRef = useRef({});
-  const lastArchivedIssuesSyncRef = useRef(JSON.stringify({}));
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -4341,35 +4509,9 @@ export default function App() {
     setArchivedIssuesState((current) => {
       const nextState = normalizeArchivedIssuesState(typeof updater === "function" ? updater(current) : updater);
       archivedIssuesStateRef.current = nextState;
+      writeStoredArchivedIssuesState(nextState);
       return nextState;
     });
-  }, []);
-  const loadArchivedIssuesState = useCallback(async (sessionArg) => {
-    if (!sessionArg?.loginId) {
-      archivedIssuesStateRef.current = {};
-      lastArchivedIssuesSyncRef.current = JSON.stringify({});
-      setArchivedIssuesState({});
-      setArchivesHydrated(false);
-      return {};
-    }
-
-    setArchivesHydrated(false);
-    const legacyState = readLegacyStoredArchives();
-    const payload = await apiRequest(`/api/dashboard/archives?login_id=${encodeURIComponent(sessionArg.loginId)}`);
-    const remoteState = normalizeArchivedIssuesState(payload?.archives);
-    const shouldMigrateLegacy = isArchivedIssuesStateEmpty(remoteState) && !isArchivedIssuesStateEmpty(legacyState);
-    const nextState = shouldMigrateLegacy ? legacyState : remoteState;
-
-    archivedIssuesStateRef.current = nextState;
-    lastArchivedIssuesSyncRef.current = JSON.stringify(shouldMigrateLegacy ? remoteState : nextState);
-    setArchivedIssuesState(nextState);
-    setArchivesHydrated(true);
-
-    if (!isArchivedIssuesStateEmpty(remoteState) || shouldMigrateLegacy) {
-      clearLegacyStoredArchives();
-    }
-
-    return nextState;
   }, []);
   const persistArchivedIssuesState = useCallback(async (sessionArg, nextState, requestOptions = {}) => {
     if (!sessionArg?.loginId) {
@@ -4384,9 +4526,54 @@ export default function App() {
         archives: normalizedState
       })
     });
-    lastArchivedIssuesSyncRef.current = JSON.stringify(normalizedState);
-    clearLegacyStoredArchives();
   }, []);
+  const syncArchivedIssuesState = useCallback((sessionArg, nextState, requestOptions = {}) => {
+    if (!sessionArg?.loginId) {
+      return;
+    }
+
+    void persistArchivedIssuesState(sessionArg, nextState, requestOptions).catch((error) => {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "dashboard.archives.save.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    });
+  }, [persistArchivedIssuesState]);
+  const loadArchivedIssuesState = useCallback(async (sessionArg) => {
+    if (!sessionArg?.loginId) {
+      archivedIssuesStateRef.current = {};
+      setArchivedIssuesState({});
+      setArchivesHydrated(false);
+      return {};
+    }
+
+    setArchivesHydrated(false);
+    const localState = readStoredArchivedIssuesState();
+    archivedIssuesStateRef.current = localState;
+    setArchivedIssuesState(localState);
+    setArchivesHydrated(true);
+
+    const payload = await apiRequest(`/api/dashboard/archives?login_id=${encodeURIComponent(sessionArg.loginId)}`);
+    const remoteState = normalizeArchivedIssuesState(payload?.archives);
+    const nextState = mergeArchivedIssuesState(archivedIssuesStateRef.current, remoteState);
+    const serializedRemoteState = JSON.stringify(remoteState);
+    const serializedNextState = JSON.stringify(nextState);
+
+    archivedIssuesStateRef.current = nextState;
+    setArchivedIssuesState(nextState);
+    writeStoredArchivedIssuesState(nextState);
+
+    if (serializedNextState !== serializedRemoteState) {
+      syncArchivedIssuesState(sessionArg, nextState);
+    }
+
+    return nextState;
+  }, [syncArchivedIssuesState]);
   const markProjectThreadsLoaded = useCallback((bridgeId, projectId) => {
     if (!bridgeId || !projectId) {
       return;
@@ -4401,7 +4588,7 @@ export default function App() {
     };
   }, []);
   const replaceArchivedIssuesForCurrentScope = useCallback((bridgeId, threadId, nextIssues) => {
-    archivedIssueSnapshotsRef.current = replaceArchivedIssuesForScope(
+    archivedIssueSnapshotsRef.current = replaceArchivedIssueSnapshotForScope(
       archivedIssueSnapshotsRef.current,
       bridgeId,
       threadId,
@@ -4417,30 +4604,16 @@ export default function App() {
       return;
     }
 
-    const nextArchivedState = replaceArchivedIssuesForScope(
+    const nextArchivedState = removeArchivedIssuesStateScope(
       archivedIssuesStateRef.current,
       bridgeId,
-      threadId,
-      []
+      threadId
     );
 
     updateArchivedIssuesState(nextArchivedState);
     replaceArchivedIssuesForCurrentScope(bridgeId, threadId, []);
-
-    if (session?.loginId) {
-      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
-        setRecentEvents((current) => [
-          {
-            id: createId(),
-            type: "dashboard.archives.save.failed",
-            timestamp: new Date().toISOString(),
-            summary: error.message
-          },
-          ...current
-        ].slice(0, 20));
-      });
-    }
-  }, [persistArchivedIssuesState, replaceArchivedIssuesForCurrentScope, session, updateArchivedIssuesState]);
+    syncArchivedIssuesState(session, nextArchivedState, { keepalive: true });
+  }, [replaceArchivedIssuesForCurrentScope, session, syncArchivedIssuesState, updateArchivedIssuesState]);
   const applyIssueStateForScope = useCallback((bridgeId, threadId, nextIssues) => {
     const normalizedIssues = mergeIssues([], nextIssues ?? []);
     const { visibleIssues, archivedIssues: nextArchivedIssues } = partitionIssuesByArchiveState(
@@ -4485,7 +4658,6 @@ export default function App() {
   useEffect(() => {
     if (!session?.loginId) {
       archivedIssuesStateRef.current = {};
-      lastArchivedIssuesSyncRef.current = JSON.stringify({});
       setArchivedIssuesState({});
       setArchivesHydrated(false);
       return;
@@ -4501,9 +4673,8 @@ export default function App() {
           return;
         }
 
-        const fallbackState = readLegacyStoredArchives();
+        const fallbackState = readStoredArchivedIssuesState();
         archivedIssuesStateRef.current = fallbackState;
-        lastArchivedIssuesSyncRef.current = JSON.stringify({});
         setArchivedIssuesState(fallbackState);
         setArchivesHydrated(true);
         setRecentEvents((current) => [
@@ -4522,30 +4693,6 @@ export default function App() {
       cancelled = true;
     };
   }, [loadArchivedIssuesState, session]);
-
-  useEffect(() => {
-    if (!archivesHydrated || !session?.loginId) {
-      return;
-    }
-
-    const serializedState = JSON.stringify(normalizeArchivedIssuesState(archivedIssuesState));
-
-    if (serializedState === lastArchivedIssuesSyncRef.current) {
-      return;
-    }
-
-    void persistArchivedIssuesState(session, archivedIssuesState).catch((error) => {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "dashboard.archives.save.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
-    });
-  }, [archivedIssuesState, archivesHydrated, persistArchivedIssuesState, session]);
 
   useEffect(() => {
     if (!selectedBridgeId) {
@@ -5220,14 +5367,13 @@ export default function App() {
 
   const handleLogout = () => {
     clearSessionStorage();
-    clearLegacyStoredArchives();
+    clearStoredArchivedIssuesState();
     setSession(null);
     setBridges([]);
     setProjects([]);
     setProjectThreads([]);
     setIssues([]);
     archivedIssuesStateRef.current = {};
-    lastArchivedIssuesSyncRef.current = JSON.stringify({});
     setArchivedIssuesState({});
     setArchivesHydrated(false);
     archivedIssueSnapshotsRef.current = {};
@@ -5333,16 +5479,16 @@ export default function App() {
       return;
     }
 
-    const nextArchivedState = normalizeArchivedIssuesState({
-      ...archivedIssuesStateRef.current,
-      [selectedBridgeId]: {
-        ...(archivedIssuesStateRef.current[selectedBridgeId] ?? {}),
-        [selectedProjectThreadId]: Array.from(new Set([
-          ...(archivedIssuesStateRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []),
-          ...archiveableIds
-        ]))
-      }
-    });
+    const nextArchivedState = replaceArchivedIssuesStateForScope(
+      archivedIssuesStateRef.current,
+      selectedBridgeId,
+      selectedProjectThreadId,
+      [
+        ...getArchivedIssueIdsForScope(archivedIssuesStateRef.current, selectedBridgeId, selectedProjectThreadId),
+        ...archiveableIds
+      ],
+      new Date().toISOString()
+    );
 
     updateArchivedIssuesState(nextArchivedState);
     replaceArchivedIssuesForCurrentScope(
@@ -5359,19 +5505,7 @@ export default function App() {
     setSelectedIssueIds((current) => current.filter((threadId) => !archiveableIds.includes(threadId)));
     setDraggingArchiveIssueIds([]);
 
-    if (session?.loginId) {
-      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
-        setRecentEvents((current) => [
-          {
-            id: createId(),
-            type: "dashboard.archives.save.failed",
-            timestamp: new Date().toISOString(),
-            summary: error.message
-          },
-          ...current
-        ].slice(0, 20));
-      });
-    }
+    syncArchivedIssuesState(session, nextArchivedState, { keepalive: true });
   };
 
   const handleRestoreArchivedIssues = (threadIds) => {
@@ -5379,32 +5513,20 @@ export default function App() {
       return;
     }
 
-    const bridgeMap = archivedIssuesStateRef.current[selectedBridgeId];
-    const archived = bridgeMap?.[selectedProjectThreadId] ?? [];
+    const archived = getArchivedIssueIdsForScope(archivedIssuesStateRef.current, selectedBridgeId, selectedProjectThreadId);
     const remaining = archived.filter((threadId) => !threadIds.includes(threadId));
 
     if (remaining.length === archived.length) {
       return;
     }
 
-    const nextArchivedState = normalizeArchivedIssuesState({
-      ...archivedIssuesStateRef.current,
-      [selectedBridgeId]: {
-        ...(bridgeMap ?? {}),
-        [selectedProjectThreadId]: remaining
-      }
-    });
-
-    if (remaining.length === 0) {
-      const nextBridgeMap = { ...(nextArchivedState[selectedBridgeId] ?? {}) };
-      delete nextBridgeMap[selectedProjectThreadId];
-
-      if (Object.keys(nextBridgeMap).length === 0) {
-        delete nextArchivedState[selectedBridgeId];
-      } else {
-        nextArchivedState[selectedBridgeId] = nextBridgeMap;
-      }
-    }
+    const nextArchivedState = replaceArchivedIssuesStateForScope(
+      archivedIssuesStateRef.current,
+      selectedBridgeId,
+      selectedProjectThreadId,
+      remaining,
+      new Date().toISOString()
+    );
 
     updateArchivedIssuesState(nextArchivedState);
     const restoredIssues = (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter((issue) =>
@@ -5420,19 +5542,7 @@ export default function App() {
     setIssues((current) => mergeIssues(current, restoredIssues));
     setDraggingArchiveIssueIds([]);
 
-    if (session?.loginId) {
-      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
-        setRecentEvents((current) => [
-          {
-            id: createId(),
-            type: "dashboard.archives.save.failed",
-            timestamp: new Date().toISOString(),
-            summary: error.message
-          },
-          ...current
-        ].slice(0, 20));
-      });
-    }
+    syncArchivedIssuesState(session, nextArchivedState, { keepalive: true });
   };
 
   const handleStartSelectedIssues = async () => {
