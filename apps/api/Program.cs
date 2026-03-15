@@ -507,8 +507,82 @@ app.MapGet("/api/threads/{threadId}/issues", async (
     cancellationToken
   );
 
+  var rootThreadId = ResolveRootThreadId(threadId, payload);
+  var projectionIssues = await octopStore.ListLogicalThreadIssueBoardAsync(userId, bridgeId, rootThreadId);
+  var mergedPayload = MergeThreadIssuesPayload(payload, projectionIssues);
+
   return Results.Text(
-    payload?.ToJsonString() ?? "{\"issues\":[]}",
+    mergedPayload.ToJsonString(),
+    "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/threads/{threadId}/timeline", async (
+  string threadId,
+  HttpContext httpContext,
+  BridgeNatsClient bridgeNatsClient,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"thread\":null,\"entries\":[]}", "application/json; charset=utf-8");
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ThreadTimelineGet,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId,
+      thread_id = threadId
+    },
+    cancellationToken
+  );
+
+  var rootThreadId = ResolveRootThreadId(threadId, payload);
+  var projectionEntries = await octopStore.ListLogicalThreadTimelineAsync(userId, bridgeId, rootThreadId);
+  var mergedPayload = MergeThreadTimelinePayload(payload, projectionEntries);
+
+  return Results.Text(
+    mergedPayload.ToJsonString(),
+    "application/json; charset=utf-8");
+});
+
+app.MapGet("/api/threads/{threadId}/continuity", async (
+  string threadId,
+  HttpContext httpContext,
+  BridgeNatsClient bridgeNatsClient,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"root_thread\":null,\"physical_threads\":[],\"handoff_summaries\":[]}", "application/json; charset=utf-8");
+  }
+
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ThreadContinuityGet,
+    new
+    {
+      login_id = userId,
+      user_id = userId,
+      bridge_id = bridgeId,
+      thread_id = threadId
+    },
+    cancellationToken
+  );
+
+  return Results.Text(
+    payload?.ToJsonString() ?? "{\"root_thread\":null,\"physical_threads\":[],\"handoff_summaries\":[]}",
     "application/json; charset=utf-8");
 });
 
@@ -749,6 +823,44 @@ app.MapPost("/api/threads/{threadId}/issues/reorder", async (
   );
 });
 
+app.MapPost("/api/threads/{threadId}/rollover", async (
+  string threadId,
+  HttpContext httpContext,
+  BridgeNatsClient bridgeNatsClient,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  var payload = await bridgeNatsClient.RequestAsync(
+    subjects.ProjectThreadRollover,
+    new
+    {
+      user_id = userId,
+      login_id = userId,
+      bridge_id = bridgeId,
+      thread_id = threadId,
+      reason = body?["reason"]?.GetValue<string>() ?? "manual"
+    },
+    cancellationToken
+  );
+
+  var accepted = payload?["accepted"]?.GetValue<bool?>() ?? false;
+  return Results.Text(
+    payload?.ToJsonString() ?? "{}",
+    "application/json; charset=utf-8",
+    statusCode: accepted ? StatusCodes.Status202Accepted : StatusCodes.Status400BadRequest
+  );
+});
+
 app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
@@ -925,3 +1037,379 @@ static string ResolveIdentityKey(HttpContext httpContext)
 
   return BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
 }
+
+static string ResolveRootThreadId(string fallbackThreadId, JsonNode? payload)
+{
+  return GetStringValue(payload?["continuity"]?["root_thread"]?["id"])
+    ?? GetStringValue(payload?["thread"]?["id"])
+    ?? fallbackThreadId;
+}
+
+static JsonObject MergeThreadIssuesPayload(JsonNode? bridgePayload, JArray projectionIssues)
+{
+  var result = bridgePayload?.DeepClone() as JsonObject ?? new JsonObject();
+  var continuity = result["continuity"]?.DeepClone() as JsonObject;
+  var bridgeIssues = result["issues"] as JsonArray ?? new JsonArray();
+  var readSplit = ResolveReadSplitState(continuity, BuildProjectionIssueCoverage(projectionIssues));
+  var preferredPhysicalThreadIds = readSplit.PreferredBridgePhysicalThreadIds;
+  var mergedById = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+
+  foreach (var projectionIssue in projectionIssues.OfType<JObject>())
+  {
+    var issueNode = ConvertJTokenToJsonNode(projectionIssue) as JsonObject;
+
+    if (issueNode is null)
+    {
+      continue;
+    }
+
+    var issueId = GetStringValue(issueNode["id"]);
+
+    if (string.IsNullOrWhiteSpace(issueId))
+    {
+      continue;
+    }
+
+    var physicalThreadId = ResolveIssuePhysicalThreadId(issueNode);
+
+    if (string.IsNullOrWhiteSpace(physicalThreadId) || preferredPhysicalThreadIds.Contains(physicalThreadId))
+    {
+      continue;
+    }
+
+    mergedById[issueId] = issueNode;
+  }
+
+  foreach (var bridgeIssue in bridgeIssues.OfType<JsonObject>())
+  {
+    var issueNode = bridgeIssue.DeepClone() as JsonObject;
+
+    if (issueNode is null)
+    {
+      continue;
+    }
+
+    var issueId = GetStringValue(issueNode["id"]);
+
+    if (string.IsNullOrWhiteSpace(issueId))
+    {
+      continue;
+    }
+
+    var physicalThreadId = ResolveIssuePhysicalThreadId(issueNode);
+
+    if (!mergedById.ContainsKey(issueId) || string.IsNullOrWhiteSpace(physicalThreadId) || preferredPhysicalThreadIds.Contains(physicalThreadId))
+    {
+      mergedById[issueId] = issueNode;
+    }
+  }
+
+  var mergedIssues = mergedById.Values.ToList();
+  mergedIssues.Sort(CompareIssueBoardEntries);
+
+  result["thread"] = result["thread"]?.DeepClone() ?? continuity?["root_thread"]?.DeepClone();
+  result["issues"] = new JsonArray(mergedIssues.Select(issue => (JsonNode)issue).ToArray());
+  if (continuity is not null)
+  {
+    continuity["read_split"] = BuildReadSplitMetadata(readSplit);
+  }
+  result["continuity"] = continuity;
+  return result;
+}
+
+static JsonObject MergeThreadTimelinePayload(JsonNode? bridgePayload, JArray projectionEntries)
+{
+  var result = bridgePayload?.DeepClone() as JsonObject ?? new JsonObject();
+  var continuity = result["continuity"]?.DeepClone() as JsonObject;
+  var bridgeEntries = result["entries"] as JsonArray ?? new JsonArray();
+  var readSplit = ResolveReadSplitState(continuity, BuildProjectionTimelineCoverage(projectionEntries));
+  var preferredPhysicalThreadIds = readSplit.PreferredBridgePhysicalThreadIds;
+  var mergedByKey = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+
+  foreach (var projectionEntry in projectionEntries.OfType<JObject>())
+  {
+    var entryNode = ConvertJTokenToJsonNode(projectionEntry) as JsonObject;
+
+    if (entryNode is null)
+    {
+      continue;
+    }
+
+    var physicalThreadId = GetStringValue(entryNode["physical_thread_id"]);
+
+    if (string.IsNullOrWhiteSpace(physicalThreadId) || preferredPhysicalThreadIds.Contains(physicalThreadId))
+    {
+      continue;
+    }
+
+    mergedByKey[BuildTimelineEntryKey(entryNode)] = entryNode;
+  }
+
+  foreach (var bridgeEntry in bridgeEntries.OfType<JsonObject>())
+  {
+    var entryNode = bridgeEntry.DeepClone() as JsonObject;
+
+    if (entryNode is null)
+    {
+      continue;
+    }
+
+    var physicalThreadId = GetStringValue(entryNode["physical_thread_id"]);
+    var entryKey = BuildTimelineEntryKey(entryNode);
+
+    if (string.IsNullOrWhiteSpace(physicalThreadId) || preferredPhysicalThreadIds.Contains(physicalThreadId) || !mergedByKey.ContainsKey(entryKey))
+    {
+      mergedByKey[entryKey] = entryNode;
+    }
+  }
+
+  var mergedEntries = mergedByKey.Values.ToList();
+  mergedEntries.Sort(CompareTimelineEntries);
+
+  result["thread"] = result["thread"]?.DeepClone() ?? continuity?["root_thread"]?.DeepClone();
+  result["entries"] = new JsonArray(mergedEntries.Select(entry => (JsonNode)entry).ToArray());
+  if (continuity is not null)
+  {
+    continuity["read_split"] = BuildReadSplitMetadata(readSplit);
+  }
+  result["continuity"] = continuity;
+  return result;
+}
+
+static ReadSplitState ResolveReadSplitState(JsonNode? continuity, Dictionary<string, DateTimeOffset> projectionCoverage)
+{
+  var preferred = new HashSet<string>(StringComparer.Ordinal);
+  var caughtUp = new HashSet<string>(StringComparer.Ordinal);
+  var pending = new HashSet<string>(StringComparer.Ordinal);
+  var activePhysicalThreadId = GetStringValue(continuity?["active_physical_thread"]?["id"]);
+
+  if (!string.IsNullOrWhiteSpace(activePhysicalThreadId))
+  {
+    preferred.Add(activePhysicalThreadId);
+  }
+
+  if (continuity?["recently_closed_physical_threads"] is JsonArray recentlyClosed)
+  {
+    foreach (var item in recentlyClosed)
+    {
+      var physicalThreadId = GetStringValue(item?["physical_thread_id"]);
+      var closedAt = ParseIsoTimestamp(GetStringValue(item?["closed_at"]));
+
+      if (!string.IsNullOrWhiteSpace(physicalThreadId))
+      {
+        if (projectionCoverage.TryGetValue(physicalThreadId, out var projectedAt) && projectedAt >= closedAt)
+        {
+          caughtUp.Add(physicalThreadId);
+          continue;
+        }
+
+        preferred.Add(physicalThreadId);
+        pending.Add(physicalThreadId);
+      }
+    }
+  }
+
+  return new ReadSplitState(preferred, caughtUp, pending);
+}
+
+static string? ResolveIssuePhysicalThreadId(JsonNode? issueNode)
+{
+  return GetStringValue(issueNode?["executed_physical_thread_id"])
+    ?? GetStringValue(issueNode?["created_physical_thread_id"]);
+}
+
+static int CompareIssueBoardEntries(JsonObject? left, JsonObject? right)
+{
+  var leftStatus = GetStringValue(left?["status"]) ?? string.Empty;
+  var rightStatus = GetStringValue(right?["status"]) ?? string.Empty;
+
+  if (string.Equals(leftStatus, "staged", StringComparison.Ordinal) && string.Equals(rightStatus, "staged", StringComparison.Ordinal))
+  {
+    var leftPrep = GetNullableInt(left?["prep_position"]);
+    var rightPrep = GetNullableInt(right?["prep_position"]);
+    var prepComparison = CompareOrderedIntegers(leftPrep, rightPrep);
+
+    if (prepComparison != 0)
+    {
+      return prepComparison;
+    }
+  }
+
+  if (string.Equals(leftStatus, "queued", StringComparison.Ordinal) && string.Equals(rightStatus, "queued", StringComparison.Ordinal))
+  {
+    var leftQueue = GetNullableInt(left?["queue_position"]);
+    var rightQueue = GetNullableInt(right?["queue_position"]);
+    var queueComparison = CompareOrderedIntegers(leftQueue, rightQueue);
+
+    if (queueComparison != 0)
+    {
+      return queueComparison;
+    }
+  }
+
+  return CompareIsoTimestampsDescending(GetStringValue(left?["updated_at"]), GetStringValue(right?["updated_at"]));
+}
+
+static int CompareTimelineEntries(JsonObject? left, JsonObject? right)
+{
+  var leftSequence = GetNullableInt(left?["physical_sequence"]) ?? int.MaxValue;
+  var rightSequence = GetNullableInt(right?["physical_sequence"]) ?? int.MaxValue;
+
+  if (leftSequence != rightSequence)
+  {
+    return leftSequence.CompareTo(rightSequence);
+  }
+
+  return CompareIsoTimestampsAscending(GetStringValue(left?["timestamp"]), GetStringValue(right?["timestamp"]));
+}
+
+static int CompareOrderedIntegers(int? left, int? right)
+{
+  var leftHasValue = left.HasValue;
+  var rightHasValue = right.HasValue;
+  var leftValue = left.GetValueOrDefault();
+  var rightValue = right.GetValueOrDefault();
+
+  if (leftHasValue && rightHasValue && leftValue != rightValue)
+  {
+    return leftValue.CompareTo(rightValue);
+  }
+
+  if (leftHasValue && !rightHasValue)
+  {
+    return -1;
+  }
+
+  if (!leftHasValue && rightHasValue)
+  {
+    return 1;
+  }
+
+  return 0;
+}
+
+static int CompareIsoTimestampsDescending(string? left, string? right)
+{
+  var leftValue = ParseIsoTimestamp(left);
+  var rightValue = ParseIsoTimestamp(right);
+  return rightValue.CompareTo(leftValue);
+}
+
+static int CompareIsoTimestampsAscending(string? left, string? right)
+{
+  var leftValue = ParseIsoTimestamp(left);
+  var rightValue = ParseIsoTimestamp(right);
+  return leftValue.CompareTo(rightValue);
+}
+
+static DateTimeOffset ParseIsoTimestamp(string? value)
+{
+  return DateTimeOffset.TryParse(value, out var parsed) ? parsed : DateTimeOffset.MinValue;
+}
+
+static Dictionary<string, DateTimeOffset> BuildProjectionIssueCoverage(JArray projectionIssues)
+{
+  var coverage = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
+  foreach (var issue in projectionIssues.OfType<JObject>())
+  {
+    var issueNode = ConvertJTokenToJsonNode(issue);
+    var physicalThreadId = ResolveIssuePhysicalThreadId(issueNode);
+
+    if (string.IsNullOrWhiteSpace(physicalThreadId))
+    {
+      continue;
+    }
+
+    var projectedAt = ParseIsoTimestamp(issue.Value<string>("projected_at"));
+
+    if (!coverage.TryGetValue(physicalThreadId, out var currentProjectedAt) || projectedAt > currentProjectedAt)
+    {
+      coverage[physicalThreadId] = projectedAt;
+    }
+  }
+
+  return coverage;
+}
+
+static Dictionary<string, DateTimeOffset> BuildProjectionTimelineCoverage(JArray projectionEntries)
+{
+  var coverage = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
+  foreach (var entry in projectionEntries.OfType<JObject>())
+  {
+    var physicalThreadId = entry.Value<string>("physical_thread_id");
+
+    if (string.IsNullOrWhiteSpace(physicalThreadId))
+    {
+      continue;
+    }
+
+    var projectedAt = ParseIsoTimestamp(entry.Value<string>("projected_at"));
+
+    if (!coverage.TryGetValue(physicalThreadId, out var currentProjectedAt) || projectedAt > currentProjectedAt)
+    {
+      coverage[physicalThreadId] = projectedAt;
+    }
+  }
+
+  return coverage;
+}
+
+static JsonObject BuildReadSplitMetadata(ReadSplitState state)
+{
+  return new JsonObject
+  {
+    ["active_source"] = "bridge",
+    ["recently_closed_source"] = "bridge",
+    ["closed_history_source"] = "projection",
+    ["projection_catch_up_signal"] = "projected_at >= physical_thread.closed_at",
+    ["projection_caught_up_physical_thread_ids"] = new JsonArray(state.CaughtUpPhysicalThreadIds.Select(id => (JsonNode)id).ToArray()),
+    ["projection_pending_physical_thread_ids"] = new JsonArray(state.PendingProjectionPhysicalThreadIds.Select(id => (JsonNode)id).ToArray())
+  };
+}
+
+static int? GetNullableInt(JsonNode? node)
+{
+  if (node is null)
+  {
+    return null;
+  }
+
+  if (node.GetValueKind() == JsonValueKind.Number && node is JsonValue jsonValue && jsonValue.TryGetValue<int>(out var numericValue))
+  {
+    return numericValue;
+  }
+
+  var raw = GetStringValue(node);
+  return int.TryParse(raw, out var parsed) ? parsed : null;
+}
+
+static string? GetStringValue(JsonNode? node)
+{
+  var value = node?.ToString()?.Trim();
+  return string.IsNullOrWhiteSpace(value) ? null : value;
+}
+
+static JsonNode? ConvertJTokenToJsonNode(JToken? token)
+{
+  return token is null ? null : JsonNode.Parse(token.ToString(Newtonsoft.Json.Formatting.None));
+}
+
+static string BuildTimelineEntryKey(JsonObject entry)
+{
+  return string.Join(
+    "|",
+    GetStringValue(entry["physical_thread_id"]) ?? string.Empty,
+    GetStringValue(entry["issue_id"]) ?? string.Empty,
+    GetStringValue(entry["timestamp"]) ?? string.Empty,
+    GetStringValue(entry["role"]) ?? string.Empty,
+    GetStringValue(entry["kind"]) ?? string.Empty,
+    GetStringValue(entry["content"]) ?? string.Empty
+  );
+}
+
+sealed record ReadSplitState(
+  HashSet<string> PreferredBridgePhysicalThreadIds,
+  HashSet<string> CaughtUpPhysicalThreadIds,
+  HashSet<string> PendingProjectionPhysicalThreadIds);

@@ -13,6 +13,11 @@ public sealed class OctopStore : IAsyncDisposable
   private const string ThreadTable = "thread_projection";
   private const string ProjectThreadTable = "project_threads";
   private const string ThreadIssueCardTable = "thread_issue_cards";
+  private const string RootThreadTable = "root_threads";
+  private const string PhysicalThreadTable = "physical_threads";
+  private const string HandoffSummaryTable = "handoff_summaries";
+  private const string LogicalThreadTimelineTable = "logical_thread_timeline";
+  private const string LogicalThreadIssueBoardTable = "logical_thread_issue_board";
 
   private readonly string _host;
   private readonly int _port;
@@ -71,6 +76,11 @@ public sealed class OctopStore : IAsyncDisposable
       await EnsureTableAsync(connection, tables, ThreadTable);
       await EnsureTableAsync(connection, tables, ProjectThreadTable);
       await EnsureTableAsync(connection, tables, ThreadIssueCardTable);
+      await EnsureTableAsync(connection, tables, RootThreadTable);
+      await EnsureTableAsync(connection, tables, PhysicalThreadTable);
+      await EnsureTableAsync(connection, tables, HandoffSummaryTable);
+      await EnsureTableAsync(connection, tables, LogicalThreadTimelineTable);
+      await EnsureTableAsync(connection, tables, LogicalThreadIssueBoardTable);
       _storageEnsured = true;
     }
     finally
@@ -149,6 +159,50 @@ public sealed class OctopStore : IAsyncDisposable
           string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal))
         .Where(thread => string.IsNullOrWhiteSpace(projectId) || string.Equals(thread.Value<string>("project_id"), projectId, StringComparison.Ordinal))
         .OrderByDescending(thread => DateTimeOffset.TryParse(thread.Value<string>("updated_at"), out var updatedAt) ? updatedAt : DateTimeOffset.MinValue)
+    );
+  }
+
+  public async Task<JArray> ListLogicalThreadIssueBoardAsync(string userId, string bridgeId, string rootThreadId)
+  {
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return [];
+    }
+
+    var connection = await GetConnectionAsync();
+    var issues = await _r.Db(_db).Table(LogicalThreadIssueBoardTable).RunResultAsync<JArray>(connection);
+
+    return new JArray(
+      issues
+        .OfType<JObject>()
+        .Where(issue =>
+          string.Equals(issue.Value<string>("login_id") ?? issue.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+          string.Equals(issue.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+          string.Equals(issue.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal) &&
+          string.IsNullOrWhiteSpace(issue.Value<string>("deleted_at")))
+        .OrderByDescending(issue => DateTimeOffset.TryParse(issue.Value<string>("updated_at"), out var updatedAt) ? updatedAt : DateTimeOffset.MinValue)
+    );
+  }
+
+  public async Task<JArray> ListLogicalThreadTimelineAsync(string userId, string bridgeId, string rootThreadId)
+  {
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return [];
+    }
+
+    var connection = await GetConnectionAsync();
+    var entries = await _r.Db(_db).Table(LogicalThreadTimelineTable).RunResultAsync<JArray>(connection);
+
+    return new JArray(
+      entries
+        .OfType<JObject>()
+        .Where(entry =>
+          string.Equals(entry.Value<string>("login_id") ?? entry.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+          string.Equals(entry.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+          string.Equals(entry.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal) &&
+          string.IsNullOrWhiteSpace(entry.Value<string>("deleted_at")))
+        .OrderBy(entry => DateTimeOffset.TryParse(entry.Value<string>("timestamp"), out var timestamp) ? timestamp : DateTimeOffset.MinValue)
     );
   }
 

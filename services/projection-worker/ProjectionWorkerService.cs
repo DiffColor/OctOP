@@ -18,6 +18,11 @@ public sealed class ProjectionWorkerService : BackgroundService
   private const string ThreadTable = "thread_projection";
   private const string ProjectThreadTable = "project_threads";
   private const string ThreadIssueCardTable = "thread_issue_cards";
+  private const string RootThreadTable = "root_threads";
+  private const string PhysicalThreadTable = "physical_threads";
+  private const string HandoffSummaryTable = "handoff_summaries";
+  private const string LogicalThreadTimelineTable = "logical_thread_timeline";
+  private const string LogicalThreadIssueBoardTable = "logical_thread_issue_board";
   private const string EventTable = "event_log";
 
   private readonly ILogger<ProjectionWorkerService> _logger;
@@ -102,6 +107,11 @@ public sealed class ProjectionWorkerService : BackgroundService
     await EnsureTableAsync(connection, tables, ThreadTable);
     await EnsureTableAsync(connection, tables, ProjectThreadTable);
     await EnsureTableAsync(connection, tables, ThreadIssueCardTable);
+    await EnsureTableAsync(connection, tables, RootThreadTable);
+    await EnsureTableAsync(connection, tables, PhysicalThreadTable);
+    await EnsureTableAsync(connection, tables, HandoffSummaryTable);
+    await EnsureTableAsync(connection, tables, LogicalThreadTimelineTable);
+    await EnsureTableAsync(connection, tables, LogicalThreadIssueBoardTable);
     await EnsureTableAsync(connection, tables, EventTable);
   }
 
@@ -117,6 +127,11 @@ public sealed class ProjectionWorkerService : BackgroundService
       await UpsertUserStateAsync(connection, @event);
       await UpsertProjectThreadsAsync(connection, @event);
       await UpsertIssueCardsAsync(connection, @event);
+      await UpsertRootThreadsAsync(connection, @event);
+      await UpsertPhysicalThreadsAsync(connection, @event);
+      await UpsertHandoffSummariesAsync(connection, @event);
+      await UpsertLogicalThreadTimelineAsync(connection, @event);
+      await UpsertLogicalThreadIssueBoardAsync(connection, @event);
     }
     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
     {
@@ -353,6 +368,285 @@ public sealed class ProjectionWorkerService : BackgroundService
       item["projected_at"] = projectedAt;
       await UpsertThreadDocumentAsync(connection, ProjectThreadTable, item, projectedAt);
       await UpsertThreadDocumentAsync(connection, ThreadTable, new JObject(item), projectedAt);
+    }
+  }
+
+  private async Task UpsertRootThreadsAsync(RethinkConnection connection, JObject @event)
+  {
+    var eventType = @event.Value<string>("type");
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var projectedAt = @event.Value<string>("timestamp");
+
+    if (eventType is "rootThread.deleted" or "thread.deleted")
+    {
+      var rootThreadId = @event["payload"]?["root_thread_id"]?.Value<string>() ?? @event["payload"]?["thread_id"]?.Value<string>();
+
+      if (!string.IsNullOrWhiteSpace(rootThreadId))
+      {
+        await DeleteRootThreadArtifactsAsync(connection, rootThreadId);
+      }
+
+      return;
+    }
+
+    if (
+      eventType == "thread.created" ||
+      eventType == "thread.updated" ||
+      eventType == "rootThread.created" ||
+      eventType == "rootThread.updated" ||
+      eventType == "physicalThread.bound")
+    {
+      var thread = @event["payload"]?["thread"] as JObject;
+
+      if (thread is null || thread["id"] is null)
+      {
+        return;
+      }
+
+      if (thread.Value<string>("deleted_at") is not null)
+      {
+        await DeleteRootThreadArtifactsAsync(connection, thread.Value<string>("id") ?? string.Empty);
+        return;
+      }
+
+      thread["login_id"] = loginId;
+      thread["user_id"] = loginId;
+      thread["bridge_id"] = bridgeId;
+      thread["last_event_type"] = eventType;
+      thread["projected_at"] = projectedAt;
+      await UpsertThreadDocumentAsync(connection, RootThreadTable, thread, projectedAt);
+      return;
+    }
+
+    if (eventType != "bridge.projectThreads.updated")
+    {
+      return;
+    }
+
+    var threads = @event["payload"]?["threads"] as JArray;
+
+    if (threads is null)
+    {
+      return;
+    }
+
+    foreach (var item in threads.OfType<JObject>())
+    {
+      if (item["id"] is null)
+      {
+        continue;
+      }
+
+      item["login_id"] = loginId;
+      item["user_id"] = loginId;
+      item["bridge_id"] = bridgeId;
+      item["last_event_type"] = eventType;
+      item["projected_at"] = projectedAt;
+      await UpsertThreadDocumentAsync(connection, RootThreadTable, item, projectedAt);
+    }
+  }
+
+  private async Task DeleteRootThreadArtifactsAsync(RethinkConnection connection, string rootThreadId)
+  {
+    var tables = new[]
+    {
+      RootThreadTable,
+      PhysicalThreadTable,
+      HandoffSummaryTable,
+      LogicalThreadTimelineTable,
+      LogicalThreadIssueBoardTable,
+      ThreadIssueCardTable,
+      ProjectThreadTable,
+      ThreadTable
+    };
+
+    foreach (var tableName in tables)
+    {
+      var rows = await _r.Db(_rethinkDb).Table(tableName).RunResultAsync<JArray>(connection);
+
+      foreach (var row in rows.OfType<JObject>())
+      {
+        var rowId = row.Value<string>("id");
+        var rowRootThreadId = row.Value<string>("root_thread_id") ?? row.Value<string>("thread_id") ?? row.Value<string>("id");
+
+        if (string.IsNullOrWhiteSpace(rowId) || !string.Equals(rowRootThreadId, rootThreadId, StringComparison.Ordinal))
+        {
+          continue;
+        }
+
+        await _r.Db(_rethinkDb).Table(tableName).Get(rowId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+  }
+
+  private async Task UpsertPhysicalThreadsAsync(RethinkConnection connection, JObject @event)
+  {
+    var eventType = @event.Value<string>("type");
+
+    if (eventType is not ("physicalThread.created" or "physicalThread.closed" or "physicalThread.bound" or "physicalThread.updated"))
+    {
+      return;
+    }
+
+    var physicalThread = @event["payload"]?["physical_thread"] as JObject;
+
+    if (physicalThread is null || physicalThread["id"] is null)
+    {
+      return;
+    }
+
+    physicalThread["login_id"] = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    physicalThread["user_id"] = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    physicalThread["bridge_id"] = @event.Value<string>("bridge_id");
+    physicalThread["last_event_type"] = eventType;
+    physicalThread["projected_at"] = @event.Value<string>("timestamp");
+    if (physicalThread.Value<string>("deleted_at") is not null)
+    {
+      return;
+    }
+
+    if (eventType == "physicalThread.updated" && physicalThread.Value<string>("closed_at") is not null)
+    {
+      return;
+    }
+
+    await UpsertThreadDocumentAsync(connection, PhysicalThreadTable, physicalThread, physicalThread.Value<string>("projected_at"));
+  }
+
+  private async Task UpsertHandoffSummariesAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "handoffSummary.created")
+    {
+      return;
+    }
+
+    var summary = @event["payload"]?["summary"] as JObject;
+
+    if (summary is null || summary["id"] is null)
+    {
+      return;
+    }
+
+    summary["login_id"] = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    summary["user_id"] = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    summary["bridge_id"] = @event.Value<string>("bridge_id");
+    summary["last_event_type"] = @event.Value<string>("type");
+    summary["projected_at"] = @event.Value<string>("timestamp");
+    await UpsertThreadDocumentAsync(connection, HandoffSummaryTable, summary, summary.Value<string>("projected_at"));
+  }
+
+  private async Task UpsertLogicalThreadTimelineAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "logicalThread.timeline.updated")
+    {
+      return;
+    }
+
+    var rootThreadId = @event["payload"]?["root_thread_id"]?.Value<string>();
+    var entries = @event["payload"]?["entries"] as JArray;
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var projectedAt = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return;
+    }
+
+    var existingRows = await _r.Db(_rethinkDb).Table(LogicalThreadTimelineTable).RunResultAsync<JArray>(connection);
+
+    foreach (var row in existingRows.OfType<JObject>().Where(row =>
+               string.Equals(row.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal)))
+    {
+      var rowId = row.Value<string>("id");
+
+      if (!string.IsNullOrWhiteSpace(rowId))
+      {
+        await _r.Db(_rethinkDb).Table(LogicalThreadTimelineTable).Get(rowId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+
+    if (entries is null)
+    {
+      return;
+    }
+
+    var index = 0;
+    foreach (var entry in entries.OfType<JObject>())
+    {
+      entry["id"] = $"{rootThreadId}:{index++:D6}:{entry.Value<string>("id") ?? Guid.NewGuid().ToString("N")}";
+      entry["root_thread_id"] = rootThreadId;
+      entry["login_id"] = loginId;
+      entry["user_id"] = loginId;
+      entry["bridge_id"] = bridgeId;
+      entry["last_event_type"] = @event.Value<string>("type");
+      entry["projected_at"] = projectedAt;
+      await _r.Db(_rethinkDb)
+        .Table(LogicalThreadTimelineTable)
+        .Insert(entry)
+        .OptArg("conflict", "replace")
+        .RunResultAsync<object>(connection);
+    }
+  }
+
+  private async Task UpsertLogicalThreadIssueBoardAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "bridge.threadIssues.updated")
+    {
+      return;
+    }
+
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var rootThreadId = @event["payload"]?["thread_id"]?.Value<string>();
+    var issues = @event["payload"]?["issues"] as JArray;
+    var projectedAt = @event.Value<string>("timestamp");
+
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return;
+    }
+
+    var existingIssues = await _r.Db(_rethinkDb).Table(LogicalThreadIssueBoardTable).RunResultAsync<JArray>(connection);
+
+    foreach (var issue in existingIssues.OfType<JObject>().Where(issue =>
+               string.Equals(issue.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal)))
+    {
+      var issueId = issue.Value<string>("id");
+
+      if (!string.IsNullOrWhiteSpace(issueId))
+      {
+        await _r.Db(_rethinkDb).Table(LogicalThreadIssueBoardTable).Get(issueId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+
+    if (issues is null)
+    {
+      return;
+    }
+
+    foreach (var item in issues.OfType<JObject>())
+    {
+      var issueId = item.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(issueId))
+      {
+        continue;
+      }
+
+      item["root_thread_id"] = item.Value<string>("root_thread_id") ?? rootThreadId;
+      item["thread_id"] = item.Value<string>("thread_id") ?? rootThreadId;
+      item["login_id"] = loginId;
+      item["user_id"] = loginId;
+      item["bridge_id"] = bridgeId;
+      item["last_event_type"] = @event.Value<string>("type");
+      item["projected_at"] = projectedAt;
+      await _r.Db(_rethinkDb)
+        .Table(LogicalThreadIssueBoardTable)
+        .Insert(item)
+        .OptArg("conflict", "replace")
+        .RunResultAsync<object>(connection);
     }
   }
 
