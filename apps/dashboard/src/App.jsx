@@ -1542,9 +1542,7 @@ function LoginPage({ language, initialLoginId, loading, error, onSubmit }) {
         <main className="w-full max-w-md">
           <header className="mb-10 text-center">
             <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border border-white/10 bg-slate-950/70">
-              <svg className="h-8 w-8 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
+              <img src="/octop-icon-192.png" alt="OctOP" className="h-9 w-9 rounded-2xl" />
             </div>
             <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">{copy.login.eyebrow}</p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">{copy.login.title}</h1>
