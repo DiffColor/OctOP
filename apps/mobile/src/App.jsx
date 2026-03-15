@@ -73,6 +73,7 @@ const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
+const TODO_SCOPE_ID = "todo";
 
 function readStoredSession() {
   for (const key of [
@@ -752,6 +753,90 @@ function upsertThread(currentThreads, thread) {
   }
 
   return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function normalizeTodoChat(chat) {
+  if (!chat?.id) {
+    return null;
+  }
+
+  return {
+    id: chat.id,
+    title: chat.title ?? "새 ToDo 채팅",
+    last_message: chat.last_message ?? "",
+    message_count: Number.isFinite(Number(chat.message_count)) ? Number(chat.message_count) : 0,
+    created_at: chat.created_at ?? new Date().toISOString(),
+    updated_at: chat.updated_at ?? chat.created_at ?? new Date().toISOString()
+  };
+}
+
+function mergeTodoChats(currentChats, nextChats) {
+  const nextById = new Map();
+
+  for (const chat of currentChats) {
+    const normalized = normalizeTodoChat(chat);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
+
+  for (const chat of nextChats) {
+    const normalized = normalizeTodoChat(chat);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
+
+  return [...nextById.values()].sort(
+    (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+  );
+}
+
+function upsertTodoChat(currentChats, chat) {
+  const normalized = normalizeTodoChat(chat);
+
+  if (!normalized) {
+    return currentChats;
+  }
+
+  const next = [...currentChats];
+  const index = next.findIndex((item) => item.id === normalized.id);
+
+  if (index === -1) {
+    next.unshift(normalized);
+  } else {
+    next[index] = {
+      ...next[index],
+      ...normalized
+    };
+  }
+
+  return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function getTodoChatPreview(chat) {
+  if (chat?.last_message) {
+    return chat.last_message;
+  }
+
+  return "아직 저장된 메모가 없습니다.";
+}
+
+function normalizeTodoMessage(message) {
+  if (!message?.id) {
+    return null;
+  }
+
+  return {
+    id: message.id,
+    todo_chat_id: message.todo_chat_id ?? null,
+    content: message.content ?? "",
+    status: message.status ?? "open",
+    created_at: message.created_at ?? new Date().toISOString(),
+    updated_at: message.updated_at ?? message.created_at ?? new Date().toISOString()
+  };
 }
 
 function getThreadPreview(thread) {
@@ -1879,6 +1964,536 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
   );
 }
 
+function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
+  return (
+    <div className="border-b border-white/8 px-3 py-3">
+      <div
+        className={`rounded-2xl border px-3 py-3 ${
+          active ? "border-white/12 bg-white/[0.03]" : "border-transparent bg-transparent"
+        }`}
+      >
+        <button type="button" onClick={() => onOpen(chat.id)} className="block w-full text-left">
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{chat.title}</p>
+            <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(chat.updated_at)}</span>
+          </div>
+          <p className="mt-1 text-[13px] leading-5 text-slate-300">{getTodoChatPreview(chat)}</p>
+          <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-slate-300">
+              메모 {chat.message_count}
+            </span>
+          </div>
+        </button>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onRename(chat)}
+            className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            편집
+          </button>
+          <button
+            type="button"
+            onClick={() => onDelete(chat)}
+            className="rounded-full bg-rose-500/90 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-400"
+          >
+            삭제
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TodoChatRenameDialog({ open, busy, chat, onClose, onSubmit }) {
+  const [title, setTitle] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      return;
+    }
+
+    setTitle(chat?.title ?? "");
+  }, [chat, open]);
+
+  if (!open || !chat) {
+    return null;
+  }
+
+  return (
+    <BottomSheet open={open} title="ToDo 채팅 이름 변경" onClose={onClose} variant="center">
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+
+          if (!title.trim()) {
+            return;
+          }
+
+          const accepted = await onSubmit(title.trim());
+
+          if (accepted !== false) {
+            onClose();
+          }
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-chat-title">
+            제목
+          </label>
+          <input
+            id="todo-chat-title"
+            type="text"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !title.trim()}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
+function TodoMessageEditorDialog({ open, busy, message, onClose, onSubmit }) {
+  const [content, setContent] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setContent("");
+      return;
+    }
+
+    setContent(message?.content ?? "");
+  }, [message, open]);
+
+  if (!open || !message) {
+    return null;
+  }
+
+  return (
+    <BottomSheet open={open} title="메모 수정" onClose={onClose} variant="center">
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+
+          if (!content.trim()) {
+            return;
+          }
+
+          const accepted = await onSubmit(content.trim());
+
+          if (accepted !== false) {
+            onClose();
+          }
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-message-content">
+            내용
+          </label>
+          <textarea
+            id="todo-message-content"
+            rows="6"
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !content.trim()}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
+function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTransfer }) {
+  if (!open || !message) {
+    return null;
+  }
+
+  return (
+    <BottomSheet open={open} title="메모 작업" onClose={onClose}>
+      <div className="space-y-3 px-5 py-5">
+        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
+          {message.content}
+        </div>
+        <button
+          type="button"
+          onClick={onEdit}
+          className="w-full rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/5"
+        >
+          편집
+        </button>
+        <button
+          type="button"
+          onClick={onTransfer}
+          className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400"
+        >
+          프로젝트-쓰레드로 이동
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400"
+        >
+          삭제
+        </button>
+      </div>
+    </BottomSheet>
+  );
+}
+
+function TodoTransferSheet({
+  open,
+  busy,
+  message,
+  projects,
+  threadOptionsByProjectId,
+  selectedProjectId,
+  onEnsureProjectThreads,
+  onClose,
+  onSubmit
+}) {
+  const [projectId, setProjectId] = useState("");
+  const [threadMode, setThreadMode] = useState("existing");
+  const [threadId, setThreadId] = useState("");
+  const [threadName, setThreadName] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setProjectId("");
+      setThreadMode("existing");
+      setThreadId("");
+      setThreadName("");
+      return;
+    }
+
+    const nextProjectId = selectedProjectId || projects[0]?.id || "";
+    setProjectId(nextProjectId);
+    setThreadMode("existing");
+    setThreadId("");
+    setThreadName(createThreadTitleFromPrompt(message?.content ?? "") || "새 채팅창");
+  }, [message, open, projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!open || !projectId || !onEnsureProjectThreads) {
+      return;
+    }
+
+    void onEnsureProjectThreads(projectId);
+  }, [onEnsureProjectThreads, open, projectId]);
+
+  const availableThreads = useMemo(
+    () => threadOptionsByProjectId[projectId] ?? [],
+    [projectId, threadOptionsByProjectId]
+  );
+
+  if (!open || !message) {
+    return null;
+  }
+
+  return (
+    <BottomSheet
+      open={open}
+      title="프로젝트-쓰레드로 이동"
+      description="이 메모를 staged issue로 넘깁니다. 실행은 자동으로 시작되지 않습니다."
+      onClose={onClose}
+      variant="center"
+    >
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+
+          if (!projectId) {
+            return;
+          }
+
+          if (threadMode === "existing" && !threadId) {
+            return;
+          }
+
+          if (threadMode === "new" && !threadName.trim()) {
+            return;
+          }
+
+          const accepted = await onSubmit({
+            project_id: projectId,
+            thread_mode: threadMode,
+            thread_id: threadMode === "existing" ? threadId : null,
+            thread_name: threadMode === "new" ? threadName.trim() : null
+          });
+
+          if (accepted !== false) {
+            onClose();
+          }
+        }}
+      >
+        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
+          {message.content}
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-project">
+            프로젝트
+          </label>
+          <select
+            id="todo-transfer-project"
+            value={projectId}
+            onChange={(event) => {
+              setProjectId(event.target.value);
+              setThreadId("");
+            }}
+            className="w-full rounded-[1rem] border border-white/10 bg-[#0b1622] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          >
+            <option value="">프로젝트 선택</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => setThreadMode("existing")}
+            className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+              threadMode === "existing"
+                ? "bg-white text-slate-900"
+                : "border border-white/10 text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            기존 쓰레드
+          </button>
+          <button
+            type="button"
+            onClick={() => setThreadMode("new")}
+            className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+              threadMode === "new"
+                ? "bg-white text-slate-900"
+                : "border border-white/10 text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            신규 쓰레드
+          </button>
+        </div>
+
+        {threadMode === "existing" ? (
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-thread">
+              대상 쓰레드
+            </label>
+            <select
+              id="todo-transfer-thread"
+              value={threadId}
+              onChange={(event) => setThreadId(event.target.value)}
+              className="w-full rounded-[1rem] border border-white/10 bg-[#0b1622] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            >
+              <option value="">쓰레드 선택</option>
+              {availableThreads.map((thread) => (
+                <option key={thread.id} value={thread.id}>
+                  {thread.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-thread-name">
+              새 쓰레드 이름
+            </label>
+            <input
+              id="todo-transfer-thread-name"
+              type="text"
+              value={threadName}
+              onChange={(event) => setThreadName(event.target.value)}
+              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+            />
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !projectId || (threadMode === "existing" ? !threadId : !threadName.trim())}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "이동 중..." : "이동"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
+function TodoChatDetail({
+  chat,
+  messages,
+  loading,
+  error,
+  submitBusy,
+  onBack,
+  onRefresh,
+  onRename,
+  onDelete,
+  onSelectMessage,
+  onSubmitMessage
+}) {
+  const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
+  return (
+    <div className="flex min-h-[100dvh] flex-col">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-white">{chat?.title ?? "새 ToDo 채팅"}</p>
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+              <span>ToDo</span>
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+              <span>Preparation</span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRename}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M11 5H6a2 2 0 00-2 2v11a1 1 0 001 1h11a2 2 0 002-2v-5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              <path d="M18.5 2.5a2.12 2.12 0 113 3L12 15l-4 1 1-4 9.5-9.5z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-rose-500/20"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M6 7h12M9 7V4h6v3m-7 4v6m4-6v6m4-6v6M5 7l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                d="M4 4v5h.582m15.418 11v-5h-.581M5.007 9a7 7 0 0111.995-3m2.998 9a7 7 0 01-11.995 3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+              />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
+          {error ? (
+            <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+              {error}
+            </div>
+          ) : null}
+
+          {safeMessages.map((message) => (
+            <button
+              key={message.id}
+              type="button"
+              onClick={() => onSelectMessage(message)}
+              className="text-left"
+            >
+              <MessageBubble align="right" tone="brand" title="메모" meta={formatRelativeTime(message.updated_at)}>
+                <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+              </MessageBubble>
+            </button>
+          ))}
+
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+            </div>
+          ) : null}
+
+          {!loading && safeMessages.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/15 px-4 py-4 text-center text-sm text-slate-300">
+              아직 저장된 메모가 없습니다. 아래 입력창에서 아이디어를 남겨 주세요.
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2">
+        <div className="mx-auto w-full max-w-3xl">
+          <InlineIssueComposer
+            busy={submitBusy}
+            selectedProject={fakeProject}
+            onSubmit={({ prompt }) => onSubmitMessage(prompt)}
+            label="메모"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectInstructionDialog({ open, busy, project, instructionType, onClose, onSubmit }) {
   const [value, setValue] = useState("");
 
@@ -2787,19 +3402,26 @@ function MainPage({
   status,
   projects,
   threads,
+  todoChats,
+  threadOptionsByProjectId,
   threadDetail,
+  todoChatDetail,
   workspaceRoots,
   folderState,
   folderLoading,
   selectedWorkspacePath,
   selectedBridgeId,
-  selectedProjectId,
+  selectedScope,
   selectedThreadId,
+  selectedTodoChatId,
   draftThreadProjectId,
   search,
   loadingState,
   projectBusy,
   threadBusy,
+  todoBusy,
+  todoRenameBusy,
+  todoTransferBusy,
   projectInstructionBusy,
   renameBusy,
   utilityOpen,
@@ -2812,8 +3434,11 @@ function MainPage({
   onChangeThreadMessageFilter,
   onSelectBridge,
   onSelectProject,
+  onSelectTodoScope,
   onSelectThread,
+  onSelectTodoChat,
   onOpenNewThread,
+  onOpenNewTodoChat,
   onOpenUtility,
   onOpenProjectComposer,
   onOpenProjectInstructionDialog,
@@ -2831,9 +3456,17 @@ function MainPage({
   onSubmitProjectInstruction,
   onCreateThread,
   onAppendThreadMessage,
+  onSubmitTodoMessage,
   onRenameThread,
+  onRenameTodoChat,
   onDeleteThread,
+  onDeleteTodoChat,
   onDeleteProject,
+  onEditTodoMessage,
+  onDeleteTodoMessage,
+  onTransferTodoMessage,
+  onEnsureProjectThreads,
+  onRefreshTodoChat,
   onRefreshThreadDetail,
   onRefresh,
   onLogout,
@@ -2841,13 +3474,20 @@ function MainPage({
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [threadBeingEdited, setThreadBeingEdited] = useState(null);
+  const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
+  const [activeTodoMessage, setActiveTodoMessage] = useState(null);
+  const [todoMessageEditorOpen, setTodoMessageEditorOpen] = useState(false);
+  const [todoTransferOpen, setTodoTransferOpen] = useState(false);
   const projectLongPressTimerRef = useRef(null);
   const projectLongPressTriggeredRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
+  const isTodoScope = selectedScope?.kind === "todo";
+  const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const draftProject = projects.find((project) => project.id === draftThreadProjectId) ?? null;
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const selectedTodoChat = todoChats.find((chat) => chat.id === selectedTodoChatId) ?? null;
   const resolvedThread =
     selectedThread ??
     threadDetail?.thread ??
@@ -2866,6 +3506,16 @@ function MainPage({
           turn_id: null
         }
       : null);
+  const filteredTodoChats = useMemo(() => {
+    return todoChats.filter((chat) => {
+      const matchesSearch =
+        !searchKeyword ||
+        chat.title.toLowerCase().includes(searchKeyword) ||
+        (chat.last_message ?? "").toLowerCase().includes(searchKeyword);
+
+      return matchesSearch;
+    });
+  }, [searchKeyword, todoChats]);
   const filteredThreads = useMemo(() => {
     return threads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
@@ -2884,6 +3534,9 @@ function MainPage({
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
+  const todoChatMessages = todoChatDetail?.messages ?? [];
+  const todoChatLoading = todoChatDetail?.loading ?? false;
+  const todoChatError = todoChatDetail?.error ?? "";
   const clearPendingProjectLongPress = useCallback(() => {
     if (projectLongPressTimerRef.current) {
       clearTimeout(projectLongPressTimerRef.current);
@@ -2954,6 +3607,91 @@ function MainPage({
     },
     [onSelectProject]
   );
+
+  if (activeView === "todo" && selectedTodoChatId) {
+    return (
+      <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
+        <TodoChatDetail
+          chat={selectedTodoChat ?? todoChatDetail?.chat ?? null}
+          messages={todoChatMessages}
+          loading={todoChatLoading}
+          error={todoChatError}
+          submitBusy={todoBusy}
+          onBack={onBackToInbox}
+          onRefresh={onRefreshTodoChat}
+          onRename={() => setTodoChatBeingEdited(selectedTodoChat ?? todoChatDetail?.chat ?? null)}
+          onDelete={() => {
+            const targetChat = selectedTodoChat ?? todoChatDetail?.chat ?? null;
+
+            if (!targetChat) {
+              return;
+            }
+
+            void onDeleteTodoChat(targetChat.id);
+          }}
+          onSelectMessage={(message) => setActiveTodoMessage(message)}
+          onSubmitMessage={onSubmitTodoMessage}
+        />
+        <TodoChatRenameDialog
+          open={Boolean(todoChatBeingEdited)}
+          busy={todoRenameBusy}
+          chat={todoChatBeingEdited}
+          onClose={() => setTodoChatBeingEdited(null)}
+          onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
+        />
+        <TodoMessageActionSheet
+          open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
+          message={activeTodoMessage}
+          onClose={() => setActiveTodoMessage(null)}
+          onEdit={() => setTodoMessageEditorOpen(true)}
+          onDelete={async () => {
+            const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
+
+            if (accepted !== false) {
+              setActiveTodoMessage(null);
+            }
+          }}
+          onTransfer={() => setTodoTransferOpen(true)}
+        />
+        <TodoMessageEditorDialog
+          open={todoMessageEditorOpen}
+          busy={todoBusy}
+          message={activeTodoMessage}
+          onClose={() => setTodoMessageEditorOpen(false)}
+          onSubmit={async (content) => {
+            const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
+
+            if (accepted !== false) {
+              setTodoMessageEditorOpen(false);
+              setActiveTodoMessage(null);
+            }
+
+            return accepted;
+          }}
+        />
+        <TodoTransferSheet
+          open={todoTransferOpen}
+          busy={todoTransferBusy}
+          message={activeTodoMessage}
+          projects={projects}
+          threadOptionsByProjectId={threadOptionsByProjectId}
+          selectedProjectId={selectedProjectId}
+          onEnsureProjectThreads={onEnsureProjectThreads}
+          onClose={() => setTodoTransferOpen(false)}
+          onSubmit={async (payload) => {
+            const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
+
+            if (accepted !== false) {
+              setTodoTransferOpen(false);
+              setActiveTodoMessage(null);
+            }
+
+            return accepted;
+          }}
+        />
+      </div>
+    );
+  }
 
   if (activeView === "thread" && (resolvedThread || draftProject || selectedThreadId)) {
     const threadProject =
@@ -3055,6 +3793,15 @@ function MainPage({
         <main className="flex-1 px-4 pb-28 pt-2">
           <div className="border-b border-white/10 pb-3">
             <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+              <button
+                type="button"
+                onClick={() => onSelectTodoScope()}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+                  isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
+                }`}
+              >
+                ToDo
+              </button>
               {projects.map((project) => (
                 <button
                   key={project.id}
@@ -3066,7 +3813,7 @@ function MainPage({
                   onPointerCancel={handleProjectChipPointerCancel}
                   onContextMenu={(event) => event.preventDefault()}
                   className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
-                    project.id === selectedProjectId
+                    !isTodoScope && project.id === selectedProjectId
                       ? "bg-white text-slate-900"
                       : "bg-transparent text-slate-400 hover:text-white"
                   }`}
@@ -3078,7 +3825,26 @@ function MainPage({
           </div>
 
           <section className="mt-1">
-            {filteredThreads.length === 0 ? (
+            {isTodoScope ? (
+              filteredTodoChats.length === 0 ? (
+                <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+                  {loadingState === "loading"
+                    ? "데이터를 동기화하고 있습니다."
+                    : "조건에 맞는 ToDo 채팅이 없습니다. 새 ToDo 채팅을 만들어 아이디어를 쌓아 주세요."}
+                </div>
+              ) : (
+                filteredTodoChats.map((chat) => (
+                  <TodoChatListItem
+                    key={chat.id}
+                    chat={chat}
+                    active={chat.id === selectedTodoChatId}
+                    onOpen={onSelectTodoChat}
+                    onRename={(targetChat) => setTodoChatBeingEdited(targetChat)}
+                    onDelete={(targetChat) => void onDeleteTodoChat(targetChat.id)}
+                  />
+                ))
+              )
+            ) : filteredThreads.length === 0 ? (
               <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
                 {loadingState === "loading"
                   ? "데이터를 동기화하고 있습니다."
@@ -3102,11 +3868,11 @@ function MainPage({
         <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
           <button
             type="button"
-            onClick={() => onOpenNewThread(selectedProjectId)}
-            disabled={!selectedProject}
+            onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
+            disabled={isTodoScope ? false : !selectedProject}
             className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
           >
-            새 채팅창
+            {isTodoScope ? "새 ToDo 채팅" : "새 채팅창"}
           </button>
         </div>
       </div>
@@ -3117,6 +3883,63 @@ function MainPage({
         thread={threadBeingEdited}
         onClose={() => setThreadBeingEdited(null)}
         onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
+      />
+      <TodoChatRenameDialog
+        open={Boolean(todoChatBeingEdited)}
+        busy={todoRenameBusy}
+        chat={todoChatBeingEdited}
+        onClose={() => setTodoChatBeingEdited(null)}
+        onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
+      />
+      <TodoMessageActionSheet
+        open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
+        message={activeTodoMessage}
+        onClose={() => setActiveTodoMessage(null)}
+        onEdit={() => setTodoMessageEditorOpen(true)}
+        onDelete={async () => {
+          const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
+
+          if (accepted !== false) {
+            setActiveTodoMessage(null);
+          }
+        }}
+        onTransfer={() => setTodoTransferOpen(true)}
+      />
+      <TodoMessageEditorDialog
+        open={todoMessageEditorOpen}
+        busy={todoBusy}
+        message={activeTodoMessage}
+        onClose={() => setTodoMessageEditorOpen(false)}
+        onSubmit={async (content) => {
+          const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
+
+          if (accepted !== false) {
+            setTodoMessageEditorOpen(false);
+            setActiveTodoMessage(null);
+          }
+
+          return accepted;
+        }}
+      />
+      <TodoTransferSheet
+        open={todoTransferOpen}
+        busy={todoTransferBusy}
+        message={activeTodoMessage}
+        projects={projects}
+        threadOptionsByProjectId={threadOptionsByProjectId}
+        selectedProjectId={selectedProjectId}
+        onEnsureProjectThreads={onEnsureProjectThreads}
+        onClose={() => setTodoTransferOpen(false)}
+        onSubmit={async (payload) => {
+          const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
+
+          if (accepted !== false) {
+            setTodoTransferOpen(false);
+            setActiveTodoMessage(null);
+          }
+
+          return accepted;
+        }}
       />
       <UtilitySheet
         open={utilityOpen}
@@ -3175,14 +3998,18 @@ export default function App() {
   });
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
+  const [threadListsByProjectId, setThreadListsByProjectId] = useState({});
+  const [todoChats, setTodoChats] = useState([]);
   const [threadDetails, setThreadDetails] = useState({});
+  const [todoChatDetails, setTodoChatDetails] = useState({});
   const [workspaceRoots, setWorkspaceRoots] = useState([]);
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
   const [folderLoading, setFolderLoading] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedScope, setSelectedScope] = useState({ kind: "project", id: "" });
   const [selectedThreadId, setSelectedThreadId] = useState("");
+  const [selectedTodoChatId, setSelectedTodoChatId] = useState("");
   const [draftThreadProjectId, setDraftThreadProjectId] = useState("");
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
@@ -3193,6 +4020,9 @@ export default function App() {
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
   const [threadBusy, setThreadBusy] = useState(false);
+  const [todoBusy, setTodoBusy] = useState(false);
+  const [todoRenameBusy, setTodoRenameBusy] = useState(false);
+  const [todoTransferBusy, setTodoTransferBusy] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
@@ -3203,13 +4033,34 @@ export default function App() {
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
   const pendingUpdateActivatorRef = useRef(null);
   const threadLoadRequestIdRef = useRef(0);
+  const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
   );
+  const selectedProjectId = selectedScope.kind === "project" ? selectedScope.id : "";
+  const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
+  const updateThreadCache = useCallback((projectId, nextThreads) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    if (!normalizedProjectId) {
+      return;
+    }
+
+    setThreadListsByProjectId((current) => ({
+      ...current,
+      [normalizedProjectId]: mergeThreads([], nextThreads)
+    }));
+  }, []);
+  const selectProjectScope = useCallback((projectId) => {
+    setSelectedScope({ kind: "project", id: projectId });
+  }, []);
+  const selectTodoScope = useCallback(() => {
+    setSelectedScope({ kind: "todo", id: TODO_SCOPE_ID });
+  }, []);
   const currentThreadDetailVersion = currentThreadDetail?.version ?? null;
   const currentThreadDetailLoading = currentThreadDetail?.loading ?? false;
   const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
@@ -3324,6 +4175,84 @@ export default function App() {
     [selectedBridgeId, session?.loginId, threads]
   );
 
+  const loadTodoChatMessages = useCallback(
+    async (chatId, { force = false } = {}) => {
+      if (!session?.loginId || !selectedBridgeId || !chatId) {
+        return;
+      }
+
+      const requestId = todoChatLoadRequestIdRef.current + 1;
+      todoChatLoadRequestIdRef.current = requestId;
+
+      setTodoChatDetails((current) => {
+        const currentEntry = current[chatId];
+
+        if (!force && currentEntry?.loading) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [chatId]: {
+            ...currentEntry,
+            loading: true,
+            error: "",
+            messages: currentEntry?.messages ?? []
+          }
+        };
+      });
+
+      try {
+        const payload = await apiRequest(
+          `/api/todo/chats/${chatId}/messages?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        );
+
+        if (todoChatLoadRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setTodoChatDetails((current) => ({
+          ...current,
+          [chatId]: {
+            loading: false,
+            error: "",
+            chat: normalizeTodoChat(payload?.chat),
+            messages: (payload?.messages ?? []).map(normalizeTodoMessage).filter(Boolean),
+            fetchedAt: Date.now()
+          }
+        }));
+      } catch (error) {
+        if (todoChatLoadRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setTodoChatDetails((current) => ({
+          ...current,
+          [chatId]: {
+            ...current[chatId],
+            loading: false,
+            error: error.message ?? "메모를 불러오지 못했습니다."
+          }
+        }));
+      }
+    },
+    [selectedBridgeId, session?.loginId]
+  );
+
+  async function loadTodoChats(sessionArg, bridgeId) {
+    if (!sessionArg?.loginId || !bridgeId) {
+      setTodoChats([]);
+      return [];
+    }
+
+    const payload = await apiRequest(
+      `/api/todo/chats?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+    const nextChats = mergeTodoChats([], payload?.chats ?? []);
+    setTodoChats(nextChats);
+    return nextChats;
+  }
+
   const scheduleThreadMessagesReload = useCallback((threadId, options = {}) => {
     if (!threadId) {
       return;
@@ -3367,6 +4296,9 @@ export default function App() {
     if (!sessionArg?.loginId || !bridgeId) {
       setProjects([]);
       setThreads([]);
+      setThreadListsByProjectId({});
+      setTodoChats([]);
+      setTodoChatDetails({});
       setStatus({
         app_server: {
           connected: false,
@@ -3382,26 +4314,42 @@ export default function App() {
     setLoadingState("loading");
 
     try {
-      const [nextStatus, nextProjects] = await Promise.all([
+      const [nextStatus, nextProjects, nextTodoChats] = await Promise.all([
         apiRequest(
           `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         ),
         apiRequest(
           `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+        ),
+        apiRequest(
+          `/api/todo/chats?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         )
       ]);
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
+      setTodoChats(mergeTodoChats([], nextTodoChats.chats ?? []));
+      setTodoChatDetails({});
       const nextProjectId =
         selectedProjectId && nextProjects.projects?.some((project) => project.id === selectedProjectId)
           ? selectedProjectId
           : nextProjects.projects?.[0]?.id || "";
 
-      setSelectedProjectId(nextProjectId);
+      setSelectedScope((current) => {
+        if (current.kind === "todo") {
+          return current;
+        }
+
+        return {
+          kind: "project",
+          id: nextProjectId
+        };
+      });
+
+      setThreadListsByProjectId({});
 
       if (nextProjectId) {
-        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId);
+        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, { applyToInbox: true });
         setSelectedThreadId((current) =>
           current && nextThreads.some((thread) => thread.id === current) ? current : nextThreads[0]?.id || ""
         );
@@ -3416,18 +4364,23 @@ export default function App() {
     }
   }
 
-  async function loadProjectThreads(sessionArg, bridgeId, projectId) {
+  async function loadProjectThreads(sessionArg, bridgeId, projectId, options = {}) {
     if (!sessionArg?.loginId || !bridgeId || !projectId) {
-      setThreads([]);
       return [];
     }
 
     const payload = await apiRequest(
       `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
     );
+    const nextThreads = mergeThreads([], payload?.threads ?? []);
 
-    setThreads(mergeThreads([], payload?.threads ?? []));
-    return payload?.threads ?? [];
+    updateThreadCache(projectId, nextThreads);
+
+    if (options.applyToInbox !== false) {
+      setThreads(nextThreads);
+    }
+
+    return nextThreads;
   }
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
@@ -3687,21 +4640,62 @@ export default function App() {
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
           setProjects(nextProjects);
-          setSelectedProjectId((current) => {
-            if (current && nextProjects.some((project) => project.id === current)) {
+          setSelectedScope((current) => {
+            if (current.kind === "todo") {
               return current;
             }
 
-            return nextProjects[0]?.id || "";
+            if (current.id && nextProjects.some((project) => project.id === current.id)) {
+              return current;
+            }
+
+            return {
+              kind: "project",
+              id: nextProjects[0]?.id || ""
+            };
           });
+          return;
+        }
+
+        if (payload.type === "bridge.todoChats.updated") {
+          const nextChats = mergeTodoChats([], payload.payload?.chats ?? []);
+          setTodoChats(nextChats);
+          setSelectedTodoChatId((current) => (current && nextChats.some((chat) => chat.id === current) ? current : ""));
+          return;
+        }
+
+        if (payload.type === "bridge.todoMessages.updated") {
+          const incomingChat = normalizeTodoChat(payload.payload?.chat);
+
+          if (incomingChat) {
+            setTodoChats((current) => upsertTodoChat(current, incomingChat));
+          }
+
+          if (incomingChat?.id && incomingChat.id === selectedTodoChatId) {
+            setTodoChatDetails((current) => ({
+              ...current,
+              [incomingChat.id]: {
+                ...(current[incomingChat.id] ?? {}),
+                loading: false,
+                error: "",
+                chat: incomingChat,
+                messages: (payload.payload?.messages ?? []).map(normalizeTodoMessage).filter(Boolean)
+              }
+            }));
+          }
           return;
         }
 
         if (payload.type === "bridge.projectThreads.updated") {
           const projectId = payload.payload?.project_id ?? "";
+          const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
+
+          if (projectId) {
+            updateThreadCache(projectId, nextThreads);
+          }
 
           if (!projectId || projectId === selectedProjectId) {
-            setThreads(mergeThreads([], payload.payload?.threads ?? []));
+            setThreads(nextThreads);
           }
 
           if (selectedThreadId && payload.payload?.threads?.some((thread) => thread.id === selectedThreadId)) {
@@ -3773,7 +4767,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [loadThreadMessages, scheduleThreadMessagesReload, selectedBridgeId, selectedProjectId, selectedThreadId, session]);
+  }, [loadThreadMessages, scheduleThreadMessagesReload, selectedBridgeId, selectedProjectId, selectedThreadId, selectedTodoChatId, session, updateThreadCache]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -3788,7 +4782,7 @@ export default function App() {
       return;
     }
 
-    void loadProjectThreads(session, selectedBridgeId, selectedProjectId);
+    void loadProjectThreads(session, selectedBridgeId, selectedProjectId, { applyToInbox: true });
   }, [selectedBridgeId, selectedProjectId, session]);
 
   useEffect(() => {
@@ -3841,10 +4835,16 @@ export default function App() {
 
   useEffect(() => {
     threadLoadRequestIdRef.current += 1;
+    todoChatLoadRequestIdRef.current += 1;
 
-    setSelectedProjectId("");
+    setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
+    setSelectedTodoChatId("");
     setDraftThreadProjectId("");
+    setThreadListsByProjectId({});
+    setTodoChats([]);
+    setTodoChatDetails({});
+    setThreadDetails({});
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -3856,10 +4856,14 @@ export default function App() {
   }, [selectedThreadId]);
 
   useEffect(() => {
-    if (!selectedProjectId && projects.length > 0) {
-      setSelectedProjectId(projects[0].id);
+    if (selectedScope.kind === "todo") {
+      return;
     }
-  }, [projects, selectedProjectId]);
+
+    if (!selectedProjectId && projects.length > 0) {
+      selectProjectScope(projects[0].id);
+    }
+  }, [projects, selectProjectScope, selectedProjectId, selectedScope.kind]);
 
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
@@ -3872,6 +4876,10 @@ export default function App() {
   }, [selectedThreadId, threads]);
 
   useEffect(() => {
+    if (selectedScope.kind !== "project") {
+      return;
+    }
+
     if (!selectedProjectId) {
       return;
     }
@@ -3900,7 +4908,15 @@ export default function App() {
     if (draftThreadProjectId === selectedProjectId) {
       setDraftThreadProjectId("");
     }
-  }, [draftThreadProjectId, selectedProjectId, selectedThreadId, threads]);
+  }, [draftThreadProjectId, selectedProjectId, selectedScope.kind, selectedThreadId, threads]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId || activeView !== "todo" || !selectedTodoChatId) {
+      return;
+    }
+
+    void loadTodoChatMessages(selectedTodoChatId);
+  }, [activeView, loadTodoChatMessages, selectedBridgeId, selectedTodoChatId, session?.loginId]);
 
   const handleLogin = async ({ loginId, password, rememberDevice }) => {
     setLoginState({ loading: true, error: "" });
@@ -3938,18 +4954,364 @@ export default function App() {
     setBridges([]);
     setProjects([]);
     setThreads([]);
+    setThreadListsByProjectId({});
+    setTodoChats([]);
     setThreadDetails({});
+    setTodoChatDetails({});
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
-    setSelectedProjectId("");
+    setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
+    setSelectedTodoChatId("");
     setDraftThreadProjectId("");
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
     setActiveView("inbox");
   };
+
+  const handleSelectTodoScope = useCallback(() => {
+    selectTodoScope();
+    setSelectedThreadId("");
+    setDraftThreadProjectId("");
+    setActiveView("inbox");
+  }, [selectTodoScope]);
+
+  const handleSelectTodoChat = useCallback((chatId) => {
+    if (!chatId) {
+      return;
+    }
+
+    selectTodoScope();
+    setSelectedThreadId("");
+    setDraftThreadProjectId("");
+    setSelectedTodoChatId(chatId);
+    setActiveView("todo");
+  }, [selectTodoScope]);
+
+  const ensureProjectThreadsLoaded = useCallback(
+    async (projectId, options = {}) => {
+      const normalizedProjectId = String(projectId ?? "").trim();
+
+      if (!session?.loginId || !selectedBridgeId || !normalizedProjectId) {
+        return [];
+      }
+
+      if (!options.force && Array.isArray(threadListsByProjectId[normalizedProjectId])) {
+        return threadListsByProjectId[normalizedProjectId];
+      }
+
+      return loadProjectThreads(session, selectedBridgeId, normalizedProjectId, {
+        applyToInbox: options.applyToInbox ?? (selectedScope.kind === "project" && selectedProjectId === normalizedProjectId)
+      });
+    },
+    [selectedBridgeId, selectedProjectId, selectedScope.kind, session, threadListsByProjectId]
+  );
+
+  const syncTodoChatPayload = useCallback((payload, fallbackChatId = "") => {
+    const nextChat = normalizeTodoChat(payload?.chat);
+    const targetChatId = nextChat?.id ?? fallbackChatId;
+
+    if (nextChat) {
+      setTodoChats((current) => upsertTodoChat(current, nextChat));
+    }
+
+    if (targetChatId) {
+      setTodoChatDetails((current) => ({
+        ...current,
+        [targetChatId]: {
+          ...(current[targetChatId] ?? {}),
+          loading: false,
+          error: "",
+          chat: nextChat ?? current[targetChatId]?.chat ?? null,
+          messages: Array.isArray(payload?.messages)
+            ? payload.messages.map(normalizeTodoMessage).filter(Boolean)
+            : current[targetChatId]?.messages ?? []
+        }
+      }));
+    }
+  }, []);
+
+  const handleOpenNewTodoChat = useCallback(async () => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return false;
+    }
+
+    setTodoBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/chats?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ title: "새 ToDo 채팅" })
+        }
+      );
+      const nextChats = mergeTodoChats(todoChats, response?.chats ?? []);
+      const createdChat = normalizeTodoChat(response?.chat);
+
+      setTodoChats(nextChats);
+
+      if (createdChat?.id) {
+        setTodoChatDetails((current) => ({
+          ...current,
+          [createdChat.id]: {
+            ...(current[createdChat.id] ?? {}),
+            loading: false,
+            error: "",
+            chat: createdChat,
+            messages: current[createdChat.id]?.messages ?? []
+          }
+        }));
+        selectTodoScope();
+        setSelectedTodoChatId(createdChat.id);
+        setSelectedThreadId("");
+        setDraftThreadProjectId("");
+        setActiveView("todo");
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setTodoBusy(false);
+    }
+  }, [selectedBridgeId, selectTodoScope, session, todoChats]);
+
+  const handleSubmitTodoMessage = useCallback(async (content) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedTodoChatId) {
+      return false;
+    }
+
+    setTodoBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/chats/${encodeURIComponent(selectedTodoChatId)}/messages?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ content })
+        }
+      );
+
+      syncTodoChatPayload(response, selectedTodoChatId);
+
+      if (Array.isArray(response?.chats)) {
+        setTodoChats(mergeTodoChats([], response.chats));
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setTodoBusy(false);
+    }
+  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+
+  const handleRenameTodoChat = useCallback(async (chatId, title) => {
+    if (!session?.loginId || !selectedBridgeId || !chatId) {
+      return false;
+    }
+
+    setTodoRenameBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/chats/${encodeURIComponent(chatId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ title })
+        }
+      );
+
+      if (Array.isArray(response?.chats)) {
+        setTodoChats(mergeTodoChats([], response.chats));
+      } else if (response?.chat) {
+        setTodoChats((current) => upsertTodoChat(current, response.chat));
+      }
+
+      if (response?.chat) {
+        setTodoChatDetails((current) => ({
+          ...current,
+          [chatId]: {
+            ...(current[chatId] ?? {}),
+            chat: normalizeTodoChat(response.chat)
+          }
+        }));
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setTodoRenameBusy(false);
+    }
+  }, [selectedBridgeId, session]);
+
+  const handleDeleteTodoChat = useCallback(async (chatId) => {
+    if (!session?.loginId || !selectedBridgeId || !chatId) {
+      return false;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm("이 ToDo 채팅을 삭제하시겠습니까?")) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/chats/${encodeURIComponent(chatId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      if (Array.isArray(response?.chats)) {
+        setTodoChats(mergeTodoChats([], response.chats));
+      } else {
+        setTodoChats((current) => current.filter((chat) => chat.id !== chatId));
+      }
+
+      setTodoChatDetails((current) => {
+        const next = { ...current };
+        delete next[chatId];
+        return next;
+      });
+
+      if (selectedTodoChatId === chatId) {
+        setSelectedTodoChatId("");
+        setActiveView("inbox");
+        selectTodoScope();
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [selectedBridgeId, selectedTodoChatId, selectTodoScope, session]);
+
+  const handleEditTodoMessage = useCallback(async (messageId, content) => {
+    if (!session?.loginId || !selectedBridgeId || !messageId || !selectedTodoChatId) {
+      return false;
+    }
+
+    setTodoBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/messages/${encodeURIComponent(messageId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ content })
+        }
+      );
+
+      syncTodoChatPayload(response, selectedTodoChatId);
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setTodoBusy(false);
+    }
+  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+
+  const handleDeleteTodoMessage = useCallback(async (messageId) => {
+    if (!session?.loginId || !selectedBridgeId || !messageId || !selectedTodoChatId) {
+      return false;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm("이 메모를 삭제하시겠습니까?")) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/messages/${encodeURIComponent(messageId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      syncTodoChatPayload(response, selectedTodoChatId);
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+
+  const handleTransferTodoMessage = useCallback(async (messageId, payload) => {
+    if (!session?.loginId || !selectedBridgeId || !messageId) {
+      return false;
+    }
+
+    setTodoTransferBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/todo/messages/${encodeURIComponent(messageId)}/transfer?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }
+      );
+
+      if (selectedTodoChatId) {
+        void loadTodoChatMessages(selectedTodoChatId, { force: true });
+      }
+
+      if (response?.thread) {
+        const normalizedThread = normalizeThread(response.thread);
+
+        if (normalizedThread) {
+          setThreadListsByProjectId((current) => ({
+            ...current,
+            [normalizedThread.project_id]: mergeThreads(current[normalizedThread.project_id] ?? [], [normalizedThread])
+          }));
+
+          if (selectedScope.kind === "project" && selectedProjectId === normalizedThread.project_id) {
+            setThreads((current) => upsertThread(current, normalizedThread));
+          }
+        }
+      } else if (payload?.project_id) {
+        void ensureProjectThreadsLoaded(payload.project_id, { force: true, applyToInbox: false });
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setTodoTransferBusy(false);
+    }
+  }, [ensureProjectThreadsLoaded, loadTodoChatMessages, selectedBridgeId, selectedProjectId, selectedScope.kind, selectedTodoChatId, session]);
+
+  const handleRefreshTodoChat = useCallback(() => {
+    if (!selectedTodoChatId) {
+      return;
+    }
+
+    void loadTodoChatMessages(selectedTodoChatId, { force: true });
+  }, [loadTodoChatMessages, selectedTodoChatId]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -4278,9 +5640,20 @@ export default function App() {
       }
 
       if (Array.isArray(response?.threads)) {
-        setThreads(mergeThreads([], response.threads));
+        const nextThreads = mergeThreads([], response.threads);
+        setThreads(nextThreads);
+        setThreadListsByProjectId((current) => {
+          const next = { ...current };
+          delete next[projectId];
+          return next;
+        });
       } else {
         setThreads((current) => current.filter((thread) => thread.project_id !== projectId));
+        setThreadListsByProjectId((current) => {
+          const next = { ...current };
+          delete next[projectId];
+          return next;
+        });
       }
 
       setThreadDetails((current) => {
@@ -4299,7 +5672,7 @@ export default function App() {
 
       if (selectedProjectId === projectId) {
         const fallbackProjectId = updatedProjects[0]?.id ?? "";
-        setSelectedProjectId(fallbackProjectId);
+        setSelectedScope({ kind: "project", id: fallbackProjectId });
         setSelectedThreadId("");
         setActiveView("inbox");
       }
@@ -4344,7 +5717,7 @@ export default function App() {
       }
 
       if (createdProject?.id) {
-        setSelectedProjectId(createdProject.id);
+        selectProjectScope(createdProject.id);
       }
 
       setSelectedWorkspacePath("");
@@ -4461,8 +5834,9 @@ export default function App() {
   };
 
   const handleSelectProject = (projectId) => {
-    setSelectedProjectId(projectId);
+    selectProjectScope(projectId);
     setSelectedThreadId("");
+    setSelectedTodoChatId("");
     setDraftThreadProjectId("");
     setActiveView("inbox");
   };
@@ -4483,8 +5857,9 @@ export default function App() {
       return;
     }
 
-    setSelectedProjectId(nextProjectId);
+    selectProjectScope(nextProjectId);
     setSelectedThreadId("");
+    setSelectedTodoChatId("");
     setDraftThreadProjectId(nextProjectId);
     setThreadMessageFilter("all");
     setActiveView("thread");
@@ -4551,13 +5926,17 @@ export default function App() {
         status={status}
         projects={projects}
         threads={threads}
+        todoChats={todoChats}
+        threadOptionsByProjectId={threadListsByProjectId}
+        todoChatDetail={currentTodoChatDetail}
         workspaceRoots={workspaceRoots}
         folderState={folderState}
         folderLoading={folderLoading}
         selectedWorkspacePath={selectedWorkspacePath}
         selectedBridgeId={selectedBridgeId}
-        selectedProjectId={selectedProjectId}
+        selectedScope={selectedScope}
         selectedThreadId={selectedThreadId}
+        selectedTodoChatId={selectedTodoChatId}
         draftThreadProjectId={draftThreadProjectId}
         search={search}
         loadingState={loadingState}
@@ -4565,6 +5944,9 @@ export default function App() {
         projectBusy={projectBusy}
         projectInstructionBusy={projectInstructionBusy}
         threadBusy={threadBusy}
+        todoBusy={todoBusy}
+        todoRenameBusy={todoRenameBusy}
+        todoTransferBusy={todoTransferBusy}
         renameBusy={renameBusy}
         projectComposerOpen={projectComposerOpen}
         projectInstructionDialogOpen={projectInstructionDialogOpen}
@@ -4578,8 +5960,11 @@ export default function App() {
         onChangeThreadMessageFilter={setThreadMessageFilter}
         onSelectBridge={setSelectedBridgeId}
         onSelectProject={handleSelectProject}
+        onSelectTodoScope={handleSelectTodoScope}
         onSelectThread={handleSelectThread}
+        onSelectTodoChat={handleSelectTodoChat}
         onOpenNewThread={handleOpenNewThread}
+        onOpenNewTodoChat={() => void handleOpenNewTodoChat()}
         onOpenUtility={() => setUtilityOpen(true)}
         onOpenProjectComposer={() => void handleOpenProjectComposer()}
         onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
@@ -4595,9 +5980,17 @@ export default function App() {
         onSubmitProjectInstruction={handleSubmitProjectInstruction}
         onCreateThread={handleCreateThread}
         onAppendThreadMessage={handleAppendThreadMessage}
+        onSubmitTodoMessage={handleSubmitTodoMessage}
         onRenameThread={handleRenameThread}
+        onRenameTodoChat={handleRenameTodoChat}
         onDeleteThread={handleDeleteThread}
+        onDeleteTodoChat={handleDeleteTodoChat}
         onDeleteProject={handleDeleteProject}
+        onEditTodoMessage={handleEditTodoMessage}
+        onDeleteTodoMessage={handleDeleteTodoMessage}
+        onTransferTodoMessage={handleTransferTodoMessage}
+        onEnsureProjectThreads={ensureProjectThreadsLoaded}
+        onRefreshTodoChat={handleRefreshTodoChat}
         onRefreshThreadDetail={() => {
           if (selectedThreadId) {
             void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });

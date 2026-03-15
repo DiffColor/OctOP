@@ -82,6 +82,10 @@ const pendingStartQueues = new Map();
 const issueCardsById = new Map();
 const issueMessagesById = new Map();
 const threadIssueIdsById = new Map();
+const todoChatsById = new Map();
+const todoChatIdsByUserId = new Map();
+const todoMessagesById = new Map();
+const todoMessageIdsByChatId = new Map();
 const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
@@ -179,6 +183,14 @@ function createHandoffSummaryId() {
   return sanitizeBridgeId(`summary-${randomUUID()}`);
 }
 
+function createTodoChatId() {
+  return sanitizeBridgeId(`todo-chat-${randomUUID()}`);
+}
+
+function createTodoMessageId() {
+  return sanitizeBridgeId(`todo-msg-${randomUUID()}`);
+}
+
 async function connectToNats() {
   let attempt = 0;
 
@@ -274,16 +286,24 @@ function ensureUserState(userId) {
 
   if (!users.has(normalized)) {
     const projectEntry = loadProjectEntry(normalized);
-    const restoredThreads = loadThreadsForUser(normalized);
+    const restoredState = loadThreadsForUser(normalized);
     users.set(normalized, {
       projects: loadProjectsForUser(normalized, projectEntry),
       deletedWorkspacePaths: projectEntry.deletedWorkspacePaths,
-      threadIds: restoredThreads,
+      threadIds: restoredState.threadIds,
+      todoChatIds: restoredState.todoChatIds,
       updated_at: now()
     });
   }
 
   const state = users.get(normalized);
+
+  if (!(state.todoChatIds instanceof Set)) {
+    state.todoChatIds = ensureTodoChatIdsForUser(normalized);
+  } else {
+    todoChatIdsByUserId.set(normalized, state.todoChatIds);
+  }
+
   const discoveredProjects = discoverProjectsForUser(normalized, state.deletedWorkspacePaths);
   const mergedProjects = mergeProjects(state.projects, discoveredProjects);
 
@@ -353,14 +373,20 @@ function loadThreadsForUser(loginId) {
   const stored = storage[loginId];
 
   if (!stored || typeof stored !== "object") {
-    return new Set();
+    return {
+      threadIds: new Set(),
+      todoChatIds: new Set()
+    };
   }
 
   if (Array.isArray(stored.project_thread_ids)) {
     return restoreThreadCentricState(loginId, stored);
   }
 
-  return migrateLegacyThreadState(loginId, stored);
+  return {
+    threadIds: migrateLegacyThreadState(loginId, stored),
+    todoChatIds: new Set()
+  };
 }
 
 function persistThreadsForUser(loginId) {
@@ -374,6 +400,8 @@ function persistThreadsForUser(loginId) {
   const storage = readThreadStorage();
   const threadIds = [...state.threadIds].filter((threadId) => threadStateById.has(threadId));
   const issueIds = threadIds.flatMap((threadId) => getThreadIssueIds(threadId));
+  const todoChatIds = [...(state.todoChatIds ?? new Set())].filter((chatId) => todoChatsById.has(chatId));
+  const todoMessageIds = todoChatIds.flatMap((chatId) => getTodoMessageIds(chatId));
   const queueIds = Object.fromEntries(
     threadIds.map((threadId) => [threadId, ensurePendingQueue(threadId)])
   );
@@ -428,6 +456,14 @@ function persistThreadsForUser(loginId) {
         .filter((issueId) => issueMessagesById.has(issueId))
         .map((issueId) => [issueId, issueMessagesById.get(issueId)])
     ),
+    todo_chat_ids: todoChatIds,
+    todo_chats: Object.fromEntries(todoChatIds.map((chatId) => [chatId, todoChatsById.get(chatId)])),
+    todo_message_ids_by_chat: Object.fromEntries(
+      todoChatIds.map((chatId) => [chatId, getTodoMessageIds(chatId)])
+    ),
+    todo_messages: Object.fromEntries(
+      todoMessageIds.map((messageId) => [messageId, todoMessagesById.get(messageId)])
+    ),
     updated_at: now()
   };
 
@@ -446,6 +482,7 @@ function persistThreadById(threadId) {
 
 function restoreThreadCentricState(loginId, stored) {
   const threadIds = new Set();
+  const todoChatIds = new Set();
 
   for (const threadId of stored.project_thread_ids ?? []) {
     if (!threadId) {
@@ -618,7 +655,49 @@ function restoreThreadCentricState(loginId, stored) {
     ensureRunningIssueTrackingForThread(threadId);
   }
 
-  return threadIds;
+  for (const chatId of stored.todo_chat_ids ?? []) {
+    if (!chatId) {
+      continue;
+    }
+
+    const chat = stored.todo_chats?.[chatId];
+
+    if (!chat) {
+      continue;
+    }
+
+    const normalizedChat = normalizeTodoChat(loginId, chat);
+    todoChatsById.set(chatId, normalizedChat);
+    todoChatIds.add(chatId);
+  }
+
+  for (const [chatId, messageIds] of Object.entries(stored.todo_message_ids_by_chat ?? {})) {
+    todoMessageIdsByChatId.set(
+      chatId,
+      Array.isArray(messageIds) ? messageIds.filter((messageId) => stored.todo_messages?.[messageId]) : []
+    );
+  }
+
+  for (const messageId of Object.keys(stored.todo_messages ?? {})) {
+    const message = stored.todo_messages?.[messageId];
+
+    if (!message) {
+      continue;
+    }
+
+    const normalizedMessage = normalizeTodoMessage(loginId, message);
+    todoMessagesById.set(messageId, normalizedMessage);
+  }
+
+  for (const chatId of todoChatIds) {
+    syncTodoChatSnapshot(chatId);
+  }
+
+  todoChatIdsByUserId.set(loginId, todoChatIds);
+  return {
+    threadIds,
+    todoChatIds
+  };
 }
 
 function migrateLegacyThreadState(loginId, stored) {
@@ -948,6 +1027,37 @@ function normalizeIssueCard(issue = {}) {
   };
 }
 
+function normalizeTodoChat(loginId, chat = {}) {
+  return {
+    id: sanitizeBridgeId(chat.id ?? createTodoChatId()),
+    bridge_id: BRIDGE_ID,
+    login_id: sanitizeUserId(chat.login_id ?? loginId),
+    title: String(chat.title ?? "").trim() || "새 ToDo 채팅",
+    last_message: String(chat.last_message ?? "").trim(),
+    message_count: Number.isFinite(Number(chat.message_count)) ? Number(chat.message_count) : 0,
+    created_at: chat.created_at ?? now(),
+    updated_at: chat.updated_at ?? now(),
+    deleted_at: chat.deleted_at ?? null
+  };
+}
+
+function normalizeTodoMessage(loginId, message = {}) {
+  return {
+    id: sanitizeBridgeId(message.id ?? createTodoMessageId()),
+    todo_chat_id: sanitizeBridgeId(message.todo_chat_id ?? message.todoChatId ?? createTodoChatId()),
+    bridge_id: BRIDGE_ID,
+    login_id: sanitizeUserId(message.login_id ?? loginId),
+    content: String(message.content ?? "").trim(),
+    status: String(message.status ?? "open").trim() || "open",
+    moved_to_project_id: String(message.moved_to_project_id ?? "").trim() || null,
+    moved_to_thread_id: String(message.moved_to_thread_id ?? "").trim() || null,
+    moved_to_issue_id: String(message.moved_to_issue_id ?? "").trim() || null,
+    created_at: message.created_at ?? now(),
+    updated_at: message.updated_at ?? now(),
+    deleted_at: message.deleted_at ?? null
+  };
+}
+
 function normalizePhysicalThread(physicalThread = {}, fallbackRootThread = null) {
   const tokenUsageState = normalizeThreadTokenUsage(
     physicalThread.token_usage ?? physicalThread.tokenUsage ?? null,
@@ -1018,6 +1128,97 @@ function getThreadIssueIds(threadId) {
   }
 
   return threadIssueIdsById.get(threadId);
+}
+
+function ensureTodoChatIdsForUser(userId) {
+  const normalized = sanitizeUserId(userId);
+
+  if (!todoChatIdsByUserId.has(normalized)) {
+    todoChatIdsByUserId.set(normalized, new Set());
+  }
+
+  return todoChatIdsByUserId.get(normalized);
+}
+
+function getTodoMessageIds(chatId) {
+  const normalized = sanitizeBridgeId(chatId);
+
+  if (!todoMessageIdsByChatId.has(normalized)) {
+    todoMessageIdsByChatId.set(normalized, []);
+  }
+
+  return todoMessageIdsByChatId.get(normalized);
+}
+
+function setTodoMessageIds(chatId, messageIds) {
+  todoMessageIdsByChatId.set(sanitizeBridgeId(chatId), messageIds);
+  persistTodoChatById(chatId);
+}
+
+function listTodoMessagesByChatId(chatId) {
+  return getTodoMessageIds(chatId)
+    .map((messageId) => todoMessagesById.get(messageId))
+    .filter(Boolean)
+    .filter((message) => !message.deleted_at)
+    .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+}
+
+function syncTodoChatSnapshot(chatId) {
+  const chat = todoChatsById.get(chatId);
+
+  if (!chat) {
+    return null;
+  }
+
+  const openMessages = listTodoMessagesByChatId(chatId).filter((message) => message.status === "open");
+  const latestMessage = openMessages.at(-1) ?? null;
+  const nextChat = {
+    ...chat,
+    last_message: latestMessage?.content ?? "",
+    message_count: openMessages.length,
+    updated_at: latestMessage?.updated_at ?? chat.updated_at
+  };
+
+  todoChatsById.set(chatId, nextChat);
+  return nextChat;
+}
+
+function persistTodoChatById(chatId) {
+  const owner = todoChatsById.get(chatId)?.login_id ?? null;
+
+  if (!owner) {
+    return;
+  }
+
+  persistThreadsForUser(owner);
+}
+
+function listTodoChats(userId) {
+  const state = ensureUserState(userId);
+  const todoChatIds = [...(state.todoChatIds ?? ensureTodoChatIdsForUser(userId))];
+  return todoChatIds
+    .map((chatId) => syncTodoChatSnapshot(chatId) ?? todoChatsById.get(chatId))
+    .filter(Boolean)
+    .filter((chat) => !chat.deleted_at)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function getTodoMessagesResponse(userId, chatId) {
+  const chat = todoChatsById.get(chatId) ?? null;
+
+  if (!chat || chat.deleted_at || chat.login_id !== sanitizeUserId(userId)) {
+    return {
+      chat: null,
+      messages: []
+    };
+  }
+
+  return {
+    chat: syncTodoChatSnapshot(chatId) ?? chat,
+    messages: listTodoMessagesByChatId(chatId).filter(
+      (message) => message.login_id === sanitizeUserId(userId) && message.status === "open"
+    )
+  };
 }
 
 function setThreadIssueIds(threadId, issueIds) {
@@ -2077,6 +2278,349 @@ function resolveWorkspaceFromPayload(loginId, payload = {}) {
 
 function listProjectState(userId) {
   return ensureUserState(userId).projects;
+}
+
+async function createTodoChat(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const state = ensureUserState(normalized);
+  const title = String(payload.title ?? "").trim() || "새 ToDo 채팅";
+  const chatId = createTodoChatId();
+  const chat = normalizeTodoChat(normalized, {
+    id: chatId,
+    title
+  });
+
+  todoChatsById.set(chatId, chat);
+  ensureTodoChatIdsForUser(normalized).add(chatId);
+  state.todoChatIds.add(chatId);
+  persistTodoChatById(chatId);
+  await publishEvent(normalized, "todo.chat.created", { chat });
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    chat,
+    chats: listTodoChats(normalized)
+  };
+}
+
+async function updateTodoChat(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const chatId = String(payload.todo_chat_id ?? payload.todoChatId ?? payload.chat_id ?? payload.chatId ?? "").trim();
+  const title = String(payload.title ?? "").trim();
+
+  if (!chatId) {
+    throw new Error("수정할 ToDo 채팅 id가 필요합니다.");
+  }
+
+  if (!title) {
+    throw new Error("ToDo 채팅 이름이 필요합니다.");
+  }
+
+  const current = todoChatsById.get(chatId);
+
+  if (!current || current.deleted_at || current.login_id !== normalized) {
+    throw new Error("ToDo 채팅을 찾을 수 없습니다.");
+  }
+
+  const next = normalizeTodoChat(normalized, {
+    ...current,
+    title,
+    updated_at: now()
+  });
+
+  todoChatsById.set(chatId, next);
+  persistTodoChatById(chatId);
+  await publishEvent(normalized, "todo.chat.updated", { chat: next });
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    chat: next,
+    chats: listTodoChats(normalized)
+  };
+}
+
+async function deleteTodoChat(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const chatId = String(payload.todo_chat_id ?? payload.todoChatId ?? payload.chat_id ?? payload.chatId ?? "").trim();
+
+  if (!chatId) {
+    throw new Error("삭제할 ToDo 채팅 id가 필요합니다.");
+  }
+
+  const current = todoChatsById.get(chatId);
+
+  if (!current || current.deleted_at || current.login_id !== normalized) {
+    throw new Error("ToDo 채팅을 찾을 수 없습니다.");
+  }
+
+  const deletedAt = now();
+  todoChatsById.set(chatId, {
+    ...current,
+    deleted_at: deletedAt,
+    updated_at: deletedAt
+  });
+
+  for (const messageId of getTodoMessageIds(chatId)) {
+    const currentMessage = todoMessagesById.get(messageId);
+
+    if (!currentMessage || currentMessage.deleted_at) {
+      continue;
+    }
+
+    todoMessagesById.set(messageId, {
+      ...currentMessage,
+      status: currentMessage.status === "moved" ? "moved" : "deleted",
+      deleted_at: deletedAt,
+      updated_at: deletedAt
+    });
+  }
+
+  persistTodoChatById(chatId);
+  await publishEvent(normalized, "todo.chat.deleted", {
+    todo_chat_id: chatId
+  });
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    todo_chat_id: chatId,
+    chats: listTodoChats(normalized)
+  };
+}
+
+async function createTodoMessage(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const chatId = String(payload.todo_chat_id ?? payload.todoChatId ?? payload.chat_id ?? payload.chatId ?? "").trim();
+  const content = String(payload.content ?? "").trim();
+
+  if (!chatId) {
+    throw new Error("메시지를 저장할 ToDo 채팅 id가 필요합니다.");
+  }
+
+  if (!content) {
+    throw new Error("내용을 입력해 주세요.");
+  }
+
+  const chat = todoChatsById.get(chatId);
+
+  if (!chat || chat.deleted_at || chat.login_id !== normalized) {
+    throw new Error("ToDo 채팅을 찾을 수 없습니다.");
+  }
+
+  const message = normalizeTodoMessage(normalized, {
+    id: createTodoMessageId(),
+    todo_chat_id: chatId,
+    content,
+    status: "open"
+  });
+
+  todoMessagesById.set(message.id, message);
+  setTodoMessageIds(chatId, [...getTodoMessageIds(chatId), message.id]);
+  syncTodoChatSnapshot(chatId);
+  persistTodoChatById(chatId);
+  await publishEvent(normalized, "todo.message.created", {
+    todo_chat_id: chatId,
+    message
+  });
+  await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, chatId));
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    message,
+    ...getTodoMessagesResponse(normalized, chatId)
+  };
+}
+
+async function updateTodoMessage(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const messageId = String(payload.todo_message_id ?? payload.todoMessageId ?? payload.message_id ?? payload.messageId ?? "").trim();
+  const content = String(payload.content ?? "").trim();
+
+  if (!messageId) {
+    throw new Error("수정할 ToDo 메시지 id가 필요합니다.");
+  }
+
+  if (!content) {
+    throw new Error("내용을 입력해 주세요.");
+  }
+
+  const current = todoMessagesById.get(messageId);
+
+  if (!current || current.deleted_at || current.login_id !== normalized) {
+    throw new Error("ToDo 메시지를 찾을 수 없습니다.");
+  }
+
+  if (current.status !== "open") {
+    throw new Error("이동되지 않은 ToDo 메시지만 수정할 수 있습니다.");
+  }
+
+  const next = normalizeTodoMessage(normalized, {
+    ...current,
+    content,
+    updated_at: now()
+  });
+
+  todoMessagesById.set(messageId, next);
+  syncTodoChatSnapshot(next.todo_chat_id);
+  persistTodoChatById(next.todo_chat_id);
+  await publishEvent(normalized, "todo.message.updated", {
+    todo_chat_id: next.todo_chat_id,
+    message: next
+  });
+  await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, next.todo_chat_id));
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    message: next,
+    ...getTodoMessagesResponse(normalized, next.todo_chat_id)
+  };
+}
+
+async function deleteTodoMessage(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const messageId = String(payload.todo_message_id ?? payload.todoMessageId ?? payload.message_id ?? payload.messageId ?? "").trim();
+
+  if (!messageId) {
+    throw new Error("삭제할 ToDo 메시지 id가 필요합니다.");
+  }
+
+  const current = todoMessagesById.get(messageId);
+
+  if (!current || current.deleted_at || current.login_id !== normalized) {
+    throw new Error("ToDo 메시지를 찾을 수 없습니다.");
+  }
+
+  const next = normalizeTodoMessage(normalized, {
+    ...current,
+    status: current.status === "moved" ? "moved" : "deleted",
+    deleted_at: current.deleted_at ?? now(),
+    updated_at: now()
+  });
+
+  todoMessagesById.set(messageId, next);
+  syncTodoChatSnapshot(next.todo_chat_id);
+  persistTodoChatById(next.todo_chat_id);
+  await publishEvent(normalized, "todo.message.deleted", {
+    todo_chat_id: next.todo_chat_id,
+    todo_message_id: messageId
+  });
+  await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, next.todo_chat_id));
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    todo_message_id: messageId,
+    ...getTodoMessagesResponse(normalized, next.todo_chat_id)
+  };
+}
+
+async function transferTodoMessage(userId, payload = {}) {
+  const normalized = sanitizeUserId(userId);
+  const messageId = String(payload.todo_message_id ?? payload.todoMessageId ?? payload.message_id ?? payload.messageId ?? "").trim();
+  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+  const threadMode = String(payload.thread_mode ?? payload.threadMode ?? "").trim().toLowerCase();
+  const requestedThreadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const requestedThreadName = String(payload.thread_name ?? payload.threadName ?? "").trim();
+
+  if (!messageId) {
+    throw new Error("이동할 ToDo 메시지 id가 필요합니다.");
+  }
+
+  if (!projectId) {
+    throw new Error("이동할 프로젝트 id가 필요합니다.");
+  }
+
+  if (!["existing", "new"].includes(threadMode)) {
+    throw new Error("thread_mode는 existing 또는 new 여야 합니다.");
+  }
+
+  const message = todoMessagesById.get(messageId);
+
+  if (!message || message.deleted_at || message.login_id !== normalized) {
+    throw new Error("ToDo 메시지를 찾을 수 없습니다.");
+  }
+
+  if (message.status !== "open") {
+    throw new Error("이미 이동되었거나 삭제된 ToDo 메시지입니다.");
+  }
+
+  const project = ensureUserState(normalized).projects.find((item) => item.id === projectId);
+
+  if (!project) {
+    throw new Error("프로젝트를 찾을 수 없습니다.");
+  }
+
+  let targetThread = null;
+
+  if (threadMode === "existing") {
+    targetThread = threadStateById.get(requestedThreadId) ?? null;
+
+    if (!targetThread || targetThread.deleted_at || threadOwners.get(targetThread.id) !== normalized) {
+      throw new Error("대상 thread를 찾을 수 없습니다.");
+    }
+
+    if (targetThread.project_id !== projectId) {
+      throw new Error("대상 thread가 선택한 프로젝트에 속하지 않습니다.");
+    }
+  } else {
+    const created = await createProjectThread(normalized, {
+      project_id: projectId,
+      name: requestedThreadName || createIssueTitle({ prompt: message.content })
+    });
+    targetThread = created.thread;
+  }
+
+  const createdIssue = await createThreadIssue(normalized, {
+    thread_id: targetThread.id,
+    title: createIssueTitle({ prompt: message.content }),
+    prompt: message.content
+  });
+
+  const movedMessage = normalizeTodoMessage(normalized, {
+    ...message,
+    status: "moved",
+    moved_to_project_id: projectId,
+    moved_to_thread_id: targetThread.id,
+    moved_to_issue_id: createdIssue.issue.id,
+    updated_at: now()
+  });
+
+  todoMessagesById.set(messageId, movedMessage);
+  syncTodoChatSnapshot(movedMessage.todo_chat_id);
+  persistTodoChatById(movedMessage.todo_chat_id);
+  await publishEvent(normalized, "todo.message.transferred", {
+    todo_chat_id: movedMessage.todo_chat_id,
+    message: movedMessage,
+    thread: targetThread,
+    issue: createdIssue.issue
+  });
+  await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, movedMessage.todo_chat_id));
+  await publishEvent(normalized, "bridge.todoChats.updated", {
+    chats: listTodoChats(normalized)
+  });
+
+  return {
+    accepted: true,
+    todo_message: movedMessage,
+    thread: targetThread,
+    issue: createdIssue.issue
+  };
 }
 
 function getProjectInstructionOverrides(userId, projectId) {
@@ -3773,6 +4317,9 @@ async function publishSnapshots(loginId) {
 
   await publishEvent(loginId, "bridge.status.updated", await bridgeStatus(loginId));
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
+  await publishEvent(loginId, "bridge.todoChats.updated", {
+    chats: listTodoChats(loginId)
+  });
   await publishEvent(loginId, "bridge.projectThreads.updated", {
     scope: "all",
     threads: listProjectThreads(loginId)
@@ -5090,6 +5637,10 @@ async function subscribeRequests() {
       handler: (userId) => ({ projects: listProjectState(userId) })
     },
     {
+      subject: "octop.user.*.bridge.*.todo.chats.get",
+      handler: (userId) => ({ chats: listTodoChats(userId) })
+    },
+    {
       subject: "octop.user.*.bridge.*.workspace.roots.get",
       handler: (userId) => ({ roots: listWorkspaceRoots(userId) })
     },
@@ -5122,6 +5673,11 @@ async function subscribeRequests() {
     {
       subject: "octop.user.*.bridge.*.thread.issue.detail.get",
       handler: (userId, body) => getIssueDetail(userId, body.issue_id ?? body.issueId ?? "")
+    },
+    {
+      subject: "octop.user.*.bridge.*.todo.messages.get",
+      handler: (userId, body) =>
+        getTodoMessagesResponse(userId, String(body.todo_chat_id ?? body.todoChatId ?? body.chat_id ?? body.chatId ?? ""))
     }
   ];
 
@@ -5145,6 +5701,153 @@ async function subscribeRequests() {
       }
     })();
   }
+
+  const todoChatCreateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.create");
+
+  (async () => {
+    for await (const message of todoChatCreateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await createTodoChat(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoChatUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.update");
+
+  (async () => {
+    for await (const message of todoChatUpdateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await updateTodoChat(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoChatDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.delete");
+
+  (async () => {
+    for await (const message of todoChatDeleteSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await deleteTodoChat(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoMessageCreateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.create");
+
+  (async () => {
+    for await (const message of todoMessageCreateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await createTodoMessage(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoMessageUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.update");
+
+  (async () => {
+    for await (const message of todoMessageUpdateSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await updateTodoMessage(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoMessageDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.delete");
+
+  (async () => {
+    for await (const message of todoMessageDeleteSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await deleteTodoMessage(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const todoMessageTransferSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.transfer");
+
+  (async () => {
+    for await (const message of todoMessageTransferSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await transferTodoMessage(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
 
   const projectCreateSubscription = nc.subscribe("octop.user.*.bridge.*.project.create");
 
@@ -5490,6 +6193,101 @@ createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/projects") {
     return sendJson(response, 200, { projects: listProjectState(userId) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/todo/chats") {
+    return sendJson(response, 200, { chats: listTodoChats(userId) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/todo/chats") {
+    try {
+      const body = await readJsonBody(request);
+      const payload = await createTodoChat(userId, body);
+      return sendJson(response, 201, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "PATCH" && /^\/api\/todo\/chats\/[^/]+$/.test(url.pathname)) {
+    try {
+      const chatId = url.pathname.split("/").at(-1);
+      const body = await readJsonBody(request);
+      const payload = await updateTodoChat(userId, {
+        ...body,
+        todo_chat_id: chatId
+      });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "DELETE" && /^\/api\/todo\/chats\/[^/]+$/.test(url.pathname)) {
+    try {
+      const chatId = url.pathname.split("/").at(-1);
+      const payload = await deleteTodoChat(userId, { todo_chat_id: chatId });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "GET" && /^\/api\/todo\/chats\/[^/]+\/messages$/.test(url.pathname)) {
+    const chatId = url.pathname.split("/")[4];
+    return sendJson(response, 200, getTodoMessagesResponse(userId, chatId));
+  }
+
+  if (request.method === "POST" && /^\/api\/todo\/chats\/[^/]+\/messages$/.test(url.pathname)) {
+    try {
+      const chatId = url.pathname.split("/")[4];
+      const body = await readJsonBody(request);
+      const payload = await createTodoMessage(userId, {
+        ...body,
+        todo_chat_id: chatId
+      });
+      return sendJson(response, 201, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "PATCH" && /^\/api\/todo\/messages\/[^/]+$/.test(url.pathname)) {
+    try {
+      const messageId = url.pathname.split("/").at(-1);
+      const body = await readJsonBody(request);
+      const payload = await updateTodoMessage(userId, {
+        ...body,
+        todo_message_id: messageId
+      });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "DELETE" && /^\/api\/todo\/messages\/[^/]+$/.test(url.pathname)) {
+    try {
+      const messageId = url.pathname.split("/").at(-1);
+      const payload = await deleteTodoMessage(userId, { todo_message_id: messageId });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/todo\/messages\/[^/]+\/transfer$/.test(url.pathname)) {
+    try {
+      const messageId = url.pathname.split("/")[4];
+      const body = await readJsonBody(request);
+      const payload = await transferTodoMessage(userId, {
+        ...body,
+        todo_message_id: messageId
+      });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
   }
 
   if (request.method === "GET" && url.pathname === "/api/workspace-roots") {

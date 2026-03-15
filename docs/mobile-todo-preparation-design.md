@@ -481,94 +481,96 @@ const isTodoScope = selectedScope.kind === "todo";
 
 ## A. 브리지
 
-- [ ] persisted state에 `todoChatsById`, `todoMessagesById` 추가
-- [ ] user 기준 todo chat index 추가
-- [ ] chat 기준 message index 추가
-- [ ] todo chat create/list/update/delete helper 추가
-- [ ] todo message create/list/update/delete helper 추가
-- [ ] todo message transfer helper 추가
-- [ ] transfer 시 신규 thread 생성 분기 구현
-- [ ] transfer 시 기존 thread 분기 구현
-- [ ] transfer issue를 `staged` 상태로 생성
-- [ ] transfer에서 `issues/start` 호출하지 않도록 보장
-- [ ] moved/deleted 상태 persistence 반영
+- [x] persisted state에 `todoChatsById`, `todoMessagesById` 추가
+- [x] user 기준 todo chat index 추가
+- [x] chat 기준 message index 추가
+- [x] todo chat create/list/update/delete helper 추가
+- [x] todo message create/list/update/delete helper 추가
+- [x] todo message transfer helper 추가
+- [x] transfer 시 신규 thread 생성 분기 구현
+- [x] transfer 시 기존 thread 분기 구현
+- [x] transfer issue를 `staged` 상태로 생성
+- [x] transfer에서 `issues/start` 호출하지 않도록 보장
+- [x] moved/deleted 상태 persistence 반영
 - [ ] state save/load 호환성 확인
 
 ## B. API Gateway
 
-- [ ] `GET /api/todo/chats` 추가
-- [ ] `POST /api/todo/chats` 추가
-- [ ] `PATCH /api/todo/chats/{chatId}` 추가
-- [ ] `DELETE /api/todo/chats/{chatId}` 추가
-- [ ] `GET /api/todo/chats/{chatId}/messages` 추가
-- [ ] `POST /api/todo/chats/{chatId}/messages` 추가
-- [ ] `PATCH /api/todo/messages/{messageId}` 추가
-- [ ] `DELETE /api/todo/messages/{messageId}` 추가
-- [ ] `POST /api/todo/messages/{messageId}/transfer` 추가
-- [ ] login_id / bridge_id 인증 규칙 기존 API와 동일하게 맞춤
+- [x] `GET /api/todo/chats` 추가
+- [x] `POST /api/todo/chats` 추가
+- [x] `PATCH /api/todo/chats/{chatId}` 추가
+- [x] `DELETE /api/todo/chats/{chatId}` 추가
+- [x] `GET /api/todo/chats/{chatId}/messages` 추가
+- [x] `POST /api/todo/chats/{chatId}/messages` 추가
+- [x] `PATCH /api/todo/messages/{messageId}` 추가
+- [x] `DELETE /api/todo/messages/{messageId}` 추가
+- [x] `POST /api/todo/messages/{messageId}/transfer` 추가
+- [x] login_id / bridge_id 인증 규칙 기존 API와 동일하게 맞춤
 
 ## C. 모바일 상태 모델
 
-- [ ] `selectedScope` 도입
-- [ ] `ToDo` 고정 chip 추가
-- [ ] project chip row와 ToDo chip 공존 구조로 변경
-- [ ] todo scope 선택 시 project thread 필터와 분리
-- [ ] `todoChats` 상태 추가
-- [ ] `selectedTodoChatId` 상태 추가
-- [ ] `todoChatDetails` 상태 추가
-- [ ] todo CRUD 전용 busy state 추가
+- [x] `selectedScope` 도입
+- [x] `ToDo` 고정 chip 추가
+- [x] project chip row와 ToDo chip 공존 구조로 변경
+- [x] todo scope 선택 시 project thread 필터와 분리
+- [x] `todoChats` 상태 추가
+- [x] `selectedTodoChatId` 상태 추가
+- [x] `todoChatDetails` 상태 추가
+- [x] todo CRUD 전용 busy state 추가
 
 ## D. 모바일 목록 화면
 
-- [ ] todo scope에서 todo chat 목록 렌더
-- [ ] project scope에서 기존 thread 목록 유지
-- [ ] 검색이 현재 scope에만 적용되도록 분기
-- [ ] 하단 CTA를 scope별로 `새 채팅창` / `새 ToDo 채팅`으로 분기
+- [x] todo scope에서 todo chat 목록 렌더
+- [x] project scope에서 기존 thread 목록 유지
+- [x] 검색이 현재 scope에만 적용되도록 분기
+- [x] 하단 CTA를 scope별로 `새 채팅창` / `새 ToDo 채팅`으로 분기
 
 ## E. ToDo chat 상세
 
-- [ ] `TodoChatDetail` 컴포넌트 추가
-- [ ] todo message 목록 렌더
-- [ ] composer 입력 시 message 저장만 수행
-- [ ] Codex 실행 경로와 완전히 분리
-- [ ] 빈 상태 메시지 추가
-- [ ] header/back 동선 기존 thread detail과 일관성 유지
+- [x] `TodoChatDetail` 컴포넌트 추가
+- [x] todo message 목록 렌더
+- [x] composer 입력 시 message 저장만 수행
+- [x] Codex 실행 경로와 완전히 분리
+- [x] 빈 상태 메시지 추가
+- [x] header/back 동선 기존 thread detail과 일관성 유지
 
 ## F. 메시지 액션
 
-- [ ] message 탭 또는 롱프레스 액션시트 추가
-- [ ] 편집 다이얼로그 추가
-- [ ] 삭제 확인 추가
-- [ ] 이동 액션 진입 추가
+- [x] message 탭 또는 롱프레스 액션시트 추가
+- [x] 편집 다이얼로그 추가
+- [x] 삭제 확인 추가
+- [x] 이동 액션 진입 추가
+- [x] 편집/이동 완료 후 액션시트 자동 종료
 
 ## G. 이동 플로우
 
-- [ ] 프로젝트 선택 step 추가
-- [ ] 기존 thread / 신규 thread 선택 step 추가
-- [ ] 기존 thread picker 추가
-- [ ] 신규 thread 이름 입력 step 추가
-- [ ] transfer 성공 후 moved 상태 반영
-- [ ] transfer 성공 후 대상 thread refresh
-- [ ] transfer 실패 시 prep message 유지
+- [x] 프로젝트 선택 step 추가
+- [x] 기존 thread / 신규 thread 선택 step 추가
+- [x] 기존 thread picker 추가
+- [x] 신규 thread 이름 입력 step 추가
+- [x] transfer 성공 후 moved 상태 반영
+- [x] transfer 성공 후 대상 thread refresh
+- [x] transfer 실패 시 prep message 유지
+- [x] 타 프로젝트 선택 시 기존 thread 목록 lazy load
 
 ## H. 일관성 / 운영
 
-- [ ] ToDo는 project 삭제 영향 없이 유지
-- [ ] bridge 변경 시 todo chats/messages도 bridge 기준으로 분리
-- [ ] logout 시 todo 상태 초기화
-- [ ] events 기반 실시간 반영 필요 여부 결정
-- [ ] moved message 표시 정책 결정
+- [x] ToDo는 project 삭제 영향 없이 유지
+- [x] bridge 변경 시 todo chats/messages도 bridge 기준으로 분리
+- [x] logout 시 todo 상태 초기화
+- [x] events 기반 실시간 반영 필요 여부 결정
+- [x] moved message 표시 정책 결정
 
 ## I. 검증
 
-- [ ] `npm --prefix apps/mobile run build`
-- [ ] `dotnet build apps/api/OctOP.Gateway.csproj`
-- [ ] `node --check services/codex-adapter/src/index.js`
-- [ ] ToDo chip 노출 수동 확인
-- [ ] todo chat 생성/rename/delete 수동 확인
-- [ ] todo message 생성/edit/delete 수동 확인
-- [ ] 기존 thread로 transfer 수동 확인
-- [ ] 신규 thread로 transfer 수동 확인
+- [x] `npm --prefix apps/mobile run build`
+- [x] `dotnet build apps/api/OctOP.Gateway.csproj`
+- [x] `node --check services/codex-adapter/src/index.js`
+- [x] ToDo chip 노출 수동 확인
+- [x] todo chat 생성/rename/delete 수동 확인
+- [x] todo message 생성/edit/delete 수동 확인
+- [x] 기존 thread로 transfer 수동 확인
+- [x] 신규 thread로 transfer 수동 확인
 - [ ] transfer 후 대시보드 Preparation 반영 수동 확인
 - [ ] 앱 재시작 후 todo data 유지 확인
 
