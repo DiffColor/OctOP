@@ -2571,8 +2571,8 @@ function TodoChatDetail({
         </div>
       </header>
 
-      <div className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
+      <div className="telegram-grid flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           {error ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
               {error}
@@ -2606,8 +2606,8 @@ function TodoChatDetail({
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2">
-        <div className="mx-auto w-full max-w-3xl">
+      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={fakeProject}
@@ -3404,8 +3404,8 @@ function ThreadDetail({
         </div>
       </header>
 
-      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-10">
+      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
               {formatDateTime(threadTimestamp)}
@@ -3514,8 +3514,8 @@ function ThreadDetail({
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-30 border-t border-white/10 bg-slate-950 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2">
-        <div className="mx-auto w-full max-w-3xl">
+      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={project}
