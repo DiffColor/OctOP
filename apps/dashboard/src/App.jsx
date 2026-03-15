@@ -5535,7 +5535,7 @@ export default function App() {
             );
 
             if (Array.isArray(reorderResponse?.issues)) {
-              setIssues(mergeIssues([], reorderResponse.issues));
+              applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, reorderResponse.issues);
             }
           }
         }
