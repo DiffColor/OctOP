@@ -543,13 +543,21 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "thread.status.changed":
-      return {
-        id: threadId,
-        project_id: projectId || currentThread?.project_id || null,
-        status: normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus),
-        last_event: "thread.status.changed",
-        updated_at: new Date().toISOString()
-      };
+      {
+        const nextStatus = normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus);
+
+        if (nextStatus === currentStatus) {
+          return null;
+        }
+
+        return {
+          id: threadId,
+          project_id: projectId || currentThread?.project_id || null,
+          status: nextStatus,
+          last_event: "thread.status.changed",
+          updated_at: new Date().toISOString()
+        };
+      }
     case "thread.tokenUsage.updated":
       return null;
     case "turn.started":
@@ -599,14 +607,28 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "turn.completed":
-      return {
-        id: threadId,
-        project_id: projectId || currentThread?.project_id || null,
-        status: payload.turn?.status === "completed" ? "idle" : "failed",
-        progress: payload.turn?.status === "completed" ? 100 : 0,
-        last_event: "turn.completed",
-        updated_at: new Date().toISOString()
-      };
+      {
+        const nextStatus = payload.turn?.status === "completed" ? "idle" : "failed";
+        const nextProgress = payload.turn?.status === "completed" ? 100 : 0;
+
+        if (
+          currentThread &&
+          currentThread.status === nextStatus &&
+          Number(currentThread.progress ?? 0) === nextProgress &&
+          currentThread.last_event === "turn.completed"
+        ) {
+          return null;
+        }
+
+        return {
+          id: threadId,
+          project_id: projectId || currentThread?.project_id || null,
+          status: nextStatus,
+          progress: nextProgress,
+          last_event: "turn.completed",
+          updated_at: new Date().toISOString()
+        };
+      }
     default:
       return null;
   }
