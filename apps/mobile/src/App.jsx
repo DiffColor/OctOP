@@ -4772,7 +4772,27 @@ export default function App() {
     let touchStartY = 0;
     let scrollTarget = null;
 
+    const resolveBoundaryLockTarget = (node) => {
+      let current = node instanceof HTMLElement ? node : node?.parentElement ?? null;
+
+      while (current) {
+        if (current.classList?.contains("touch-scroll-boundary-lock")) {
+          return current;
+        }
+
+        current = current.parentElement;
+      }
+
+      return null;
+    };
+
     const resolveScrollTarget = (node) => {
+      const boundaryTarget = resolveBoundaryLockTarget(node);
+
+      if (boundaryTarget) {
+        return boundaryTarget;
+      }
+
       let current = node instanceof HTMLElement ? node : node?.parentElement ?? null;
 
       while (current) {
@@ -4797,6 +4817,23 @@ export default function App() {
 
       touchStartY = event.touches[0].clientY;
       scrollTarget = resolveScrollTarget(event.target);
+
+      if (!scrollTarget || !(scrollTarget instanceof HTMLElement) || !scrollTarget.classList.contains("touch-scroll-boundary-lock")) {
+        return;
+      }
+
+      const maxScrollTop = Math.max(0, scrollTarget.scrollHeight - scrollTarget.clientHeight);
+      const boundaryEpsilon = 1;
+
+      if (maxScrollTop <= 0) {
+        return;
+      }
+
+      if (scrollTarget.scrollTop <= 0) {
+        scrollTarget.scrollTop = boundaryEpsilon;
+      } else if (scrollTarget.scrollTop >= maxScrollTop) {
+        scrollTarget.scrollTop = Math.max(boundaryEpsilon, maxScrollTop - boundaryEpsilon);
+      }
     };
 
     const handleTouchMove = (event) => {
@@ -4813,6 +4850,25 @@ export default function App() {
           ? document.scrollingElement ?? document.documentElement
           : scrollTarget;
       const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+
+      if (scrollContainer instanceof HTMLElement && scrollContainer.classList.contains("touch-scroll-boundary-lock")) {
+        const boundaryEpsilon = 1;
+        const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+
+        if (maxScrollTop <= 0) {
+          event.preventDefault();
+          return;
+        }
+
+        const isPullingPastTop = deltaY > 0 && scrollTop <= boundaryEpsilon;
+        const isPushingPastBottom = deltaY < 0 && scrollTop >= maxScrollTop - boundaryEpsilon;
+
+        if (isPullingPastTop || isPushingPastBottom) {
+          event.preventDefault();
+        }
+
+        return;
+      }
 
       if (deltaY > 0 && scrollTop <= 0) {
         event.preventDefault();
