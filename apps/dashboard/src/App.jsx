@@ -5900,10 +5900,6 @@ export default function App() {
       setDraggingPrepIssueIds([]);
       setSelectedIssueIds(draggedIds);
       setSelectedIssueId(threadId);
-      setSelectionAnchor({
-        threadId,
-        columnId
-      });
       setDraggingArchiveIssueIds(draggedIds);
     },
     clear: () => {
