@@ -598,6 +598,82 @@ function replaceArchivedIssuesForScope(currentState, bridgeId = "", threadId = "
   };
 }
 
+function pruneArchivedIssueScopesForBridge(currentState, bridgeId = "", validThreadIds = new Set()) {
+  if (!bridgeId || !(validThreadIds instanceof Set)) {
+    return currentState;
+  }
+
+  const bridgeState = currentState?.[bridgeId];
+
+  if (!bridgeState) {
+    return currentState;
+  }
+
+  let changed = false;
+  const nextBridgeState = {};
+
+  for (const [threadId, issues] of Object.entries(bridgeState)) {
+    if (!validThreadIds.has(threadId)) {
+      changed = true;
+      continue;
+    }
+
+    nextBridgeState[threadId] = issues;
+  }
+
+  if (!changed) {
+    return currentState;
+  }
+
+  const nextState = { ...currentState };
+
+  if (Object.keys(nextBridgeState).length === 0) {
+    delete nextState[bridgeId];
+    return nextState;
+  }
+
+  nextState[bridgeId] = nextBridgeState;
+  return nextState;
+}
+
+function pruneArchivedIssueSnapshotsForBridge(currentSnapshots, bridgeId = "", validThreadIds = new Set()) {
+  if (!bridgeId || !(validThreadIds instanceof Set)) {
+    return currentSnapshots;
+  }
+
+  const bridgeSnapshots = currentSnapshots?.[bridgeId];
+
+  if (!bridgeSnapshots) {
+    return currentSnapshots;
+  }
+
+  let changed = false;
+  const nextBridgeSnapshots = {};
+
+  for (const [threadId, issues] of Object.entries(bridgeSnapshots)) {
+    if (!validThreadIds.has(threadId)) {
+      changed = true;
+      continue;
+    }
+
+    nextBridgeSnapshots[threadId] = issues;
+  }
+
+  if (!changed) {
+    return currentSnapshots;
+  }
+
+  const nextSnapshots = { ...currentSnapshots };
+
+  if (Object.keys(nextBridgeSnapshots).length === 0) {
+    delete nextSnapshots[bridgeId];
+    return nextSnapshots;
+  }
+
+  nextSnapshots[bridgeId] = nextBridgeSnapshots;
+  return nextSnapshots;
+}
+
 function getCopy(language) {
   return COPY[language] ?? COPY.en;
 }
@@ -1040,13 +1116,14 @@ function upsertProjectThread(currentThreads, thread) {
 }
 
 function normalizeIssue(issue, fallbackThreadId = null) {
-  if (!issue?.id) {
+  if (!issue?.id || issue.deleted_at) {
     return null;
   }
 
   return {
     id: issue.id,
     thread_id: issue.thread_id ?? fallbackThreadId,
+    root_thread_id: issue.root_thread_id ?? issue.thread_id ?? fallbackThreadId,
     project_id: issue.project_id ?? null,
     title: issue.title ?? "",
     status: issue.status ?? "staged",
@@ -1057,7 +1134,8 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
     prompt: issue.prompt ?? "",
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
-    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null
+    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    continuity: issue.continuity ?? null
   };
 }
 
@@ -2483,6 +2561,7 @@ function PrepThreadCard({
   };
   return (
     <div
+      data-testid={`issue-card-${thread.id}`}
       draggable
       onDragStart={() => onDragStart(thread.id)}
       onDoubleClick={() => onEdit(thread.id)}
@@ -2556,6 +2635,7 @@ function TodoThreadCard({
   };
   return (
     <div
+      data-testid={`issue-card-${thread.id}`}
       draggable
       onDragStart={() => onDragStart(thread.id)}
       onDragOver={(event) => {
@@ -2659,6 +2739,7 @@ function ThreadCard({ language, thread, active, multiSelected, columnId, onSelec
 
   return (
     <button
+      data-testid={`issue-card-${thread.id}`}
       type="button"
       onClick={handleClick}
       draggable={typeof onDragStart === "function"}
@@ -2722,6 +2803,7 @@ function CompletedThreadCard({
   };
   return (
     <button
+      data-testid={`issue-card-${thread.id}`}
       type="button"
       onClick={handleClick}
       onDoubleClick={() => onOpen(thread.id)}
@@ -3817,6 +3899,7 @@ function MainPage({
                 {columns.map((column) => (
                   <section
                     key={column.id}
+                    data-testid={`board-column-${column.id}`}
                     className={`flex w-80 flex-col rounded-2xl ${column.id === "todo" ? "ring-1 ring-transparent" : ""}`}
                     onDragOver={(event) => {
                       if (column.id === "todo") {
@@ -4361,6 +4444,14 @@ export default function App() {
       setArchivedIssues(nextIssues);
     }
   }, []);
+  const clearArchivedIssuesForScope = useCallback((bridgeId, threadId) => {
+    if (!bridgeId || !threadId) {
+      return;
+    }
+
+    updateArchivedIssuesState((current) => replaceArchivedIssuesForScope(current, bridgeId, threadId, []));
+    replaceArchivedIssuesForCurrentScope(bridgeId, threadId, []);
+  }, [replaceArchivedIssuesForCurrentScope, updateArchivedIssuesState]);
   const applyIssueStateForScope = useCallback((bridgeId, threadId, nextIssues) => {
     const normalizedIssues = mergeIssues([], nextIssues ?? []);
     const { visibleIssues, archivedIssues: nextArchivedIssues } = partitionIssuesByArchiveState(
@@ -4401,6 +4492,23 @@ export default function App() {
   useEffect(() => {
     archivedIssuesStateRef.current = archivedIssuesState;
   }, [archivedIssuesState]);
+
+  useEffect(() => {
+    if (!selectedBridgeId) {
+      return;
+    }
+
+    const validThreadIds = new Set(
+      projectThreads.map((thread) => thread.id).filter((threadId) => typeof threadId === "string" && threadId.length > 0)
+    );
+
+    archivedIssueSnapshotsRef.current = pruneArchivedIssueSnapshotsForBridge(
+      archivedIssueSnapshotsRef.current,
+      selectedBridgeId,
+      validThreadIds
+    );
+    updateArchivedIssuesState((current) => pruneArchivedIssueScopesForBridge(current, selectedBridgeId, validThreadIds));
+  }, [projectThreads, selectedBridgeId, updateArchivedIssuesState]);
 
   useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
@@ -5655,6 +5763,7 @@ export default function App() {
       } else {
         setProjectThreads((current) => current.filter((thread) => thread.id !== threadId));
       }
+      clearArchivedIssuesForScope(selectedBridgeId, threadId);
       updateStatusCounts({ threads: Math.max((status.counts?.threads ?? 0) - 1, 0) });
 
       if (selectedProjectThreadId === threadId) {

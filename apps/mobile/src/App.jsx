@@ -2151,6 +2151,8 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
   const bubbleClassName =
     tone === "brand"
       ? "bg-telegram-500 text-white"
+      : tone === "system"
+        ? "border border-white/10 bg-white/[0.06] text-slate-200"
       : tone === "success"
         ? "bg-emerald-100 text-slate-900"
         : tone === "warn"
@@ -2158,10 +2160,11 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
           : tone === "danger"
             ? "bg-rose-100 text-slate-900"
             : "bg-white text-slate-900";
-  const wrapperClassName = align === "right" ? "justify-end" : "justify-start";
+  const wrapperClassName =
+    align === "right" ? "justify-end" : align === "center" ? "justify-center" : "justify-start";
 
   return (
-    <div className={`message-enter flex ${wrapperClassName}`}>
+    <div className={`message-enter flex ${wrapperClassName}`} data-testid={`message-bubble-${tone}`}>
       <article className={`max-w-[86%] rounded-[1.35rem] px-4 py-3 ${bubbleClassName}`}>
         {title ? <p className="text-xs font-semibold uppercase tracking-[0.16em] opacity-70">{title}</p> : null}
         <div className={title ? "mt-2" : ""}>{children}</div>
@@ -2278,7 +2281,12 @@ function ThreadDetail({
         return;
       }
 
-      const role = message.role === "assistant" ? "assistant" : "user";
+      const role =
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "system" || message.kind === "handoff_summary"
+            ? "system"
+            : "user";
       const content = String(message.content ?? "").trim();
       const timestamp = message.timestamp ?? thread.updated_at ?? thread.created_at ?? new Date().toISOString();
       const base = {
@@ -2287,6 +2295,17 @@ function ThreadDetail({
         content,
         timestamp
       };
+
+      if (role === "system") {
+        lastPrompt = null;
+        normalized.push({
+          ...base,
+          align: "center",
+          tone: "system",
+          title: message.kind === "handoff_summary" ? "핸드오프 요약" : "시스템"
+        });
+        return;
+      }
 
       if (role === "user") {
         lastPrompt = base;
@@ -2336,10 +2355,32 @@ function ThreadDetail({
         return;
       }
 
-      const role = message.role === "assistant" ? "assistant" : "user";
+      const role =
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "system" || message.kind === "handoff_summary"
+            ? "system"
+            : "user";
       const content = String(message.content ?? "").trim();
       const timestamp = message.timestamp ?? fallbackTimestamp;
       const identifier = message.id ?? `${role}-${index}`;
+
+      if (role === "system") {
+        commitGroup();
+        groups.push({
+          id: identifier,
+          prompt: message.kind === "handoff_summary" ? "핸드오프 요약" : "시스템 메시지",
+          promptAt: timestamp,
+          responses: [
+            {
+              id: `${identifier}-system`,
+              content,
+              timestamp
+            }
+          ]
+        });
+        return;
+      }
 
       if (role === "user") {
         commitGroup();

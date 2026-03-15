@@ -1,7 +1,7 @@
 {
   "name": "octop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageManager": "npm@10.9.2",
   "workspaces": [
     "apps/*",
@@ -20,6 +20,7 @@
     "build:mobile": "npm run build --workspace @octop/mobile",
     "build:dashboard": "npm run build --workspace @octop/dashboard",
     "build:api": "dotnet build apps/api/OctOP.Gateway.csproj",
-    "build:projector": "dotnet build services/projection-worker/OctOP.ProjectionWorker.csproj"
+    "build:projector": "dotnet build services/projection-worker/OctOP.ProjectionWorker.csproj",
+    "test:integration:bridge-rollover": "node --test tests/integration/root-thread-rollover.bridge.integration.test.mjs"
   }
 }
