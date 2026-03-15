@@ -1,4 +1,8 @@
-# OctOP
+<p align="center">
+  <img src="./design/icon.png" alt="OctOP icon" width="120" />
+</p>
+
+<h1 align="center">OctOP</h1>
 
 원격에서 프로젝트 이슈와 Codex 실행을 운영하는 플랫폼입니다.
 
