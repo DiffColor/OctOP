@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from "react";
+import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
@@ -1753,14 +1754,17 @@ function InlineIssueComposer({
 
   return (
     <>
-      {isRecording ? (
-        <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex justify-center">
-          <div className="flex items-center gap-2 rounded-full bg-rose-500/95 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/40">
-            <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" />
-            <span>음성 입력 중 · 버튼을 다시 누르면 종료됩니다</span>
-          </div>
-        </div>
-      ) : null}
+      {isRecording && typeof document !== "undefined"
+        ? createPortal(
+            <div className="pointer-events-none fixed inset-x-0 top-3 z-[80] flex justify-center px-4">
+              <div className="flex items-center gap-2 rounded-full bg-rose-500/95 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/40">
+                <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" />
+                <span>음성 입력 중</span>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
       <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
         <div className="flex items-end gap-3">
           <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
