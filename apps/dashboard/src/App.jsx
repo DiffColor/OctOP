@@ -940,6 +940,7 @@ function parseResponseBody(response, text) {
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
+    cache: options.cache ?? "no-store",
     headers: {
       Accept: "application/json",
       ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -4370,7 +4371,7 @@ export default function App() {
 
     return nextState;
   }, []);
-  const persistArchivedIssuesState = useCallback(async (sessionArg, nextState) => {
+  const persistArchivedIssuesState = useCallback(async (sessionArg, nextState, requestOptions = {}) => {
     if (!sessionArg?.loginId) {
       return;
     }
@@ -4378,6 +4379,7 @@ export default function App() {
     const normalizedState = normalizeArchivedIssuesState(nextState);
     await apiRequest(`/api/dashboard/archives?login_id=${encodeURIComponent(sessionArg.loginId)}`, {
       method: "PUT",
+      ...requestOptions,
       body: JSON.stringify({
         archives: normalizedState
       })
@@ -4415,9 +4417,30 @@ export default function App() {
       return;
     }
 
-    updateArchivedIssuesState((current) => replaceArchivedIssuesForScope(current, bridgeId, threadId, []));
+    const nextArchivedState = replaceArchivedIssuesForScope(
+      archivedIssuesStateRef.current,
+      bridgeId,
+      threadId,
+      []
+    );
+
+    updateArchivedIssuesState(nextArchivedState);
     replaceArchivedIssuesForCurrentScope(bridgeId, threadId, []);
-  }, [replaceArchivedIssuesForCurrentScope, updateArchivedIssuesState]);
+
+    if (session?.loginId) {
+      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
+        setRecentEvents((current) => [
+          {
+            id: createId(),
+            type: "dashboard.archives.save.failed",
+            timestamp: new Date().toISOString(),
+            summary: error.message
+          },
+          ...current
+        ].slice(0, 20));
+      });
+    }
+  }, [persistArchivedIssuesState, replaceArchivedIssuesForCurrentScope, session, updateArchivedIssuesState]);
   const applyIssueStateForScope = useCallback((bridgeId, threadId, nextIssues) => {
     const normalizedIssues = mergeIssues([], nextIssues ?? []);
     const { visibleIssues, archivedIssues: nextArchivedIssues } = partitionIssuesByArchiveState(
@@ -5310,19 +5333,18 @@ export default function App() {
       return;
     }
 
-    updateArchivedIssuesState((current) => {
-      const next = { ...current };
-      const bridgeMap = { ...(next[selectedBridgeId] ?? {}) };
-      const currentThreadIds = new Set(bridgeMap[selectedProjectThreadId] ?? []);
-
-      for (const archiveId of archiveableIds) {
-        currentThreadIds.add(archiveId);
+    const nextArchivedState = normalizeArchivedIssuesState({
+      ...archivedIssuesStateRef.current,
+      [selectedBridgeId]: {
+        ...(archivedIssuesStateRef.current[selectedBridgeId] ?? {}),
+        [selectedProjectThreadId]: Array.from(new Set([
+          ...(archivedIssuesStateRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []),
+          ...archiveableIds
+        ]))
       }
-
-      bridgeMap[selectedProjectThreadId] = Array.from(currentThreadIds);
-      next[selectedBridgeId] = bridgeMap;
-      return next;
     });
+
+    updateArchivedIssuesState(nextArchivedState);
     replaceArchivedIssuesForCurrentScope(
       selectedBridgeId,
       selectedProjectThreadId,
@@ -5336,6 +5358,20 @@ export default function App() {
     setIssues((current) => current.filter((issue) => !archiveableIds.includes(issue.id)));
     setSelectedIssueIds((current) => current.filter((threadId) => !archiveableIds.includes(threadId)));
     setDraggingArchiveIssueIds([]);
+
+    if (session?.loginId) {
+      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
+        setRecentEvents((current) => [
+          {
+            id: createId(),
+            type: "dashboard.archives.save.failed",
+            timestamp: new Date().toISOString(),
+            summary: error.message
+          },
+          ...current
+        ].slice(0, 20));
+      });
+    }
   };
 
   const handleRestoreArchivedIssues = (threadIds) => {
@@ -5343,42 +5379,34 @@ export default function App() {
       return;
     }
 
-    updateArchivedIssuesState((current) => {
-      const bridgeMap = current[selectedBridgeId];
+    const bridgeMap = archivedIssuesStateRef.current[selectedBridgeId];
+    const archived = bridgeMap?.[selectedProjectThreadId] ?? [];
+    const remaining = archived.filter((threadId) => !threadIds.includes(threadId));
 
-      if (!bridgeMap) {
-        return current;
+    if (remaining.length === archived.length) {
+      return;
+    }
+
+    const nextArchivedState = normalizeArchivedIssuesState({
+      ...archivedIssuesStateRef.current,
+      [selectedBridgeId]: {
+        ...(bridgeMap ?? {}),
+        [selectedProjectThreadId]: remaining
       }
-
-      const archived = bridgeMap[selectedProjectThreadId];
-
-      if (!archived?.length) {
-        return current;
-      }
-
-      const remaining = archived.filter((threadId) => !threadIds.includes(threadId));
-
-      if (remaining.length === archived.length) {
-        return current;
-      }
-
-      const next = {
-        ...current,
-        [selectedBridgeId]: { ...bridgeMap }
-      };
-
-      if (remaining.length === 0) {
-        delete next[selectedBridgeId][selectedProjectThreadId];
-
-        if (Object.keys(next[selectedBridgeId]).length === 0) {
-          delete next[selectedBridgeId];
-        }
-      } else {
-        next[selectedBridgeId][selectedProjectThreadId] = remaining;
-      }
-
-      return next;
     });
+
+    if (remaining.length === 0) {
+      const nextBridgeMap = { ...(nextArchivedState[selectedBridgeId] ?? {}) };
+      delete nextBridgeMap[selectedProjectThreadId];
+
+      if (Object.keys(nextBridgeMap).length === 0) {
+        delete nextArchivedState[selectedBridgeId];
+      } else {
+        nextArchivedState[selectedBridgeId] = nextBridgeMap;
+      }
+    }
+
+    updateArchivedIssuesState(nextArchivedState);
     const restoredIssues = (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter((issue) =>
       threadIds.includes(issue.id)
     );
@@ -5391,6 +5419,20 @@ export default function App() {
     );
     setIssues((current) => mergeIssues(current, restoredIssues));
     setDraggingArchiveIssueIds([]);
+
+    if (session?.loginId) {
+      void persistArchivedIssuesState(session, nextArchivedState, { keepalive: true }).catch((error) => {
+        setRecentEvents((current) => [
+          {
+            id: createId(),
+            type: "dashboard.archives.save.failed",
+            timestamp: new Date().toISOString(),
+            summary: error.message
+          },
+          ...current
+        ].slice(0, 20));
+      });
+    }
   };
 
   const handleStartSelectedIssues = async () => {

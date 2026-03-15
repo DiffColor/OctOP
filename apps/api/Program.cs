@@ -140,6 +140,8 @@ app.MapGet("/api/dashboard/archives", async (HttpContext httpContext, OctopStore
   var userId = ResolveIdentityKey(httpContext);
   cancellationToken.ThrowIfCancellationRequested();
   var archives = await octopStore.GetDashboardArchivesAsync(userId);
+  httpContext.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+  httpContext.Response.Headers.Pragma = "no-cache";
   return Results.Text(
     new JsonObject
     {
@@ -155,6 +157,8 @@ app.MapPut("/api/dashboard/archives", async (HttpContext httpContext, OctopStore
   var archives = NormalizeDashboardArchiveState(body?["archives"] ?? body);
 
   await octopStore.UpsertDashboardArchivesAsync(userId, JObject.Parse(archives.ToJsonString()));
+  httpContext.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+  httpContext.Response.Headers.Pragma = "no-cache";
 
   return Results.Text(
     new JsonObject
