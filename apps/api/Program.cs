@@ -15,7 +15,7 @@ var gatewayPort = int.TryParse(Environment.GetEnvironmentVariable("OCTOP_GATEWAY
   : 4000;
 var natsUrl = Environment.GetEnvironmentVariable("OCTOP_NATS_URL") ?? "nats://ilysrv.ddns.net:4222";
 var corsOrigins = (Environment.GetEnvironmentVariable("OCTOP_DASHBOARD_ORIGIN")
-    ?? "https://octop.pages.dev,https://octop.ilycode.app")
+    ?? "https://octop-admin.pages.dev,https://octop.turtlelab.app,https://octop-mobile.pages.dev,https://octop-m.turtlelab.app")
   .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 var licenseHubApiBaseUrl =
   Environment.GetEnvironmentVariable("OCTOP_LICENSEHUB_API_BASE_URL") ?? "https://licensehub.ilycode.app";
