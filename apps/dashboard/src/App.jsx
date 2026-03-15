@@ -1247,6 +1247,14 @@ function normalizeIssue(issue, fallbackThreadId = null) {
 function mergeIssues(currentIssues, nextIssues) {
   const nextById = new Map();
 
+  for (const issue of currentIssues) {
+    const normalized = normalizeIssue(issue);
+
+    if (normalized) {
+      nextById.set(normalized.id, normalized);
+    }
+  }
+
   for (const issue of nextIssues) {
     const normalized = normalizeIssue(issue);
 

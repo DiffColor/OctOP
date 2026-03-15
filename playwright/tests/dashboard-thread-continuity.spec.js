@@ -97,6 +97,18 @@ const mergedIssuesPayload = {
       executed_physical_thread_id: 'pth-1',
       updated_at: '2026-03-15T10:01:30.000Z',
       created_at: '2026-03-15T09:54:00.000Z'
+    },
+    {
+      id: 'issue-closed-third',
+      thread_id: rootThreadId,
+      root_thread_id: rootThreadId,
+      title: 'Closed Third',
+      prompt: '현재 워크스페이스 경로',
+      status: 'completed',
+      progress: 100,
+      executed_physical_thread_id: 'pth-1',
+      updated_at: '2026-03-15T10:01:00.000Z',
+      created_at: '2026-03-15T09:53:00.000Z'
     }
   ],
   continuity: {
@@ -526,6 +538,38 @@ test.describe('대시보드 continuity UI', () => {
         }
       }
     });
+  });
+
+  test('기존 보관 항목이 있어도 새 드래그 보관 시 뱃지가 누적되고 나머지 완료 카드는 남는다', async ({ page }) => {
+    await mockDashboardApi(page, {
+      initialArchives: {
+        [bridgeId]: {
+          [rootThreadId]: {
+            issueIds: ['issue-closed', 'issue-closed-second'],
+            updatedAt: '2026-03-16T00:00:00.000Z'
+          }
+        }
+      }
+    });
+
+    await page.addInitScript(({ key, value }) => {
+      window.sessionStorage.setItem(key, JSON.stringify(value));
+    }, { key: SESSION_KEY, value: session });
+
+    await page.goto(baseUrl);
+
+    const doneColumn = page.locator('[data-testid="board-column-done"]');
+    const archiveButton = doneColumn.getByTitle('보관함');
+
+    await expect(doneColumn.getByTestId('issue-card-issue-closed')).toHaveCount(0);
+    await expect(doneColumn.getByTestId('issue-card-issue-closed-second')).toHaveCount(0);
+    await expect(doneColumn.getByTestId('issue-card-issue-closed-third')).toBeVisible();
+    await expect(archiveButton).toContainText('2');
+
+    await doneColumn.getByTestId('issue-card-issue-closed-third').dragTo(archiveButton);
+
+    await expect(doneColumn.getByTestId('issue-card-issue-closed-third')).toHaveCount(0);
+    await expect(archiveButton).toContainText('3');
   });
 
 
