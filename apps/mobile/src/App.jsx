@@ -2622,7 +2622,7 @@ function TodoChatDetail({
         </div>
       </header>
 
-      <div className="telegram-grid telegram-scroll-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           {error ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -3290,16 +3290,11 @@ function ThreadDetail({
         const node = scrollRef.current;
 
         if (node && !autoScrollingRef.current) {
-          const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
-          const nextScrollTop = Math.min(maxScrollTop, Math.max(0, node.scrollTop));
+          const nextScrollTop = Math.max(0, node.scrollTop);
           const delta = nextScrollTop - previousScrollTopRef.current;
-          const distanceFromBottom = maxScrollTop - nextScrollTop;
-          const isNearBottomEdge = distanceFromBottom <= HEADER_MENU_SCROLL_DELTA_PX * 2;
 
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
-          } else if (isNearBottomEdge) {
-            setShowHeaderMenus(false);
           } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(false);
           } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
@@ -3461,7 +3456,7 @@ function ThreadDetail({
         </div>
       </header>
 
-      <div ref={scrollRef} className="telegram-grid telegram-scroll-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div ref={scrollRef} className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
@@ -4744,24 +4739,8 @@ export default function App() {
           ? document.scrollingElement ?? document.documentElement
           : scrollTarget;
       const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
-      const maxScrollTop = scrollContainer
-        ? Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
-        : 0;
-      const boundaryEpsilon = 1;
 
-      const isPullingPastTop = deltaY > 0 && scrollTop <= boundaryEpsilon;
-      const isPushingPastBottom = deltaY < 0 && scrollTop >= maxScrollTop - boundaryEpsilon;
-      const isNonScrollableContainer = maxScrollTop <= 0;
-
-      if (isNonScrollableContainer || isPullingPastTop || isPushingPastBottom) {
-        if (scrollContainer) {
-          if (isPullingPastTop) {
-            scrollContainer.scrollTop = 0;
-          } else if (isPushingPastBottom) {
-            scrollContainer.scrollTop = maxScrollTop;
-          }
-        }
-
+      if (deltaY > 0 && scrollTop <= 0) {
         event.preventDefault();
       }
     };
