@@ -1510,6 +1510,7 @@ function syncRootThreadFromActivePhysicalThread(rootThreadId) {
     return rootThread ?? null;
   }
 
+  const nextUpdatedAt = activePhysicalThread.updated_at ?? rootThread.updated_at;
   const nextRootThread = {
     ...rootThread,
     codex_thread_id: activePhysicalThread.codex_thread_id ?? null,
@@ -1518,8 +1519,20 @@ function syncRootThreadFromActivePhysicalThread(rootThreadId) {
     context_usage_percent: activePhysicalThread.context_usage_percent,
     active_physical_thread_id: activePhysicalThread.id,
     latest_physical_sequence: activePhysicalThread.sequence,
-    updated_at: now()
+    updated_at: nextUpdatedAt
   };
+
+  if (
+    nextRootThread.codex_thread_id === rootThread.codex_thread_id &&
+    nextRootThread.context_window_tokens === rootThread.context_window_tokens &&
+    nextRootThread.context_used_tokens === rootThread.context_used_tokens &&
+    nextRootThread.context_usage_percent === rootThread.context_usage_percent &&
+    nextRootThread.active_physical_thread_id === rootThread.active_physical_thread_id &&
+    nextRootThread.latest_physical_sequence === rootThread.latest_physical_sequence &&
+    nextRootThread.updated_at === rootThread.updated_at
+  ) {
+    return rootThread;
+  }
 
   threadStateById.set(rootThreadId, nextRootThread);
   return nextRootThread;
@@ -4995,11 +5008,20 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         turn_id: currentPhysicalThread?.turn_id ?? null
       };
     case "thread/status/changed":
-      return {
-        status: normalizeThreadStatus(params.status, currentStatus),
-        last_event: "thread.status.changed",
-        turn_id: ["idle", "error"].includes(params.status?.type ?? "") ? null : currentPhysicalThread?.turn_id ?? null
-      };
+      {
+        const nextStatus = normalizeThreadStatus(params.status, currentStatus);
+        const nextTurnId = ["idle", "error"].includes(params.status?.type ?? "") ? null : currentPhysicalThread?.turn_id ?? null;
+
+        if (nextStatus === currentStatus && nextTurnId === (currentPhysicalThread?.turn_id ?? null)) {
+          return null;
+        }
+
+        return {
+          status: nextStatus,
+          last_event: "thread.status.changed",
+          turn_id: nextTurnId
+        };
+      }
     case "thread/tokenUsage/updated":
       return {
         ...normalizeThreadTokenUsage(params.tokenUsage ?? params.token_usage ?? null, currentPhysicalThread ?? {}),
@@ -5032,12 +5054,27 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         last_message: `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
       };
     case "turn/completed":
-      return {
-        status: params.turn?.status === "completed" ? "idle" : "failed",
-        progress: params.turn?.status === "completed" ? 100 : 0,
-        last_event: "turn.completed",
-        turn_id: null
-      };
+      {
+        const nextStatus = params.turn?.status === "completed" ? "idle" : "failed";
+        const nextProgress = params.turn?.status === "completed" ? 100 : 0;
+
+        if (
+          currentPhysicalThread &&
+          currentPhysicalThread.status === nextStatus &&
+          Number(currentPhysicalThread.progress ?? 0) === nextProgress &&
+          currentPhysicalThread.last_event === "turn.completed" &&
+          (currentPhysicalThread.turn_id ?? null) === null
+        ) {
+          return null;
+        }
+
+        return {
+          status: nextStatus,
+          progress: nextProgress,
+          last_event: "turn.completed",
+          turn_id: null
+        };
+      }
     default:
       return null;
   }
