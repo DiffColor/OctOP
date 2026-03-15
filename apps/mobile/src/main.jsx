@@ -10,12 +10,32 @@ if ("serviceWorker" in navigator) {
   const SKIP_WAITING_MESSAGE = { type: "SKIP_WAITING" };
   const UPDATE_CHECK_MIN_INTERVAL_MS = 3_000;
   const UPDATE_CHECK_POLL_INTERVAL_MS = 5_000;
+  const UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS = 2_500;
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
   let pendingActivationWorker = null;
   let lastUpdateCheckAt = 0;
+  let activationRequested = false;
+  let activationReloadTimer = null;
   const observedRegistrations = new WeakSet();
   const observedWorkers = new WeakSet();
+
+  const clearActivationReloadTimer = () => {
+    if (activationReloadTimer) {
+      window.clearTimeout(activationReloadTimer);
+      activationReloadTimer = null;
+    }
+  };
+
+  const forceReload = () => {
+    if (refreshing) {
+      return;
+    }
+
+    refreshing = true;
+    clearActivationReloadTimer();
+    window.location.reload();
+  };
 
   const getServiceWorkerUrl = (buildId = SERVICE_WORKER_BUILD_ID) => `/sw.js?v=${encodeURIComponent(buildId)}`;
 
@@ -47,14 +67,20 @@ if ("serviceWorker" in navigator) {
     pendingActivationWorker = worker;
 
     const activate = () => {
+      activationRequested = true;
+      clearActivationReloadTimer();
+      activationReloadTimer = window.setTimeout(() => {
+        forceReload();
+      }, UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS);
+
       try {
         if (worker.state !== "redundant") {
           worker.postMessage(SKIP_WAITING_MESSAGE);
         } else {
-          window.location.reload();
+          forceReload();
         }
       } catch {
-        window.location.reload();
+        forceReload();
       }
     };
 
@@ -168,17 +194,16 @@ if ("serviceWorker" in navigator) {
   };
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!controllerSeen) {
+    clearActivationReloadTimer();
+
+    if (!controllerSeen && !activationRequested) {
       controllerSeen = true;
       return;
     }
 
-    if (refreshing) {
-      return;
-    }
-
-    refreshing = true;
-    window.location.reload();
+    controllerSeen = true;
+    activationRequested = false;
+    forceReload();
   });
 
   window.addEventListener("load", () => {
