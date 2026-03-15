@@ -1722,7 +1722,7 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 - [ ] delete 중 bridge 재시작
 - [ ] source physical thread close 직후 projection worker down
 - [ ] projection lag 상태에서 모바일/대시보드 조회
-- [ ] 브리지 재시작 후 tombstone miss 상황에서 `closed_at` / `deleted_at` 차단 동작
+- [x] 브리지 재시작 후 tombstone miss 상황에서 `closed_at` / `deleted_at` 차단 동작
 - [ ] active physical thread binding invalidated 후 재바인딩
 
 ### 21.23 배포 게이트
@@ -1747,4 +1747,4 @@ rollover는 "새 Codex thread 생성 성공" 이전에는 root thread active 포
 - [x] API 읽기 경로를 closed physical thread에 대해 projection 우선으로 전환하는 2차 read split이 `issues/timeline`에 적용됐다.
 - [x] 대시보드/모바일 Playwright UI 계약 자동화가 추가됐고 반복 실행까지 통과했다.
 - [x] 브리지 격리 프로세스 + fake app-server 기반 통합 테스트가 추가됐고 자동 rollover/delete/late-event drop까지 통과했다.
-- [ ] delete/rollover 이후 late event 재주입에 대한 재시작 시나리오 통합 테스트는 아직 남아 있다.
+- [x] delete/rollover 이후 late event 재주입에 대한 재시작 시나리오 통합 테스트가 추가됐고 통과했다.

@@ -2,7 +2,18 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import os from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { connect, StringCodec } from "nats";
@@ -30,6 +41,23 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
+const THREAD_CONTEXT_ROLLOVER_ENABLED =
+  (process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_ENABLED ?? "true") !== "false";
+const THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT = Number(
+  process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT ?? 85
+);
+const THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS = Number(
+  process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS ?? 30000
+);
+const RECENTLY_CLOSED_PHYSICAL_THREAD_GRACE_WINDOW_MS = Number(
+  process.env.OCTOP_RECENTLY_CLOSED_PHYSICAL_THREAD_GRACE_WINDOW_MS ?? 60000
+);
+const CLOSED_PHYSICAL_THREAD_TOMBSTONE_TTL_MS = Number(
+  process.env.OCTOP_CLOSED_PHYSICAL_THREAD_TOMBSTONE_TTL_MS ?? 600000
+);
+const DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS = Number(
+  process.env.OCTOP_DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS ?? 1800000
+);
 const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
 const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
@@ -55,8 +83,18 @@ const issueCardsById = new Map();
 const issueMessagesById = new Map();
 const threadIssueIdsById = new Map();
 const activeIssueByThreadId = new Map();
+const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
 const codexThreadToThreadId = new Map();
+const codexThreadToPhysicalThreadId = new Map();
+const physicalThreadStateById = new Map();
+const rootThreadPhysicalThreadIdsById = new Map();
+const handoffSummariesById = new Map();
+const rolloverLocksByRootThreadId = new Map();
+const rolloverCooldownByRootThreadId = new Map();
+const recentlyClosedPhysicalThreadIdsByRootThreadId = new Map();
+const closedPhysicalThreadTombstonesById = new Map();
+const deletedRootThreadTombstonesById = new Map();
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
@@ -69,6 +107,58 @@ function now() {
   return new Date().toISOString();
 }
 
+function buildLogContext(overrides = {}) {
+  return {
+    root_thread_id: overrides.root_thread_id ?? null,
+    physical_thread_id: overrides.physical_thread_id ?? null,
+    source_physical_thread_id: overrides.source_physical_thread_id ?? null,
+    target_physical_thread_id: overrides.target_physical_thread_id ?? null,
+    codex_thread_id: overrides.codex_thread_id ?? null,
+    issue_id: overrides.issue_id ?? null,
+    event_type: overrides.event_type ?? null,
+    drop_reason: overrides.drop_reason ?? null,
+    ...overrides
+  };
+}
+
+const bridgeMetrics = {
+  root_thread_rollover_total: 0,
+  root_thread_rollover_failed_total: 0,
+  root_thread_rollover_duration_ms: {
+    count: 0,
+    sum: 0,
+    max: 0,
+    last: 0
+  },
+  late_event_drop_total: 0,
+  root_thread_delete_total: 0,
+  root_thread_delete_failed_total: 0
+};
+
+function incrementBridgeMetric(name, value = 1) {
+  if (!(name in bridgeMetrics)) {
+    return;
+  }
+
+  bridgeMetrics[name] = Number(bridgeMetrics[name] ?? 0) + value;
+}
+
+function observeBridgeDurationMetric(name, durationMs) {
+  const safeDuration = Math.max(0, Number(durationMs) || 0);
+  const current = bridgeMetrics[name];
+
+  if (!current || typeof current !== "object") {
+    return;
+  }
+
+  bridgeMetrics[name] = {
+    count: Number(current.count ?? 0) + 1,
+    sum: Number(current.sum ?? 0) + safeDuration,
+    max: Math.max(Number(current.max ?? 0), safeDuration),
+    last: safeDuration
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -79,6 +169,14 @@ function createThreadEntityId() {
 
 function createIssueCardId() {
   return sanitizeBridgeId(`issue-${randomUUID()}`);
+}
+
+function createPhysicalThreadId() {
+  return sanitizeBridgeId(`pth-${randomUUID()}`);
+}
+
+function createHandoffSummaryId() {
+  return sanitizeBridgeId(`summary-${randomUUID()}`);
 }
 
 async function connectToNats() {
@@ -211,8 +309,43 @@ function readThreadStorage() {
 }
 
 function writeThreadStorage(payload) {
-  mkdirSync(dirname(THREAD_STATE_PATH), { recursive: true });
-  writeFileSync(THREAD_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
+  writeJsonFileAtomic(THREAD_STATE_PATH, payload);
+}
+
+function writeJsonFileAtomic(path, payload) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const serialized = JSON.stringify(payload, null, 2);
+  let fd = null;
+
+  try {
+    fd = openSync(tempPath, "w");
+    writeFileSync(fd, serialized, "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tempPath, path);
+  } catch (error) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore close failure on error path
+      }
+    }
+
+    try {
+      unlinkSync(tempPath);
+    } catch (cleanupError) {
+      console.warn("[OctOP bridge] atomic write temp cleanup failed", {
+        path,
+        tempPath,
+        error: cleanupError.message
+      });
+    }
+
+    throw error;
+  }
 }
 
 function loadThreadsForUser(loginId) {
@@ -249,10 +382,19 @@ function persistThreadsForUser(loginId) {
       .filter((threadId) => activeIssueByThreadId.has(threadId))
       .map((threadId) => [threadId, activeIssueByThreadId.get(threadId)])
   );
+  const activeIssueIdsByPhysicalThreadId = Object.fromEntries(
+    [...activeIssueByPhysicalThreadId.entries()].filter(([physicalThreadId]) =>
+      physicalThreadStateById.has(physicalThreadId)
+    )
+  );
   const codexThreadIds = Object.fromEntries(
     threadIds
       .map((threadId) => [threadId, threadStateById.get(threadId)?.codex_thread_id ?? null])
   );
+  const physicalThreadIds = threadIds.flatMap((threadId) => getRootThreadPhysicalThreadIds(threadId));
+  const handoffSummaryIds = [...handoffSummariesById.values()]
+    .filter((summary) => threadIds.includes(summary.root_thread_id))
+    .map((summary) => summary.id);
 
   storage[normalized] = {
     project_thread_ids: threadIds,
@@ -268,7 +410,19 @@ function persistThreadsForUser(loginId) {
     ),
     issue_queue_ids: queueIds,
     active_issue_ids: activeIssueIds,
+    active_issue_ids_by_physical_thread_id: activeIssueIdsByPhysicalThreadId,
     codex_thread_ids: codexThreadIds,
+    physical_thread_ids: physicalThreadIds,
+    physical_threads: Object.fromEntries(
+      physicalThreadIds.map((physicalThreadId) => [physicalThreadId, physicalThreadStateById.get(physicalThreadId)])
+    ),
+    root_thread_physical_thread_ids: Object.fromEntries(
+      threadIds.map((threadId) => [threadId, getRootThreadPhysicalThreadIds(threadId)])
+    ),
+    handoff_summary_ids: handoffSummaryIds,
+    handoff_summaries: Object.fromEntries(
+      handoffSummaryIds.map((summaryId) => [summaryId, handoffSummariesById.get(summaryId)])
+    ),
     issue_messages: Object.fromEntries(
       issueIds
         .filter((issueId) => issueMessagesById.has(issueId))
@@ -314,6 +468,53 @@ function restoreThreadCentricState(loginId, stored) {
     }
   }
 
+  for (const physicalThreadId of stored.physical_thread_ids ?? []) {
+    if (!physicalThreadId) {
+      continue;
+    }
+
+    const physicalThread = stored.physical_threads?.[physicalThreadId];
+
+    if (!physicalThread) {
+      continue;
+    }
+
+    const rootThread = threadStateById.get(
+      sanitizeBridgeId(physicalThread.root_thread_id ?? physicalThread.thread_id ?? "")
+    );
+    const normalizedPhysicalThread = normalizePhysicalThread(physicalThread, rootThread);
+    physicalThreadStateById.set(normalizedPhysicalThread.id, normalizedPhysicalThread);
+
+    if (normalizedPhysicalThread.codex_thread_id) {
+      codexThreadToPhysicalThreadId.set(normalizedPhysicalThread.codex_thread_id, normalizedPhysicalThread.id);
+      codexThreadToThreadId.set(normalizedPhysicalThread.codex_thread_id, normalizedPhysicalThread.root_thread_id);
+    }
+  }
+
+  for (const [rootThreadId, physicalThreadIds] of Object.entries(stored.root_thread_physical_thread_ids ?? {})) {
+    setRootThreadPhysicalThreadIds(
+      rootThreadId,
+      Array.isArray(physicalThreadIds)
+        ? physicalThreadIds.filter((physicalThreadId) => physicalThreadStateById.has(physicalThreadId))
+        : []
+    );
+  }
+
+  for (const summaryId of stored.handoff_summary_ids ?? []) {
+    if (!summaryId) {
+      continue;
+    }
+
+    const summary = stored.handoff_summaries?.[summaryId];
+
+    if (!summary) {
+      continue;
+    }
+
+    const normalizedSummary = normalizeHandoffSummary(summary);
+    handoffSummariesById.set(normalizedSummary.id, normalizedSummary);
+  }
+
   for (const issueId of stored.issue_ids ?? []) {
     if (!issueId) {
       continue;
@@ -325,7 +526,8 @@ function restoreThreadCentricState(loginId, stored) {
       continue;
     }
 
-    issueCardsById.set(issueId, normalizeIssueCard(issue));
+    const normalizedIssue = normalizeIssueCard(issue);
+    issueCardsById.set(issueId, normalizedIssue);
 
     const messages = stored.issue_messages?.[issueId];
 
@@ -361,6 +563,12 @@ function restoreThreadCentricState(loginId, stored) {
     }
 
     activeIssueByThreadId.set(threadId, issueId);
+    const executedPhysicalThreadId =
+      issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null;
+
+    if (executedPhysicalThreadId) {
+      activeIssueByPhysicalThreadId.set(sanitizeBridgeId(executedPhysicalThreadId), issueId);
+    }
     markRunningIssueActivity(threadId, {
       startedAt: issue.updated_at ?? thread.updated_at ?? now(),
       lastActivityAt: issue.updated_at ?? thread.updated_at ?? now(),
@@ -369,7 +577,40 @@ function restoreThreadCentricState(loginId, stored) {
     });
   }
 
+  for (const [physicalThreadId, issueId] of Object.entries(stored.active_issue_ids_by_physical_thread_id ?? {})) {
+    if (!physicalThreadStateById.has(physicalThreadId) || !issueCardsById.has(issueId)) {
+      continue;
+    }
+
+    activeIssueByPhysicalThreadId.set(physicalThreadId, issueId);
+  }
+
   for (const threadId of threadIds) {
+    ensureRootThreadPhysicalStructure(loginId, threadId);
+
+    for (const issueId of getThreadIssueIds(threadId)) {
+      const issue = issueCardsById.get(issueId);
+
+      if (!issue) {
+        continue;
+      }
+
+      const activePhysicalThread = getActivePhysicalThread(threadId);
+      const normalizedIssue = normalizeIssueCard({
+        ...issue,
+        thread_id: threadId,
+        root_thread_id: issue.root_thread_id ?? threadId,
+        created_physical_thread_id: issue.created_physical_thread_id ?? activePhysicalThread?.id ?? null,
+        executed_physical_thread_id:
+          issue.executed_physical_thread_id ??
+          issue.created_physical_thread_id ??
+          activePhysicalThread?.id ??
+          null
+      });
+
+      issueCardsById.set(issueId, normalizedIssue);
+    }
+
     if (activeIssueByThreadId.has(threadId)) {
       continue;
     }
@@ -517,6 +758,10 @@ function normalizeProject(loginId, project = {}) {
 
 function normalizeProjectThread(loginId, thread = {}) {
   const tokenUsageState = normalizeThreadTokenUsage(thread.token_usage ?? thread.tokenUsage ?? null, thread);
+  const activePhysicalThreadId = thread.active_physical_thread_id
+    ? sanitizeBridgeId(thread.active_physical_thread_id)
+    : null;
+
   return {
     id: sanitizeBridgeId(thread.id ?? createThreadEntityId()),
     project_id: String(thread.project_id ?? "").trim(),
@@ -534,38 +779,49 @@ function normalizeProjectThread(loginId, thread = {}) {
     context_window_tokens: tokenUsageState.context_window_tokens,
     context_used_tokens: tokenUsageState.context_used_tokens,
     context_usage_percent: tokenUsageState.context_usage_percent,
+    active_physical_thread_id: activePhysicalThreadId,
+    latest_physical_sequence: Number.isFinite(Number(thread.latest_physical_sequence))
+      ? Number(thread.latest_physical_sequence)
+      : activePhysicalThreadId
+        ? 1
+        : 0,
+    rollover_count: Number.isFinite(Number(thread.rollover_count)) ? Number(thread.rollover_count) : 0,
+    continuity_mode: String(thread.continuity_mode ?? "projection_merge").trim() || "projection_merge",
+    continuity_status: String(thread.continuity_status ?? "healthy").trim() || "healthy",
     created_at: thread.created_at ?? now(),
-    updated_at: thread.updated_at ?? now()
+    updated_at: thread.updated_at ?? now(),
+    deleted_at: thread.deleted_at ?? null
   };
 }
 
 function normalizeTokenUsageBreakdown(breakdown = null, fallback = {}) {
+  const safeFallback = fallback && typeof fallback === "object" ? fallback : {};
   const inputTokens = Number.isFinite(Number(breakdown?.inputTokens ?? breakdown?.input_tokens))
     ? Number(breakdown.inputTokens ?? breakdown.input_tokens)
-    : Number.isFinite(Number(fallback.input_tokens))
-      ? Number(fallback.input_tokens)
+    : Number.isFinite(Number(safeFallback.input_tokens))
+      ? Number(safeFallback.input_tokens)
       : null;
   const cachedInputTokens = Number.isFinite(Number(breakdown?.cachedInputTokens ?? breakdown?.cached_input_tokens))
     ? Number(breakdown.cachedInputTokens ?? breakdown.cached_input_tokens)
-    : Number.isFinite(Number(fallback.cached_input_tokens))
-      ? Number(fallback.cached_input_tokens)
+    : Number.isFinite(Number(safeFallback.cached_input_tokens))
+      ? Number(safeFallback.cached_input_tokens)
       : null;
   const outputTokens = Number.isFinite(Number(breakdown?.outputTokens ?? breakdown?.output_tokens))
     ? Number(breakdown.outputTokens ?? breakdown.output_tokens)
-    : Number.isFinite(Number(fallback.output_tokens))
-      ? Number(fallback.output_tokens)
+    : Number.isFinite(Number(safeFallback.output_tokens))
+      ? Number(safeFallback.output_tokens)
       : null;
   const reasoningOutputTokens = Number.isFinite(
     Number(breakdown?.reasoningOutputTokens ?? breakdown?.reasoning_output_tokens)
   )
     ? Number(breakdown.reasoningOutputTokens ?? breakdown.reasoning_output_tokens)
-    : Number.isFinite(Number(fallback.reasoning_output_tokens))
-      ? Number(fallback.reasoning_output_tokens)
+    : Number.isFinite(Number(safeFallback.reasoning_output_tokens))
+      ? Number(safeFallback.reasoning_output_tokens)
       : null;
   const totalTokens = Number.isFinite(Number(breakdown?.totalTokens ?? breakdown?.total_tokens))
     ? Number(breakdown.totalTokens ?? breakdown.total_tokens)
-    : Number.isFinite(Number(fallback.total_tokens))
-      ? Number(fallback.total_tokens)
+    : Number.isFinite(Number(safeFallback.total_tokens))
+      ? Number(safeFallback.total_tokens)
       : null;
   const hasPositiveComponent =
     (inputTokens ?? 0) > 0 ||
@@ -670,6 +926,13 @@ function normalizeIssueCard(issue = {}) {
     id: sanitizeBridgeId(issue.id ?? createIssueCardId()),
     project_id: String(issue.project_id ?? "").trim(),
     thread_id: String(issue.thread_id ?? "").trim(),
+    root_thread_id: String(issue.root_thread_id ?? issue.thread_id ?? "").trim(),
+    created_physical_thread_id: issue.created_physical_thread_id
+      ? sanitizeBridgeId(issue.created_physical_thread_id)
+      : null,
+    executed_physical_thread_id: issue.executed_physical_thread_id
+      ? sanitizeBridgeId(issue.executed_physical_thread_id)
+      : null,
     title: String(issue.title ?? "").trim() || "Untitled issue",
     prompt: String(issue.prompt ?? "").trim(),
     status: String(issue.status ?? "staged").trim() || "staged",
@@ -680,8 +943,73 @@ function normalizeIssueCard(issue = {}) {
     prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
     created_at: issue.created_at ?? now(),
     updated_at: issue.updated_at ?? now(),
-    source: issue.source ?? "bridge"
+    source: issue.source ?? "bridge",
+    deleted_at: issue.deleted_at ?? null
   };
+}
+
+function normalizePhysicalThread(physicalThread = {}, fallbackRootThread = null) {
+  const tokenUsageState = normalizeThreadTokenUsage(
+    physicalThread.token_usage ?? physicalThread.tokenUsage ?? null,
+    physicalThread
+  );
+
+  return {
+    id: sanitizeBridgeId(physicalThread.id ?? createPhysicalThreadId()),
+    root_thread_id: sanitizeBridgeId(
+      physicalThread.root_thread_id ?? fallbackRootThread?.id ?? physicalThread.thread_id ?? createThreadEntityId()
+    ),
+    project_id: String(physicalThread.project_id ?? fallbackRootThread?.project_id ?? "").trim(),
+    bridge_id: BRIDGE_ID,
+    login_id: sanitizeUserId(physicalThread.login_id ?? fallbackRootThread?.login_id ?? BRIDGE_OWNER_LOGIN_ID),
+    sequence: Number.isFinite(Number(physicalThread.sequence)) ? Number(physicalThread.sequence) : 1,
+    codex_thread_id: physicalThread.codex_thread_id ? String(physicalThread.codex_thread_id).trim() : null,
+    status: String(physicalThread.status ?? "active").trim() || "active",
+    opened_reason: String(physicalThread.opened_reason ?? "initial").trim() || "initial",
+    opened_from_physical_thread_id: physicalThread.opened_from_physical_thread_id
+      ? sanitizeBridgeId(physicalThread.opened_from_physical_thread_id)
+      : null,
+    rollover_trigger_percent: Number.isFinite(Number(physicalThread.rollover_trigger_percent))
+      ? Number(physicalThread.rollover_trigger_percent)
+      : null,
+    handoff_summary_id: physicalThread.handoff_summary_id
+      ? sanitizeBridgeId(physicalThread.handoff_summary_id)
+      : null,
+    turn_id: physicalThread.turn_id ? String(physicalThread.turn_id).trim() : null,
+    last_event: String(physicalThread.last_event ?? fallbackRootThread?.last_event ?? "physicalThread.ready").trim(),
+    last_message: String(physicalThread.last_message ?? fallbackRootThread?.last_message ?? "").trim(),
+    token_usage: tokenUsageState.token_usage,
+    context_window_tokens: tokenUsageState.context_window_tokens,
+    context_used_tokens: tokenUsageState.context_used_tokens,
+    context_usage_percent: tokenUsageState.context_usage_percent,
+    created_at: physicalThread.created_at ?? now(),
+    updated_at: physicalThread.updated_at ?? now(),
+    closed_at: physicalThread.closed_at ?? null,
+    deleted_at: physicalThread.deleted_at ?? null
+  };
+}
+
+function normalizeHandoffSummary(summary = {}) {
+  return {
+    id: sanitizeBridgeId(summary.id ?? createHandoffSummaryId()),
+    root_thread_id: sanitizeBridgeId(summary.root_thread_id ?? summary.thread_id ?? createThreadEntityId()),
+    target_physical_thread_id: summary.target_physical_thread_id
+      ? sanitizeBridgeId(summary.target_physical_thread_id)
+      : null,
+    source_physical_thread_id: summary.source_physical_thread_id
+      ? sanitizeBridgeId(summary.source_physical_thread_id)
+      : null,
+    format_version: Number.isFinite(Number(summary.format_version)) ? Number(summary.format_version) : 1,
+    summary_type: String(summary.summary_type ?? "handoff").trim() || "handoff",
+    content_markdown: String(summary.content_markdown ?? "").trim(),
+    content_json: summary.content_json && typeof summary.content_json === "object" ? summary.content_json : {},
+    created_at: summary.created_at ?? now(),
+    deleted_at: summary.deleted_at ?? null
+  };
+}
+
+function getRootThreadIdForIssue(issue) {
+  return String(issue?.root_thread_id ?? issue?.thread_id ?? "").trim();
 }
 
 function getThreadIssueIds(threadId) {
@@ -700,7 +1028,7 @@ function setThreadIssueIds(threadId, issueIds) {
 function getPrepIssueIds(threadId) {
   return getThreadIssueIds(threadId).filter((issueId) => {
     const issue = issueCardsById.get(issueId);
-    return issue && issue.status === "staged";
+    return issue && !issue.deleted_at && issue.status === "staged";
   });
 }
 
@@ -727,6 +1055,324 @@ function ensurePendingQueue(threadId) {
   return pendingStartQueues.get(normalized);
 }
 
+function getRootThreadPhysicalThreadIds(rootThreadId) {
+  const normalizedRootThreadId = sanitizeBridgeId(rootThreadId);
+
+  if (!rootThreadPhysicalThreadIdsById.has(normalizedRootThreadId)) {
+    rootThreadPhysicalThreadIdsById.set(normalizedRootThreadId, []);
+  }
+
+  return rootThreadPhysicalThreadIdsById.get(normalizedRootThreadId);
+}
+
+function setRootThreadPhysicalThreadIds(rootThreadId, physicalThreadIds) {
+  rootThreadPhysicalThreadIdsById.set(
+    sanitizeBridgeId(rootThreadId),
+    physicalThreadIds.map((physicalThreadId) => sanitizeBridgeId(physicalThreadId))
+  );
+}
+
+function listPhysicalThreads(rootThreadId) {
+  return getRootThreadPhysicalThreadIds(rootThreadId)
+    .map((physicalThreadId) => physicalThreadStateById.get(physicalThreadId))
+    .filter(Boolean)
+    .sort((left, right) => left.sequence - right.sequence);
+}
+
+function getActivePhysicalThread(rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const activePhysicalThreadId = rootThread?.active_physical_thread_id ?? null;
+
+  if (activePhysicalThreadId) {
+    const activePhysicalThread = physicalThreadStateById.get(activePhysicalThreadId) ?? null;
+
+    if (activePhysicalThread && !activePhysicalThread.deleted_at) {
+      return activePhysicalThread;
+    }
+  }
+
+  const fallback = listPhysicalThreads(rootThreadId)
+    .filter((physicalThread) => !physicalThread.deleted_at)
+    .sort((left, right) => right.sequence - left.sequence)[0] ?? null;
+
+  if (!fallback) {
+    return null;
+  }
+
+  if (rootThread) {
+    threadStateById.set(rootThreadId, {
+      ...rootThread,
+      active_physical_thread_id: fallback.id,
+      latest_physical_sequence: fallback.sequence,
+      codex_thread_id: fallback.codex_thread_id ?? null,
+      context_window_tokens: fallback.context_window_tokens,
+      context_used_tokens: fallback.context_used_tokens,
+      context_usage_percent: fallback.context_usage_percent,
+      updated_at: now()
+    });
+  }
+
+  return fallback;
+}
+
+function resolvePhysicalThreadIdByCodexThreadId(codexThreadId) {
+  const candidate = String(codexThreadId ?? "").trim();
+
+  if (!candidate) {
+    return null;
+  }
+
+  if (codexThreadToPhysicalThreadId.has(candidate)) {
+    return codexThreadToPhysicalThreadId.get(candidate) ?? null;
+  }
+
+  for (const [physicalThreadId, physicalThread] of physicalThreadStateById.entries()) {
+    if (physicalThread?.codex_thread_id === candidate) {
+      codexThreadToPhysicalThreadId.set(candidate, physicalThreadId);
+      return physicalThreadId;
+    }
+  }
+
+  return null;
+}
+
+function createPhysicalThread(rootThreadId, reason = "initial", sourcePhysicalThread = null, overrides = {}) {
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread) {
+    throw new Error("root thread를 찾을 수 없습니다.");
+  }
+
+  const nextSequence = Number(rootThread.latest_physical_sequence ?? 0) + 1;
+  const physicalThread = normalizePhysicalThread(
+    {
+      id: createPhysicalThreadId(),
+      root_thread_id: rootThreadId,
+      project_id: rootThread.project_id,
+      sequence: nextSequence,
+      status: overrides.status ?? "active",
+      opened_reason: reason,
+      opened_from_physical_thread_id: sourcePhysicalThread?.id ?? null,
+      rollover_trigger_percent: overrides.rollover_trigger_percent ?? null,
+      handoff_summary_id: overrides.handoff_summary_id ?? null,
+      token_usage: overrides.token_usage ?? null,
+      context_window_tokens: overrides.context_window_tokens ?? null,
+      context_used_tokens: overrides.context_used_tokens ?? null,
+      context_usage_percent: overrides.context_usage_percent ?? null,
+      last_event: overrides.last_event ?? "physicalThread.created",
+      last_message: overrides.last_message ?? ""
+    },
+    rootThread
+  );
+
+  physicalThreadStateById.set(physicalThread.id, physicalThread);
+  setRootThreadPhysicalThreadIds(rootThreadId, [
+    ...getRootThreadPhysicalThreadIds(rootThreadId),
+    physicalThread.id
+  ]);
+  return physicalThread;
+}
+
+function activatePhysicalThread(rootThreadId, physicalThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const physicalThread = physicalThreadStateById.get(physicalThreadId);
+
+  if (!rootThread || !physicalThread) {
+    return null;
+  }
+
+  const nextRootThread = {
+    ...rootThread,
+    active_physical_thread_id: physicalThread.id,
+    latest_physical_sequence: physicalThread.sequence,
+    codex_thread_id: physicalThread.codex_thread_id ?? null,
+    context_window_tokens: physicalThread.context_window_tokens,
+    context_used_tokens: physicalThread.context_used_tokens,
+    context_usage_percent: physicalThread.context_usage_percent,
+    updated_at: now()
+  };
+
+  threadStateById.set(rootThreadId, nextRootThread);
+
+  if (physicalThread.codex_thread_id) {
+    codexThreadToThreadId.set(physicalThread.codex_thread_id, rootThreadId);
+  }
+
+  return nextRootThread;
+}
+
+function syncRootThreadFromActivePhysicalThread(rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+
+  if (!rootThread || !activePhysicalThread) {
+    return rootThread ?? null;
+  }
+
+  const nextRootThread = {
+    ...rootThread,
+    codex_thread_id: activePhysicalThread.codex_thread_id ?? null,
+    context_window_tokens: activePhysicalThread.context_window_tokens,
+    context_used_tokens: activePhysicalThread.context_used_tokens,
+    context_usage_percent: activePhysicalThread.context_usage_percent,
+    active_physical_thread_id: activePhysicalThread.id,
+    latest_physical_sequence: activePhysicalThread.sequence,
+    updated_at: now()
+  };
+
+  threadStateById.set(rootThreadId, nextRootThread);
+  return nextRootThread;
+}
+
+function isPhysicalThreadClosed(physicalThreadId) {
+  const physicalThread = physicalThreadStateById.get(physicalThreadId);
+  return Boolean(physicalThread?.closed_at || physicalThread?.deleted_at);
+}
+
+function isRootThreadDeleted(rootThreadId) {
+  return Boolean(threadStateById.get(rootThreadId)?.deleted_at);
+}
+
+function closePhysicalThread(physicalThreadId, reason = "rolled_over") {
+  const physicalThread = physicalThreadStateById.get(physicalThreadId);
+
+  if (!physicalThread) {
+    return null;
+  }
+
+  const nextPhysicalThread = {
+    ...physicalThread,
+    status: "closed",
+    last_event: `physicalThread.${reason}`,
+    closed_at: physicalThread.closed_at ?? now(),
+    updated_at: now()
+  };
+
+  physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
+  return nextPhysicalThread;
+}
+
+function markPhysicalThreadClosedForEventDrop(physicalThreadId, ttlMs = CLOSED_PHYSICAL_THREAD_TOMBSTONE_TTL_MS) {
+  closedPhysicalThreadTombstonesById.set(physicalThreadId, Date.now() + ttlMs);
+}
+
+function markRootThreadDeletedForEventDrop(rootThreadId, ttlMs = DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS) {
+  deletedRootThreadTombstonesById.set(rootThreadId, Date.now() + ttlMs);
+}
+
+function cleanupExpiredEventDropTombstones() {
+  const currentTime = Date.now();
+
+  for (const [physicalThreadId, expiresAt] of closedPhysicalThreadTombstonesById.entries()) {
+    if (expiresAt <= currentTime) {
+      closedPhysicalThreadTombstonesById.delete(physicalThreadId);
+    }
+  }
+
+  for (const [rootThreadId, expiresAt] of deletedRootThreadTombstonesById.entries()) {
+    if (expiresAt <= currentTime) {
+      deletedRootThreadTombstonesById.delete(rootThreadId);
+    }
+  }
+}
+
+function trackRecentlyClosedPhysicalThread(rootThreadId, physicalThreadId, closedAt = now()) {
+  const items = recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? [];
+  const closedAtMs = Date.parse(closedAt) || Date.now();
+  const nextItems = [
+    ...items.filter((item) => item.physical_thread_id !== physicalThreadId),
+    {
+      physical_thread_id: physicalThreadId,
+      closed_at: closedAt,
+      expires_at_ms: closedAtMs + RECENTLY_CLOSED_PHYSICAL_THREAD_GRACE_WINDOW_MS
+    }
+  ].filter((item) => item.expires_at_ms > Date.now());
+
+  recentlyClosedPhysicalThreadIdsByRootThreadId.set(rootThreadId, nextItems);
+}
+
+function pruneRecentlyClosedPhysicalThreads(rootThreadId) {
+  const items = recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? [];
+  const nextItems = items.filter((item) => item.expires_at_ms > Date.now());
+
+  if (nextItems.length === 0) {
+    recentlyClosedPhysicalThreadIdsByRootThreadId.delete(rootThreadId);
+    return [];
+  }
+
+  recentlyClosedPhysicalThreadIdsByRootThreadId.set(rootThreadId, nextItems);
+  return nextItems;
+}
+
+function ensureRootThreadPhysicalStructure(loginId, rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread) {
+    return null;
+  }
+
+  const existingPhysicalThreads = listPhysicalThreads(rootThreadId);
+
+  if (existingPhysicalThreads.length > 0) {
+    const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+
+    if (activePhysicalThread) {
+      threadStateById.set(rootThreadId, {
+        ...rootThread,
+        active_physical_thread_id: activePhysicalThread.id,
+        latest_physical_sequence: Math.max(
+          rootThread.latest_physical_sequence ?? 0,
+          activePhysicalThread.sequence
+        ),
+        codex_thread_id: activePhysicalThread.codex_thread_id ?? rootThread.codex_thread_id ?? null,
+        continuity_mode: rootThread.continuity_mode ?? "projection_merge",
+        continuity_status: rootThread.continuity_status ?? "healthy"
+      });
+    }
+
+    return activePhysicalThread;
+  }
+
+  const initialPhysicalThread = normalizePhysicalThread(
+    {
+      root_thread_id: rootThreadId,
+      project_id: rootThread.project_id,
+      sequence: 1,
+      codex_thread_id: rootThread.codex_thread_id ?? null,
+      status: "active",
+      opened_reason: "initial",
+      token_usage: rootThread.token_usage,
+      context_window_tokens: rootThread.context_window_tokens,
+      context_used_tokens: rootThread.context_used_tokens,
+      context_usage_percent: rootThread.context_usage_percent,
+      last_event: rootThread.last_event,
+      last_message: rootThread.last_message,
+      turn_id: rootThread.turn_id
+    },
+    rootThread
+  );
+
+  physicalThreadStateById.set(initialPhysicalThread.id, initialPhysicalThread);
+  setRootThreadPhysicalThreadIds(rootThreadId, [initialPhysicalThread.id]);
+  threadStateById.set(rootThreadId, {
+    ...rootThread,
+    login_id: sanitizeUserId(loginId),
+    active_physical_thread_id: initialPhysicalThread.id,
+    latest_physical_sequence: 1,
+    rollover_count: rootThread.rollover_count ?? 0,
+    continuity_mode: rootThread.continuity_mode ?? "projection_merge",
+    continuity_status: rootThread.continuity_status ?? "healthy",
+    codex_thread_id: initialPhysicalThread.codex_thread_id ?? null
+  });
+
+  if (initialPhysicalThread.codex_thread_id) {
+    codexThreadToPhysicalThreadId.set(initialPhysicalThread.codex_thread_id, initialPhysicalThread.id);
+    codexThreadToThreadId.set(initialPhysicalThread.codex_thread_id, rootThreadId);
+  }
+
+  return initialPhysicalThread;
+}
+
 function markRunningIssueActivity(threadId, patch = {}) {
   const current = runningIssueMetaByThreadId.get(threadId) ?? {
     startedAt: now(),
@@ -745,14 +1391,25 @@ function markRunningIssueActivity(threadId, patch = {}) {
 }
 
 function clearRunningIssueTracking(threadId) {
+  const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
   activeIssueByThreadId.delete(threadId);
   runningIssueMetaByThreadId.delete(threadId);
+
+  if (!activeIssueId) {
+    return;
+  }
+
+  for (const [physicalThreadId, issueId] of activeIssueByPhysicalThreadId.entries()) {
+    if (issueId === activeIssueId) {
+      activeIssueByPhysicalThreadId.delete(physicalThreadId);
+    }
+  }
 }
 
 function findRecoverableRunningIssue(threadId) {
   return getThreadIssueIds(threadId)
     .map((issueId) => issueCardsById.get(issueId))
-    .filter((issue) => issue && ["running", "awaiting_input"].includes(issue.status))
+    .filter((issue) => issue && !issue.deleted_at && ["running", "awaiting_input"].includes(issue.status))
     .sort((left, right) => Date.parse(right.updated_at ?? 0) - Date.parse(left.updated_at ?? 0))[0] ?? null;
 }
 
@@ -790,20 +1447,31 @@ function ensureIssueMessages(issueId) {
 }
 
 function pushIssueMessage(issueId, message) {
+  const issue = issueCardsById.get(issueId);
   const messages = ensureIssueMessages(issueId);
   messages.push({
     id: randomUUID(),
     timestamp: now(),
+    root_thread_id: getRootThreadIdForIssue(issue),
+    physical_thread_id:
+      message.physical_thread_id ??
+      issue?.executed_physical_thread_id ??
+      issue?.created_physical_thread_id ??
+      null,
+    message_class: message.message_class ?? message.role ?? "system",
     ...message
   });
   return messages;
 }
 
-function appendAssistantDeltaToIssue(issueId, delta = "") {
+function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null) {
+  const issue = issueCardsById.get(issueId);
   const messages = ensureIssueMessages(issueId);
   const lastMessage = messages.at(-1);
+  const resolvedPhysicalThreadId =
+    physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
 
-  if (lastMessage?.role === "assistant") {
+  if (lastMessage?.role === "assistant" && (lastMessage.physical_thread_id ?? null) === resolvedPhysicalThreadId) {
     lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
     lastMessage.timestamp = now();
     return;
@@ -811,15 +1479,18 @@ function appendAssistantDeltaToIssue(issueId, delta = "") {
 
   messages.push({
     id: randomUUID(),
+    root_thread_id: getRootThreadIdForIssue(issue),
+    physical_thread_id: resolvedPhysicalThreadId,
     role: "assistant",
     kind: "message",
+    message_class: "assistant",
     content: String(delta ?? ""),
     timestamp: now()
   });
 }
 
 function listIssueMessages(issueId) {
-  return [...(issueMessagesById.get(issueId) ?? [])];
+  return [...(issueMessagesById.get(issueId) ?? [])].filter((message) => !message.deleted_at);
 }
 
 function updateProjectThreadSnapshot(threadId) {
@@ -863,7 +1534,7 @@ function updateProjectThreadSnapshot(threadId) {
   };
 
   threadStateById.set(threadId, nextThread);
-  return nextThread;
+  return syncRootThreadFromActivePhysicalThread(threadId) ?? nextThread;
 }
 
 function ensureDefaultProjectThread(loginId, projectId, preferredName = "Main") {
@@ -871,7 +1542,7 @@ function ensureDefaultProjectThread(loginId, projectId, preferredName = "Main") 
   const state = users.get(normalized);
   const existing = [...(state?.threadIds ?? [])]
     .map((threadId) => threadStateById.get(threadId))
-    .find((thread) => thread?.project_id === projectId);
+    .find((thread) => thread?.project_id === projectId && !thread?.deleted_at);
 
   if (existing?.id) {
     return existing.id;
@@ -892,6 +1563,7 @@ function ensureDefaultProjectThread(loginId, projectId, preferredName = "Main") 
   threadOwners.set(threadId, normalized);
   state?.threadIds.add(threadId);
   getThreadIssueIds(threadId);
+  ensureRootThreadPhysicalStructure(normalized, threadId);
   persistThreadById(threadId);
   return threadId;
 }
@@ -901,6 +1573,7 @@ function listProjectThreads(userId, projectId = "") {
   const items = [...state.threadIds]
     .map((threadId) => updateProjectThreadSnapshot(threadId) ?? threadStateById.get(threadId))
     .filter(Boolean)
+    .filter((thread) => !thread.deleted_at)
     .filter((thread) => !projectId || thread.project_id === projectId)
     .map((thread) => ({
       ...thread,
@@ -916,6 +1589,7 @@ function listThreadIssues(threadId) {
   return getThreadIssueIds(threadId)
     .map((issueId) => issueCardsById.get(issueId))
     .filter(Boolean)
+    .filter((issue) => !issue.deleted_at)
     .sort((left, right) => {
       if (left.status === "staged" && right.status === "staged") {
         const leftHasOrder = Number.isFinite(left.prep_position);
@@ -943,6 +1617,76 @@ function listThreadIssues(threadId) {
 
       return Date.parse(right.updated_at) - Date.parse(left.updated_at);
     });
+}
+
+function listThreadTimeline(threadId) {
+  const issues = listThreadIssues(threadId)
+    .slice()
+    .sort((left, right) => {
+      const leftSequence =
+        physicalThreadStateById.get(left.executed_physical_thread_id ?? left.created_physical_thread_id ?? "")?.sequence ??
+        Number.MAX_SAFE_INTEGER;
+      const rightSequence =
+        physicalThreadStateById.get(right.executed_physical_thread_id ?? right.created_physical_thread_id ?? "")?.sequence ??
+        Number.MAX_SAFE_INTEGER;
+
+      if (leftSequence !== rightSequence) {
+        return leftSequence - rightSequence;
+      }
+
+      return Date.parse(left.created_at) - Date.parse(right.created_at);
+    });
+
+  return issues
+    .flatMap((issue) =>
+      listIssueMessages(issue.id).map((message, index) => ({
+        ...message,
+        id: message.id ?? `${issue.id}-${index}`,
+        issue_id: issue.id,
+        issue_title: issue.title,
+        issue_status: issue.status,
+        physical_sequence:
+          physicalThreadStateById.get(message.physical_thread_id ?? issue.executed_physical_thread_id ?? "")?.sequence ??
+          null
+      }))
+    )
+    .sort((left, right) => {
+      const leftSequence = Number(left.physical_sequence ?? Number.MAX_SAFE_INTEGER);
+      const rightSequence = Number(right.physical_sequence ?? Number.MAX_SAFE_INTEGER);
+
+      if (leftSequence !== rightSequence) {
+        return leftSequence - rightSequence;
+      }
+
+      return Date.parse(left.timestamp ?? 0) - Date.parse(right.timestamp ?? 0);
+    });
+}
+
+function getThreadContinuity(userId, rootThreadId) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread || rootThread.deleted_at || threadOwners.get(rootThreadId) !== normalizedUserId) {
+    return {
+      root_thread: null,
+      physical_threads: [],
+      active_physical_thread: null,
+      handoff_summaries: [],
+      recently_closed_physical_threads: []
+    };
+  }
+
+  pruneRecentlyClosedPhysicalThreads(rootThreadId);
+
+  return {
+    root_thread: rootThread,
+    physical_threads: listPhysicalThreads(rootThreadId).filter((physicalThread) => !physicalThread.deleted_at),
+    active_physical_thread: getActivePhysicalThread(rootThreadId),
+    handoff_summaries: [...handoffSummariesById.values()]
+      .filter((summary) => summary.root_thread_id === rootThreadId && !summary.deleted_at)
+      .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)),
+    recently_closed_physical_threads: recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? []
+  };
 }
 
 function resolveWorkspaceRoots() {
@@ -1384,8 +2128,17 @@ async function createProjectThread(userId, payload = {}) {
   threadOwners.set(threadId, sanitizeUserId(userId));
   state.threadIds.add(threadId);
   getThreadIssueIds(threadId);
+  const initialPhysicalThread = ensureRootThreadPhysicalStructure(userId, threadId);
+  const createdRootThread = threadStateById.get(threadId) ?? thread;
   persistThreadsForUser(userId);
-  await publishEvent(userId, "thread.created", { thread });
+  await publishEvent(userId, "thread.created", { thread: createdRootThread });
+  await publishEvent(userId, "rootThread.created", { thread: createdRootThread });
+  if (initialPhysicalThread) {
+    await publishEvent(userId, "physicalThread.created", {
+      root_thread_id: threadId,
+      physical_thread: initialPhysicalThread
+    });
+  }
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
     project_id: projectId,
@@ -1394,7 +2147,7 @@ async function createProjectThread(userId, payload = {}) {
 
   return {
     accepted: true,
-    thread,
+    thread: createdRootThread,
     threads: listProjectThreads(userId, projectId)
   };
 }
@@ -1426,6 +2179,7 @@ async function updateProjectThread(userId, payload = {}) {
   threadStateById.set(threadId, next);
   persistThreadById(threadId);
   await publishEvent(userId, "thread.updated", { thread: next });
+  await publishEvent(userId, "rootThread.updated", { thread: next });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
     project_id: next.project_id,
@@ -1452,44 +2206,7 @@ async function deleteProjectThread(userId, payload = {}) {
     throw new Error("thread를 찾을 수 없습니다.");
   }
 
-  if (activeIssueByThreadId.has(threadId) || current.status === "running") {
-    await stopProjectThreadExecutionForDelete(current);
-  }
-
-  for (const issueId of getThreadIssueIds(threadId)) {
-    issueCardsById.delete(issueId);
-    issueMessagesById.delete(issueId);
-  }
-
-  threadIssueIdsById.delete(threadId);
-  pendingStartQueues.delete(threadId);
-  clearRunningIssueTracking(threadId);
-
-  const codexThreadId = current.codex_thread_id;
-  if (codexThreadId) {
-    codexThreadToThreadId.delete(codexThreadId);
-  }
-
-  const state = ensureUserState(userId);
-  state.threadIds.delete(threadId);
-  threadStateById.delete(threadId);
-  threadOwners.delete(threadId);
-  persistThreadsForUser(userId);
-  await publishEvent(userId, "thread.deleted", {
-    thread_id: threadId,
-    project_id: current.project_id
-  });
-  await publishEvent(userId, "bridge.projectThreads.updated", {
-    scope: "project",
-    project_id: current.project_id,
-    threads: listProjectThreads(userId, current.project_id)
-  });
-
-  return {
-    accepted: true,
-    thread_id: threadId,
-    threads: listProjectThreads(userId, current.project_id)
-  };
+  return deleteRootThreadCascade(userId, threadId, current);
 }
 
 async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DELETE_STOP_TIMEOUT_MS) {
@@ -1524,7 +2241,8 @@ async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DEL
 }
 
 async function stopProjectThreadExecutionForDelete(thread) {
-  const codexThreadId = String(thread?.codex_thread_id ?? "").trim();
+  const activePhysicalThread = thread?.id ? getActivePhysicalThread(thread.id) : null;
+  const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? thread?.codex_thread_id ?? "").trim();
 
   if (!codexThreadId) {
     return;
@@ -1553,17 +2271,224 @@ async function stopProjectThreadExecutionForDelete(thread) {
 
   if (stopErrors.length > 0) {
     console.warn("[OctOP bridge] thread delete proceeded after stop attempt errors", {
-      threadId: thread.id,
-      codexThreadId,
+      ...buildLogContext({
+        root_thread_id: thread.id,
+        codex_thread_id: codexThreadId,
+        event_type: "rootThread.delete.stopBestEffort.failed"
+      }),
       errors: stopErrors
     });
+  }
+}
+
+async function stopActivePhysicalThreadBestEffort(rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread) {
+    return;
+  }
+
+  await stopProjectThreadExecutionForDelete(rootThread);
+}
+
+function softDeleteRootThreadState(rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread) {
+    return null;
+  }
+
+  const nextRootThread = {
+    ...rootThread,
+    deleted_at: rootThread.deleted_at ?? now(),
+    continuity_status: "deleted",
+    updated_at: now()
+  };
+
+  threadStateById.set(rootThreadId, nextRootThread);
+  return nextRootThread;
+}
+
+function deleteRootThreadIssues(rootThreadId) {
+  const issueIds = [...getThreadIssueIds(rootThreadId)];
+
+  for (const issueId of issueIds) {
+    const currentIssue = issueCardsById.get(issueId);
+
+    if (!currentIssue) {
+      continue;
+    }
+
+    issueCardsById.set(issueId, {
+      ...currentIssue,
+      deleted_at: currentIssue.deleted_at ?? now(),
+      updated_at: now()
+    });
+  }
+
+  return issueIds;
+}
+
+function deleteRootThreadMessages(rootThreadId, issueIds = getThreadIssueIds(rootThreadId)) {
+  for (const issueId of issueIds) {
+    const issueMessages = issueMessagesById.get(issueId) ?? [];
+    issueMessagesById.set(
+      issueId,
+      issueMessages.map((message) => ({
+        ...message,
+        deleted_at: message.deleted_at ?? now()
+      }))
+    );
+  }
+}
+
+function deleteRootThreadSummaries(rootThreadId) {
+  let deletedCount = 0;
+
+  for (const [summaryId, summary] of handoffSummariesById.entries()) {
+    if (summary.root_thread_id !== rootThreadId) {
+      continue;
+    }
+
+    handoffSummariesById.set(summaryId, {
+      ...summary,
+      deleted_at: summary.deleted_at ?? now()
+    });
+    deletedCount += 1;
+  }
+
+  return deletedCount;
+}
+
+function buildThreadIssuesResponse(userId, rootThreadId) {
+  return {
+    thread: threadStateById.get(rootThreadId) ?? null,
+    issues: listThreadIssues(rootThreadId),
+    continuity: getThreadContinuity(userId, rootThreadId)
+  };
+}
+
+async function deleteRootThreadCascade(userId, rootThreadId, currentRootThread = threadStateById.get(rootThreadId)) {
+  const rootThread = currentRootThread ?? threadStateById.get(rootThreadId);
+  const deleteStartedAtMs = Date.now();
+
+  if (!rootThread) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const physicalThreads = listPhysicalThreads(rootThreadId);
+  const issueIds = [...getThreadIssueIds(rootThreadId)];
+  const existingLock = rolloverLocksByRootThreadId.get(rootThreadId);
+
+  if (existingLock) {
+    throw new Error("현재 thread는 다른 연속성 작업이 진행 중입니다.");
+  }
+
+  rolloverLocksByRootThreadId.set(rootThreadId, {
+    root_thread_id: rootThreadId,
+    started_at: now(),
+    reason: "delete"
+  });
+
+  try {
+    console.info("[OctOP bridge] root thread delete started", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: rootThread.active_physical_thread_id ?? null,
+        event_type: "rootThread.delete.started"
+      }),
+      physical_thread_count: physicalThreads.length,
+      issue_count: issueIds.length
+    });
+
+    markRootThreadDeletedForEventDrop(rootThreadId);
+    softDeleteRootThreadState(rootThreadId);
+    await stopActivePhysicalThreadBestEffort(rootThreadId);
+
+    for (const physicalThread of physicalThreads) {
+      const deletedPhysicalThread = {
+        ...physicalThread,
+        deleted_at: physicalThread.deleted_at ?? now(),
+        closed_at: physicalThread.closed_at ?? now(),
+        status: "deleted",
+        updated_at: now()
+      };
+
+      physicalThreadStateById.set(physicalThread.id, deletedPhysicalThread);
+      markPhysicalThreadClosedForEventDrop(physicalThread.id);
+
+      if (deletedPhysicalThread.codex_thread_id) {
+        codexThreadToPhysicalThreadId.delete(deletedPhysicalThread.codex_thread_id);
+        codexThreadToThreadId.delete(deletedPhysicalThread.codex_thread_id);
+      }
+
+      activeIssueByPhysicalThreadId.delete(physicalThread.id);
+    }
+
+    deleteRootThreadIssues(rootThreadId);
+    deleteRootThreadMessages(rootThreadId, issueIds);
+    deleteRootThreadSummaries(rootThreadId);
+
+    pendingStartQueues.delete(rootThreadId);
+    clearRunningIssueTracking(rootThreadId);
+    recentlyClosedPhysicalThreadIdsByRootThreadId.delete(rootThreadId);
+
+    persistThreadsForUser(userId);
+
+    await publishEvent(userId, "rootThread.deleted", {
+      root_thread_id: rootThreadId,
+      thread_id: rootThreadId,
+      project_id: rootThread.project_id
+    });
+    await publishEvent(userId, "thread.deleted", {
+      root_thread_id: rootThreadId,
+      thread_id: rootThreadId,
+      project_id: rootThread.project_id
+    });
+    await publishEvent(userId, "bridge.projectThreads.updated", {
+      scope: "project",
+      project_id: rootThread.project_id,
+      threads: listProjectThreads(userId, rootThread.project_id)
+    });
+
+    console.info("[OctOP bridge] root thread delete completed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        event_type: "rootThread.delete.completed"
+      }),
+      deleted_physical_thread_count: physicalThreads.length,
+      deleted_issue_count: issueIds.length
+    });
+    incrementBridgeMetric("root_thread_delete_total");
+
+    return {
+      accepted: true,
+      thread_id: rootThreadId,
+      deleted_physical_thread_count: physicalThreads.length,
+      deleted_issue_count: issueIds.length,
+      threads: listProjectThreads(userId, rootThread.project_id)
+    };
+  } catch (error) {
+    incrementBridgeMetric("root_thread_delete_failed_total");
+    console.error("[OctOP bridge] root thread delete failed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: rootThread.active_physical_thread_id ?? null,
+        event_type: "rootThread.delete.failed"
+      }),
+      duration_ms: Date.now() - deleteStartedAtMs,
+      error: error.message
+    });
+    throw error;
+  } finally {
+    rolloverLocksByRootThreadId.delete(rootThreadId);
   }
 }
 
 function getIssueDetail(userId, issueId) {
   const issue = issueCardsById.get(issueId);
 
-  if (!issue) {
+  if (!issue || issue.deleted_at) {
     return {
       issue: null,
       messages: []
@@ -1572,7 +2497,7 @@ function getIssueDetail(userId, issueId) {
 
   const thread = threadStateById.get(issue.thread_id);
 
-  if (!thread || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+  if (!thread || thread.deleted_at || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
     return {
       issue: null,
       messages: []
@@ -1599,8 +2524,9 @@ async function createThreadIssue(userId, payload = {}) {
   }
 
   const thread = threadStateById.get(threadId);
+  const activePhysicalThread = getActivePhysicalThread(threadId);
 
-  if (!thread || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
+  if (!thread || thread.deleted_at || threadOwners.get(threadId) !== sanitizeUserId(userId)) {
     throw new Error("thread를 찾을 수 없습니다.");
   }
 
@@ -1608,6 +2534,9 @@ async function createThreadIssue(userId, payload = {}) {
     id: createIssueCardId(),
     project_id: thread.project_id,
     thread_id: threadId,
+    root_thread_id: threadId,
+    created_physical_thread_id: activePhysicalThread?.id ?? null,
+    executed_physical_thread_id: null,
     title: createIssueTitle(payload),
     prompt,
     status: "staged",
@@ -1631,6 +2560,11 @@ async function createThreadIssue(userId, payload = {}) {
     thread_id: threadId,
     issues: listThreadIssues(threadId)
   });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: threadId,
+    thread_id: threadId,
+    entries: listThreadTimeline(threadId)
+  });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
     project_id: thread.project_id,
@@ -1645,18 +2579,33 @@ async function createThreadIssue(userId, payload = {}) {
 }
 
 async function ensureCodexThreadForProjectThread(userId, threadId) {
-  const thread = threadStateById.get(threadId);
+  return ensureCodexThreadForActivePhysicalThread(userId, threadId);
+}
 
-  if (!thread) {
-    throw new Error("thread를 찾을 수 없습니다.");
+async function ensureCodexThreadForActivePhysicalThread(userId, rootThreadId) {
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+
+  if (!activePhysicalThread) {
+    throw new Error("active physical thread를 찾을 수 없습니다.");
   }
 
-  if (thread.codex_thread_id) {
-    return thread.codex_thread_id;
+  return ensureCodexThreadForPhysicalThread(userId, activePhysicalThread.id);
+}
+
+async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
+  const physicalThread = physicalThreadStateById.get(physicalThreadId);
+
+  if (!physicalThread) {
+    throw new Error("physical thread를 찾을 수 없습니다.");
   }
 
-  const cwd = resolveProjectWorkspace(userId, thread.project_id);
-  const instructionOverrides = getProjectInstructionOverrides(userId, thread.project_id);
+  if (physicalThread.codex_thread_id) {
+    return physicalThread.codex_thread_id;
+  }
+
+  const rootThread = threadStateById.get(physicalThread.root_thread_id);
+  const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
+  const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
   await appServer.ensureReady();
   const threadResponse = await appServer.request("thread/start", {
     cwd,
@@ -1672,23 +2621,34 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
     throw new Error("app-server thread/start 응답에 thread id가 없습니다.");
   }
 
-  const next = {
-    ...thread,
+  const nextPhysicalThread = {
+    ...physicalThread,
     codex_thread_id: codexThread.id,
     updated_at: now(),
-    last_event: "thread.bound"
+    last_event: "physicalThread.bound"
   };
 
-  threadStateById.set(threadId, next);
-  codexThreadToThreadId.set(codexThread.id, threadId);
-  persistThreadById(threadId);
-  await publishEvent(userId, "thread.bound", {
-    thread: next
+  physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
+  codexThreadToPhysicalThreadId.set(codexThread.id, physicalThreadId);
+  codexThreadToThreadId.set(codexThread.id, physicalThread.root_thread_id);
+
+  if (rootThread?.active_physical_thread_id === physicalThreadId) {
+    activatePhysicalThread(physicalThread.root_thread_id, physicalThreadId);
+  }
+
+  persistThreadById(physicalThread.root_thread_id);
+  await publishEvent(userId, "physicalThread.bound", {
+    root_thread_id: physicalThread.root_thread_id,
+    physical_thread: nextPhysicalThread
+  });
+  await publishEvent(userId, "physicalThread.updated", {
+    root_thread_id: physicalThread.root_thread_id,
+    physical_thread: nextPhysicalThread
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
-    project_id: next.project_id,
-    threads: listProjectThreads(userId, next.project_id)
+    project_id: physicalThread.project_id,
+    threads: listProjectThreads(userId, physicalThread.project_id)
   });
 
   return codexThread.id;
@@ -1715,71 +2675,97 @@ function updateIssueCard(issueId, patch = {}) {
 }
 
 function invalidateCodexThreadBinding(threadId) {
-  const current = threadStateById.get(threadId);
+  const rootThread = threadStateById.get(threadId);
+  const activePhysicalThread = getActivePhysicalThread(threadId);
 
-  if (!current) {
+  if (!rootThread || !activePhysicalThread) {
     return null;
   }
 
-  if (current.codex_thread_id) {
-    codexThreadToThreadId.delete(current.codex_thread_id);
+  if (activePhysicalThread.codex_thread_id) {
+    codexThreadToThreadId.delete(activePhysicalThread.codex_thread_id);
+    codexThreadToPhysicalThreadId.delete(activePhysicalThread.codex_thread_id);
   }
 
-  const next = {
-    ...current,
+  const nextPhysicalThread = {
+    ...activePhysicalThread,
+    codex_thread_id: null,
+    updated_at: now(),
+    last_event: "physicalThread.binding.invalidated"
+  };
+
+  physicalThreadStateById.set(activePhysicalThread.id, nextPhysicalThread);
+  const nextRootThread = {
+    ...rootThread,
     codex_thread_id: null,
     updated_at: now(),
     last_event: "thread.binding.invalidated"
   };
 
-  threadStateById.set(threadId, next);
+  threadStateById.set(threadId, nextRootThread);
   persistThreadById(threadId);
-  return next;
+  return nextRootThread;
 }
 
-async function startIssueTurn(userId, threadId, issueId) {
-  const thread = threadStateById.get(threadId);
+async function startTurnOnPhysicalThread(
+  userId,
+  rootThreadId,
+  physicalThreadId,
+  issueId,
+  inputPrompt,
+  turnStartingEvent = "turn.starting"
+) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const physicalThread = physicalThreadStateById.get(physicalThreadId);
   const issue = issueCardsById.get(issueId);
 
-  if (!thread || !issue) {
+  if (!rootThread || !physicalThread || !issue) {
     throw new Error("실행할 작업을 찾을 수 없습니다.");
   }
 
-  const codexThreadId = await ensureCodexThreadForProjectThread(userId, threadId);
-  const cwd = resolveProjectWorkspace(userId, thread.project_id);
-  activeIssueByThreadId.set(threadId, issueId);
-  markRunningIssueActivity(threadId, {
+  const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+  const cwd = resolveProjectWorkspace(userId, rootThread.project_id);
+  activeIssueByThreadId.set(rootThreadId, issueId);
+  activeIssueByPhysicalThreadId.set(physicalThreadId, issueId);
+  markRunningIssueActivity(rootThreadId, {
     startedAt: now(),
     lastActivityAt: now(),
     reconcileAttempts: 0,
     lastReconciledAt: null
   });
   updateIssueCard(issueId, {
+    executed_physical_thread_id: physicalThreadId,
     status: "running",
     progress: Math.max(issue.progress ?? 0, 10),
     last_event: "turn.starting"
   });
-  updateProjectThreadSnapshot(threadId);
-  await publishEvent(userId, "turn.starting", {
-    thread_id: threadId,
+  updateProjectThreadSnapshot(rootThreadId);
+  await publishEvent(userId, turnStartingEvent, {
+    thread_id: rootThreadId,
+    physical_thread_id: physicalThreadId,
     issue_id: issueId
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
-    thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    thread_id: rootThreadId,
+    issues: listThreadIssues(rootThreadId)
+  });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: rootThreadId,
+    thread_id: rootThreadId,
+    entries: listThreadTimeline(rootThreadId)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
-    project_id: thread.project_id,
-    threads: listProjectThreads(userId, thread.project_id)
+    project_id: rootThread.project_id,
+    threads: listProjectThreads(userId, rootThread.project_id)
   });
 
   let attempt = 0;
 
   while (attempt < 2) {
     try {
-      const activeThread = threadStateById.get(threadId);
-      const activeCodexThreadId = activeThread?.codex_thread_id ?? codexThreadId;
+      const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
+      const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
       const turnResponse = await appServer.request("turn/start", {
         threadId: activeCodexThreadId,
         cwd,
@@ -1787,63 +2773,107 @@ async function startIssueTurn(userId, threadId, issueId) {
         input: [
           {
             type: "text",
-            text: buildExecutionPrompt(issue.prompt)
+            text: inputPrompt
           }
         ]
       });
 
       const turn = turnResponse.result?.turn ?? null;
+      const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId);
+
+      if (currentPhysicalThread) {
+        physicalThreadStateById.set(physicalThreadId, {
+          ...currentPhysicalThread,
+          status: "active",
+          turn_id: turn?.id ?? currentPhysicalThread.turn_id ?? null,
+          last_event: "turn.started",
+          updated_at: now()
+        });
+      }
+
       updateIssueCard(issueId, {
+        executed_physical_thread_id: physicalThreadId,
         status: "running",
         progress: 20,
         last_event: "turn.started"
       });
-      updateProjectThreadSnapshot(threadId);
+      updateProjectThreadSnapshot(rootThreadId);
       await publishEvent(userId, "turn.started", {
-        thread_id: threadId,
+        thread_id: rootThreadId,
+        physical_thread_id: physicalThreadId,
         issue_id: issueId,
         turn
       });
       await publishEvent(userId, "bridge.threadIssues.updated", {
-        thread_id: threadId,
-        issues: listThreadIssues(threadId)
+        thread_id: rootThreadId,
+        issues: listThreadIssues(rootThreadId)
+      });
+      await publishEvent(userId, "logicalThread.timeline.updated", {
+        root_thread_id: rootThreadId,
+        thread_id: rootThreadId,
+        entries: listThreadTimeline(rootThreadId)
       });
       await publishEvent(userId, "bridge.projectThreads.updated", {
         scope: "project",
-        project_id: thread.project_id,
-        threads: listProjectThreads(userId, thread.project_id)
+        project_id: rootThread.project_id,
+        threads: listProjectThreads(userId, rootThread.project_id)
       });
       return;
     } catch (error) {
       const threadNotFound = /thread not found/i.test(String(error.message ?? ""));
 
       if (threadNotFound && attempt === 0) {
-        invalidateCodexThreadBinding(threadId);
-        await ensureCodexThreadForProjectThread(userId, threadId);
+        invalidateCodexThreadBinding(rootThreadId);
+        await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
         attempt += 1;
         continue;
       }
 
-      clearRunningIssueTracking(threadId);
+      clearRunningIssueTracking(rootThreadId);
+      activeIssueByPhysicalThreadId.delete(physicalThreadId);
       updateIssueCard(issueId, {
+        executed_physical_thread_id: physicalThreadId,
         status: "failed",
         progress: 0,
         last_event: "turn.start.failed",
         last_message: error.message
       });
       await publishEvent(userId, "turn.start.failed", {
-        thread_id: threadId,
+        thread_id: rootThreadId,
+        physical_thread_id: physicalThreadId,
         issue_id: issueId,
         error: error.message
       });
       await publishEvent(userId, "bridge.threadIssues.updated", {
-        thread_id: threadId,
-        issues: listThreadIssues(threadId)
+        thread_id: rootThreadId,
+        issues: listThreadIssues(rootThreadId)
       });
-      void processIssueQueue(userId, threadId);
+      await publishEvent(userId, "logicalThread.timeline.updated", {
+        root_thread_id: rootThreadId,
+        thread_id: rootThreadId,
+        entries: listThreadTimeline(rootThreadId)
+      });
+      void processIssueQueue(userId, rootThreadId);
       return;
     }
   }
+}
+
+async function startIssueTurn(userId, threadId, issueId) {
+  const activePhysicalThread = getActivePhysicalThread(threadId);
+  const issue = issueCardsById.get(issueId);
+
+  if (!activePhysicalThread || !issue) {
+    throw new Error("실행할 작업을 찾을 수 없습니다.");
+  }
+
+  return startTurnOnPhysicalThread(
+    userId,
+    threadId,
+    activePhysicalThread.id,
+    issueId,
+    buildExecutionPrompt(issue.prompt)
+  );
 }
 
 async function processIssueQueue(userId, threadId) {
@@ -1896,7 +2926,7 @@ async function startThreadIssues(userId, payload = {}) {
 
   const eligibleIssueIds = requestedIssueIds.filter((issueId) => {
     const issue = issueCardsById.get(issueId);
-    return issue && issue.thread_id === threadId && issue.status === "staged";
+    return issue && !issue.deleted_at && issue.thread_id === threadId && issue.status === "staged";
   });
 
   if (eligibleIssueIds.length === 0) {
@@ -1930,6 +2960,11 @@ async function startThreadIssues(userId, payload = {}) {
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
     issues: listThreadIssues(threadId)
+  });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: threadId,
+    thread_id: threadId,
+    entries: listThreadTimeline(threadId)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
@@ -2043,7 +3078,7 @@ async function deleteThreadIssue(userId, payload = {}) {
 
   const issue = issueCardsById.get(issueId);
 
-  if (!issue) {
+  if (!issue || issue.deleted_at) {
     throw new Error("이슈를 찾을 수 없습니다.");
   }
 
@@ -2053,7 +3088,10 @@ async function deleteThreadIssue(userId, payload = {}) {
     throw new Error("이슈를 찾을 수 없습니다.");
   }
 
-  if (activeIssueByThreadId.get(issue.thread_id) === issueId) {
+  if (
+    activeIssueByThreadId.get(issue.thread_id) === issueId ||
+    [...activeIssueByPhysicalThreadId.values()].includes(issueId)
+  ) {
     throw new Error("실행 중인 이슈는 삭제할 수 없습니다.");
   }
 
@@ -2075,6 +3113,11 @@ async function deleteThreadIssue(userId, payload = {}) {
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: issue.thread_id,
     issues: listThreadIssues(issue.thread_id)
+  });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: issue.thread_id,
+    thread_id: issue.thread_id,
+    entries: listThreadTimeline(issue.thread_id)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
@@ -2103,13 +3146,13 @@ async function updateThreadIssue(userId, payload = {}) {
 
   const issue = issueCardsById.get(issueId);
 
-  if (!issue) {
+  if (!issue || issue.deleted_at) {
     throw new Error("이슈를 찾을 수 없습니다.");
   }
 
   const thread = threadStateById.get(issue.thread_id);
 
-  if (!thread || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+  if (!thread || thread.deleted_at || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
     throw new Error("이슈를 수정할 수 없습니다.");
   }
 
@@ -2150,6 +3193,11 @@ async function updateThreadIssue(userId, payload = {}) {
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: thread.id,
     issues: listThreadIssues(thread.id)
+  });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: thread.id,
+    thread_id: thread.id,
+    entries: listThreadTimeline(thread.id)
   });
   await publishEvent(userId, "bridge.projectThreads.updated", {
     scope: "project",
@@ -2357,6 +3405,343 @@ function buildExecutionPrompt(prompt = "") {
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
 }
 
+function buildHandoffPrompt(summary, issuePrompt = "") {
+  const sections = [
+    "이전 thread에서 컨텍스트 사용량 한계로 rollover되었습니다.",
+    "아래 handoff summary를 최우선 문맥으로 사용해 같은 작업을 이어가십시오.",
+    "",
+    "[handoff summary]",
+    summary.content_markdown,
+    "",
+    "[현재 issue 원본 프롬프트]",
+    String(issuePrompt ?? "").trim()
+  ];
+
+  return buildExecutionPrompt(sections.join("\n"));
+}
+
+function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, issueId = null) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const sourcePhysicalThread = physicalThreadStateById.get(sourcePhysicalThreadId);
+  const activeIssue = issueId ? issueCardsById.get(issueId) : null;
+  const recentMessages = activeIssue ? listIssueMessages(activeIssue.id).slice(-8) : [];
+  const recentIssues = listThreadIssues(rootThreadId).slice(0, 5);
+  const contentJson = {
+    root_thread_id: rootThreadId,
+    source_physical_thread_id: sourcePhysicalThreadId,
+    project_id: rootThread?.project_id ?? null,
+    root_thread_name: rootThread?.name ?? "",
+    active_issue: activeIssue
+      ? {
+          id: activeIssue.id,
+          title: activeIssue.title,
+          prompt: activeIssue.prompt,
+          status: activeIssue.status,
+          last_message: activeIssue.last_message ?? ""
+        }
+      : null,
+    recent_issues: recentIssues.map((issue) => ({
+      id: issue.id,
+      title: issue.title,
+      status: issue.status,
+      last_message: issue.last_message ?? ""
+    })),
+    recent_messages: recentMessages.map((message) => ({
+      role: message.role ?? "system",
+      content: String(message.content ?? "").trim()
+    })),
+    source_context_usage_percent: sourcePhysicalThread?.context_usage_percent ?? null,
+    source_context_used_tokens: sourcePhysicalThread?.context_used_tokens ?? null,
+    source_context_window_tokens: sourcePhysicalThread?.context_window_tokens ?? null
+  };
+  const markdownLines = [
+    `root thread: ${rootThread?.name ?? rootThreadId}`,
+    `source physical thread: ${sourcePhysicalThreadId}`,
+    activeIssue ? `active issue: ${activeIssue.title}` : "active issue: 없음",
+    activeIssue?.prompt ? `issue prompt: ${activeIssue.prompt}` : null,
+    recentIssues.length > 0 ? "recent issues:" : null,
+    ...recentIssues.map((issue) => `- ${issue.title} [${issue.status}] ${issue.last_message ?? ""}`),
+    recentMessages.length > 0 ? "recent messages:" : null,
+    ...recentMessages.map((message) => `- ${message.role}: ${String(message.content ?? "").trim()}`)
+  ].filter(Boolean);
+
+  return normalizeHandoffSummary({
+    id: createHandoffSummaryId(),
+    root_thread_id: rootThreadId,
+    source_physical_thread_id: sourcePhysicalThreadId,
+    content_markdown: markdownLines.join("\n"),
+    content_json: contentJson
+  });
+}
+
+function validateRolloverPreconditions(rootThreadId) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+  const activeIssueId = activeIssueByThreadId.get(rootThreadId) ?? null;
+  const cooldownUntil = rolloverCooldownByRootThreadId.get(rootThreadId) ?? 0;
+
+  if (!THREAD_CONTEXT_ROLLOVER_ENABLED) {
+    return { ok: false, reason: "disabled" };
+  }
+
+  if (!rootThread || rootThread.deleted_at) {
+    return { ok: false, reason: "missing_root_thread" };
+  }
+
+  if (!activePhysicalThread || activePhysicalThread.deleted_at || activePhysicalThread.closed_at) {
+    return { ok: false, reason: "missing_active_physical_thread" };
+  }
+
+  if (!activeIssueId || !issueCardsById.has(activeIssueId)) {
+    return { ok: false, reason: "missing_active_issue" };
+  }
+
+  if (rolloverLocksByRootThreadId.has(rootThreadId)) {
+    return { ok: false, reason: "locked" };
+  }
+
+  if (cooldownUntil > Date.now()) {
+    return { ok: false, reason: "cooldown" };
+  }
+
+  if ((activePhysicalThread.context_usage_percent ?? 0) < THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT) {
+    return { ok: false, reason: "below_threshold" };
+  }
+
+  return {
+    ok: true,
+    rootThread,
+    activePhysicalThread,
+    activeIssueId
+  };
+}
+
+async function publishRolloverEvents(userId, rootThreadId, sourcePhysicalThread, targetPhysicalThread, summary, issue) {
+  await publishEvent(userId, "handoffSummary.created", {
+    root_thread_id: rootThreadId,
+    summary
+  });
+  await publishEvent(userId, "physicalThread.closed", {
+    root_thread_id: rootThreadId,
+    physical_thread: sourcePhysicalThread
+  });
+  await publishEvent(userId, "physicalThread.created", {
+    root_thread_id: rootThreadId,
+    physical_thread: targetPhysicalThread
+  });
+    await publishEvent(userId, "rootThread.rollover.completed", {
+      root_thread_id: rootThreadId,
+      thread_id: rootThreadId,
+      issue_id: issue?.id ?? null,
+      source_physical_thread_id: sourcePhysicalThread.id,
+      target_physical_thread_id: targetPhysicalThread.id,
+      summary_id: summary.id
+    });
+}
+
+async function performContextRollover(userId, rootThreadId, reason = "threshold") {
+  const preconditions = validateRolloverPreconditions(rootThreadId);
+  const rolloverStartedAtMs = Date.now();
+
+  if (!preconditions.ok) {
+    return {
+      accepted: false,
+      reason: preconditions.reason
+    };
+  }
+
+  const { rootThread, activePhysicalThread: sourcePhysicalThread, activeIssueId } = preconditions;
+  const activeIssue = issueCardsById.get(activeIssueId) ?? null;
+  const lockToken = {
+    root_thread_id: rootThreadId,
+    source_physical_thread_id: sourcePhysicalThread.id,
+    started_at: now(),
+    reason
+  };
+
+  rolloverLocksByRootThreadId.set(rootThreadId, lockToken);
+
+  try {
+    console.info("[OctOP bridge] rollover started", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: sourcePhysicalThread.id,
+        source_physical_thread_id: sourcePhysicalThread.id,
+        codex_thread_id: sourcePhysicalThread.codex_thread_id ?? null,
+        issue_id: activeIssueId,
+        event_type: "rootThread.rollover.started"
+      }),
+      context_usage_percent: sourcePhysicalThread.context_usage_percent ?? null,
+    });
+
+    await publishEvent(userId, "rootThread.rollover.started", {
+      root_thread_id: rootThreadId,
+      thread_id: rootThreadId,
+      issue_id: activeIssueId,
+      source_physical_thread_id: sourcePhysicalThread.id,
+      reason
+    });
+
+    const summary = buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThread.id, activeIssueId);
+    handoffSummariesById.set(summary.id, summary);
+
+    const targetPhysicalThread = createPhysicalThread(rootThreadId, "context_rollover", sourcePhysicalThread, {
+      rollover_trigger_percent: sourcePhysicalThread.context_usage_percent ?? null,
+      handoff_summary_id: summary.id,
+      status: "active"
+    });
+    const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id);
+    const interrupted = await requestAppServerBestEffort("turn/interrupt", {
+      threadId: sourcePhysicalThread.codex_thread_id,
+      turnId: sourcePhysicalThread.turn_id
+    });
+
+    if (!interrupted.ok) {
+      console.warn("[OctOP bridge] rollover source interrupt best effort failed", {
+        ...buildLogContext({
+          root_thread_id: rootThreadId,
+          physical_thread_id: sourcePhysicalThread.id,
+          source_physical_thread_id: sourcePhysicalThread.id,
+          codex_thread_id: sourcePhysicalThread.codex_thread_id ?? null,
+          issue_id: activeIssueId,
+          event_type: "rootThread.rollover.interrupt.failed"
+        }),
+        error: interrupted.error?.message ?? "unknown"
+      });
+    }
+
+    const closedSourcePhysicalThread = closePhysicalThread(sourcePhysicalThread.id, "rolled_over");
+    markPhysicalThreadClosedForEventDrop(sourcePhysicalThread.id);
+    trackRecentlyClosedPhysicalThread(rootThreadId, sourcePhysicalThread.id, closedSourcePhysicalThread?.closed_at ?? now());
+    activeIssueByPhysicalThreadId.delete(sourcePhysicalThread.id);
+    const nextSummary = {
+      ...summary,
+      target_physical_thread_id: targetPhysicalThread.id
+    };
+
+    handoffSummariesById.set(summary.id, nextSummary);
+    const updatedTargetPhysicalThread = normalizePhysicalThread(
+      {
+        ...targetPhysicalThread,
+        codex_thread_id: targetCodexThreadId,
+        handoff_summary_id: summary.id
+      },
+      rootThread
+    );
+    physicalThreadStateById.set(targetPhysicalThread.id, updatedTargetPhysicalThread);
+    activatePhysicalThread(rootThreadId, updatedTargetPhysicalThread.id);
+    const nextRootThread = threadStateById.get(rootThreadId);
+
+    if (nextRootThread) {
+      threadStateById.set(rootThreadId, {
+        ...nextRootThread,
+        rollover_count: Number(nextRootThread.rollover_count ?? 0) + 1,
+        continuity_status: "healthy",
+        updated_at: now()
+      });
+    }
+
+    pushIssueMessage(activeIssueId, {
+      role: "system",
+      kind: "handoff_summary",
+      message_class: "system",
+      physical_thread_id: updatedTargetPhysicalThread.id,
+      content: nextSummary.content_markdown
+    });
+
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: updatedTargetPhysicalThread.id,
+      status: "running",
+      last_event: "rootThread.rollover.completed"
+    });
+    persistThreadById(rootThreadId);
+
+    await startTurnOnPhysicalThread(
+      userId,
+      rootThreadId,
+      updatedTargetPhysicalThread.id,
+      activeIssueId,
+      buildHandoffPrompt(nextSummary, activeIssue?.prompt ?? ""),
+      "rootThread.rollover.continuation.starting"
+    );
+    await publishRolloverEvents(
+      userId,
+      rootThreadId,
+      closedSourcePhysicalThread ?? sourcePhysicalThread,
+      updatedTargetPhysicalThread,
+      nextSummary,
+      activeIssue
+    );
+    rolloverCooldownByRootThreadId.set(rootThreadId, Date.now() + THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS);
+    incrementBridgeMetric("root_thread_rollover_total");
+    observeBridgeDurationMetric("root_thread_rollover_duration_ms", Date.now() - rolloverStartedAtMs);
+
+    console.info("[OctOP bridge] rollover completed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: updatedTargetPhysicalThread.id,
+        source_physical_thread_id: sourcePhysicalThread.id,
+        target_physical_thread_id: updatedTargetPhysicalThread.id,
+        codex_thread_id: updatedTargetPhysicalThread.codex_thread_id ?? null,
+        issue_id: activeIssueId,
+        event_type: "rootThread.rollover.completed"
+      })
+    });
+
+    return {
+      accepted: true,
+      root_thread_id: rootThreadId,
+      source_physical_thread_id: sourcePhysicalThread.id,
+      target_physical_thread_id: updatedTargetPhysicalThread.id,
+      summary_id: nextSummary.id
+    };
+  } catch (error) {
+    incrementBridgeMetric("root_thread_rollover_failed_total");
+    observeBridgeDurationMetric("root_thread_rollover_duration_ms", Date.now() - rolloverStartedAtMs);
+    const currentRootThread = threadStateById.get(rootThreadId);
+
+    if (currentRootThread) {
+      threadStateById.set(rootThreadId, {
+        ...currentRootThread,
+        continuity_status: "degraded",
+        updated_at: now()
+      });
+    }
+
+    await publishEvent(userId, "rootThread.rollover.failed", {
+      root_thread_id: rootThreadId,
+      thread_id: rootThreadId,
+      source_physical_thread_id: sourcePhysicalThread.id,
+      issue_id: activeIssueId,
+      error: error.message
+    });
+    console.error("[OctOP bridge] rollover failed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: sourcePhysicalThread.id,
+        source_physical_thread_id: sourcePhysicalThread.id,
+        codex_thread_id: sourcePhysicalThread.codex_thread_id ?? null,
+        issue_id: activeIssueId,
+        event_type: "rootThread.rollover.failed"
+      }),
+      error: error.message
+    });
+    throw error;
+  } finally {
+    rolloverLocksByRootThreadId.delete(rootThreadId);
+  }
+}
+
+async function maybeTriggerContextRollover(userId, rootThreadId, reason = "threshold") {
+  const preconditions = validateRolloverPreconditions(rootThreadId);
+
+  if (!preconditions.ok) {
+    return preconditions;
+  }
+
+  return performContextRollover(userId, rootThreadId, reason);
+}
+
 function refreshQueuePositions(userId) {
   const state = ensureUserState(userId);
   const queue = ensurePendingQueue(userId);
@@ -2405,6 +3790,16 @@ function resolveLocalThreadId(threadReference) {
     return candidate;
   }
 
+  if (physicalThreadStateById.has(candidate)) {
+    return physicalThreadStateById.get(candidate)?.root_thread_id ?? null;
+  }
+
+  const mappedPhysicalThreadId = resolvePhysicalThreadIdByCodexThreadId(candidate);
+
+  if (mappedPhysicalThreadId) {
+    return physicalThreadStateById.get(mappedPhysicalThreadId)?.root_thread_id ?? null;
+  }
+
   const mappedThreadId = codexThreadToThreadId.get(candidate);
 
   if (mappedThreadId) {
@@ -2448,6 +3843,14 @@ function buildRemoteNotificationPayload(params = {}, context = {}) {
 
   if (context.threadId) {
     remotePayload.thread_id = context.threadId;
+  }
+
+  if (context.rootThreadId && !remotePayload.root_thread_id) {
+    remotePayload.root_thread_id = context.rootThreadId;
+  }
+
+  if (context.physicalThreadId && !remotePayload.physical_thread_id) {
+    remotePayload.physical_thread_id = context.physicalThreadId;
   }
 
   if (context.projectId) {
@@ -2662,12 +4065,53 @@ class AppServerClient {
       return;
     }
 
+    cleanupExpiredEventDropTombstones();
+
     const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
-    const threadId = resolveLocalThreadId(codexThreadId);
-    let owner = resolveOwnerFromParams(params);
+    const physicalThreadId =
+      params.physical_thread_id ??
+      resolvePhysicalThreadIdByCodexThreadId(codexThreadId) ??
+      null;
+    const threadId =
+      params.root_thread_id ??
+      (physicalThreadId ? physicalThreadStateById.get(physicalThreadId)?.root_thread_id ?? null : null) ??
+      resolveLocalThreadId(codexThreadId);
+    let owner = threadId ? threadOwners.get(threadId) ?? null : resolveOwnerFromParams(params);
     let eventPatch = null;
     let issuePatch = null;
-    const activeIssueId = threadId ? activeIssueByThreadId.get(threadId) ?? null : null;
+    const activeIssueId = physicalThreadId
+      ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? activeIssueByThreadId.get(threadId) ?? null
+      : threadId
+        ? activeIssueByThreadId.get(threadId) ?? null
+        : null;
+
+    if (
+      (physicalThreadId && closedPhysicalThreadTombstonesById.has(physicalThreadId)) ||
+      (threadId && deletedRootThreadTombstonesById.has(threadId)) ||
+      (physicalThreadId && isPhysicalThreadClosed(physicalThreadId)) ||
+      (threadId && isRootThreadDeleted(threadId))
+    ) {
+      const dropReason = physicalThreadId && isPhysicalThreadClosed(physicalThreadId)
+        ? "physical_thread_closed"
+        : threadId && isRootThreadDeleted(threadId)
+          ? "root_thread_deleted"
+          : physicalThreadId && closedPhysicalThreadTombstonesById.has(physicalThreadId)
+            ? "physical_thread_tombstone"
+            : "root_thread_tombstone";
+      incrementBridgeMetric("late_event_drop_total");
+
+      console.warn("[OctOP bridge] app-server notification dropped", {
+        ...buildLogContext({
+          root_thread_id: threadId,
+          physical_thread_id: physicalThreadId,
+          codex_thread_id: codexThreadId,
+          event_type: method,
+          drop_reason: dropReason
+        }),
+        method
+      });
+      return;
+    }
 
     if (threadId) {
       if (
@@ -2684,37 +4128,52 @@ class AppServerClient {
         });
       }
 
-      eventPatch = buildThreadPatch(method, params);
+      eventPatch = buildThreadPatch(method, params, threadId, physicalThreadId);
 
       if (eventPatch) {
-        const current = threadStateById.get(threadId);
+        const targetPhysicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) : null;
 
-        if (current) {
-          threadStateById.set(threadId, {
-            ...current,
+        if (targetPhysicalThread && physicalThreadId) {
+          const nextPhysicalThread = {
+            ...targetPhysicalThread,
             ...eventPatch,
             updated_at: eventPatch.updated_at ?? now()
-          });
+          };
+
+          physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
 
           if (method === "thread/tokenUsage/updated") {
             persistThreadById(threadId);
           }
+
+          await publishEvent(owner ?? threadOwners.get(threadId) ?? BRIDGE_OWNER_LOGIN_ID, "physicalThread.updated", {
+            root_thread_id: threadId,
+            physical_thread: nextPhysicalThread
+          });
         }
+
+        syncRootThreadFromActivePhysicalThread(threadId);
+        updateProjectThreadSnapshot(threadId);
       }
 
       if (activeIssueId) {
         issuePatch = buildIssuePatch(method, params, activeIssueId);
 
         if (issuePatch) {
-          updateIssueCard(activeIssueId, issuePatch);
+          updateIssueCard(activeIssueId, {
+            ...issuePatch,
+            ...(physicalThreadId ? { executed_physical_thread_id: physicalThreadId } : {})
+          });
         }
       }
 
       if (method === "item/agentMessage/delta" && params.delta) {
-        const activeIssueId = activeIssueByThreadId.get(threadId);
+        const activeIssueId =
+          (physicalThreadId ? activeIssueByPhysicalThreadId.get(physicalThreadId) : null) ??
+          activeIssueByThreadId.get(threadId);
 
         if (activeIssueId) {
-          appendAssistantDeltaToIssue(activeIssueId, params.delta);
+          appendAssistantDeltaToIssue(activeIssueId, params.delta, physicalThreadId);
         }
       }
     }
@@ -2729,9 +4188,14 @@ class AppServerClient {
 
     if (!owner) {
       console.warn("[OctOP bridge] ownerless app-server notification dropped", {
-        method,
-        codexThreadId,
-        threadId
+        ...buildLogContext({
+          root_thread_id: threadId,
+          physical_thread_id: physicalThreadId,
+          codex_thread_id: codexThreadId,
+          event_type: method,
+          drop_reason: "ownerless_notification"
+        }),
+        method
       });
       return;
     }
@@ -2743,6 +4207,8 @@ class AppServerClient {
       buildRemoteNotificationPayload(params, {
         codexThreadId,
         threadId,
+        rootThreadId: threadId,
+        physicalThreadId,
         projectId,
         issueId: activeIssueId
       })
@@ -2759,6 +4225,11 @@ class AppServerClient {
           thread_id: threadId,
           issues: listThreadIssues(threadId)
         });
+        await publishEvent(owner, "logicalThread.timeline.updated", {
+          root_thread_id: threadId,
+          thread_id: threadId,
+          entries: listThreadTimeline(threadId)
+        });
       }
     }
 
@@ -2768,9 +4239,16 @@ class AppServerClient {
         ["idle", "error"].includes(params.status?.type ?? ""))
     ) {
       if (threadId) {
+        if (physicalThreadId) {
+          activeIssueByPhysicalThreadId.delete(physicalThreadId);
+        }
         clearRunningIssueTracking(threadId);
         void processIssueQueue(owner, threadId);
       }
+    }
+
+    if (threadId && method === "thread/tokenUsage/updated") {
+      void maybeTriggerContextRollover(owner, threadId, "threshold");
     }
   }
 
@@ -2821,37 +4299,43 @@ class AppServerClient {
   }
 }
 
-function buildThreadPatch(method, params) {
+function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId = null) {
   const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
-  const threadId = resolveLocalThreadId(params.thread_id ?? codexThreadId);
-  const currentThread = threadId ? threadStateById.get(threadId) ?? null : null;
-  const currentStatus = currentThread?.status ?? "idle";
+  const resolvedPhysicalThreadId =
+    physicalThreadId ??
+    resolvePhysicalThreadIdByCodexThreadId(codexThreadId) ??
+    null;
+  const currentPhysicalThread = resolvedPhysicalThreadId
+    ? physicalThreadStateById.get(resolvedPhysicalThreadId) ?? null
+    : null;
+  const currentStatus = currentPhysicalThread?.status ?? "idle";
 
   switch (method) {
     case "thread/started":
       return {
         codex_thread_id: params.thread?.id ?? codexThreadId ?? null,
-        progress: Math.max(5, threadStateById.get(threadId)?.progress ?? 0),
+        progress: Math.max(5, currentPhysicalThread?.progress ?? 0),
         status: currentStatus,
-        last_event: "thread.started"
+        last_event: "thread.started",
+        turn_id: currentPhysicalThread?.turn_id ?? null
       };
     case "thread/status/changed":
       return {
         status: normalizeThreadStatus(params.status, currentStatus),
         last_event: "thread.status.changed",
-        turn_id: ["idle", "error"].includes(params.status?.type ?? "") ? null : currentThread?.turn_id ?? null
+        turn_id: ["idle", "error"].includes(params.status?.type ?? "") ? null : currentPhysicalThread?.turn_id ?? null
       };
     case "thread/tokenUsage/updated":
       return {
-        ...normalizeThreadTokenUsage(params.tokenUsage ?? params.token_usage ?? null, currentThread ?? {}),
-        updated_at: currentThread?.updated_at ?? now()
+        ...normalizeThreadTokenUsage(params.tokenUsage ?? params.token_usage ?? null, currentPhysicalThread ?? {}),
+        updated_at: currentPhysicalThread?.updated_at ?? now()
       };
     case "turn/started":
       return {
         status: "running",
         progress: 20,
         last_event: "turn.started",
-        turn_id: params.turn?.id ?? currentThread?.turn_id ?? null
+        turn_id: params.turn?.id ?? currentPhysicalThread?.turn_id ?? null
       };
     case "turn/plan/updated":
       return {
@@ -2870,7 +4354,7 @@ function buildThreadPatch(method, params) {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${threadStateById.get(threadId)?.last_message ?? ""}${params.delta ?? ""}`
+        last_message: `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
       };
     case "turn/completed":
       return {
@@ -3078,6 +4562,11 @@ async function publishThreadState(userId, threadId) {
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
     issues: listThreadIssues(threadId)
+  });
+  await publishEvent(userId, "logicalThread.timeline.updated", {
+    root_thread_id: threadId,
+    thread_id: threadId,
+    entries: listThreadTimeline(threadId)
   });
 }
 
@@ -3612,9 +5101,23 @@ async function subscribeRequests() {
     },
     {
       subject: "octop.user.*.bridge.*.thread.issues.get",
-      handler: async (_userId, body) => ({
-        issues: listThreadIssues(String(body.thread_id ?? body.threadId ?? ""))
-      })
+      handler: async (userId, body) =>
+        buildThreadIssuesResponse(userId, String(body.thread_id ?? body.threadId ?? ""))
+    },
+    {
+      subject: "octop.user.*.bridge.*.thread.timeline.get",
+      handler: async (userId, body) => {
+        const rootThreadId = String(body.thread_id ?? body.threadId ?? "");
+        return {
+          thread: threadStateById.get(rootThreadId) ?? null,
+          entries: listThreadTimeline(rootThreadId),
+          continuity: getThreadContinuity(userId, rootThreadId)
+        };
+      }
+    },
+    {
+      subject: "octop.user.*.bridge.*.thread.continuity.get",
+      handler: async (userId, body) => getThreadContinuity(userId, String(body.thread_id ?? body.threadId ?? ""))
     },
     {
       subject: "octop.user.*.bridge.*.thread.issue.detail.get",
@@ -3761,6 +5264,31 @@ async function subscribeRequests() {
         }
 
         const result = await deleteProjectThread(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const projectThreadRolloverSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.rollover");
+
+  (async () => {
+    for await (const message of projectThreadRolloverSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await performContextRollover(
+          userId,
+          String(body.thread_id ?? body.threadId ?? "").trim(),
+          String(body.reason ?? "manual").trim() || "manual"
+        );
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -3955,7 +5483,8 @@ createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/health") {
     return sendJson(response, 200, {
       ok: true,
-      status: await bridgeStatus(userId)
+      status: await bridgeStatus(userId),
+      metrics: bridgeMetrics
     });
   }
 
@@ -4056,9 +5585,21 @@ createServer(async (request, response) => {
 
   if (request.method === "GET" && /^\/api\/threads\/[^/]+\/issues$/.test(url.pathname)) {
     const threadId = url.pathname.split("/")[3];
+    return sendJson(response, 200, buildThreadIssuesResponse(userId, threadId));
+  }
+
+  if (request.method === "GET" && /^\/api\/threads\/[^/]+\/timeline$/.test(url.pathname)) {
+    const threadId = url.pathname.split("/")[3];
     return sendJson(response, 200, {
-      issues: listThreadIssues(threadId)
+      thread: threadStateById.get(threadId) ?? null,
+      entries: listThreadTimeline(threadId),
+      continuity: getThreadContinuity(userId, threadId)
     });
+  }
+
+  if (request.method === "GET" && /^\/api\/threads\/[^/]+\/continuity$/.test(url.pathname)) {
+    const threadId = url.pathname.split("/")[3];
+    return sendJson(response, 200, getThreadContinuity(userId, threadId));
   }
 
   if (request.method === "POST" && /^\/api\/threads\/[^/]+\/issues$/.test(url.pathname)) {
@@ -4098,6 +5639,21 @@ createServer(async (request, response) => {
         thread_id: threadId
       });
       return sendJson(response, 202, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/rollover$/.test(url.pathname)) {
+    try {
+      const threadId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await performContextRollover(
+        userId,
+        threadId,
+        String(body.reason ?? "manual").trim() || "manual"
+      );
+      return sendJson(response, payload.accepted ? 202 : 400, payload);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });
     }

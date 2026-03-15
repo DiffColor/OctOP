@@ -126,6 +126,8 @@
 - root thread delete cascade
 - closed physical thread late event drop
 - deleted root thread late event drop
+- 브리지 재시작 후 `closed_at` 기반 late event drop 유지
+- 브리지 재시작 후 `deleted_at` 기반 late event drop 유지
 - bridge 저장 파일에 deleted/physical/handoff 상태가 남는지 확인
 
 ---

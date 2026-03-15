@@ -140,6 +140,7 @@ class FakeAppServer {
   constructor() {
     this.server = null;
     this.socket = null;
+    this.sockets = new Set();
     this.bufferBySocket = new Map();
     this.requests = [];
     this.threads = new Map();
@@ -174,6 +175,8 @@ class FakeAppServer {
       );
 
       this.socket = socket;
+      this.sockets.add(socket);
+      socket.unref();
       this.bufferBySocket.set(socket, Buffer.alloc(0));
 
       socket.on("data", (chunk) => {
@@ -188,6 +191,7 @@ class FakeAppServer {
 
       socket.on("close", () => {
         this.bufferBySocket.delete(socket);
+        this.sockets.delete(socket);
         if (this.socket === socket) {
           this.socket = null;
         }
@@ -200,6 +204,7 @@ class FakeAppServer {
       this.server.once("error", reject);
       this.server.listen(port, "127.0.0.1", () => {
         this.server.off("error", reject);
+        this.server.unref();
         resolve();
       });
     });
@@ -210,25 +215,20 @@ class FakeAppServer {
   }
 
   async stop() {
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
+    for (const socket of this.sockets) {
+      socket.destroy();
     }
+
+    this.sockets.clear();
+    this.socket = null;
 
     if (!this.server) {
       return;
     }
 
-    await new Promise((resolve, reject) => {
-      this.server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
-      });
-    });
+    const server = this.server;
+    this.server = null;
+    server.close();
   }
 
   send(payload) {
@@ -406,14 +406,24 @@ class BridgeProcess {
       return;
     }
 
-    this.child.kill("SIGTERM");
+    const child = this.child;
+    const exitPromise = new Promise((resolve) => {
+      child.once("exit", resolve);
+    });
 
-    await Promise.race([
-      new Promise((resolve) => this.child.once("exit", resolve)),
-      sleep(5000).then(() => {
-        this.child.kill("SIGKILL");
-      })
+    child.kill("SIGTERM");
+    const exitedBySigterm = await Promise.race([
+      exitPromise.then(() => true),
+      sleep(5000).then(() => false)
     ]);
+
+    if (exitedBySigterm || child.exitCode !== null) {
+      await exitPromise;
+      return;
+    }
+
+    child.kill("SIGKILL");
+    await exitPromise;
   }
 
   async request(pathname, options = {}) {
@@ -444,6 +454,113 @@ class BridgeProcess {
       stderr: this.stderr.join("")
     };
   }
+
+  dispose() {
+    if (this.child && this.child.exitCode === null) {
+      this.child.kill("SIGKILL");
+    }
+  }
+}
+
+async function getWorkspaceProject(bridge) {
+  const projectsPayload = await bridge.request("/api/projects");
+  const project = projectsPayload.projects.find((item) => item.workspace_path === REPO_ROOT) ?? projectsPayload.projects[0];
+  assert.ok(project?.id, "통합 테스트용 프로젝트를 찾지 못했습니다.");
+  return project;
+}
+
+async function createRunningIssueScenario(bridge, { project, threadName }) {
+  const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+    method: "POST",
+    body: JSON.stringify({
+      name: threadName
+    })
+  });
+  const rootThreadId = createThreadPayload.thread.id;
+
+  const issueOnePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: "Active Issue",
+      prompt: PROMPT
+    })
+  });
+  const issueTwoPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: "Second Issue",
+      prompt: PROMPT
+    })
+  });
+  const activeIssueId = issueOnePayload.issue.id;
+  const stagedIssueId = issueTwoPayload.issue.id;
+
+  await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+    method: "POST",
+    body: JSON.stringify({
+      issue_ids: [activeIssueId]
+    })
+  });
+
+  await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+    assert.equal(payload.issue?.status, "running");
+    assert.ok(payload.issue?.executed_physical_thread_id);
+    return payload;
+  }, {
+    label: "issue running"
+  });
+
+  const sourceContinuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+  return {
+    rootThreadId,
+    activeIssueId,
+    stagedIssueId,
+    sourcePhysicalThreadId: sourceContinuity.active_physical_thread.id,
+    sourceCodexThreadId: sourceContinuity.active_physical_thread.codex_thread_id
+  };
+}
+
+async function triggerThresholdRollover(bridge, fakeAppServer, { rootThreadId, sourceCodexThreadId, sourcePhysicalThreadId }) {
+  fakeAppServer.notify("thread/tokenUsage/updated", {
+    threadId: sourceCodexThreadId,
+    tokenUsage: {
+      modelContextWindow: 100000,
+      total: {
+        inputTokens: 86000,
+        outputTokens: 1200,
+        totalTokens: 87200
+      }
+    }
+  });
+
+  await waitFor(async () => {
+    const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+    assert.equal(Number(payload.active_physical_thread?.context_usage_percent ?? 0) >= 85, true);
+    return payload;
+  }, {
+    label: "threshold context usage update"
+  });
+
+  const rolloverContinuity = await waitFor(async () => {
+    const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+    assert.equal(payload.physical_threads.length, 2);
+    assert.equal(payload.handoff_summaries.length, 1);
+    assert.notEqual(payload.active_physical_thread.id, sourcePhysicalThreadId);
+    assert.equal(payload.recently_closed_physical_threads.some((item) => item.physical_thread_id === sourcePhysicalThreadId), true);
+    return payload;
+  }, {
+    timeoutMs: 45000,
+    intervalMs: 300,
+    label: "automatic rollover"
+  });
+
+  return {
+    rolloverContinuity,
+    targetPhysicalThreadId: rolloverContinuity.active_physical_thread.id,
+    targetCodexThreadId: rolloverContinuity.active_physical_thread.codex_thread_id
+  };
 }
 
 test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async (t) => {
@@ -469,98 +586,34 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
   try {
     await bridge.start();
 
-    const projectsPayload = await bridge.request("/api/projects");
-    const project = projectsPayload.projects.find((item) => item.workspace_path === REPO_ROOT) ?? projectsPayload.projects[0];
-    assert.ok(project?.id, "통합 테스트용 프로젝트를 찾지 못했습니다.");
-
-    const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: "Integration Root Thread"
-      })
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      stagedIssueId,
+      sourcePhysicalThreadId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Integration Root Thread"
     });
-    const rootThreadId = createThreadPayload.thread.id;
-    assert.ok(rootThreadId);
-
-    const issueOnePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Active Issue",
-        prompt: PROMPT
-      })
-    });
-    const issueTwoPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Second Issue",
-        prompt: PROMPT
-      })
-    });
-    const activeIssueId = issueOnePayload.issue.id;
-    const stagedIssueId = issueTwoPayload.issue.id;
 
     let issuesResponse = await bridge.request(`/api/threads/${rootThreadId}/issues`);
     assert.equal(issuesResponse.issues.length, 2);
     assert.equal(issuesResponse.issues.find((issue) => issue.id === activeIssueId)?.created_physical_thread_id !== null, true);
     assert.equal(issuesResponse.issues.find((issue) => issue.id === stagedIssueId)?.status, "staged");
-
-    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
-      method: "POST",
-      body: JSON.stringify({
-        issue_ids: [activeIssueId]
-      })
-    });
-
-    const runningIssueDetail = await waitFor(async () => {
-      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
-      assert.equal(payload.issue?.status, "running");
-      assert.ok(payload.issue?.executed_physical_thread_id);
-      return payload;
-    }, {
-      label: "issue running"
-    });
-
-    const sourceContinuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
-    const sourcePhysicalThreadId = sourceContinuity.active_physical_thread.id;
-    const sourceCodexThreadId = sourceContinuity.active_physical_thread.codex_thread_id;
     assert.ok(sourcePhysicalThreadId);
     assert.ok(sourceCodexThreadId);
 
-    fakeAppServer.notify("thread/tokenUsage/updated", {
-      threadId: sourceCodexThreadId,
-      tokenUsage: {
-        modelContextWindow: 100000,
-        total: {
-          inputTokens: 86000,
-          outputTokens: 1200,
-          totalTokens: 87200
-        }
-      }
+    const {
+      rolloverContinuity,
+      targetPhysicalThreadId,
+      targetCodexThreadId
+    } = await triggerThresholdRollover(bridge, fakeAppServer, {
+      rootThreadId,
+      sourceCodexThreadId,
+      sourcePhysicalThreadId
     });
-
-    await waitFor(async () => {
-      const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
-      assert.equal(Number(payload.active_physical_thread?.context_usage_percent ?? 0) >= 85, true);
-      return payload;
-    }, {
-      label: "threshold context usage update"
-    });
-
-    const rolloverContinuity = await waitFor(async () => {
-      const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
-      assert.equal(payload.physical_threads.length, 2);
-      assert.equal(payload.handoff_summaries.length, 1);
-      assert.notEqual(payload.active_physical_thread.id, sourcePhysicalThreadId);
-      assert.equal(payload.recently_closed_physical_threads.some((item) => item.physical_thread_id === sourcePhysicalThreadId), true);
-      return payload;
-    }, {
-      timeoutMs: 45000,
-      intervalMs: 300,
-      label: "manual rollover"
-    });
-
-    const targetPhysicalThreadId = rolloverContinuity.active_physical_thread.id;
-    const targetCodexThreadId = rolloverContinuity.active_physical_thread.codex_thread_id;
     assert.ok(targetCodexThreadId);
 
     issuesResponse = await bridge.request(`/api/threads/${rootThreadId}/issues`);
@@ -677,5 +730,136 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;
+  }
+});
+
+test("브리지 재시작 후 closed/deleted late event 차단 유지", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-restart-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgeId = `integration-bridge-${randomUUID().slice(0, 8)}`;
+  const token = "octop-restart-integration-token";
+  const userId = "integration-user";
+  const debugBridges = [];
+  let bridge = null;
+  let restartedBridge = null;
+  let restartedAfterDeleteBridge = null;
+
+  try {
+    bridge = new BridgeProcess({
+      port: await getFreePort(),
+      token,
+      userId,
+      bridgeId,
+      homeDir,
+      appServerUrl
+    });
+    debugBridges.push(bridge);
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const scenario = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Restart Validation Thread"
+    });
+    const rolloverResult = await triggerThresholdRollover(bridge, fakeAppServer, scenario);
+
+    await bridge.stop();
+
+    restartedBridge = new BridgeProcess({
+      port: await getFreePort(),
+      token,
+      userId,
+      bridgeId,
+      homeDir,
+      appServerUrl
+    });
+    debugBridges.push(restartedBridge);
+    await restartedBridge.start();
+
+    await waitFor(async () => {
+      const continuity = await restartedBridge.request(`/api/threads/${scenario.rootThreadId}/continuity`);
+      assert.equal(continuity.physical_threads.length, 2);
+      assert.equal(continuity.active_physical_thread.id, rolloverResult.targetPhysicalThreadId);
+      assert.equal(
+        continuity.physical_threads.some((item) => item.id === scenario.sourcePhysicalThreadId && Boolean(item.closed_at)),
+        true
+      );
+      return continuity;
+    }, {
+      label: "restart continuity restore"
+    });
+
+    const healthAfterRestart = await restartedBridge.request("/health");
+    const lateDropBeforeClosedReplay = Number(healthAfterRestart.metrics.late_event_drop_total ?? 0);
+
+    fakeAppServer.notify("item/agentMessage/delta", {
+      threadId: scenario.sourceCodexThreadId,
+      delta: "stale-after-restart"
+    });
+
+    await waitFor(async () => {
+      const health = await restartedBridge.request("/health");
+      assert.equal(Number(health.metrics.late_event_drop_total ?? 0), lateDropBeforeClosedReplay + 1);
+      return health;
+    }, {
+      label: "closed source late-event drop after restart"
+    });
+
+    const deletePayload = await restartedBridge.request(`/api/threads/${scenario.rootThreadId}`, {
+      method: "DELETE"
+    });
+    assert.equal(deletePayload.accepted, true);
+
+    await restartedBridge.stop();
+
+    restartedAfterDeleteBridge = new BridgeProcess({
+      port: await getFreePort(),
+      token,
+      userId,
+      bridgeId,
+      homeDir,
+      appServerUrl
+    });
+    debugBridges.push(restartedAfterDeleteBridge);
+    await restartedAfterDeleteBridge.start();
+
+    const continuityAfterDeleteRestart = await restartedAfterDeleteBridge.request(`/api/threads/${scenario.rootThreadId}/continuity`);
+    assert.equal(continuityAfterDeleteRestart.root_thread, null);
+
+    const healthAfterDeleteRestart = await restartedAfterDeleteBridge.request("/health");
+    const lateDropBeforeDeletedReplay = Number(healthAfterDeleteRestart.metrics.late_event_drop_total ?? 0);
+
+    fakeAppServer.notify("item/agentMessage/delta", {
+      threadId: rolloverResult.targetCodexThreadId,
+      delta: "stale-after-delete-restart"
+    });
+
+    await waitFor(async () => {
+      const health = await restartedAfterDeleteBridge.request("/health");
+      assert.equal(Number(health.metrics.late_event_drop_total ?? 0), lateDropBeforeDeletedReplay + 1);
+      return health;
+    }, {
+      label: "deleted root late-event drop after restart"
+    });
+
+    const deletedIssueDetail = await restartedAfterDeleteBridge.request(`/api/issues/${scenario.activeIssueId}`);
+    assert.equal(deletedIssueDetail.issue, null);
+    assert.deepEqual(deletedIssueDetail.messages, []);
+  } catch (error) {
+    const debugOutput = debugBridges
+      .map((item, index) => {
+        const output = item.debugOutput();
+        return `[bridge ${index + 1} stdout]\n${output.stdout}\n[bridge ${index + 1} stderr]\n${output.stderr}`;
+      })
+      .join("\n\n");
+    error.message = `${error.message}\n\n${debugOutput}`;
+    throw error;
+  } finally {
+    restartedAfterDeleteBridge?.dispose();
+    restartedBridge?.dispose();
+    bridge?.dispose();
+    void fakeAppServer.stop();
+    void rm(homeDir, { recursive: true, force: true });
   }
 });
