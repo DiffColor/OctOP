@@ -1156,7 +1156,7 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
               <path d="M20 4L4 10.5l6 2.2L12.5 19 20 4z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
             </svg>
           </div>
-          <p className="mt-6 text-[11px] uppercase tracking-[0.32em] text-telegram-100/70">OctOP Pocket</p>
+          <p className="mt-6 text-[11px] uppercase tracking-[0.32em] text-telegram-100/70">OctOP</p>
           <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-white">모바일 워크스페이스</h1>
           <p className="mt-3 text-sm leading-6 text-telegram-50/80">
             대시보드의 프로젝트, thread, bridge 상태를 텔레그램 형식으로 바로 확인하실 수 있습니다.
@@ -4005,7 +4005,7 @@ function MainPage({
             </button>
 
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-base font-semibold text-white">OctOP Pocket</h1>
+              <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
               <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
                 <span className="truncate">{bridgeLabel}</span>
                 <span

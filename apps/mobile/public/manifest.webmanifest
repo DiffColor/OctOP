@@ -1,6 +1,6 @@
 {
-  "name": "OctOP Pocket",
-  "short_name": "Pocket",
+  "name": "OctOP",
+  "short_name": "OctOP",
   "description": "대시보드 기능을 모바일 메시지형 인터페이스로 옮긴 OctOP PWA",
   "start_url": "/",
   "display": "standalone",
