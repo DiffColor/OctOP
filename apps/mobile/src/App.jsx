@@ -4739,8 +4739,15 @@ export default function App() {
           ? document.scrollingElement ?? document.documentElement
           : scrollTarget;
       const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+      const maxScrollTop = scrollContainer
+        ? Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
+        : 0;
 
-      if (deltaY > 0 && scrollTop <= 0) {
+      const isPullingPastTop = deltaY > 0 && scrollTop <= 0;
+      const isPushingPastBottom = deltaY < 0 && scrollTop >= maxScrollTop;
+      const isNonScrollableContainer = maxScrollTop <= 0;
+
+      if (isNonScrollableContainer || isPullingPastTop || isPushingPastBottom) {
         event.preventDefault();
       }
     };
