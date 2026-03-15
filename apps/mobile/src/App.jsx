@@ -2691,7 +2691,7 @@ function TodoChatDetail({
 
       <div
         ref={scrollRef}
-        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5"
+        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           {error ? (
@@ -3529,7 +3529,7 @@ function ThreadDetail({
 
       <div
         ref={scrollRef}
-        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5"
+        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
