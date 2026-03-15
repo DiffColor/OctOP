@@ -1,8 +1,13 @@
-<div align="center">
+<p align="center">
   <img src="./design/icon.png" alt="OctOP icon" width="120" />
-  <h1>OctOP</h1>
-</div>
+  <br />
+  <strong>OctOP</strong>
+</p>
+
 <br />
+
+---
+
 원격에서 프로젝트 이슈와 Codex 실행을 운영하는 플랫폼입니다.
 
 OctOP는 브라우저 기반 Dashboard와 모바일 PWA에서 원격으로 접속해, 각 작업 머신에 붙어 있는 Bridge를 통해 Codex 실행을 제어하고 상태를 추적하는 구조를 사용합니다. 외부 사용자는 gateway만 바라보고, `codex app-server`와 Bridge는 작업 머신 또는 사설 네트워크 안쪽에 남겨 둡니다.
