@@ -120,8 +120,8 @@
 - fake app-server websocket 연결
 - root thread 생성
 - issue 2개 생성 후 1개 실행
-- `thread/tokenUsage/updated`로 threshold 진입
-- 자동 rollover로 target physical thread 생성
+- `thread/tokenUsage/updated`로 threshold 상태 누적
+- 다음 issue 시작 직전 preflight rollover로 target physical thread 생성
 - handoff summary가 timeline에 적재되는지 확인
 - root thread delete cascade
 - closed physical thread late event drop

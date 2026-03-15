@@ -43,9 +43,10 @@ const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never"
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
   (process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_ENABLED ?? "true") !== "false";
-const THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT = Number(
-  process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT ?? 85
-);
+const {
+  value: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
+  reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
+} = resolveRolloverThreshold(process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT, 85);
 const THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS = Number(
   process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS ?? 30000
 );
@@ -106,6 +107,49 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT ?? 2
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
+
+if (
+  THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON &&
+  process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT
+) {
+  console.warn("[OctOP bridge] invalid rollover threshold env value", {
+    env_value: process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
+    fallback_percent: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
+    reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
+  });
+}
+
+function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
+  if (rawValue === undefined || rawValue === null) {
+    return { value: fallbackPercent, reason: null };
+  }
+
+  const normalized = String(rawValue).trim();
+
+  if (!normalized) {
+    return { value: fallbackPercent, reason: null };
+  }
+
+  const sanitized = normalized.endsWith("%") ? normalized.slice(0, -1).trim() : normalized;
+  let parsed = Number(sanitized);
+
+  if (!Number.isFinite(parsed)) {
+    return { value: fallbackPercent, reason: "invalid" };
+  }
+
+  if (parsed > 0 && parsed < 1) {
+    parsed *= 100;
+  }
+
+  if (parsed <= 0) {
+    return { value: fallbackPercent, reason: "non_positive" };
+  }
+
+  return {
+    value: Math.max(1, Math.min(100, parsed)),
+    reason: null
+  };
+}
 
 function now() {
   return new Date().toISOString();
@@ -941,6 +985,19 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
     (total?.cached_input_tokens ?? 0) > 0 ||
     (total?.output_tokens ?? 0) > 0 ||
     (total?.reasoning_output_tokens ?? 0) > 0;
+  const parseTokenCount = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const reportedLastTotalTokens = parseTokenCount(
+    tokenUsage?.last?.totalTokens ?? tokenUsage?.last?.total_tokens
+  );
+  const reportedTotalTokens = parseTokenCount(
+    tokenUsage?.total?.totalTokens ?? tokenUsage?.total?.total_tokens
+  );
+  const fallbackTotalTokens = parseTokenCount(
+    fallbackTokenUsage?.total?.totalTokens ?? fallbackTokenUsage?.total?.total_tokens
+  );
   const rawModelContextWindow =
     tokenUsage?.modelContextWindow ??
     tokenUsage?.model_context_window ??
@@ -956,7 +1013,20 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
     Number(fallback.context_used_tokens) === 0 && hasTokenUsageActivity
       ? null
       : fallback.context_used_tokens;
-  const rawContextUsedTokens = total?.total_tokens ?? rawFallbackContextUsedTokens;
+  let derivedContextUsedTokens = reportedLastTotalTokens;
+
+  if (derivedContextUsedTokens === null && reportedTotalTokens !== null) {
+    if (fallbackTotalTokens !== null && reportedTotalTokens >= fallbackTotalTokens) {
+      derivedContextUsedTokens = reportedTotalTokens - fallbackTotalTokens;
+    } else {
+      derivedContextUsedTokens = reportedTotalTokens;
+    }
+  }
+
+  const rawContextUsedTokens =
+    derivedContextUsedTokens === null || derivedContextUsedTokens === undefined
+      ? rawFallbackContextUsedTokens
+      : derivedContextUsedTokens;
   const contextUsedTokens =
     rawContextUsedTokens === null || rawContextUsedTokens === undefined
       ? null
@@ -2586,18 +2656,34 @@ async function transferTodoMessage(userId, payload = {}) {
     targetThread = created.thread;
   }
 
-  const createdIssue = await createThreadIssue(normalized, {
+  const createdIssueResult = await createThreadIssue(normalized, {
     thread_id: targetThread.id,
     title: createIssueTitle({ prompt: message.content }),
     prompt: message.content
   });
+  const createdIssue = createdIssueResult?.issue ?? null;
+  const createdIssueId = createdIssue?.id ?? null;
+
+  if (!createdIssueId) {
+    throw new Error("thread issue를 생성하지 못했습니다.");
+  }
+
+  const startResult = await startThreadIssues(normalized, {
+    thread_id: targetThread.id,
+    issue_ids: [createdIssueId]
+  });
+  const startedIssue =
+    startResult?.issues?.find((issue) => issue.id === createdIssueId) ??
+    issueCardsById.get(createdIssueId) ??
+    createdIssue;
+  targetThread = threadStateById.get(targetThread.id) ?? targetThread;
 
   const movedMessage = normalizeTodoMessage(normalized, {
     ...message,
     status: "moved",
     moved_to_project_id: projectId,
     moved_to_thread_id: targetThread.id,
-    moved_to_issue_id: createdIssue.issue.id,
+    moved_to_issue_id: startedIssue.id,
     updated_at: now()
   });
 
@@ -2608,7 +2694,7 @@ async function transferTodoMessage(userId, payload = {}) {
     todo_chat_id: movedMessage.todo_chat_id,
     message: movedMessage,
     thread: targetThread,
-    issue: createdIssue.issue
+    issue: startedIssue
   });
   await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, movedMessage.todo_chat_id));
   await publishEvent(normalized, "bridge.todoChats.updated", {
@@ -2619,7 +2705,7 @@ async function transferTodoMessage(userId, payload = {}) {
     accepted: true,
     todo_message: movedMessage,
     thread: targetThread,
-    issue: createdIssue.issue
+    issue: startedIssue
   };
 }
 
@@ -3362,7 +3448,10 @@ async function startTurnOnPhysicalThread(
         project_id: rootThread.project_id,
         threads: listProjectThreads(userId, rootThread.project_id)
       });
-      return;
+      return {
+        accepted: true,
+        turn
+      };
     } catch (error) {
       const threadNotFound = /thread not found/i.test(String(error.message ?? ""));
 
@@ -3398,12 +3487,34 @@ async function startTurnOnPhysicalThread(
         entries: listThreadTimeline(rootThreadId)
       });
       void processIssueQueue(userId, rootThreadId);
-      return;
+      return {
+        accepted: false,
+        error: error.message
+      };
     }
   }
+
+  return {
+    accepted: false,
+    error: "turn.start did not complete"
+  };
 }
 
 async function startIssueTurn(userId, threadId, issueId) {
+  const preflightRollover = await maybeTriggerContextRollover(
+    userId,
+    threadId,
+    "preflight_threshold",
+    {
+      issueId,
+      requireActiveIssue: false
+    }
+  );
+
+  if (preflightRollover?.accepted) {
+    return;
+  }
+
   const activePhysicalThread = getActivePhysicalThread(threadId);
   const issue = issueCardsById.get(issueId);
 
@@ -4018,10 +4129,13 @@ function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, 
   });
 }
 
-function validateRolloverPreconditions(rootThreadId) {
+function validateRolloverPreconditions(rootThreadId, options = {}) {
   const rootThread = threadStateById.get(rootThreadId);
   const activePhysicalThread = getActivePhysicalThread(rootThreadId);
-  const activeIssueId = activeIssueByThreadId.get(rootThreadId) ?? null;
+  const requireActiveIssue = options.requireActiveIssue !== false;
+  const requestedIssueId = String(options.issueId ?? "").trim() || null;
+  const activeIssueId = requestedIssueId ?? activeIssueByThreadId.get(rootThreadId) ?? null;
+  const activeIssue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
   const cooldownUntil = rolloverCooldownByRootThreadId.get(rootThreadId) ?? 0;
 
   if (!THREAD_CONTEXT_ROLLOVER_ENABLED) {
@@ -4036,8 +4150,11 @@ function validateRolloverPreconditions(rootThreadId) {
     return { ok: false, reason: "missing_active_physical_thread" };
   }
 
-  if (!activeIssueId || !issueCardsById.has(activeIssueId)) {
-    return { ok: false, reason: "missing_active_issue" };
+  if (!activeIssueId || !activeIssue || activeIssue.deleted_at || activeIssue.thread_id !== rootThreadId) {
+    return {
+      ok: false,
+      reason: requireActiveIssue ? "missing_active_issue" : "missing_issue_to_start"
+    };
   }
 
   if (rolloverLocksByRootThreadId.has(rootThreadId)) {
@@ -4056,7 +4173,8 @@ function validateRolloverPreconditions(rootThreadId) {
     ok: true,
     rootThread,
     activePhysicalThread,
-    activeIssueId
+    activeIssueId,
+    activeIssue
   };
 }
 
@@ -4083,8 +4201,8 @@ async function publishRolloverEvents(userId, rootThreadId, sourcePhysicalThread,
     });
 }
 
-async function performContextRollover(userId, rootThreadId, reason = "threshold") {
-  const preconditions = validateRolloverPreconditions(rootThreadId);
+async function performContextRollover(userId, rootThreadId, reason = "threshold", options = {}) {
+  const preconditions = validateRolloverPreconditions(rootThreadId, options);
   const rolloverStartedAtMs = Date.now();
 
   if (!preconditions.ok) {
@@ -4094,8 +4212,8 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
     };
   }
 
-  const { rootThread, activePhysicalThread: sourcePhysicalThread, activeIssueId } = preconditions;
-  const activeIssue = issueCardsById.get(activeIssueId) ?? null;
+  const { rootThread, activePhysicalThread: sourcePhysicalThread, activeIssueId, activeIssue } = preconditions;
+  const isPreflight = options.requireActiveIssue === false;
   const lockToken = {
     root_thread_id: rootThreadId,
     source_physical_thread_id: sourcePhysicalThread.id,
@@ -4106,18 +4224,6 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
   rolloverLocksByRootThreadId.set(rootThreadId, lockToken);
 
   try {
-    console.info("[OctOP bridge] rollover started", {
-      ...buildLogContext({
-        root_thread_id: rootThreadId,
-        physical_thread_id: sourcePhysicalThread.id,
-        source_physical_thread_id: sourcePhysicalThread.id,
-        codex_thread_id: sourcePhysicalThread.codex_thread_id ?? null,
-        issue_id: activeIssueId,
-        event_type: "rootThread.rollover.started"
-      }),
-      context_usage_percent: sourcePhysicalThread.context_usage_percent ?? null,
-    });
-
     await publishEvent(userId, "rootThread.rollover.started", {
       root_thread_id: rootThreadId,
       thread_id: rootThreadId,
@@ -4135,10 +4241,12 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       status: "active"
     });
     const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id);
-    const interrupted = await requestAppServerBestEffort("turn/interrupt", {
-      threadId: sourcePhysicalThread.codex_thread_id,
-      turnId: sourcePhysicalThread.turn_id
-    });
+    const interrupted = isPreflight
+      ? { ok: true, skipped: true }
+      : await requestAppServerBestEffort("turn/interrupt", {
+          threadId: sourcePhysicalThread.codex_thread_id,
+          turnId: sourcePhysicalThread.turn_id
+        });
 
     if (!interrupted.ok) {
       console.warn("[OctOP bridge] rollover source interrupt best effort failed", {
@@ -4200,14 +4308,19 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
     });
     persistThreadById(rootThreadId);
 
-    await startTurnOnPhysicalThread(
+    const continuationStartResult = await startTurnOnPhysicalThread(
       userId,
       rootThreadId,
       updatedTargetPhysicalThread.id,
       activeIssueId,
       buildHandoffPrompt(nextSummary, activeIssue?.prompt ?? ""),
-      "rootThread.rollover.continuation.starting"
+      isPreflight ? "rootThread.rollover.preflight.starting" : "rootThread.rollover.continuation.starting"
     );
+
+    if (!continuationStartResult?.accepted) {
+      throw new Error(continuationStartResult?.error ?? "rollover continuation start failed");
+    }
+
     await publishRolloverEvents(
       userId,
       rootThreadId,
@@ -4219,18 +4332,6 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
     rolloverCooldownByRootThreadId.set(rootThreadId, Date.now() + THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS);
     incrementBridgeMetric("root_thread_rollover_total");
     observeBridgeDurationMetric("root_thread_rollover_duration_ms", Date.now() - rolloverStartedAtMs);
-
-    console.info("[OctOP bridge] rollover completed", {
-      ...buildLogContext({
-        root_thread_id: rootThreadId,
-        physical_thread_id: updatedTargetPhysicalThread.id,
-        source_physical_thread_id: sourcePhysicalThread.id,
-        target_physical_thread_id: updatedTargetPhysicalThread.id,
-        codex_thread_id: updatedTargetPhysicalThread.codex_thread_id ?? null,
-        issue_id: activeIssueId,
-        event_type: "rootThread.rollover.completed"
-      })
-    });
 
     return {
       accepted: true,
@@ -4276,14 +4377,14 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
   }
 }
 
-async function maybeTriggerContextRollover(userId, rootThreadId, reason = "threshold") {
-  const preconditions = validateRolloverPreconditions(rootThreadId);
+async function maybeTriggerContextRollover(userId, rootThreadId, reason = "threshold", options = {}) {
+  const preconditions = validateRolloverPreconditions(rootThreadId, options);
 
   if (!preconditions.ok) {
     return preconditions;
   }
 
-  return performContextRollover(userId, rootThreadId, reason);
+  return performContextRollover(userId, rootThreadId, reason, options);
 }
 
 function refreshQueuePositions(userId) {
@@ -4794,9 +4895,6 @@ class AppServerClient {
       }
     }
 
-    if (threadId && method === "thread/tokenUsage/updated") {
-      void maybeTriggerContextRollover(owner, threadId, "threshold");
-    }
   }
 
   notify(method, params) {
