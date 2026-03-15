@@ -49,7 +49,7 @@ app.Use(async (httpContext, next) =>
   if (!string.IsNullOrWhiteSpace(origin) && allowedOriginSet.Contains(origin))
   {
     httpContext.Response.Headers.AccessControlAllowOrigin = origin;
-    httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,PATCH,DELETE,OPTIONS";
+    httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
     httpContext.Response.Headers.AccessControlAllowHeaders = "content-type,authorization";
     httpContext.Response.Headers.Append("Vary", "Origin");
   }
