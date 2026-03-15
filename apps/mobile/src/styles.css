@@ -81,6 +81,11 @@ svg {
   background: rgba(148, 163, 184, 0.45);
 }
 
+.touch-scroll-boundary-lock {
+  overscroll-behavior-y: contain;
+  overscroll-behavior-x: none;
+}
+
 .thread-title {
   display: -webkit-box;
   overflow: hidden;

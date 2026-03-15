@@ -320,6 +320,71 @@ function useVisualViewportHeight() {
   return viewportHeight;
 }
 
+function useTouchScrollBoundaryLock(scrollRef) {
+  useEffect(() => {
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return undefined;
+    }
+
+    let touchY = 0;
+    const boundaryEpsilon = 1;
+
+    const handleTouchStart = (event) => {
+      if (event.touches.length !== 1) {
+        return;
+      }
+
+      touchY = event.touches[0].clientY;
+
+      const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+
+      if (maxScrollTop <= 0) {
+        return;
+      }
+
+      if (scrollNode.scrollTop <= 0) {
+        scrollNode.scrollTop = boundaryEpsilon;
+      } else if (scrollNode.scrollTop >= maxScrollTop) {
+        scrollNode.scrollTop = Math.max(boundaryEpsilon, maxScrollTop - boundaryEpsilon);
+      }
+    };
+
+    const handleTouchMove = (event) => {
+      if (event.touches.length !== 1) {
+        return;
+      }
+
+      const currentY = event.touches[0].clientY;
+      const deltaY = currentY - touchY;
+      touchY = currentY;
+
+      const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+
+      if (maxScrollTop <= 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const isPullingPastTop = deltaY > 0 && scrollNode.scrollTop <= boundaryEpsilon;
+      const isPushingPastBottom = deltaY < 0 && scrollNode.scrollTop >= maxScrollTop - boundaryEpsilon;
+
+      if (isPullingPastTop || isPushingPastBottom) {
+        event.preventDefault();
+      }
+    };
+
+    scrollNode.addEventListener("touchstart", handleTouchStart, { passive: true });
+    scrollNode.addEventListener("touchmove", handleTouchMove, { passive: false });
+
+    return () => {
+      scrollNode.removeEventListener("touchstart", handleTouchStart);
+      scrollNode.removeEventListener("touchmove", handleTouchMove);
+    };
+  }, [scrollRef]);
+}
+
 function getRealtimeProgressText(entity) {
   const status = entity?.status ?? "queued";
   const lastEvent = entity?.last_event ?? "";
@@ -2562,6 +2627,8 @@ function TodoChatDetail({
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
   const viewportHeight = useVisualViewportHeight();
+  const scrollRef = useRef(null);
+  useTouchScrollBoundaryLock(scrollRef);
 
   return (
     <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
@@ -2622,7 +2689,10 @@ function TodoChatDetail({
         </div>
       </header>
 
-      <div className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div
+        ref={scrollRef}
+        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5"
+      >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           {error ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -3056,6 +3126,7 @@ function ThreadDetail({
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
+  useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
@@ -3456,7 +3527,10 @@ function ThreadDetail({
         </div>
       </header>
 
-      <div ref={scrollRef} className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div
+        ref={scrollRef}
+        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5"
+      >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
