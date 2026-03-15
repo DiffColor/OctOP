@@ -556,6 +556,8 @@ async function markThreadContextHigh(bridge, fakeAppServer, { rootThreadId, sour
   await waitFor(async () => {
     const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
     assert.equal(Number(payload.active_physical_thread?.context_usage_percent ?? 0) >= 85, true);
+    assert.equal(payload.active_physical_thread?.context_used_tokens, 86000);
+    assert.equal(payload.active_physical_thread?.context_usage_percent, 86);
     assert.equal(payload.physical_threads.length, 1);
     return payload;
   }, {

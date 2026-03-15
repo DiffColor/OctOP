@@ -74,6 +74,7 @@ const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
+const CHAT_COMPOSER_MAX_HEIGHT_PX = 240; // 최대 입력창 높이(px)를 제한해 채팅 영역이 사라지는 것을 방지
 
 function readStoredSession() {
   for (const key of [
@@ -332,59 +333,6 @@ function normalizeNullableInteger(value) {
   return Number.isFinite(numeric) ? Math.round(numeric) : null;
 }
 
-function normalizeLiveTokenUsagePayload(tokenUsage = null, currentThread = null) {
-  const hasTokenUsageActivity =
-    Number(tokenUsage?.total?.inputTokens ?? tokenUsage?.total?.input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.cachedInputTokens ?? tokenUsage?.total?.cached_input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.outputTokens ?? tokenUsage?.total?.output_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.reasoningOutputTokens ?? tokenUsage?.total?.reasoning_output_tokens ?? 0) > 0;
-  const currentTokenUsage = currentThread?.token_usage ?? currentThread?.tokenUsage ?? null;
-  const fallbackUsedTokens =
-    Number(currentThread?.context_used_tokens) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_used_tokens;
-  const fallbackPercent =
-    Number(currentThread?.context_usage_percent) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_usage_percent;
-  const lastTotalTokens = normalizeNullableInteger(
-    tokenUsage?.last?.totalTokens ?? tokenUsage?.last?.total_tokens
-  );
-  const totalTokens = normalizeNullableInteger(
-    tokenUsage?.total?.totalTokens ?? tokenUsage?.total?.total_tokens
-  );
-  const previousTotalTokens = normalizeNullableInteger(
-    currentTokenUsage?.total?.totalTokens ?? currentTokenUsage?.total?.total_tokens
-  );
-
-  let usedTokens = lastTotalTokens;
-
-  if (usedTokens === null && totalTokens !== null) {
-    usedTokens =
-      previousTotalTokens !== null && totalTokens >= previousTotalTokens
-        ? totalTokens - previousTotalTokens
-        : totalTokens;
-  }
-
-  if (usedTokens === null) {
-    usedTokens = fallbackUsedTokens;
-  }
-  const windowTokens = normalizeNullableInteger(
-    tokenUsage?.modelContextWindow ??
-      tokenUsage?.model_context_window ??
-      currentThread?.context_window_tokens
-  );
-  const percent = windowTokens && usedTokens !== null
-    ? normalizeNullableInteger((usedTokens / windowTokens) * 100)
-    : normalizeNullableInteger(fallbackPercent);
-
-  return {
-    context_usage_percent: percent,
-    context_used_tokens: usedTokens,
-    context_window_tokens: windowTokens
-  };
-}
-
 function getThreadContextUsage(thread) {
   if (!thread) {
     return null;
@@ -394,10 +342,7 @@ function getThreadContextUsage(thread) {
   const hasPercent =
     Number.isFinite(Number(thread.context_usage_percent)) || Number.isFinite(Number(thread.contextUsagePercent));
   const usedTokens = normalizeNullableInteger(
-    thread.context_used_tokens ??
-      thread.contextUsedTokens ??
-      thread.token_usage?.total?.total_tokens ??
-      thread.tokenUsage?.total?.totalTokens
+    thread.context_used_tokens ?? thread.contextUsedTokens
   );
   const windowTokens = normalizeNullableInteger(
     thread.context_window_tokens ??
@@ -606,15 +551,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "thread.tokenUsage.updated":
-      {
-        const nextUsage = normalizeLiveTokenUsagePayload(payload.tokenUsage ?? payload.token_usage ?? null, currentThread);
-      return {
-        id: threadId,
-        project_id: projectId || currentThread?.project_id || null,
-        ...nextUsage,
-        updated_at: currentThread?.updated_at ?? new Date().toISOString()
-      };
-      }
+      return null;
     case "turn.started":
       return {
         id: threadId,
@@ -1333,8 +1270,22 @@ function InlineIssueComposer({
       return;
     }
 
+    const viewportHeight =
+      typeof window !== "undefined"
+        ? window.visualViewport?.height ?? window.innerHeight ?? 0
+        : 0;
+    const computedLimit = viewportHeight > 0 ? viewportHeight * 0.45 : CHAT_COMPOSER_MAX_HEIGHT_PX;
+    const maxHeight =
+      computedLimit > 0 ? Math.min(CHAT_COMPOSER_MAX_HEIGHT_PX, computedLimit) : CHAT_COMPOSER_MAX_HEIGHT_PX;
+
     textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+    if (textarea.scrollHeight <= maxHeight) {
+      textarea.scrollTop = textarea.scrollHeight;
+    }
   }, []);
 
   useLayoutEffect(() => {
@@ -1686,7 +1637,7 @@ function InlineIssueComposer({
               onChange={handlePromptChange}
               placeholder=""
               disabled={!selectedProject || busy || disabled}
-              className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
+              className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
             />
           </div>
           <button
