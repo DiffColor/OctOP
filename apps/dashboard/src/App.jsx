@@ -5489,13 +5489,17 @@ export default function App() {
       ],
       new Date().toISOString()
     );
+    const currentArchivedIssuesForScope =
+      selectedBridgeIdRef.current === selectedBridgeId && selectedProjectThreadIdRef.current === selectedProjectThreadId
+        ? archivedIssues
+        : (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
 
     updateArchivedIssuesState(nextArchivedState);
     replaceArchivedIssuesForCurrentScope(
       selectedBridgeId,
       selectedProjectThreadId,
       mergeIssues(
-        archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? [],
+        currentArchivedIssuesForScope,
         archiveableIds
           .map((threadId) => issues.find((item) => item.id === threadId))
           .filter(Boolean)
@@ -5527,15 +5531,19 @@ export default function App() {
       remaining,
       new Date().toISOString()
     );
+    const currentArchivedIssuesForScope =
+      selectedBridgeIdRef.current === selectedBridgeId && selectedProjectThreadIdRef.current === selectedProjectThreadId
+        ? archivedIssues
+        : (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
 
     updateArchivedIssuesState(nextArchivedState);
-    const restoredIssues = (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter((issue) =>
+    const restoredIssues = currentArchivedIssuesForScope.filter((issue) =>
       threadIds.includes(issue.id)
     );
     replaceArchivedIssuesForCurrentScope(
       selectedBridgeId,
       selectedProjectThreadId,
-      (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+      currentArchivedIssuesForScope.filter(
         (issue) => !threadIds.includes(issue.id)
       )
     );
