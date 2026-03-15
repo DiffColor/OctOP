@@ -74,6 +74,7 @@ const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
+const CHAT_COMPOSER_MAX_HEIGHT_PX = 240; // 최대 입력창 높이(px)를 제한해 채팅 영역이 사라지는 것을 방지
 
 function readStoredSession() {
   for (const key of [
@@ -332,41 +333,6 @@ function normalizeNullableInteger(value) {
   return Number.isFinite(numeric) ? Math.round(numeric) : null;
 }
 
-function normalizeLiveTokenUsagePayload(tokenUsage = null, currentThread = null) {
-  const hasTokenUsageActivity =
-    Number(tokenUsage?.total?.inputTokens ?? tokenUsage?.total?.input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.cachedInputTokens ?? tokenUsage?.total?.cached_input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.outputTokens ?? tokenUsage?.total?.output_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.reasoningOutputTokens ?? tokenUsage?.total?.reasoning_output_tokens ?? 0) > 0;
-  const fallbackUsedTokens =
-    Number(currentThread?.context_used_tokens) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_used_tokens;
-  const fallbackPercent =
-    Number(currentThread?.context_usage_percent) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_usage_percent;
-  const usedTokens = normalizeNullableInteger(
-    tokenUsage?.total?.totalTokens ??
-      tokenUsage?.total?.total_tokens ??
-      fallbackUsedTokens
-  );
-  const windowTokens = normalizeNullableInteger(
-    tokenUsage?.modelContextWindow ??
-      tokenUsage?.model_context_window ??
-      currentThread?.context_window_tokens
-  );
-  const percent = windowTokens && usedTokens !== null
-    ? normalizeNullableInteger((usedTokens / windowTokens) * 100)
-    : normalizeNullableInteger(fallbackPercent);
-
-  return {
-    context_usage_percent: percent,
-    context_used_tokens: usedTokens,
-    context_window_tokens: windowTokens
-  };
-}
-
 function getThreadContextUsage(thread) {
   if (!thread) {
     return null;
@@ -376,10 +342,7 @@ function getThreadContextUsage(thread) {
   const hasPercent =
     Number.isFinite(Number(thread.context_usage_percent)) || Number.isFinite(Number(thread.contextUsagePercent));
   const usedTokens = normalizeNullableInteger(
-    thread.context_used_tokens ??
-      thread.contextUsedTokens ??
-      thread.token_usage?.total?.total_tokens ??
-      thread.tokenUsage?.total?.totalTokens
+    thread.context_used_tokens ?? thread.contextUsedTokens
   );
   const windowTokens = normalizeNullableInteger(
     thread.context_window_tokens ??
@@ -588,15 +551,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "thread.tokenUsage.updated":
-      {
-        const nextUsage = normalizeLiveTokenUsagePayload(payload.tokenUsage ?? payload.token_usage ?? null, currentThread);
-      return {
-        id: threadId,
-        project_id: projectId || currentThread?.project_id || null,
-        ...nextUsage,
-        updated_at: currentThread?.updated_at ?? new Date().toISOString()
-      };
-      }
+      return null;
     case "turn.started":
       return {
         id: threadId,
@@ -1315,8 +1270,22 @@ function InlineIssueComposer({
       return;
     }
 
+    const viewportHeight =
+      typeof window !== "undefined"
+        ? window.visualViewport?.height ?? window.innerHeight ?? 0
+        : 0;
+    const computedLimit = viewportHeight > 0 ? viewportHeight * 0.45 : CHAT_COMPOSER_MAX_HEIGHT_PX;
+    const maxHeight =
+      computedLimit > 0 ? Math.min(CHAT_COMPOSER_MAX_HEIGHT_PX, computedLimit) : CHAT_COMPOSER_MAX_HEIGHT_PX;
+
     textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+    if (textarea.scrollHeight <= maxHeight) {
+      textarea.scrollTop = textarea.scrollHeight;
+    }
   }, []);
 
   useLayoutEffect(() => {
@@ -1668,7 +1637,7 @@ function InlineIssueComposer({
               onChange={handlePromptChange}
               placeholder=""
               disabled={!selectedProject || busy || disabled}
-              className="min-h-[24px] w-full resize-none overflow-hidden border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
+              className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
             />
           </div>
           <button
@@ -1965,14 +1934,165 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
 }
 
 function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
+  const startPointRef = useRef(null);
+  const baseOffsetRef = useRef(0);
+  const pointerIdRef = useRef(null);
+  const swipeAxisRef = useRef(null);
+  const offsetRef = useRef(0);
+  const movedRef = useRef(false);
+  const ACTION_WIDTH = 92;
+  const SNAP_THRESHOLD = 42;
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  const setRevealOffset = useCallback((nextOffset) => {
+    const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
+    offsetRef.current = clamped;
+    setOffset(clamped);
+  }, []);
+
+  const handlePointerDown = useCallback((event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) {
+      return;
+    }
+
+    startPointRef.current = { x: event.clientX, y: event.clientY };
+    baseOffsetRef.current = offsetRef.current;
+    pointerIdRef.current = event.pointerId;
+    swipeAxisRef.current = null;
+    movedRef.current = false;
+    setDragging(false);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      if (
+        startPointRef.current === null ||
+        (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)
+      ) {
+        return;
+      }
+
+      const deltaX = event.clientX - startPointRef.current.x;
+      const deltaY = event.clientY - startPointRef.current.y;
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
+
+      if (swipeAxisRef.current === null) {
+        if (absX < 6 && absY < 6) {
+          return;
+        }
+
+        swipeAxisRef.current = absX > absY ? "x" : "y";
+      }
+
+      if (swipeAxisRef.current !== "x") {
+        return;
+      }
+
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+
+      if (absX > 6) {
+        movedRef.current = true;
+      }
+
+      setDragging(true);
+      setRevealOffset(baseOffsetRef.current + deltaX);
+    },
+    [setRevealOffset]
+  );
+
+  const handlePointerUp = useCallback(
+    (event) => {
+      if (startPointRef.current === null) {
+        return;
+      }
+
+      if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
+        setRevealOffset(-ACTION_WIDTH);
+      } else if (swipeAxisRef.current === "x" && offsetRef.current >= SNAP_THRESHOLD) {
+        setRevealOffset(ACTION_WIDTH);
+      } else if (swipeAxisRef.current === "x") {
+        setRevealOffset(0);
+      }
+
+      startPointRef.current = null;
+      baseOffsetRef.current = 0;
+      pointerIdRef.current = null;
+      swipeAxisRef.current = null;
+      setDragging(false);
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    },
+    [setRevealOffset]
+  );
+
+  const showDeleteAction = offset > 0;
+  const showRenameAction = offset < 0;
+
   return (
-    <div className="border-b border-white/8 px-3 py-3">
-      <div
-        className={`rounded-2xl border px-3 py-3 ${
-          active ? "border-white/12 bg-white/[0.03]" : "border-transparent bg-transparent"
+    <div className="relative overflow-hidden border-b border-white/8">
+      <button
+        type="button"
+        onClick={() => {
+          setRevealOffset(0);
+          onDelete(chat);
+        }}
+        className={`absolute inset-y-0 left-0 flex w-[92px] items-center justify-center bg-rose-500 text-[12px] font-semibold text-white transition-opacity duration-150 ${
+          showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
-        <button type="button" onClick={() => onOpen(chat.id)} className="block w-full text-left">
+        삭제
+      </button>
+
+      <button
+        type="button"
+        onClick={() => {
+          setRevealOffset(0);
+          onRename(chat);
+        }}
+        className={`absolute inset-y-0 right-0 flex w-[92px] items-center justify-center bg-slate-800 text-[12px] font-semibold text-white transition-opacity duration-150 ${
+          showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        편집
+      </button>
+
+      <button
+        type="button"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onClick={() => {
+          if (movedRef.current) {
+            movedRef.current = false;
+            return;
+          }
+
+          if (offsetRef.current !== 0) {
+            setRevealOffset(0);
+            return;
+          }
+
+          onOpen(chat.id);
+        }}
+        className={`relative w-full px-3 py-3 text-left ${
+          dragging ? "" : "transition-transform duration-180 ease-out"
+        } ${active ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"}`}
+        style={{
+          transform: `translate3d(${offset}px, 0, 0)`,
+          touchAction: "pan-y",
+          willChange: "transform"
+        }}
+      >
+        <div
+          className={`min-w-0 rounded-2xl border px-3 py-3 ${
+            active ? "border-white/12 bg-white/[0.03]" : "border-transparent bg-transparent"
+          }`}
+        >
           <div className="flex items-center justify-between gap-3">
             <p className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{chat.title}</p>
             <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(chat.updated_at)}</span>
@@ -1983,24 +2103,8 @@ function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
               메모 {chat.message_count}
             </span>
           </div>
-        </button>
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => onRename(chat)}
-            className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            편집
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete(chat)}
-            className="rounded-full bg-rose-500/90 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-400"
-          >
-            삭제
-          </button>
         </div>
-      </div>
+      </button>
     </div>
   );
 }
@@ -4081,7 +4185,7 @@ export default function App() {
   }, []);
 
   const loadThreadMessages = useCallback(
-    async (threadId, { force = false, version = null } = {}) => {
+    async (threadId, { force = false, version = null, suppressLoadingIndicator = false } = {}) => {
       if (!session?.loginId || !selectedBridgeId || !threadId) {
         return;
       }
@@ -4096,11 +4200,13 @@ export default function App() {
           return current;
         }
 
+        const shouldSuppressLoading = suppressLoadingIndicator && Boolean(currentEntry);
+
         return {
           ...current,
           [threadId]: {
             ...currentEntry,
-            loading: true,
+            loading: shouldSuppressLoading ? currentEntry?.loading ?? false : true,
             error: "",
             messages: currentEntry?.messages ?? [],
             version: currentEntry?.version ?? null
@@ -4258,7 +4364,7 @@ export default function App() {
       return;
     }
 
-    const { delay = 180, ...loadOptions } = options;
+    const { delay = 180, suppressLoadingIndicator = false, ...loadOptions } = options;
 
     if (threadReloadTimerRef.current) {
       window.clearTimeout(threadReloadTimerRef.current);
@@ -4267,7 +4373,7 @@ export default function App() {
 
     threadReloadTimerRef.current = window.setTimeout(() => {
       threadReloadTimerRef.current = null;
-      void loadThreadMessages(threadId, loadOptions);
+      void loadThreadMessages(threadId, { ...loadOptions, suppressLoadingIndicator });
     }, delay);
   }, [loadThreadMessages]);
 
@@ -4724,7 +4830,7 @@ export default function App() {
                 issues: payload.payload?.issues ?? current[threadId]?.issues ?? []
               }
             }));
-            scheduleThreadMessagesReload(threadId, { force: true });
+            scheduleThreadMessagesReload(threadId, { force: true, suppressLoadingIndicator: true });
           }
           return;
         }
@@ -4734,7 +4840,7 @@ export default function App() {
           eventThreadId === selectedThreadId &&
           (payload.type === "turn.completed" || payload.type === "thread.status.changed")
         ) {
-          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0 });
+          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0, suppressLoadingIndicator: true });
           return;
         }
 
@@ -4819,7 +4925,11 @@ export default function App() {
     }
 
     if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
-      scheduleThreadMessagesReload(selectedThreadId, { version: selectedThreadUpdatedAt, delay: 0 });
+      scheduleThreadMessagesReload(selectedThreadId, {
+        version: selectedThreadUpdatedAt,
+        delay: 0,
+        suppressLoadingIndicator: hasCurrentThreadDetail
+      });
     }
   }, [
     activeView,

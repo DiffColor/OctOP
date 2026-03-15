@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { mergeIncomingIssueSnapshot, shouldApplyRealtimeIssueToSelectedThread } from "./realtimeIssue";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -845,41 +846,6 @@ function normalizeNullableInteger(value) {
   return Number.isFinite(numeric) ? Math.round(numeric) : null;
 }
 
-function normalizeLiveTokenUsagePayload(tokenUsage = null, currentThread = null) {
-  const hasTokenUsageActivity =
-    Number(tokenUsage?.total?.inputTokens ?? tokenUsage?.total?.input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.cachedInputTokens ?? tokenUsage?.total?.cached_input_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.outputTokens ?? tokenUsage?.total?.output_tokens ?? 0) > 0 ||
-    Number(tokenUsage?.total?.reasoningOutputTokens ?? tokenUsage?.total?.reasoning_output_tokens ?? 0) > 0;
-  const fallbackUsedTokens =
-    Number(currentThread?.context_used_tokens) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_used_tokens;
-  const fallbackPercent =
-    Number(currentThread?.context_usage_percent) === 0 && hasTokenUsageActivity
-      ? null
-      : currentThread?.context_usage_percent;
-  const usedTokens = normalizeNullableInteger(
-    tokenUsage?.total?.totalTokens ??
-      tokenUsage?.total?.total_tokens ??
-      fallbackUsedTokens
-  );
-  const windowTokens = normalizeNullableInteger(
-    tokenUsage?.modelContextWindow ??
-      tokenUsage?.model_context_window ??
-      currentThread?.context_window_tokens
-  );
-  const percent = windowTokens && usedTokens !== null
-    ? normalizeNullableInteger((usedTokens / windowTokens) * 100)
-    : normalizeNullableInteger(fallbackPercent);
-
-  return {
-    context_usage_percent: percent,
-    context_used_tokens: usedTokens,
-    context_window_tokens: windowTokens
-  };
-}
-
 function getThreadContextUsage(thread) {
   if (!thread) {
     return null;
@@ -889,10 +855,7 @@ function getThreadContextUsage(thread) {
   const hasPercent =
     Number.isFinite(Number(thread.context_usage_percent)) || Number.isFinite(Number(thread.contextUsagePercent));
   const usedTokens = normalizeNullableInteger(
-    thread.context_used_tokens ??
-      thread.contextUsedTokens ??
-      thread.token_usage?.total?.total_tokens ??
-      thread.tokenUsage?.total?.totalTokens
+    thread.context_used_tokens ?? thread.contextUsedTokens
   );
   const windowTokens = normalizeNullableInteger(
     thread.context_window_tokens ??
@@ -1304,15 +1267,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         updated_at: new Date().toISOString()
       };
     case "thread.tokenUsage.updated":
-      {
-        const nextUsage = normalizeLiveTokenUsagePayload(payload.tokenUsage ?? payload.token_usage ?? null, currentThread);
-      return {
-        id: threadId,
-        project_id: projectId || currentThread?.project_id || null,
-        ...nextUsage,
-        updated_at: currentThread?.updated_at ?? new Date().toISOString()
-      };
-      }
+      return null;
     case "turn.started":
       return {
         id: threadId,
@@ -4758,6 +4713,8 @@ export default function App() {
     eventSource.addEventListener("message", (event) => {
       try {
         const payload = JSON.parse(event.data);
+        const activeBridgeId = selectedBridgeIdRef.current;
+        const activeThreadId = selectedProjectThreadIdRef.current;
         const { threadId: eventThreadId, issueId: eventIssueId, projectId: eventProjectId } = getLiveEventContext(payload);
         const summary =
           payload?.payload?.thread?.title ??
@@ -4779,7 +4736,7 @@ export default function App() {
           setProjectThreads((current) => upsertLiveThreadPatch(current, payload));
         }
 
-        if (eventThreadId && eventThreadId === selectedProjectThreadId) {
+        if (eventThreadId && eventThreadId === activeThreadId) {
           setIssues((current) => upsertLiveIssuePatch(current, payload));
         }
 
@@ -4826,11 +4783,11 @@ export default function App() {
           if (scope === "all") {
             for (const thread of nextThreads) {
               if (thread.project_id) {
-                markProjectThreadsLoaded(selectedBridgeId, thread.project_id);
+                markProjectThreadsLoaded(activeBridgeId, thread.project_id);
               }
             }
           } else if (projectId) {
-            markProjectThreadsLoaded(selectedBridgeId, projectId);
+            markProjectThreadsLoaded(activeBridgeId, projectId);
           }
           if (scope === "all") {
             updateStatusCounts({ threads: nextThreads.length });
@@ -4856,12 +4813,12 @@ export default function App() {
         if (payload.type === "bridge.threadIssues.updated") {
           const targetThreadId = payload.payload?.thread_id ?? "";
 
-          if (targetThreadId && targetThreadId !== selectedProjectThreadId) {
+          if (!shouldApplyRealtimeIssueToSelectedThread(activeThreadId, targetThreadId)) {
             return;
           }
 
           const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
-          applyIssueStateForScope(selectedBridgeId, targetThreadId || selectedProjectThreadId, nextIssues);
+          applyIssueStateForScope(activeBridgeId, targetThreadId || activeThreadId, nextIssues);
           return;
         }
 
@@ -4871,32 +4828,47 @@ export default function App() {
         }
 
         if (payload.payload?.issue) {
-          const nextIssue = normalizeIssue(payload.payload.issue);
+          const targetThreadId = payload.payload.issue.thread_id ?? activeThreadId;
+
+          if (!shouldApplyRealtimeIssueToSelectedThread(activeThreadId, targetThreadId)) {
+            return;
+          }
+
+          const currentVisibleIssue = issuesRef.current.find((issue) => issue.id === payload.payload.issue.id) ?? null;
+          const currentArchivedIssue =
+            archivedIssueSnapshotsRef.current[activeBridgeId]?.[targetThreadId]?.find(
+              (issue) => issue.id === payload.payload.issue.id
+            ) ?? null;
+          const nextIssue = normalizeIssue(
+            mergeIncomingIssueSnapshot(payload.payload.issue, {
+              currentIssue: currentVisibleIssue ?? currentArchivedIssue,
+              fallbackThreadId: targetThreadId
+            })
+          );
 
           if (!nextIssue) {
             return;
           }
 
-          const targetThreadId = nextIssue.thread_id ?? selectedProjectThreadId;
           const archivedIds = new Set(
-            getArchivedIssueIdsForScope(archivedIssuesStateRef.current, selectedBridgeId, targetThreadId)
+            getArchivedIssueIdsForScope(archivedIssuesStateRef.current, activeBridgeId, targetThreadId)
           );
           const isArchived = Boolean(getArchivedIssueColumnId(nextIssue)) && archivedIds.has(nextIssue.id);
 
           if (isArchived) {
             replaceArchivedIssuesForCurrentScope(
-              selectedBridgeId,
+              activeBridgeId,
               targetThreadId,
-              upsertIssue(archivedIssueSnapshotsRef.current[selectedBridgeId]?.[targetThreadId] ?? [], nextIssue)
+              upsertIssue(archivedIssueSnapshotsRef.current[activeBridgeId]?.[targetThreadId] ?? [], nextIssue)
             );
             setIssues((current) => current.filter((issue) => issue.id !== nextIssue.id));
             return;
           }
 
           replaceArchivedIssuesForCurrentScope(
-            selectedBridgeId,
+            activeBridgeId,
             targetThreadId,
-            (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[targetThreadId] ?? []).filter(
+            (archivedIssueSnapshotsRef.current[activeBridgeId]?.[targetThreadId] ?? []).filter(
               (issue) => issue.id !== nextIssue.id
             )
           );
