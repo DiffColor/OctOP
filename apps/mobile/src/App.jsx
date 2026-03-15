@@ -270,7 +270,7 @@ function createId() {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function getVisualViewportBottomInset() {
+function getVisualViewportHeight() {
   if (typeof window === "undefined") {
     return 0;
   }
@@ -278,14 +278,14 @@ function getVisualViewportBottomInset() {
   const viewport = window.visualViewport;
 
   if (!viewport) {
-    return 0;
+    return window.innerHeight;
   }
 
-  return Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+  return Math.max(0, Math.round(viewport.height));
 }
 
-function useVisualViewportBottomInset() {
-  const [bottomInset, setBottomInset] = useState(() => getVisualViewportBottomInset());
+function useVisualViewportHeight() {
+  const [viewportHeight, setViewportHeight] = useState(() => getVisualViewportHeight());
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -293,31 +293,31 @@ function useVisualViewportBottomInset() {
     }
 
     const viewport = window.visualViewport;
-    const syncInset = () => {
-      setBottomInset(getVisualViewportBottomInset());
+    const syncViewportHeight = () => {
+      setViewportHeight(getVisualViewportHeight());
     };
 
-    syncInset();
+    syncViewportHeight();
 
     if (!viewport) {
-      window.addEventListener("resize", syncInset);
+      window.addEventListener("resize", syncViewportHeight);
       return () => {
-        window.removeEventListener("resize", syncInset);
+        window.removeEventListener("resize", syncViewportHeight);
       };
     }
 
-    viewport.addEventListener("resize", syncInset);
-    viewport.addEventListener("scroll", syncInset);
-    window.addEventListener("resize", syncInset);
+    viewport.addEventListener("resize", syncViewportHeight);
+    viewport.addEventListener("scroll", syncViewportHeight);
+    window.addEventListener("resize", syncViewportHeight);
 
     return () => {
-      viewport.removeEventListener("resize", syncInset);
-      viewport.removeEventListener("scroll", syncInset);
-      window.removeEventListener("resize", syncInset);
+      viewport.removeEventListener("resize", syncViewportHeight);
+      viewport.removeEventListener("scroll", syncViewportHeight);
+      window.removeEventListener("resize", syncViewportHeight);
     };
   }, []);
 
-  return bottomInset;
+  return viewportHeight;
 }
 
 function getRealtimeProgressText(entity) {
@@ -2561,10 +2561,10 @@ function TodoChatDetail({
 }) {
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
-  const composerBottomInset = useVisualViewportBottomInset();
+  const viewportHeight = useVisualViewportHeight();
 
   return (
-    <div className="flex min-h-[100dvh] flex-col">
+    <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
           <button
@@ -2622,7 +2622,7 @@ function TodoChatDetail({
         </div>
       </header>
 
-      <div className="telegram-grid flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           {error ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -2657,11 +2657,8 @@ function TodoChatDetail({
         </div>
       </div>
 
-      <div
-        className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
-        style={{ bottom: `${composerBottomInset}px` }}
-      >
-        <div className="w-full max-w-3xl">
+      <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="mx-auto w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={fakeProject}
@@ -3051,7 +3048,7 @@ function ThreadDetail({
   isDraft = false
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
-  const composerBottomInset = useVisualViewportBottomInset();
+  const viewportHeight = useVisualViewportHeight();
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
@@ -3385,7 +3382,7 @@ function ThreadDetail({
   })();
 
   return (
-    <div className="flex min-h-[100dvh] flex-col">
+    <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
           <button
@@ -3459,7 +3456,7 @@ function ThreadDetail({
         </div>
       </header>
 
-      <div ref={scrollRef} className="telegram-grid flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
+      <div ref={scrollRef} className="telegram-grid min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom,0px)+8.5rem)] pt-5">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
@@ -3569,11 +3566,8 @@ function ThreadDetail({
         </div>
       </div>
 
-      <div
-        className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
-        style={{ bottom: `${composerBottomInset}px` }}
-      >
-        <div className="w-full max-w-3xl">
+      <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="mx-auto w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={project}
