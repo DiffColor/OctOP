@@ -734,7 +734,7 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
       assert.equal(payload.issue?.status, "completed");
       assert.equal(
         payload.messages.some((message) => message.kind === "handoff_summary"),
-        true
+        false
       );
       assert.equal(
         payload.messages.some((message) => message.role === "assistant" && String(message.content ?? "").includes(REPO_ROOT)),

@@ -1778,6 +1778,14 @@ function pushIssueMessage(issueId, message) {
   return messages;
 }
 
+function isVisibleIssueMessage(message) {
+  return !message?.deleted_at && message?.kind !== "handoff_summary";
+}
+
+function listStoredIssueMessages(issueId) {
+  return [...(issueMessagesById.get(issueId) ?? [])].filter((message) => !message.deleted_at);
+}
+
 function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null) {
   const issue = issueCardsById.get(issueId);
   const messages = ensureIssueMessages(issueId);
@@ -1804,7 +1812,13 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
 }
 
 function listIssueMessages(issueId) {
-  return [...(issueMessagesById.get(issueId) ?? [])].filter((message) => !message.deleted_at);
+  return listStoredIssueMessages(issueId).filter(isVisibleIssueMessage);
+}
+
+function listHandoffSummariesForThread(rootThreadId) {
+  return [...handoffSummariesById.values()]
+    .filter((summary) => summary.root_thread_id === rootThreadId && !summary.deleted_at)
+    .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
 }
 
 function updateProjectThreadSnapshot(threadId) {
@@ -1951,9 +1965,9 @@ function listThreadTimeline(threadId) {
       return Date.parse(left.created_at) - Date.parse(right.created_at);
     });
 
-  return issues
+  const issueTimelineEntries = issues
     .flatMap((issue) =>
-      listIssueMessages(issue.id).map((message, index) => ({
+      listStoredIssueMessages(issue.id).map((message, index) => ({
         ...message,
         id: message.id ?? `${issue.id}-${index}`,
         issue_id: issue.id,
@@ -1963,7 +1977,22 @@ function listThreadTimeline(threadId) {
           physicalThreadStateById.get(message.physical_thread_id ?? issue.executed_physical_thread_id ?? "")?.sequence ??
           null
       }))
-    )
+    );
+  const handoffTimelineEntries = listHandoffSummariesForThread(threadId).map((summary) => ({
+    id: summary.id,
+    kind: "handoff_summary",
+    role: "system",
+    message_class: "system",
+    content: summary.content_markdown,
+    timestamp: summary.created_at,
+    created_at: summary.created_at,
+    root_thread_id: summary.root_thread_id,
+    physical_thread_id: summary.target_physical_thread_id,
+    physical_sequence:
+      physicalThreadStateById.get(summary.target_physical_thread_id ?? "")?.sequence ?? null
+  }));
+
+  return [...issueTimelineEntries, ...handoffTimelineEntries]
     .sort((left, right) => {
       const leftSequence = Number(left.physical_sequence ?? Number.MAX_SAFE_INTEGER);
       const rightSequence = Number(right.physical_sequence ?? Number.MAX_SAFE_INTEGER);
@@ -1996,9 +2025,7 @@ function getThreadContinuity(userId, rootThreadId) {
     root_thread: rootThread,
     physical_threads: listPhysicalThreads(rootThreadId).filter((physicalThread) => !physicalThread.deleted_at),
     active_physical_thread: getActivePhysicalThread(rootThreadId),
-    handoff_summaries: [...handoffSummariesById.values()]
-      .filter((summary) => summary.root_thread_id === rootThreadId && !summary.deleted_at)
-      .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)),
+    handoff_summaries: listHandoffSummariesForThread(rootThreadId),
     recently_closed_physical_threads: recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? []
   };
 }
@@ -4335,14 +4362,6 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
         updated_at: now()
       });
     }
-
-    pushIssueMessage(activeIssueId, {
-      role: "system",
-      kind: "handoff_summary",
-      message_class: "system",
-      physical_thread_id: updatedTargetPhysicalThread.id,
-      content: nextSummary.content_markdown
-    });
 
     updateIssueCard(activeIssueId, {
       executed_physical_thread_id: updatedTargetPhysicalThread.id,
