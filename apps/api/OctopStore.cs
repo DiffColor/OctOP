@@ -18,6 +18,7 @@ public sealed class OctopStore : IAsyncDisposable
   private const string HandoffSummaryTable = "handoff_summaries";
   private const string LogicalThreadTimelineTable = "logical_thread_timeline";
   private const string LogicalThreadIssueBoardTable = "logical_thread_issue_board";
+  private const string DashboardArchiveTable = "dashboard_archives";
 
   private readonly string _host;
   private readonly int _port;
@@ -81,6 +82,7 @@ public sealed class OctopStore : IAsyncDisposable
       await EnsureTableAsync(connection, tables, HandoffSummaryTable);
       await EnsureTableAsync(connection, tables, LogicalThreadTimelineTable);
       await EnsureTableAsync(connection, tables, LogicalThreadIssueBoardTable);
+      await EnsureTableAsync(connection, tables, DashboardArchiveTable);
       _storageEnsured = true;
     }
     finally
@@ -229,6 +231,36 @@ public sealed class OctopStore : IAsyncDisposable
     await _r.Db(_db)
       .Table(ProjectMemberTable)
       .Insert(membership)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task<JObject> GetDashboardArchivesAsync(string userId)
+  {
+    var connection = await GetConnectionAsync();
+    var document = await _r.Db(_db)
+      .Table(DashboardArchiveTable)
+      .Get(userId)
+      .RunResultAsync<JObject?>(connection);
+
+    return document?["archives"] as JObject ?? new JObject();
+  }
+
+  public async Task UpsertDashboardArchivesAsync(string userId, JObject archives)
+  {
+    var connection = await GetConnectionAsync();
+    var document = new JObject
+    {
+      ["id"] = userId,
+      ["login_id"] = userId,
+      ["user_id"] = userId,
+      ["archives"] = archives,
+      ["updated_at"] = DateTimeOffset.UtcNow.ToString("O")
+    };
+
+    await _r.Db(_db)
+      .Table(DashboardArchiveTable)
+      .Insert(document)
       .OptArg("conflict", "replace")
       .RunResultAsync<object>(connection);
   }

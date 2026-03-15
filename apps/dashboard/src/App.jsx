@@ -475,7 +475,45 @@ function clearSessionStorage() {
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
-function readStoredArchives() {
+function normalizeArchivedIssuesState(rawState) {
+  if (!rawState || typeof rawState !== "object") {
+    return {};
+  }
+
+  const normalized = {};
+
+  for (const [bridgeId, bridgeValue] of Object.entries(rawState)) {
+    if (!bridgeId || typeof bridgeValue !== "object" || bridgeValue === null) {
+      continue;
+    }
+
+    const threadMap = {};
+
+    for (const [threadId, ids] of Object.entries(bridgeValue)) {
+      if (!threadId || !Array.isArray(ids)) {
+        continue;
+      }
+
+      const filtered = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+
+      if (filtered.length > 0) {
+        threadMap[threadId] = filtered;
+      }
+    }
+
+    if (Object.keys(threadMap).length > 0) {
+      normalized[bridgeId] = threadMap;
+    }
+  }
+
+  return normalized;
+}
+
+function isArchivedIssuesStateEmpty(state) {
+  return Object.keys(normalizeArchivedIssuesState(state)).length === 0;
+}
+
+function readLegacyStoredArchives() {
   if (typeof window === "undefined") {
     return {};
   }
@@ -487,51 +525,19 @@ function readStoredArchives() {
       return {};
     }
 
-    const parsed = JSON.parse(raw);
-
-    if (!parsed || typeof parsed !== "object") {
-      return {};
-    }
-
-    const normalized = {};
-
-    for (const [bridgeId, bridgeValue] of Object.entries(parsed)) {
-      if (!bridgeId || typeof bridgeValue !== "object" || bridgeValue === null) {
-        continue;
-      }
-
-      const threadMap = {};
-
-      for (const [threadId, ids] of Object.entries(bridgeValue)) {
-        if (!threadId || !Array.isArray(ids)) {
-          continue;
-        }
-
-        const filtered = ids.filter((id) => typeof id === "string" && id.length > 0);
-
-        if (filtered.length > 0) {
-          threadMap[threadId] = filtered;
-        }
-      }
-
-      if (Object.keys(threadMap).length > 0) {
-        normalized[bridgeId] = threadMap;
-      }
-    }
-
-    return normalized;
+    return normalizeArchivedIssuesState(JSON.parse(raw));
   } catch {
     return {};
   }
 }
 
-function storeArchivedIssuesState(state) {
+function clearLegacyStoredArchives() {
   if (typeof window === "undefined") {
     return;
   }
 
   try {
-    window.localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.removeItem(ARCHIVE_STORAGE_KEY);
   } catch {
     // ignore storage errors
   }
@@ -4247,8 +4253,9 @@ export default function App() {
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
   const [draggingArchiveIssueIds, setDraggingArchiveIssueIds] = useState([]);
-  const [archivedIssuesState, setArchivedIssuesState] = useState(() => readStoredArchives());
+  const [archivedIssuesState, setArchivedIssuesState] = useState({});
   const [archivedIssues, setArchivedIssues] = useState([]);
+  const [archivesHydrated, setArchivesHydrated] = useState(false);
   const [threadMenuState, setThreadMenuState] = useState({
     open: false,
     x: 0,
@@ -4281,8 +4288,9 @@ export default function App() {
   const pendingProjectThreadLoadsRef = useRef(new Map());
   const selectedBridgeIdRef = useRef("");
   const selectedProjectThreadIdRef = useRef("");
-  const archivedIssuesStateRef = useRef(readStoredArchives());
+  const archivedIssuesStateRef = useRef({});
   const archivedIssueSnapshotsRef = useRef({});
+  const lastArchivedIssuesSyncRef = useRef(JSON.stringify({}));
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -4330,11 +4338,52 @@ export default function App() {
   }, [issueEditorOpen, editingIssueId, issues]);
   const updateArchivedIssuesState = useCallback((updater) => {
     setArchivedIssuesState((current) => {
-      const nextState = typeof updater === "function" ? updater(current) : updater;
-      storeArchivedIssuesState(nextState);
+      const nextState = normalizeArchivedIssuesState(typeof updater === "function" ? updater(current) : updater);
       archivedIssuesStateRef.current = nextState;
       return nextState;
     });
+  }, []);
+  const loadArchivedIssuesState = useCallback(async (sessionArg) => {
+    if (!sessionArg?.loginId) {
+      archivedIssuesStateRef.current = {};
+      lastArchivedIssuesSyncRef.current = JSON.stringify({});
+      setArchivedIssuesState({});
+      setArchivesHydrated(false);
+      return {};
+    }
+
+    setArchivesHydrated(false);
+    const legacyState = readLegacyStoredArchives();
+    const payload = await apiRequest(`/api/dashboard/archives?login_id=${encodeURIComponent(sessionArg.loginId)}`);
+    const remoteState = normalizeArchivedIssuesState(payload?.archives);
+    const shouldMigrateLegacy = isArchivedIssuesStateEmpty(remoteState) && !isArchivedIssuesStateEmpty(legacyState);
+    const nextState = shouldMigrateLegacy ? legacyState : remoteState;
+
+    archivedIssuesStateRef.current = nextState;
+    lastArchivedIssuesSyncRef.current = JSON.stringify(shouldMigrateLegacy ? remoteState : nextState);
+    setArchivedIssuesState(nextState);
+    setArchivesHydrated(true);
+
+    if (!isArchivedIssuesStateEmpty(remoteState) || shouldMigrateLegacy) {
+      clearLegacyStoredArchives();
+    }
+
+    return nextState;
+  }, []);
+  const persistArchivedIssuesState = useCallback(async (sessionArg, nextState) => {
+    if (!sessionArg?.loginId) {
+      return;
+    }
+
+    const normalizedState = normalizeArchivedIssuesState(nextState);
+    await apiRequest(`/api/dashboard/archives?login_id=${encodeURIComponent(sessionArg.loginId)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        archives: normalizedState
+      })
+    });
+    lastArchivedIssuesSyncRef.current = JSON.stringify(normalizedState);
+    clearLegacyStoredArchives();
   }, []);
   const markProjectThreadsLoaded = useCallback((bridgeId, projectId) => {
     if (!bridgeId || !projectId) {
@@ -4411,6 +4460,71 @@ export default function App() {
   }, [archivedIssuesState]);
 
   useEffect(() => {
+    if (!session?.loginId) {
+      archivedIssuesStateRef.current = {};
+      lastArchivedIssuesSyncRef.current = JSON.stringify({});
+      setArchivedIssuesState({});
+      setArchivesHydrated(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        await loadArchivedIssuesState(session);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        const fallbackState = readLegacyStoredArchives();
+        archivedIssuesStateRef.current = fallbackState;
+        lastArchivedIssuesSyncRef.current = JSON.stringify({});
+        setArchivedIssuesState(fallbackState);
+        setArchivesHydrated(true);
+        setRecentEvents((current) => [
+          {
+            id: createId(),
+            type: "dashboard.archives.load.failed",
+            timestamp: new Date().toISOString(),
+            summary: error.message
+          },
+          ...current
+        ].slice(0, 20));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadArchivedIssuesState, session]);
+
+  useEffect(() => {
+    if (!archivesHydrated || !session?.loginId) {
+      return;
+    }
+
+    const serializedState = JSON.stringify(normalizeArchivedIssuesState(archivedIssuesState));
+
+    if (serializedState === lastArchivedIssuesSyncRef.current) {
+      return;
+    }
+
+    void persistArchivedIssuesState(session, archivedIssuesState).catch((error) => {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "dashboard.archives.save.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    });
+  }, [archivedIssuesState, archivesHydrated, persistArchivedIssuesState, session]);
+
+  useEffect(() => {
     if (!selectedBridgeId) {
       return;
     }
@@ -4437,6 +4551,25 @@ export default function App() {
   useEffect(() => {
     setArchivedIssues(archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
   }, [selectedBridgeId, selectedProjectThreadId]);
+
+  useEffect(() => {
+    if (!selectedBridgeId || !selectedProjectThreadId) {
+      return;
+    }
+
+    const combinedIssues = mergeIssues(
+      issuesRef.current,
+      archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []
+    );
+
+    if (combinedIssues.length === 0) {
+      replaceArchivedIssuesForCurrentScope(selectedBridgeId, selectedProjectThreadId, []);
+      setIssues([]);
+      return;
+    }
+
+    applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, combinedIssues);
+  }, [applyIssueStateForScope, archivedIssuesState, replaceArchivedIssuesForCurrentScope, selectedBridgeId, selectedProjectThreadId]);
 
   useEffect(() => {
     detailStateRef.current = detailState;
@@ -4940,14 +5073,14 @@ export default function App() {
   }, [selectedProjectId, selectedProjectThreadId, projectThreads]);
 
   useEffect(() => {
-    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId || !archivesHydrated) {
       issueLoadRequestIdRef.current += 1;
       setIssues([]);
       return;
     }
 
     void loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
-  }, [session, selectedBridgeId, selectedProjectThreadId]);
+  }, [archivesHydrated, session, selectedBridgeId, selectedProjectThreadId]);
 
   useEffect(() => {
     const todoIds = issues
@@ -5064,11 +5197,16 @@ export default function App() {
 
   const handleLogout = () => {
     clearSessionStorage();
+    clearLegacyStoredArchives();
     setSession(null);
     setBridges([]);
     setProjects([]);
     setProjectThreads([]);
     setIssues([]);
+    archivedIssuesStateRef.current = {};
+    lastArchivedIssuesSyncRef.current = JSON.stringify({});
+    setArchivedIssuesState({});
+    setArchivesHydrated(false);
     archivedIssueSnapshotsRef.current = {};
     setArchivedIssues([]);
     setWorkspaceRoots([]);

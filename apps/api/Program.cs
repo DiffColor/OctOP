@@ -135,6 +135,36 @@ app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore
   return Results.Text(new JObject { ["bridges"] = bridges }.ToString(), "application/json; charset=utf-8");
 });
 
+app.MapGet("/api/dashboard/archives", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  cancellationToken.ThrowIfCancellationRequested();
+  var archives = await octopStore.GetDashboardArchivesAsync(userId);
+  return Results.Text(
+    new JsonObject
+    {
+      ["archives"] = ConvertJTokenToJsonNode(archives) ?? new JsonObject()
+    }.ToJsonString(),
+    "application/json; charset=utf-8");
+});
+
+app.MapPut("/api/dashboard/archives", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var archives = NormalizeDashboardArchiveState(body?["archives"] ?? body);
+
+  await octopStore.UpsertDashboardArchivesAsync(userId, JObject.Parse(archives.ToJsonString()));
+
+  return Results.Text(
+    new JsonObject
+    {
+      ["ok"] = true,
+      ["archives"] = archives
+    }.ToJsonString(),
+    "application/json; charset=utf-8");
+});
+
 app.MapGet("/api/projects", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
@@ -1714,6 +1744,59 @@ static JsonObject BuildReadSplitMetadata(ReadSplitState state)
     ["projection_caught_up_physical_thread_ids"] = new JsonArray(state.CaughtUpPhysicalThreadIds.Select(id => (JsonNode)id).ToArray()),
     ["projection_pending_physical_thread_ids"] = new JsonArray(state.PendingProjectionPhysicalThreadIds.Select(id => (JsonNode)id).ToArray())
   };
+}
+
+static JsonObject NormalizeDashboardArchiveState(JsonNode? node)
+{
+  var normalized = new JsonObject();
+
+  if (node is not JsonObject bridgeObject)
+  {
+    return normalized;
+  }
+
+  foreach (var (bridgeId, bridgeValue) in bridgeObject)
+  {
+    var normalizedBridgeId = GetStringValue(JsonValue.Create(bridgeId));
+
+    if (string.IsNullOrWhiteSpace(normalizedBridgeId) || bridgeValue is not JsonObject threadObject)
+    {
+      continue;
+    }
+
+    var normalizedThreads = new JsonObject();
+
+    foreach (var (threadId, idsNode) in threadObject)
+    {
+      var normalizedThreadId = GetStringValue(JsonValue.Create(threadId));
+
+      if (string.IsNullOrWhiteSpace(normalizedThreadId) || idsNode is not JsonArray idsArray)
+      {
+        continue;
+      }
+
+      var normalizedIds = idsArray
+        .Select(GetStringValue)
+        .Where(id => !string.IsNullOrWhiteSpace(id))
+        .Distinct(StringComparer.Ordinal)
+        .Select(id => (JsonNode)JsonValue.Create(id)!)
+        .ToArray();
+
+      if (normalizedIds.Length == 0)
+      {
+        continue;
+      }
+
+      normalizedThreads[normalizedThreadId] = new JsonArray(normalizedIds);
+    }
+
+    if (normalizedThreads.Count > 0)
+    {
+      normalized[normalizedBridgeId] = normalizedThreads;
+    }
+  }
+
+  return normalized;
 }
 
 static int? GetNullableInt(JsonNode? node)
