@@ -1,6 +1,6 @@
 const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "dev";
 const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
-const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-icon-192.png", "/octop-icon-512.png", "/octop-apple-touch-icon.png"];
+const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-app-icon-192.png", "/octop-app-icon-512.png", "/octop-app-icon-180.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

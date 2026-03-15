@@ -1542,7 +1542,7 @@ function LoginPage({ language, initialLoginId, loading, error, onSubmit }) {
         <main className="w-full max-w-md">
           <header className="mb-10 text-center">
             <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border border-white/10 bg-slate-950/70">
-              <img src="/octop-icon-192.png" alt="OctOP" className="h-9 w-9 rounded-2xl" />
+              <img src="/octop-login-icon.png" alt="OctOP" className="h-full w-full rounded-3xl object-contain" />
             </div>
             <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">{copy.login.eyebrow}</p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">{copy.login.title}</h1>
