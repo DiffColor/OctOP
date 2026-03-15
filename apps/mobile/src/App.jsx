@@ -3290,14 +3290,17 @@ function ThreadDetail({
         const node = scrollRef.current;
 
         if (node && !autoScrollingRef.current) {
-          const nextScrollTop = Math.max(0, node.scrollTop);
+          const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+          const nextScrollTop = Math.min(maxScrollTop, Math.max(0, node.scrollTop));
           const delta = nextScrollTop - previousScrollTopRef.current;
+          const distanceFromBottom = maxScrollTop - nextScrollTop;
+          const isNearBottomEdge = distanceFromBottom <= HEADER_MENU_SCROLL_DELTA_PX * 2;
 
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
-          } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
+          } else if (!isNearBottomEdge && delta >= HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(false);
-          } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
+          } else if (!isNearBottomEdge && delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(true);
           }
 
