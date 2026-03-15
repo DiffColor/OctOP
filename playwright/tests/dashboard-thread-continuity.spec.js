@@ -85,6 +85,18 @@ const mergedIssuesPayload = {
       executed_physical_thread_id: 'pth-1',
       updated_at: '2026-03-15T10:02:00.000Z',
       created_at: '2026-03-15T09:55:00.000Z'
+    },
+    {
+      id: 'issue-closed-second',
+      thread_id: rootThreadId,
+      root_thread_id: rootThreadId,
+      title: 'Closed Second',
+      prompt: '현재 워크스페이스 경로',
+      status: 'completed',
+      progress: 100,
+      executed_physical_thread_id: 'pth-1',
+      updated_at: '2026-03-15T10:01:30.000Z',
+      created_at: '2026-03-15T09:54:00.000Z'
     }
   ],
   continuity: {
@@ -515,6 +527,7 @@ test.describe('대시보드 continuity UI', () => {
       }
     });
   });
+
 
   test('보관 직후 바로 로컬 데이터를 지우고 새로고침해도 서버 보관 상태를 잃지 않는다', async ({ page }) => {
     const archivePutEvents = [];

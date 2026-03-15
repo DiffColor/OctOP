@@ -5898,6 +5898,12 @@ export default function App() {
       const draggedIds = selectedIdsInColumn.includes(threadId) ? selectedIdsInColumn : [threadId];
       setDraggingIssueId("");
       setDraggingPrepIssueIds([]);
+      setSelectedIssueIds(draggedIds);
+      setSelectedIssueId(threadId);
+      setSelectionAnchor({
+        threadId,
+        columnId
+      });
       setDraggingArchiveIssueIds(draggedIds);
     },
     clear: () => {
