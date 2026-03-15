@@ -5173,6 +5173,10 @@ function hasRunningThread(userId) {
   return listLocalThreads(userId).some((thread) => thread.status === "running");
 }
 
+function hasActiveThreadExecution(userId) {
+  return listLocalThreads(userId).some((thread) => ["running", "awaiting_input"].includes(thread.status));
+}
+
 const appServer = new AppServerClient();
 
 async function bridgeStatus(userId) {
@@ -6293,6 +6297,10 @@ async function subscribeRequests() {
 await subscribeRequests();
 
 setInterval(() => {
+  if (!hasActiveThreadExecution(BRIDGE_OWNER_LOGIN_ID)) {
+    return;
+  }
+
   void publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 }, 30000).unref();
 

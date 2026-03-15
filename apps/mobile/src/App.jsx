@@ -3161,6 +3161,13 @@ function ThreadDetail({
 
     return chatTimeline;
   }, [chatTimeline, messageFilter]);
+  const visibleChatTimelineSignature = useMemo(
+    () =>
+      visibleChatTimeline
+        .map((entry) => `${entry.id}:${entry.timestamp ?? ""}:${entry.role}:${String(entry.content ?? "").length}`)
+        .join("|"),
+    [visibleChatTimeline]
+  );
 
   const recomputePinnedState = useCallback(() => {
     const scrollNode = scrollRef.current;
@@ -3267,7 +3274,7 @@ function ThreadDetail({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, messagesLoading, recomputePinnedState, thread?.id, viewMode, visibleChatTimeline]);
+  }, [isPinnedToLatest, recomputePinnedState, thread?.id, viewMode, visibleChatTimelineSignature]);
 
   const handleRefreshMessages = () => {
     if (onRefreshMessages) {
