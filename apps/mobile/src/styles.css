@@ -81,6 +81,13 @@ svg {
   background: rgba(148, 163, 184, 0.45);
 }
 
+.telegram-scroll-lock {
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
 .thread-title {
   display: -webkit-box;
   overflow: hidden;
