@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { mergeIncomingIssueSnapshot, shouldApplyRealtimeIssueToSelectedThread } from "./realtimeIssue";
+import {
+  mergeIncomingIssueSnapshot,
+  resolveRealtimeIssuePayloadScope,
+  shouldApplyRealtimeIssueToSelectedThread
+} from "./realtimeIssue";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -1188,9 +1192,7 @@ function isLiveIssueProgressEvent(eventType) {
 
 function getLiveEventContext(event) {
   const payload = event?.payload ?? {};
-  const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
-  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
-  const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
+  const { threadId, issueId, projectId } = resolveRealtimeIssuePayloadScope(payload);
 
   return {
     payload,
@@ -4789,7 +4791,7 @@ export default function App() {
         }
 
         if (payload.payload?.issue) {
-          const targetThreadId = payload.payload.issue.thread_id ?? activeThreadId;
+          const { threadId: targetThreadId } = resolveRealtimeIssuePayloadScope(payload.payload);
 
           if (!shouldApplyRealtimeIssueToSelectedThread(activeThreadId, targetThreadId)) {
             return;

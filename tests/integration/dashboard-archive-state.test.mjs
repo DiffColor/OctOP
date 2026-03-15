@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   mergeIncomingIssueSnapshot,
+  resolveRealtimeIssuePayloadScope,
   shouldApplyRealtimeIssueToSelectedThread
 } from "../../apps/dashboard/src/realtimeIssue.js";
 
@@ -35,6 +36,22 @@ test("부분 이슈 업데이트는 기존 보관 상태 판단에 필요한 필
 test("선택된 스레드와 다른 실시간 이슈 업데이트는 적용하지 않는다", () => {
   assert.equal(shouldApplyRealtimeIssueToSelectedThread("thread-1", "thread-1"), true);
   assert.equal(shouldApplyRealtimeIssueToSelectedThread("thread-1", "thread-2"), false);
-  assert.equal(shouldApplyRealtimeIssueToSelectedThread("thread-1", ""), true);
+  assert.equal(shouldApplyRealtimeIssueToSelectedThread("thread-1", ""), false);
   assert.equal(shouldApplyRealtimeIssueToSelectedThread("", "thread-1"), false);
+});
+
+test("중첩된 issue payload에서도 실시간 이슈 scope를 해석한다", () => {
+  const scope = resolveRealtimeIssuePayloadScope({
+    issue: {
+      id: "issue-2",
+      thread_id: "thread-2",
+      project_id: "project-2"
+    }
+  });
+
+  assert.deepEqual(scope, {
+    issueId: "issue-2",
+    threadId: "thread-2",
+    projectId: "project-2"
+  });
 });
