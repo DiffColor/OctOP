@@ -599,44 +599,6 @@ function replaceArchivedIssuesForScope(currentState, bridgeId = "", threadId = "
   };
 }
 
-function pruneArchivedIssueScopesForBridge(currentState, bridgeId = "", validThreadIds = new Set()) {
-  if (!bridgeId || !(validThreadIds instanceof Set)) {
-    return currentState;
-  }
-
-  const bridgeState = currentState?.[bridgeId];
-
-  if (!bridgeState) {
-    return currentState;
-  }
-
-  let changed = false;
-  const nextBridgeState = {};
-
-  for (const [threadId, issues] of Object.entries(bridgeState)) {
-    if (!validThreadIds.has(threadId)) {
-      changed = true;
-      continue;
-    }
-
-    nextBridgeState[threadId] = issues;
-  }
-
-  if (!changed) {
-    return currentState;
-  }
-
-  const nextState = { ...currentState };
-
-  if (Object.keys(nextBridgeState).length === 0) {
-    delete nextState[bridgeId];
-    return nextState;
-  }
-
-  nextState[bridgeId] = nextBridgeState;
-  return nextState;
-}
-
 function pruneArchivedIssueSnapshotsForBridge(currentSnapshots, bridgeId = "", validThreadIds = new Set()) {
   if (!bridgeId || !(validThreadIds instanceof Set)) {
     return currentSnapshots;
@@ -4462,8 +4424,7 @@ export default function App() {
       selectedBridgeId,
       validThreadIds
     );
-    updateArchivedIssuesState((current) => pruneArchivedIssueScopesForBridge(current, selectedBridgeId, validThreadIds));
-  }, [projectThreads, selectedBridgeId, updateArchivedIssuesState]);
+  }, [projectThreads, selectedBridgeId]);
 
   useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
