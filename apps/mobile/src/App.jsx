@@ -1142,28 +1142,28 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
   };
 
   return (
-    <div className="telegram-shell flex min-h-screen items-center justify-center px-5 py-8">
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="telegram-grid absolute inset-0 opacity-20" />
-        <div className="absolute left-[-15%] top-[-8%] h-72 w-72 rounded-full bg-telegram-400/30 blur-[100px]" />
-        <div className="absolute bottom-[-8%] right-[-12%] h-72 w-72 rounded-full bg-orange-300/20 blur-[120px]" />
+    <div className="relative min-h-screen overflow-hidden bg-brand-dark text-slate-200">
+      <div className="fixed inset-0 -z-10 overflow-hidden">
+        <div className="bg-mesh absolute inset-0" />
+        <div className="absolute left-[-6%] top-[-8%] h-[20rem] w-[20rem] rounded-full bg-sky-500/8 blur-[140px]" />
+        <div className="absolute bottom-[-14%] right-[-10%] h-[22rem] w-[22rem] rounded-full bg-emerald-500/8 blur-[160px]" />
       </div>
 
-      <main className="relative z-10 w-full max-w-sm overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/85 shadow-telegram-soft backdrop-blur">
-        <div className="bg-gradient-to-br from-telegram-500 via-telegram-600 to-telegram-800 px-6 pb-10 pt-8">
-          <div className="flex h-14 w-14 items-center justify-center rounded-[1.25rem] bg-white/15 text-white">
-            <svg className="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M20 4L4 10.5l6 2.2L12.5 19 20 4z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-            </svg>
-          </div>
-          <p className="mt-6 text-[11px] uppercase tracking-[0.32em] text-telegram-100/70">OctOP</p>
-          <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-white">모바일 워크스페이스</h1>
-          <p className="mt-3 text-sm leading-6 text-telegram-50/80">
-            대시보드의 프로젝트, thread, bridge 상태를 텔레그램 형식으로 바로 확인하실 수 있습니다.
-          </p>
-        </div>
+      <div className="mx-auto flex min-h-screen max-w-md items-center justify-center px-5 py-8">
+        <main className="relative z-10 w-full">
+          <header className="mb-10 text-center">
+            <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border border-white/10 bg-slate-950/70">
+              <img src="/octop-icon-192.png" alt="OctOP" className="h-9 w-9 rounded-2xl" />
+            </div>
+            <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP Workspace</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">Sign in</h1>
+            <p className="mt-3 text-sm leading-6 text-slate-400">
+              Use your LicenseHub login ID to open the mobile workspace.
+            </p>
+          </header>
 
-        <form className="space-y-5 px-6 py-6" onSubmit={handleSubmit}>
+          <section className="rounded-[28px] border border-white/8 bg-slate-950/72 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
+            <form className="space-y-6" onSubmit={handleSubmit}>
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
               Login ID
@@ -1177,14 +1177,17 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
               value={loginId}
               onChange={(event) => setLoginId(event.target.value)}
               placeholder="LicenseHub 로그인 ID"
-              className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+              className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="password">
-              Password
-            </label>
+            <div className="mb-2 flex items-center justify-between">
+              <label className="block text-sm font-medium text-slate-300" htmlFor="password">
+                Password
+              </label>
+              <span className="text-xs text-slate-500">LicenseHub password</span>
+            </div>
             <input
               id="password"
               name="password"
@@ -1193,8 +1196,8 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="비밀번호를 입력해 주세요"
-              className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+              placeholder="••••••••"
+              className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
           </div>
 
@@ -1203,13 +1206,13 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
               type="checkbox"
               checked={rememberDevice}
               onChange={(event) => setRememberDevice(event.target.checked)}
-              className="h-4 w-4 rounded border-white/10 bg-white/5 text-telegram-400 focus:ring-telegram-300"
+              className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
             />
-            이 기기에서 로그인 유지
+            Keep me signed in on this device
           </label>
 
           {error ? (
-            <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
               {error}
             </div>
           ) : null}
@@ -1217,19 +1220,25 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
           <button
             type="submit"
             disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? (
               <>
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                로그인 중...
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-950/25 border-t-slate-950" />
+                Signing in...
               </>
             ) : (
-              "접속하기"
+              "Sign in"
             )}
           </button>
-        </form>
-      </main>
+            </form>
+
+            <div className="mt-6 border-t border-slate-800 pt-4 text-xs leading-6 text-slate-500">
+              After sign-in, your connected bridge, projects, and thread board sync automatically.
+            </div>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
