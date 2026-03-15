@@ -778,6 +778,37 @@ function replaceArchivedIssueSnapshotForScope(currentState, bridgeId = "", threa
   };
 }
 
+function replaceVisibleIssueSnapshotForScope(currentState, bridgeId = "", threadId = "", issues = []) {
+  if (!bridgeId || !threadId) {
+    return currentState;
+  }
+
+  const nextBridgeState = {
+    ...(currentState?.[bridgeId] ?? {})
+  };
+
+  if (issues.length === 0) {
+    delete nextBridgeState[threadId];
+
+    if (Object.keys(nextBridgeState).length === 0) {
+      const nextState = { ...currentState };
+      delete nextState[bridgeId];
+      return nextState;
+    }
+
+    return {
+      ...currentState,
+      [bridgeId]: nextBridgeState
+    };
+  }
+
+  nextBridgeState[threadId] = issues;
+  return {
+    ...currentState,
+    [bridgeId]: nextBridgeState
+  };
+}
+
 function pruneArchivedIssueSnapshotsForBridge(currentSnapshots, bridgeId = "", validThreadIds = new Set()) {
   if (!bridgeId || !(validThreadIds instanceof Set)) {
     return currentSnapshots;
@@ -4468,6 +4499,7 @@ export default function App() {
   const selectedProjectThreadIdRef = useRef("");
   const archivedIssuesStateRef = useRef({});
   const archivedIssueSnapshotsRef = useRef({});
+  const visibleIssueSnapshotsRef = useRef({});
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -4607,6 +4639,18 @@ export default function App() {
       setArchivedIssues(nextIssues);
     }
   }, []);
+  const replaceVisibleIssuesForCurrentScope = useCallback((bridgeId, threadId, nextIssues) => {
+    visibleIssueSnapshotsRef.current = replaceVisibleIssueSnapshotForScope(
+      visibleIssueSnapshotsRef.current,
+      bridgeId,
+      threadId,
+      nextIssues
+    );
+
+    if (selectedBridgeIdRef.current === bridgeId && selectedProjectThreadIdRef.current === threadId) {
+      setIssues(nextIssues);
+    }
+  }, []);
   const clearArchivedIssuesForScope = useCallback((bridgeId, threadId) => {
     if (!bridgeId || !threadId) {
       return;
@@ -4632,14 +4676,14 @@ export default function App() {
     );
 
     replaceArchivedIssuesForCurrentScope(bridgeId, threadId, nextArchivedIssues);
-    setIssues(visibleIssues);
+    replaceVisibleIssuesForCurrentScope(bridgeId, threadId, visibleIssues);
 
     return {
       visibleIssues,
       archivedIssues: nextArchivedIssues,
       allIssues: normalizedIssues
     };
-  }, [replaceArchivedIssuesForCurrentScope]);
+  }, [replaceArchivedIssuesForCurrentScope, replaceVisibleIssuesForCurrentScope]);
 
   const updateStatusCounts = useCallback((nextCounts) => {
     setStatus((current) => ({
@@ -4716,6 +4760,11 @@ export default function App() {
       selectedBridgeId,
       validThreadIds
     );
+    visibleIssueSnapshotsRef.current = pruneArchivedIssueSnapshotsForBridge(
+      visibleIssueSnapshotsRef.current,
+      selectedBridgeId,
+      validThreadIds
+    );
   }, [projectThreads, selectedBridgeId]);
 
   useEffect(() => {
@@ -4727,6 +4776,7 @@ export default function App() {
   }, [selectedProjectThreadId]);
 
   useEffect(() => {
+    setIssues(visibleIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
     setArchivedIssues(archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
   }, [selectedBridgeId, selectedProjectThreadId]);
 
@@ -4742,12 +4792,12 @@ export default function App() {
 
     if (combinedIssues.length === 0) {
       replaceArchivedIssuesForCurrentScope(selectedBridgeId, selectedProjectThreadId, []);
-      setIssues([]);
+      replaceVisibleIssuesForCurrentScope(selectedBridgeId, selectedProjectThreadId, []);
       return;
     }
 
     applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, combinedIssues);
-  }, [applyIssueStateForScope, archivedIssuesState, replaceArchivedIssuesForCurrentScope, selectedBridgeId, selectedProjectThreadId]);
+  }, [applyIssueStateForScope, archivedIssuesState, replaceArchivedIssuesForCurrentScope, replaceVisibleIssuesForCurrentScope, selectedBridgeId, selectedProjectThreadId]);
 
   useEffect(() => {
     detailStateRef.current = detailState;
@@ -4782,6 +4832,7 @@ export default function App() {
       pendingProjectThreadLoadsRef.current.clear();
       setIssues([]);
       archivedIssueSnapshotsRef.current = {};
+      visibleIssueSnapshotsRef.current = {};
       setArchivedIssues([]);
       setStatus({
         app_server: {
@@ -4823,6 +4874,7 @@ export default function App() {
       pendingProjectThreadLoadsRef.current.clear();
       setIssues([]);
       archivedIssueSnapshotsRef.current = {};
+      visibleIssueSnapshotsRef.current = {};
       setArchivedIssues([]);
       setLoadingState("ready");
     } catch (error) {
@@ -4878,7 +4930,7 @@ export default function App() {
     return request;
   }
 
-  async function loadThreadIssues(sessionArg, bridgeId, threadId) {
+  const loadThreadIssues = useCallback(async (sessionArg, bridgeId, threadId) => {
     if (!sessionArg?.loginId || !bridgeId || !threadId) {
       setIssues([]);
       return [];
@@ -4886,7 +4938,11 @@ export default function App() {
 
     const requestId = issueLoadRequestIdRef.current + 1;
     issueLoadRequestIdRef.current = requestId;
-    setIssues([]);
+    replaceVisibleIssuesForCurrentScope(
+      bridgeId,
+      threadId,
+      visibleIssueSnapshotsRef.current[bridgeId]?.[threadId] ?? []
+    );
 
     const payload = await apiRequest(
       `/api/threads/${encodeURIComponent(threadId)}/issues?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
@@ -4899,7 +4955,7 @@ export default function App() {
 
     applyIssueStateForScope(bridgeId, threadId, nextIssues);
     return nextIssues;
-  }
+  }, [applyIssueStateForScope, replaceVisibleIssuesForCurrentScope]);
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
@@ -5258,7 +5314,7 @@ export default function App() {
     }
 
     void loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
-  }, [archivesHydrated, session, selectedBridgeId, selectedProjectThreadId]);
+  }, [archivesHydrated, loadThreadIssues, session, selectedBridgeId, selectedProjectThreadId]);
 
   useEffect(() => {
     const todoIds = issues
@@ -5385,6 +5441,7 @@ export default function App() {
     setArchivedIssuesState({});
     setArchivesHydrated(false);
     archivedIssueSnapshotsRef.current = {};
+    visibleIssueSnapshotsRef.current = {};
     setArchivedIssues([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
