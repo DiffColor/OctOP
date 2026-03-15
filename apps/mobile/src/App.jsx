@@ -3298,9 +3298,11 @@ function ThreadDetail({
 
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
-          } else if (!isNearBottomEdge && delta >= HEADER_MENU_SCROLL_DELTA_PX) {
+          } else if (isNearBottomEdge) {
             setShowHeaderMenus(false);
-          } else if (!isNearBottomEdge && delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
+          } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
+            setShowHeaderMenus(false);
+          } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(true);
           }
 
