@@ -270,6 +270,56 @@ function createId() {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function getVisualViewportBottomInset() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  const viewport = window.visualViewport;
+
+  if (!viewport) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+}
+
+function useVisualViewportBottomInset() {
+  const [bottomInset, setBottomInset] = useState(() => getVisualViewportBottomInset());
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const viewport = window.visualViewport;
+    const syncInset = () => {
+      setBottomInset(getVisualViewportBottomInset());
+    };
+
+    syncInset();
+
+    if (!viewport) {
+      window.addEventListener("resize", syncInset);
+      return () => {
+        window.removeEventListener("resize", syncInset);
+      };
+    }
+
+    viewport.addEventListener("resize", syncInset);
+    viewport.addEventListener("scroll", syncInset);
+    window.addEventListener("resize", syncInset);
+
+    return () => {
+      viewport.removeEventListener("resize", syncInset);
+      viewport.removeEventListener("scroll", syncInset);
+      window.removeEventListener("resize", syncInset);
+    };
+  }, []);
+
+  return bottomInset;
+}
+
 function getRealtimeProgressText(entity) {
   const status = entity?.status ?? "queued";
   const lastEvent = entity?.last_event ?? "";
@@ -2511,6 +2561,7 @@ function TodoChatDetail({
 }) {
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
+  const composerBottomInset = useVisualViewportBottomInset();
 
   return (
     <div className="flex min-h-[100dvh] flex-col">
@@ -2606,7 +2657,10 @@ function TodoChatDetail({
         </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
+        style={{ bottom: `${composerBottomInset}px` }}
+      >
         <div className="w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
@@ -2997,6 +3051,7 @@ function ThreadDetail({
   isDraft = false
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
+  const composerBottomInset = useVisualViewportBottomInset();
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
@@ -3514,7 +3569,10 @@ function ThreadDetail({
         </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
+        style={{ bottom: `${composerBottomInset}px` }}
+      >
         <div className="w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
