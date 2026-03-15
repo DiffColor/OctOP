@@ -4185,7 +4185,7 @@ export default function App() {
   }, []);
 
   const loadThreadMessages = useCallback(
-    async (threadId, { force = false, version = null } = {}) => {
+    async (threadId, { force = false, version = null, suppressLoadingIndicator = false } = {}) => {
       if (!session?.loginId || !selectedBridgeId || !threadId) {
         return;
       }
@@ -4200,11 +4200,13 @@ export default function App() {
           return current;
         }
 
+        const shouldSuppressLoading = suppressLoadingIndicator && Boolean(currentEntry);
+
         return {
           ...current,
           [threadId]: {
             ...currentEntry,
-            loading: true,
+            loading: shouldSuppressLoading ? currentEntry?.loading ?? false : true,
             error: "",
             messages: currentEntry?.messages ?? [],
             version: currentEntry?.version ?? null
@@ -4362,7 +4364,7 @@ export default function App() {
       return;
     }
 
-    const { delay = 180, ...loadOptions } = options;
+    const { delay = 180, suppressLoadingIndicator = false, ...loadOptions } = options;
 
     if (threadReloadTimerRef.current) {
       window.clearTimeout(threadReloadTimerRef.current);
@@ -4371,7 +4373,7 @@ export default function App() {
 
     threadReloadTimerRef.current = window.setTimeout(() => {
       threadReloadTimerRef.current = null;
-      void loadThreadMessages(threadId, loadOptions);
+      void loadThreadMessages(threadId, { ...loadOptions, suppressLoadingIndicator });
     }, delay);
   }, [loadThreadMessages]);
 
@@ -4828,7 +4830,7 @@ export default function App() {
                 issues: payload.payload?.issues ?? current[threadId]?.issues ?? []
               }
             }));
-            scheduleThreadMessagesReload(threadId, { force: true });
+            scheduleThreadMessagesReload(threadId, { force: true, suppressLoadingIndicator: true });
           }
           return;
         }
@@ -4838,7 +4840,7 @@ export default function App() {
           eventThreadId === selectedThreadId &&
           (payload.type === "turn.completed" || payload.type === "thread.status.changed")
         ) {
-          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0 });
+          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0, suppressLoadingIndicator: true });
           return;
         }
 
@@ -4923,7 +4925,11 @@ export default function App() {
     }
 
     if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
-      scheduleThreadMessagesReload(selectedThreadId, { version: selectedThreadUpdatedAt, delay: 0 });
+      scheduleThreadMessagesReload(selectedThreadId, {
+        version: selectedThreadUpdatedAt,
+        delay: 0,
+        suppressLoadingIndicator: hasCurrentThreadDetail
+      });
     }
   }, [
     activeView,
