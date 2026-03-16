@@ -763,6 +763,7 @@ test("브리지 app-server idle websocket heartbeat 유지", { timeout: 60000 },
   assert.equal(health.status?.app_server?.initialized, true);
   assert.equal(fakeAppServer.connectionCount >= 1, true);
   assert.equal(fakeAppServer.pingCount >= 2, true);
+  assert.equal(fakeAppServer.getRequests("thread/list").length, 0);
 });
 
 test("브리지 app-server 느린 pong에도 timeout으로 연결을 강제 종료하지 않는다", { timeout: 60000 }, async (t) => {

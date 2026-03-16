@@ -5481,16 +5481,6 @@ class AppServerClient {
 
       const silentForMs = this.lastSocketActivityAt > 0 ? Date.now() - this.lastSocketActivityAt : 0;
 
-      if (
-        APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS > 0 &&
-        silentForMs >= APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS
-      ) {
-        void this.checkLastKnownState("idle_silence", {
-          ...context,
-          silent_for_ms: silentForMs
-        });
-      }
-
       if (this.heartbeatProbeSentAt > 0) {
         const probeAgeMs = Date.now() - this.heartbeatProbeSentAt;
 
@@ -6237,10 +6227,6 @@ async function recoverSilentBridgeState(trigger = "unspecified") {
   const remoteThreads = await syncThreadListFromAppServer();
   await reconcileRunningIssues(remoteThreads);
   await publishSnapshotsToKnownUsers();
-  console.log("[OctOP bridge] silent state recovery completed", {
-    trigger,
-    remote_thread_count: remoteThreads.length
-  });
 }
 
 function listLocalThreads(userId) {
