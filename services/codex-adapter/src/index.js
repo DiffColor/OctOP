@@ -6068,10 +6068,11 @@ async function publishThreadState(userId, threadId) {
   });
 }
 
-async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
+async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, options = {}) {
   const activeIssueId = activeIssueByThreadId.get(threadId);
   const meta = runningIssueMetaByThreadId.get(threadId);
   const thread = threadStateById.get(threadId);
+  const force = options.force === true;
 
   if (!activeIssueId || !meta || !thread) {
     return;
@@ -6079,7 +6080,7 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
 
   const lastActivityAt = Date.parse(meta.lastActivityAt ?? 0);
 
-  if (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt < RUNNING_ISSUE_STALE_MS) {
+  if (!force && (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt < RUNNING_ISSUE_STALE_MS)) {
     return;
   }
 
@@ -6184,6 +6185,110 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
   }
 }
 
+function shouldAttemptNormalizeRollover(rootThread, activePhysicalThread, activeIssue, remoteThread) {
+  if (!rootThread || !activePhysicalThread || !activeIssue) {
+    return false;
+  }
+
+  if (activePhysicalThread.deleted_at || activePhysicalThread.closed_at || activeIssue.deleted_at) {
+    return false;
+  }
+
+  if (!["running", "awaiting_input"].includes(activeIssue.status ?? rootThread.status ?? "")) {
+    return false;
+  }
+
+  if ((activePhysicalThread.context_usage_percent ?? 0) < THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT) {
+    return false;
+  }
+
+  const updatedAtMs = Date.parse(rootThread.updated_at ?? activeIssue.updated_at ?? 0);
+  const hasStaleDelta =
+    rootThread.last_event === "item.agentMessage.delta" &&
+    Number.isFinite(updatedAtMs) &&
+    Date.now() - updatedAtMs >= RUNNING_ISSUE_STALE_MS;
+
+  return rootThread.continuity_status === "degraded" || !remoteThread || hasStaleDelta;
+}
+
+async function normalizeRootThread(userId, rootThreadId, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId);
+
+  if (!rootThread || rootThread.deleted_at || threadOwners.get(rootThreadId) !== normalizedUserId) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  await appServer.ensureReady(`threadNormalize:${options.reason ?? "manual"}`);
+  const remoteThreads = await syncThreadListFromAppServer();
+  const remoteThreadsByCodexId = new Map((remoteThreads ?? []).map((thread) => [thread.id, thread]));
+  const previousThread = threadStateById.get(rootThreadId);
+  const previousStatus = previousThread?.status ?? null;
+  const previousContinuityStatus = previousThread?.continuity_status ?? null;
+  const trackedIssueId = ensureRunningIssueTrackingForThread(rootThreadId);
+
+  if (trackedIssueId) {
+    await reconcileRunningIssue(normalizedUserId, rootThreadId, remoteThreadsByCodexId, { force: true });
+  }
+
+  let currentThread = threadStateById.get(rootThreadId);
+
+  if (!currentThread || currentThread.deleted_at) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const activeIssueId = activeIssueByThreadId.get(rootThreadId) ?? trackedIssueId ?? null;
+  const activeIssue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+  const remoteThread = currentThread.codex_thread_id ? remoteThreadsByCodexId.get(currentThread.codex_thread_id) ?? null : null;
+  let action = trackedIssueId ? "reconciled" : "noop";
+  let rollover = null;
+
+  if (
+    currentThread.continuity_status === "degraded" &&
+    (remoteThread || !["running", "awaiting_input"].includes(currentThread.status ?? ""))
+  ) {
+    currentThread = {
+      ...currentThread,
+      continuity_status: "healthy",
+      updated_at: now()
+    };
+    threadStateById.set(rootThreadId, currentThread);
+    persistThreadById(rootThreadId);
+    await publishThreadState(normalizedUserId, rootThreadId);
+    action = trackedIssueId ? "reconciled" : "recovered";
+  }
+
+  if (shouldAttemptNormalizeRollover(currentThread, activePhysicalThread, activeIssue, remoteThread)) {
+    const rolloverResult = await performContextRollover(
+      normalizedUserId,
+      rootThreadId,
+      String(options.reason ?? "manual_normalize").trim() || "manual_normalize"
+    );
+
+    if (rolloverResult?.accepted) {
+      rollover = rolloverResult;
+      currentThread = threadStateById.get(rootThreadId) ?? currentThread;
+      action = "rollover";
+    }
+  }
+
+  return {
+    accepted: true,
+    action,
+    recovered:
+      action === "rollover" ||
+      previousStatus !== currentThread.status ||
+      previousContinuityStatus !== currentThread.continuity_status,
+    thread: currentThread,
+    continuity: getThreadContinuity(normalizedUserId, rootThreadId),
+    active_issue_id: activeIssueId,
+    remote_thread_found: Boolean(remoteThread),
+    rollover_trigger_percent: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
+    rollover
+  };
+}
+
 async function reconcileRunningIssues(remoteThreads = null) {
   const candidateThreadIds = new Set(activeIssueByThreadId.keys());
 
@@ -6194,6 +6299,19 @@ async function reconcileRunningIssues(remoteThreads = null) {
   }
 
   if (candidateThreadIds.size === 0) {
+    return;
+  }
+
+  const reconciliableThreadIds = remoteThreads
+    ? [...candidateThreadIds]
+    : [...candidateThreadIds].filter((threadId) => {
+        const meta = runningIssueMetaByThreadId.get(threadId);
+        const lastActivityAt = Date.parse(meta?.lastActivityAt ?? 0);
+
+        return Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= RUNNING_ISSUE_STALE_MS;
+      });
+
+  if (reconciliableThreadIds.length === 0) {
     return;
   }
 
@@ -6211,7 +6329,7 @@ async function reconcileRunningIssues(remoteThreads = null) {
 
   const remoteThreadsByCodexId = new Map((remoteThreadList ?? []).map((thread) => [thread.id, thread]));
 
-  for (const threadId of candidateThreadIds) {
+  for (const threadId of reconciliableThreadIds) {
     const owner = threadOwners.get(threadId);
 
     if (!owner) {
@@ -6974,6 +7092,33 @@ async function subscribeRequests() {
     }
   })();
 
+  const projectThreadNormalizeSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.normalize");
+
+  (async () => {
+    for await (const message of projectThreadNormalizeSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await normalizeRootThread(
+          userId,
+          String(body.thread_id ?? body.threadId ?? "").trim(),
+          {
+            reason: String(body.reason ?? "manual_refresh").trim() || "manual_refresh"
+          }
+        );
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const projectThreadUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.update");
 
   (async () => {
@@ -7430,6 +7575,19 @@ createServer(async (request, response) => {
         threadId,
         String(body.reason ?? "manual").trim() || "manual"
       );
+      return sendJson(response, payload.accepted ? 202 : 400, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/normalize$/.test(url.pathname)) {
+    try {
+      const threadId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await normalizeRootThread(userId, threadId, {
+        reason: String(body.reason ?? "manual_refresh").trim() || "manual_refresh"
+      });
       return sendJson(response, payload.accepted ? 202 : 400, payload);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });

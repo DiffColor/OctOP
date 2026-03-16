@@ -723,6 +723,11 @@ function normalizeThread(thread, fallbackProjectId = null) {
     updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
     source: thread.source ?? "appServer",
     turn_id: thread.turn_id ?? null,
+    codex_thread_id: thread.codex_thread_id ?? null,
+    active_physical_thread_id: thread.active_physical_thread_id ?? null,
+    continuity_mode: thread.continuity_mode ?? null,
+    continuity_status: thread.continuity_status ?? "healthy",
+    rollover_count: Number.isFinite(Number(thread.rollover_count)) ? Number(thread.rollover_count) : 0,
     context_usage_percent: contextUsage?.percent ?? null,
     context_used_tokens: contextUsage?.usedTokens ?? null,
     context_window_tokens: contextUsage?.windowTokens ?? null
@@ -3354,6 +3359,7 @@ function ThreadDetail({
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
+  const [refreshPending, setRefreshPending] = useState(false);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -3649,9 +3655,17 @@ function ThreadDetail({
     return () => window.cancelAnimationFrame(frame);
   }, [isPinnedToLatest, recomputePinnedState, thread?.id, viewMode, visibleChatTimelineSignature]);
 
-  const handleRefreshMessages = () => {
-    if (onRefreshMessages) {
-      onRefreshMessages();
+  const handleRefreshMessages = async () => {
+    if (!onRefreshMessages || refreshPending) {
+      return;
+    }
+
+    setRefreshPending(true);
+
+    try {
+      await onRefreshMessages();
+    } finally {
+      setRefreshPending(false);
     }
   };
 
@@ -3716,11 +3730,13 @@ function ThreadDetail({
 
           <button
             type="button"
-            onClick={handleRefreshMessages}
-            disabled={messagesLoading || !canRefresh}
+            onClick={() => void handleRefreshMessages()}
+            disabled={messagesLoading || refreshPending || !canRefresh}
+            aria-label="쓰레드 정상화 및 새로고침"
+            title="상태를 다시 맞추고 필요하면 쓰레드를 정상화합니다."
             className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {messagesLoading ? (
+            {messagesLoading || refreshPending ? (
               <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
             ) : (
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -6029,6 +6045,48 @@ export default function App() {
     void loadTodoChatMessages(selectedTodoChatId, { force: true });
   }, [loadTodoChatMessages, selectedTodoChatId]);
 
+  const handleRefreshThreadDetail = useCallback(async () => {
+    if (!session?.loginId || !selectedBridgeId || !selectedThreadId) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/${encodeURIComponent(selectedThreadId)}/normalize?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason: "manual_refresh" })
+        }
+      );
+
+      const normalizedThread = normalizeThread(response?.thread);
+
+      if (normalizedThread) {
+        setThreads((current) => upsertThread(current, normalizedThread));
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            thread: normalizedThread
+          }
+        }));
+
+        if (normalizedThread.project_id) {
+          setThreadListsByProjectId((current) => ({
+            ...current,
+            [normalizedThread.project_id]: upsertThread(current[normalizedThread.project_id] ?? [], normalizedThread)
+          }));
+        }
+      }
+
+      await loadThreadMessages(selectedThreadId, { force: true });
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+    }
+  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session?.loginId]);
+
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
       return;
@@ -6709,11 +6767,7 @@ export default function App() {
         onTransferTodoMessage={handleTransferTodoMessage}
         onEnsureProjectThreads={ensureProjectThreadsLoaded}
         onRefreshTodoChat={handleRefreshTodoChat}
-        onRefreshThreadDetail={() => {
-          if (selectedThreadId) {
-            void loadThreadMessages(selectedThreadId, { force: true, version: selectedThreadUpdatedAt });
-          }
-        }}
+        onRefreshThreadDetail={handleRefreshThreadDetail}
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}

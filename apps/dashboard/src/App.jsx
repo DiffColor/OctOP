@@ -1336,6 +1336,10 @@ function normalizeProjectThread(thread, fallbackProjectId = null) {
     issue_count: Number.isFinite(Number(thread.issue_count)) ? Number(thread.issue_count) : 0,
     queued_count: Number.isFinite(Number(thread.queued_count)) ? Number(thread.queued_count) : 0,
     codex_thread_id: thread.codex_thread_id ?? null,
+    active_physical_thread_id: thread.active_physical_thread_id ?? null,
+    continuity_mode: thread.continuity_mode ?? null,
+    continuity_status: thread.continuity_status ?? "healthy",
+    rollover_count: Number.isFinite(Number(thread.rollover_count)) ? Number(thread.rollover_count) : 0,
     context_usage_percent: contextUsage?.percent ?? null,
     context_used_tokens: contextUsage?.usedTokens ?? null,
     context_window_tokens: contextUsage?.windowTokens ?? null

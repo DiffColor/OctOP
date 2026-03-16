@@ -134,7 +134,16 @@ test.use({
   serviceWorkers: 'block'
 });
 
-async function mockMobileApi(page) {
+async function mockMobileApi(page, options = {}) {
+  let currentThread = options.thread ?? rootThread;
+  let currentIssuesPayload = options.issuesPayload ?? {
+    ...issuesPayload,
+    thread: currentThread
+  };
+  let currentIssueDetails = options.issueDetails ?? issueDetails;
+  const normalizeRequests = options.normalizeRequests ?? [];
+  const normalizedThread = options.normalizedThread ?? null;
+
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const pathname = url.pathname;
@@ -204,7 +213,7 @@ async function mockMobileApi(page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          threads: [rootThread]
+          threads: [currentThread]
         })
       });
       return;
@@ -214,17 +223,53 @@ async function mockMobileApi(page) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(issuesPayload)
+        body: JSON.stringify(currentIssuesPayload)
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${rootThreadId}/normalize` && route.request().method() === 'POST') {
+      normalizeRequests.push(route.request().postDataJSON() ?? {});
+
+      if (normalizedThread) {
+        currentThread = normalizedThread;
+        currentIssuesPayload = {
+          ...currentIssuesPayload,
+          thread: normalizedThread,
+          continuity: {
+            ...(currentIssuesPayload.continuity ?? {}),
+            root_thread: {
+              ...(currentIssuesPayload.continuity?.root_thread ?? {}),
+              continuity_status: normalizedThread.continuity_status ?? 'healthy'
+            }
+          }
+        };
+      }
+
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          action: normalizedThread ? 'rollover' : 'reconciled',
+          recovered: Boolean(normalizedThread),
+          thread: currentThread,
+          continuity: currentIssuesPayload.continuity ?? null
+        })
       });
       return;
     }
 
     if (pathname.startsWith('/api/issues/')) {
       const issueId = pathname.split('/').at(-1);
+      const detail = currentIssueDetails[issueId] ?? { issue: null, messages: [] };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(issueDetails[issueId] ?? { issue: null, messages: [] })
+        body: JSON.stringify({
+          ...detail,
+          thread: currentThread
+        })
       });
       return;
     }
@@ -270,5 +315,46 @@ test.describe('모바일 handoff timeline UI', () => {
     await expect(page.getByText('핸드오프 요약')).toBeVisible();
     await expect(page.locator('[data-testid="message-bubble-system"]')).toContainText('이전 컨텍스트 요약');
     await expect(page.locator('[data-testid="message-bubble-system"]')).toContainText('/workspace/octop');
+  });
+
+  test('채팅 상단 리프레시 버튼이 normalize를 호출하고 정상화된 thread 상태를 다시 그린다', async ({ page }) => {
+    const normalizeRequests = [];
+    const stalledThread = {
+      ...rootThread,
+      last_event: 'item.agentMessage.delta',
+      updated_at: '2026-03-15T07:00:00.000Z',
+      context_usage_percent: 92,
+      continuity_status: 'degraded'
+    };
+    const recoveredThread = {
+      ...stalledThread,
+      last_event: 'rootThread.rollover.completed',
+      updated_at: '2026-03-15T10:12:00.000Z',
+      context_usage_percent: 12,
+      continuity_status: 'healthy'
+    };
+
+    await mockMobileApi(page, {
+      thread: stalledThread,
+      issuesPayload: {
+        ...issuesPayload,
+        thread: stalledThread
+      },
+      normalizedThread: recoveredThread,
+      normalizeRequests
+    });
+    await page.addInitScript(({ key, value }) => {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    }, { key: SESSION_KEY, value: session });
+
+    await page.goto(baseUrl);
+
+    await page.getByText('Root Thread Mobile').click();
+    await expect(page.getByText('사용률 92%')).toBeVisible();
+
+    await page.getByRole('button', { name: '쓰레드 정상화 및 새로고침' }).click();
+
+    await expect.poll(() => normalizeRequests.length).toBe(1);
+    await expect(page.getByText('사용률 12%', { exact: true })).toBeVisible();
   });
 });
