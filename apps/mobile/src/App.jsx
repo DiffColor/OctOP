@@ -4360,6 +4360,10 @@ export default function App() {
       [normalizedProjectId]: mergeThreads([], nextThreads)
     }));
   }, []);
+  const updateThreadCacheRef = useRef(updateThreadCache);
+  useEffect(() => {
+    updateThreadCacheRef.current = updateThreadCache;
+  }, [updateThreadCache]);
   const selectProjectScope = useCallback((projectId) => {
     setSelectedScope({ kind: "project", id: projectId });
   }, []);
@@ -4371,6 +4375,8 @@ export default function App() {
   const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  const selectedTodoChatIdRef = useRef(selectedTodoChatId);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
@@ -4380,6 +4386,14 @@ export default function App() {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    selectedTodoChatIdRef.current = selectedTodoChatId;
+  }, [selectedTodoChatId]);
 
   useEffect(() => {
     return () => {
@@ -4582,6 +4596,10 @@ export default function App() {
       void loadThreadMessages(threadId, { ...loadOptions, suppressLoadingIndicator });
     }, delay);
   }, [loadThreadMessages]);
+  const scheduleThreadMessagesReloadRef = useRef(scheduleThreadMessagesReload);
+  useEffect(() => {
+    scheduleThreadMessagesReloadRef.current = scheduleThreadMessagesReload;
+  }, [scheduleThreadMessagesReload]);
 
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
@@ -4989,12 +5007,17 @@ export default function App() {
       try {
         const payload = JSON.parse(event.data);
         const { threadId: eventThreadId, issueId: eventIssueId } = getLiveEventContext(payload);
+        const activeThreadId = selectedThreadIdRef.current;
+        const activeProjectId = selectedProjectIdRef.current;
+        const activeTodoChatId = selectedTodoChatIdRef.current;
+        const scheduleReload = scheduleThreadMessagesReloadRef.current;
+        const applyThreadCacheUpdate = updateThreadCacheRef.current;
 
         if (eventThreadId) {
           setThreads((current) => upsertLiveThread(current, payload));
         }
 
-        if (eventThreadId && eventThreadId === selectedThreadId) {
+        if (eventThreadId && eventThreadId === activeThreadId) {
           setThreadDetails((current) => {
             const currentEntry = current[eventThreadId];
 
@@ -5063,7 +5086,7 @@ export default function App() {
             setTodoChats((current) => upsertTodoChat(current, incomingChat));
           }
 
-          if (incomingChat?.id && incomingChat.id === selectedTodoChatId) {
+          if (incomingChat?.id && incomingChat.id === activeTodoChatId) {
             setTodoChatDetails((current) => ({
               ...current,
               [incomingChat.id]: {
@@ -5083,20 +5106,20 @@ export default function App() {
           const nextThreads = mergeThreads([], payload.payload?.threads ?? []);
 
           if (projectId) {
-            updateThreadCache(projectId, nextThreads);
+            applyThreadCacheUpdate?.(projectId, nextThreads);
           }
 
-          if (!projectId || projectId === selectedProjectId) {
+          if (!projectId || projectId === activeProjectId) {
             setThreads(nextThreads);
           }
 
-          if (selectedThreadId && payload.payload?.threads?.some((thread) => thread.id === selectedThreadId)) {
-            const matched = payload.payload.threads.find((thread) => thread.id === selectedThreadId);
+          if (activeThreadId && payload.payload?.threads?.some((thread) => thread.id === activeThreadId)) {
+            const matched = payload.payload.threads.find((thread) => thread.id === activeThreadId);
             if (matched) {
               setThreadDetails((current) => ({
                 ...current,
-                [selectedThreadId]: {
-                  ...(current[selectedThreadId] ?? {}),
+                [activeThreadId]: {
+                  ...(current[activeThreadId] ?? {}),
                   thread: normalizeThread(matched)
                 }
               }));
@@ -5108,7 +5131,7 @@ export default function App() {
         if (payload.type === "bridge.threadIssues.updated") {
           const threadId = payload.payload?.thread_id ?? "";
 
-          if (threadId && threadId === selectedThreadId) {
+          if (threadId && threadId === activeThreadId) {
             setThreadDetails((current) => ({
               ...current,
               [threadId]: {
@@ -5116,17 +5139,21 @@ export default function App() {
                 issues: payload.payload?.issues ?? current[threadId]?.issues ?? []
               }
             }));
-            scheduleThreadMessagesReload(threadId, { force: true, suppressLoadingIndicator: true });
+            if (scheduleReload) {
+              scheduleReload(threadId, { force: true, suppressLoadingIndicator: true });
+            }
           }
           return;
         }
 
         if (
           eventThreadId &&
-          eventThreadId === selectedThreadId &&
+          eventThreadId === activeThreadId &&
           (payload.type === "turn.completed" || payload.type === "thread.status.changed")
         ) {
-          scheduleThreadMessagesReload(eventThreadId, { force: true, delay: 0, suppressLoadingIndicator: true });
+          if (scheduleReload) {
+            scheduleReload(eventThreadId, { force: true, delay: 0, suppressLoadingIndicator: true });
+          }
           return;
         }
 
@@ -5137,7 +5164,7 @@ export default function App() {
             return;
           }
 
-          if (selectedThreadId === incomingThread.id) {
+          if (activeThreadId === incomingThread.id) {
             setThreadDetails((current) => ({
               ...current,
               [incomingThread.id]: {
@@ -5147,7 +5174,7 @@ export default function App() {
             }));
           }
 
-          if (!selectedProjectId || incomingThread.project_id === selectedProjectId) {
+          if (!activeProjectId || incomingThread.project_id === activeProjectId) {
             setThreads((current) => upsertThread(current, incomingThread));
           }
         }
@@ -5159,7 +5186,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [loadThreadMessages, scheduleThreadMessagesReload, selectedBridgeId, selectedProjectId, selectedThreadId, selectedTodoChatId, session, updateThreadCache]);
+  }, [selectedBridgeId, session?.loginId]);
 
   useEffect(() => {
     if (!session?.loginId) {
