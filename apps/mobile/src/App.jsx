@@ -101,7 +101,7 @@ function buildBridgeSignal({ connected, lastActivityAt, now }) {
 }
 
 function buildThreadResponseSignal(thread, now) {
-  if (!thread || thread.status !== "running") {
+  if (!thread || thread.status !== "running" || thread.last_event !== "item.agentMessage.delta") {
     return null;
   }
 
@@ -117,16 +117,10 @@ function buildThreadResponseSignal(thread, now) {
       ? 0
       : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
   const hue = Math.round(145 - 140 * ratio);
-  const stage =
-    silentMs < STREAM_SILENCE_START_MS
-      ? 0
-      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
 
   return {
-    stage,
-    detailLabel: stage === 0 ? "응답 정상" : `${formatSilentDuration(silentMs)} 무응답`,
     title:
-      stage === 0
+      silentMs < STREAM_SILENCE_START_MS
         ? "최근 쓰레드 응답이 정상입니다."
         : `최근 ${formatSilentDuration(silentMs)} 동안 쓰레드 응답이 없습니다. 필요하면 사용자가 작업을 중단하고 수동 복구해 주세요.`,
     dotColor: `hsl(${hue} 82% 58%)`,
@@ -3711,12 +3705,6 @@ function ThreadDetail({
                 />
               ) : null}
               <span>{status ? status.label : "새 채팅창"}</span>
-              {responseSignal?.stage > 0 ? (
-                <>
-                  <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
-                  <span style={{ color: responseSignal.dotColor }}>{responseSignal.detailLabel}</span>
-                </>
-              ) : null}
               {contextUsage?.percent !== null ? (
                 <>
                   <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
@@ -3868,7 +3856,6 @@ function ThreadDetail({
                   style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
                 />
                 <span>{status.label}</span>
-                {responseSignal?.stage > 0 ? <span>{responseSignal.detailLabel}</span> : null}
                 <span className="text-slate-500">{thread.progress}%</span>
                 <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
               </div>

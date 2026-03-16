@@ -103,7 +103,7 @@ function buildBridgeSignal({ connected, lastActivityAt, now, language, connected
 }
 
 function buildThreadResponseSignal({ thread, now, language }) {
-  if (!thread || thread.status !== "running") {
+  if (!thread || thread.status !== "running" || thread.last_event !== "item.agentMessage.delta") {
     return null;
   }
 
@@ -119,24 +119,11 @@ function buildThreadResponseSignal({ thread, now, language }) {
       ? 0
       : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
   const hue = Math.round(145 - 140 * ratio);
-  const stage =
-    silentMs < STREAM_SILENCE_START_MS
-      ? 0
-      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
   const durationLabel = formatBridgeSilentDuration(silentMs, language);
 
   return {
-    stage,
-    detailLabel:
-      stage === 0
-        ? language === "ko"
-          ? "응답 정상"
-          : "Responsive"
-        : language === "ko"
-          ? `${durationLabel} 무응답`
-          : `silent ${durationLabel}`,
     title:
-      stage === 0
+      silentMs < STREAM_SILENCE_START_MS
         ? language === "ko"
           ? "최근 쓰레드 응답이 정상입니다."
           : "Recent thread responses look healthy."
@@ -2774,7 +2761,6 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
                   title={responseSignal?.title}
                 >
                   {copy.status[getStatusMeta(thread.status).labelKey] ?? copy.status.queued}
-                  {responseSignal?.stage > 0 ? ` · ${responseSignal.detailLabel}` : ""}
                 </span>
                 {contextUsageLabel ? (
                   <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">
@@ -3077,7 +3063,6 @@ function ThreadCard({
             style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
           />
           {copy.status[status.labelKey] ?? copy.status.queued}
-          {responseSignal?.stage > 0 ? <span>{responseSignal.detailLabel}</span> : null}
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
