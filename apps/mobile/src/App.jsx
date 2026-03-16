@@ -3377,6 +3377,7 @@ function ThreadDetail({
   messagesLoading,
   messagesError,
   onRefreshMessages,
+  onDeleteIssue,
   onSubmitPrompt,
   submitBusy,
   onBack,
@@ -3395,6 +3396,7 @@ function ThreadDetail({
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [refreshPending, setRefreshPending] = useState(false);
+  const [deletingIssueId, setDeletingIssueId] = useState("");
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -3547,6 +3549,13 @@ function ThreadDetail({
     return groups;
   }, [messages, thread?.created_at, thread?.updated_at]);
   const runTimeline = useMemo(() => buildRunTimeline(thread), [thread]);
+  const visibleIssues = useMemo(
+    () =>
+      [...safeIssues].sort(
+        (left, right) => Date.parse(right.updated_at ?? right.created_at ?? 0) - Date.parse(left.updated_at ?? left.created_at ?? 0)
+      ),
+    [safeIssues]
+  );
   const promptTimeline = useMemo(
     () => conversationTimeline.map((entry) => ({ ...entry, responses: [] })),
     [conversationTimeline]
@@ -3704,6 +3713,20 @@ function ThreadDetail({
     }
   };
 
+  const handleDeleteIssue = async (issueId) => {
+    if (!issueId || !onDeleteIssue || deletingIssueId) {
+      return;
+    }
+
+    setDeletingIssueId(issueId);
+
+    try {
+      await onDeleteIssue(issueId);
+    } finally {
+      setDeletingIssueId((current) => (current === issueId ? "" : current));
+    }
+  };
+
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
   const showEmptyState = (() => {
     if (messagesLoading || messagesError) {
@@ -3767,8 +3790,8 @@ function ThreadDetail({
             type="button"
             onClick={() => void handleRefreshMessages()}
             disabled={messagesLoading || refreshPending || !canRefresh}
-            aria-label="쓰레드 정상화 및 새로고침"
-            title="상태를 다시 맞추고 필요하면 쓰레드를 정상화합니다."
+            aria-label="마지막 이슈 락 해제 및 새로고침"
+            title="마지막 이슈 락을 해제하고 현재 채팅창 상태를 다시 불러옵니다."
             className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {messagesLoading || refreshPending ? (
@@ -3821,6 +3844,49 @@ function ThreadDetail({
               {formatDateTime(threadTimestamp)}
             </span>
           </div>
+
+          {visibleIssues.length > 0 ? (
+            <section className="rounded-[1.6rem] border border-white/8 bg-white/5 px-4 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">이슈 목록</p>
+                  <p className="mt-1 text-sm text-slate-300">개별 이슈를 확인하고 삭제할 수 있습니다.</p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[11px] text-slate-300">
+                  {visibleIssues.length}개
+                </span>
+              </div>
+              <div className="mt-3 space-y-2">
+                {visibleIssues.map((issue) => {
+                  const issueStatus = getStatusMeta(issue.status);
+                  const deleteDisabled = deletingIssueId === issue.id || ["running", "awaiting_input"].includes(issue.status);
+
+                  return (
+                    <div
+                      key={issue.id}
+                      className="flex items-start justify-between gap-3 rounded-[1.15rem] border border-white/8 bg-slate-950/55 px-3 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${issueStatus.dotClassName}`} />
+                          <p className="truncate text-sm font-medium text-white">{issue.title ?? "제목 없는 이슈"}</p>
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-slate-400">{formatRelativeTime(issue.updated_at)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteIssue(issue.id)}
+                        disabled={deleteDisabled}
+                        className="rounded-full border border-rose-400/20 px-3 py-1.5 text-[11px] font-medium text-rose-100 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500 disabled:opacity-60"
+                      >
+                        {deletingIssueId === issue.id ? "삭제 중" : "삭제"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
 
           {messagesError ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -4022,6 +4088,7 @@ function MainPage({
   onEnsureProjectThreads,
   onRefreshTodoChat,
   onRefreshThreadDetail,
+  onDeleteThreadIssue,
   onRefresh,
   onLogout,
   onBackToInbox
@@ -4260,6 +4327,7 @@ function MainPage({
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
+          onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
               return onAppendThreadMessage(resolvedThread.id, payload.prompt);
@@ -6087,7 +6155,7 @@ export default function App() {
 
     try {
       const refreshPath =
-        `/api/threads/${encodeURIComponent(selectedThreadId)}/normalize?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+        `/api/threads/${encodeURIComponent(selectedThreadId)}/unlock?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
       const refreshOptions = {
         method: "POST",
         body: JSON.stringify({ reason: "manual_refresh" })
@@ -6102,7 +6170,7 @@ export default function App() {
             refreshPath,
             refreshOptions,
             error,
-            `쓰레드 새로고침 요청 실패\n- thread_id: ${selectedThreadId}\n- bridge_id: ${selectedBridgeId}`
+            `마지막 이슈 락 해제 요청 실패\n- thread_id: ${selectedThreadId}\n- bridge_id: ${selectedBridgeId}`
           )
         );
       }
@@ -6134,6 +6202,43 @@ export default function App() {
       }
     }
   }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session?.loginId]);
+
+  const handleDeleteThreadIssue = useCallback(async (issueId) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
+      return false;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm("이 이슈를 삭제하시겠습니까? 관련 메시지도 함께 목록에서 사라집니다.")) {
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      if (Array.isArray(response?.issues)) {
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            issues: response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+          }
+        }));
+      }
+
+      await loadThreadMessages(selectedThreadId, { force: true });
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -6881,6 +6986,7 @@ export default function App() {
         onEnsureProjectThreads={ensureProjectThreadsLoaded}
         onRefreshTodoChat={handleRefreshTodoChat}
         onRefreshThreadDetail={handleRefreshThreadDetail}
+        onDeleteThreadIssue={handleDeleteThreadIssue}
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}

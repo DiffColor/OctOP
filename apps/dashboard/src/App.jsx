@@ -3052,6 +3052,7 @@ function ThreadCard({
   columnId,
   onSelect,
   onSelectionGesture,
+  onDelete,
   onDragStart,
   onDragEnd
 }) {
@@ -3070,18 +3071,18 @@ function ThreadCard({
   };
 
   return (
-    <button
+    <div
       data-testid={`issue-card-${thread.id}`}
-      type="button"
-      onClick={handleClick}
       draggable={typeof onDragStart === "function"}
       onDragStart={() => onDragStart?.(thread.id, columnId)}
       onDragEnd={() => onDragEnd?.()}
-      className={`w-full rounded-xl border px-3.5 py-3 text-left transition ${
+      className={`rounded-xl border px-3.5 py-3 transition ${
         highlighted ? "border-sky-400/35 bg-slate-800/95" : "border-slate-800 bg-slate-800/85 hover:border-slate-700"
       }`}
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <button type="button" onClick={handleClick} className="min-w-0 flex-1 text-left">
+          <div className="flex items-center justify-between gap-3">
         <span
           className={`inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[11px] ${
             responseSignal ? "" : `${status.chipClassName} border-transparent`
@@ -3095,10 +3096,21 @@ function ThreadCard({
           />
           {copy.status[status.labelKey] ?? copy.status.queued}
         </span>
-        <span className="text-[11px] text-slate-500">{thread.progress}%</span>
+            <span className="text-[11px] text-slate-500">{thread.progress}%</span>
+          </div>
+          <OverflowRevealText value={getIssueTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
+          <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
+        </button>
+        {typeof onDelete === "function" ? (
+          <button
+            type="button"
+            onClick={() => onDelete(thread.id)}
+            className="shrink-0 rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
+          >
+            {copy.board.delete}
+          </button>
+        ) : null}
       </div>
-      <OverflowRevealText value={getIssueTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
-      <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
       <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
           className="h-1 rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
@@ -3116,7 +3128,7 @@ function ThreadCard({
           </>
         ) : null}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -3253,6 +3265,7 @@ function MainPage({
   onDragQueueIssue,
   onDragPrepIssues,
   onDragArchiveIssues,
+  onInterruptIssueToPrep,
   onEditPrepIssue,
   onOpenProjectComposer,
   onOpenProjectInstructionDialog,
@@ -4245,17 +4258,22 @@ function MainPage({
                     data-testid={`board-column-${column.id}`}
                     className={`flex w-80 flex-col rounded-2xl ${column.id === "todo" ? "ring-1 ring-transparent" : ""}`}
                     onDragOver={(event) => {
-                      if (column.id === "todo") {
+                      if (column.id === "todo" || column.id === "prep") {
                         event.preventDefault();
                       }
                     }}
                     onDrop={(event) => {
-                      if (column.id !== "todo") {
+                      if (column.id === "todo") {
+                        event.preventDefault();
+                        onDragPrepIssues.drop();
                         return;
                       }
 
-                      event.preventDefault();
-                      onDragPrepIssues.drop();
+                      if (column.id === "prep") {
+                        event.preventDefault();
+                        onInterruptIssueToPrep();
+                        return;
+                      }
                     }}
                   >
                     <div className="mb-4 flex items-center justify-between">
@@ -4360,7 +4378,7 @@ function MainPage({
                               onToggle={handleTogglePrepSelection}
                               onDelete={onDeleteIssue}
                               onDragStart={onDragPrepIssues.start}
-                              onDrop={onDragPrepIssues.reorder}
+                              onDrop={(threadId) => onInterruptIssueToPrep(threadId)}
                               onEdit={onEditPrepIssue}
                               onSelectionGesture={handleIssueSelectionGesture}
                             />
@@ -4415,6 +4433,7 @@ function MainPage({
                               columnId={column.id}
                               onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                               onSelectionGesture={handleIssueSelectionGesture}
+                              onDelete={column.id === "review" ? onDeleteIssue : undefined}
                               onDragStart={column.id === "review" ? onDragArchiveIssues.start : undefined}
                               onDragEnd={column.id === "review" ? onDragArchiveIssues.clear : undefined}
                             />
@@ -5223,6 +5242,16 @@ export default function App() {
     applyIssueStateForScope(bridgeId, threadId, nextIssues);
     return nextIssues;
   }, [applyIssueStateForScope, replaceVisibleIssuesForCurrentScope]);
+
+  const loadIssueDetail = useCallback(async (sessionArg, bridgeId, issueId) => {
+    if (!sessionArg?.loginId || !bridgeId || !issueId) {
+      return null;
+    }
+
+    return apiRequest(
+      `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    );
+  }, []);
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
@@ -6638,16 +6667,100 @@ export default function App() {
     }
   };
 
+  const handleInterruptIssueToPrep = async (targetId = "") => {
+    if (!draggingIssueId) {
+      if (draggingPrepIssueIds.length > 0) {
+        handleDragPrepIssues.reorder(targetId);
+      }
+      return;
+    }
+
+    const issueId = draggingIssueId;
+
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId || !issueId) {
+      setDraggingIssueId("");
+      return;
+    }
+
+    setDraggingIssueId("");
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason: "drag_to_prep"
+          })
+        }
+      );
+
+      if (Array.isArray(response?.issues)) {
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, response.issues);
+      } else {
+        await loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
+      }
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.interrupt.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
+  };
+
   const handleRefresh = async () => {
     if (!session?.loginId) {
       return;
     }
 
+    const activeProjectId = selectedProjectIdRef.current;
+    const activeThreadId = selectedProjectThreadIdRef.current;
+    const openIssueId = detailStateRef.current.open ? detailStateRef.current.thread?.id ?? "" : "";
     const nextBridges = await loadBridges(session);
     const targetBridgeId = selectedBridgeId || nextBridges[0]?.bridge_id;
 
     if (targetBridgeId) {
       await loadBridgeWorkspace(session, targetBridgeId);
+
+      if (activeProjectId) {
+        await loadProjectThreads(session, targetBridgeId, activeProjectId);
+      }
+
+      if (activeThreadId) {
+        await loadThreadIssues(session, targetBridgeId, activeThreadId);
+      }
+
+      if (openIssueId) {
+        try {
+          const payload = await loadIssueDetail(session, targetBridgeId, openIssueId);
+
+          if (!payload) {
+            return;
+          }
+
+          setDetailState((current) => ({
+            ...current,
+            loading: false,
+            thread: payload.issue ?? current.thread,
+            messages: payload.messages ?? []
+          }));
+        } catch (error) {
+          setRecentEvents((current) => [
+            {
+              id: createId(),
+              type: "thread.detail.refresh.failed",
+              timestamp: new Date().toISOString(),
+              summary: error.message
+            },
+            ...current
+          ].slice(0, 20));
+        }
+      }
     }
   };
 
@@ -6768,6 +6881,7 @@ export default function App() {
       onDragQueueIssue={handleDragQueueIssue}
       onDragPrepIssues={handleDragPrepIssues}
       onDragArchiveIssues={handleDragArchiveIssues}
+      onInterruptIssueToPrep={(threadId) => void handleInterruptIssueToPrep(threadId)}
       onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}
       onOpenProjectComposer={() => void handleOpenProjectComposer()}
       onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}

@@ -1127,6 +1127,159 @@ test("manual refresh normalize는 현재 thread의 staged issue를 다시 실행
   }
 });
 
+test("thread unlock은 마지막 running issue 락을 해제하고 다음 queued issue를 재개한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-unlock-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-unlock-token",
+    userId: "integration-user",
+    bridgeId: `thread-unlock-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId, stagedIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Thread Unlock Recovery"
+    });
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [stagedIssueId]
+      })
+    });
+
+    await waitFor(async () => {
+      const queuedPayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      assert.equal(queuedPayload.issue?.status, "queued");
+      return queuedPayload;
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "queued issue before unlock"
+    });
+
+    const unlockPayload = await bridge.request(`/api/threads/${rootThreadId}/unlock`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_refresh"
+      })
+    });
+
+    assert.equal(unlockPayload.accepted, true);
+    assert.equal(unlockPayload.action, "unlocked");
+    assert.equal(unlockPayload.unlocked_issue_id, activeIssueId);
+    assert.equal(unlockPayload.recovery_steps.includes("released_last_issue_lock"), true);
+
+    await waitFor(async () => {
+      const failedIssuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const resumedIssuePayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      assert.equal(failedIssuePayload.issue?.status, "failed");
+      assert.equal(failedIssuePayload.issue?.last_event, "issue.unlocked");
+      assert.equal(resumedIssuePayload.issue?.status, "running");
+      return { failedIssuePayload, resumedIssuePayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "unlock resumed queued issue"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("todo issue를 preparation으로 되돌리면 queued issue가 staged로 이동한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-issue-interrupt-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-issue-interrupt-token",
+    userId: "integration-user",
+    bridgeId: `issue-interrupt-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId, stagedIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Todo To Prep Interrupt"
+    });
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [stagedIssueId]
+      })
+    });
+
+    await waitFor(async () => {
+      const queuedPayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      assert.equal(queuedPayload.issue?.status, "queued");
+      assert.equal(Number.isFinite(queuedPayload.issue?.queue_position), true);
+      return queuedPayload;
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "queued issue before interrupt"
+    });
+
+    const interruptPayload = await bridge.request(`/api/issues/${stagedIssueId}/interrupt`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "drag_to_prep"
+      })
+    });
+
+    assert.equal(interruptPayload.accepted, true);
+    assert.equal(interruptPayload.action, "interrupted");
+
+    await waitFor(async () => {
+      const interruptedIssuePayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      const activeIssuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(interruptedIssuePayload.issue?.status, "staged");
+      assert.equal(interruptedIssuePayload.issue?.last_event, "issue.interrupted");
+      assert.equal(interruptedIssuePayload.issue?.queue_position ?? null, null);
+      assert.equal(Number.isFinite(interruptedIssuePayload.issue?.prep_position), true);
+      assert.equal(activeIssuePayload.issue?.status, "running");
+      return { interruptedIssuePayload, activeIssuePayload };
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "todo issue returned to prep"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-int-"));
   const fakeAppServer = new FakeAppServer();

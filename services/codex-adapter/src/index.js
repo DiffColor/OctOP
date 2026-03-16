@@ -3126,43 +3126,81 @@ async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DEL
   }
 }
 
-async function stopProjectThreadExecutionForDelete(thread) {
-  const activePhysicalThread = thread?.id ? getActivePhysicalThread(thread.id) : null;
-  const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? thread?.codex_thread_id ?? "").trim();
+async function interruptThreadExecutionBestEffort(rootThread, options = {}) {
+  const activePhysicalThread = rootThread?.id ? getActivePhysicalThread(rootThread.id) : null;
+  const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
+  const turnId = String(rootThread?.turn_id ?? "").trim();
+  const timeoutMs = Number(options.timeoutMs ?? THREAD_DELETE_STOP_TIMEOUT_MS);
+  const errors = [];
 
   if (!codexThreadId) {
-    return;
+    return {
+      ok: false,
+      interrupted: false,
+      stoppedRealtime: false,
+      errors: ["codex thread not bound"]
+    };
   }
 
-  const stopErrors = [];
+  let interrupted = false;
+  let stoppedRealtime = false;
 
-  if (thread.turn_id) {
-    const interruptResult = await requestAppServerBestEffort("turn/interrupt", {
-      threadId: codexThreadId,
-      turnId: String(thread.turn_id)
-    });
+  if (turnId) {
+    const interruptResult = await requestAppServerBestEffort(
+      "turn/interrupt",
+      {
+        threadId: codexThreadId,
+        turnId
+      },
+      timeoutMs
+    );
+
+    interrupted = interruptResult.ok;
 
     if (!interruptResult.ok) {
-      stopErrors.push(`turn/interrupt: ${interruptResult.error?.message ?? "unknown error"}`);
+      errors.push(`turn/interrupt: ${interruptResult.error?.message ?? "unknown error"}`);
     }
   }
 
-  const realtimeStopResult = await requestAppServerBestEffort("thread/realtime/stop", {
-    threadId: codexThreadId
-  });
+  const realtimeStopResult = await requestAppServerBestEffort(
+    "thread/realtime/stop",
+    {
+      threadId: codexThreadId
+    },
+    timeoutMs
+  );
+
+  stoppedRealtime = realtimeStopResult.ok;
 
   if (!realtimeStopResult.ok) {
-    stopErrors.push(`thread/realtime/stop: ${realtimeStopResult.error?.message ?? "unknown error"}`);
+    errors.push(`thread/realtime/stop: ${realtimeStopResult.error?.message ?? "unknown error"}`);
   }
 
-  if (stopErrors.length > 0) {
+  return {
+    ok: errors.length === 0,
+    interrupted,
+    stoppedRealtime,
+    errors
+  };
+}
+
+async function stopProjectThreadExecutionForDelete(thread) {
+  const stopResult = await interruptThreadExecutionBestEffort(thread);
+
+  if (stopResult.errors.includes("codex thread not bound")) {
+    return;
+  }
+
+  if (stopResult.errors.length > 0) {
+    const activePhysicalThread = thread?.id ? getActivePhysicalThread(thread.id) : null;
+    const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? thread?.codex_thread_id ?? "").trim();
     console.warn("[OctOP bridge] thread delete proceeded after stop attempt errors", {
       ...buildLogContext({
         root_thread_id: thread.id,
         codex_thread_id: codexThreadId,
         event_type: "rootThread.delete.stopBestEffort.failed"
       }),
-      errors: stopErrors
+      errors: stopResult.errors
     });
   }
 }
@@ -4057,6 +4095,113 @@ async function deleteThreadIssue(userId, payload = {}) {
   return {
     accepted: true,
     issues: listThreadIssues(issue.thread_id)
+  };
+}
+
+async function interruptThreadIssue(userId, payload = {}) {
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+  const interruptReason = String(payload.reason ?? "manual_interrupt").trim() || "manual_interrupt";
+
+  if (!issueId) {
+    throw new Error("중단할 이슈 id가 필요합니다.");
+  }
+
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue || issue.deleted_at) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  const thread = threadStateById.get(issue.thread_id);
+
+  if (!thread || thread.deleted_at || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+    throw new Error("이슈를 중단할 수 없습니다.");
+  }
+
+  const issueStatus = String(issue.status ?? "").trim();
+
+  if (!["queued", "idle", "running", "awaiting_input", "failed"].includes(issueStatus)) {
+    return {
+      accepted: true,
+      action: "noop",
+      thread,
+      issues: listThreadIssues(issue.thread_id)
+    };
+  }
+
+  const queue = ensurePendingQueue(issue.thread_id);
+  const wasQueued = queue.includes(issueId);
+  const wasActive =
+    activeIssueByThreadId.get(issue.thread_id) === issueId || [...activeIssueByPhysicalThreadId.values()].includes(issueId);
+  const previousActiveIssueId = activeIssueByThreadId.get(issue.thread_id) ?? null;
+  const recoverySteps = [];
+  let interruptResult = null;
+
+  if (wasActive) {
+    interruptResult = await interruptThreadExecutionBestEffort(thread);
+
+    if (interruptResult.errors.length > 0 && !interruptResult.errors.includes("codex thread not bound")) {
+      console.warn("[OctOP bridge] issue interrupt proceeded after stop attempt errors", {
+        ...buildLogContext({
+          root_thread_id: issue.thread_id,
+          physical_thread_id: thread.active_physical_thread_id ?? null,
+          codex_thread_id: thread.codex_thread_id ?? null,
+          issue_id: issueId,
+          event_type: "thread.issue.interrupt.stopBestEffort.failed"
+        }),
+        errors: interruptResult.errors
+      });
+    }
+
+    clearRunningIssueTracking(issue.thread_id);
+    recoverySteps.push("cleared_active_lock");
+  }
+
+  if (wasQueued) {
+    pendingStartQueues.set(
+      issue.thread_id,
+      queue.filter((queuedIssueId) => queuedIssueId !== issueId)
+    );
+    recoverySteps.push("removed_from_queue");
+  }
+
+  updateIssueCard(issueId, {
+    status: "staged",
+    progress: 0,
+    queue_position: null,
+    prep_position: getNextPrepPosition(issue.thread_id),
+    last_event: "issue.interrupted",
+    last_message:
+      String(issue.last_message ?? "").trim() ||
+      (interruptReason === "drag_to_prep"
+        ? "Preparation으로 이동하면서 이슈를 중단했습니다."
+        : "수동으로 이슈를 중단했습니다.")
+  });
+
+  refreshIssueQueuePositions(issue.thread_id);
+  updateProjectThreadSnapshot(issue.thread_id);
+  persistThreadById(issue.thread_id);
+  await publishThreadState(userId, issue.thread_id);
+
+  if (wasActive && previousActiveIssueId === issueId && ensurePendingQueue(issue.thread_id).length > 0) {
+    await processIssueQueue(userId, issue.thread_id);
+    recoverySteps.push("resumed_issue_queue");
+  }
+
+  return {
+    accepted: true,
+    action: wasActive || wasQueued ? "interrupted" : "restaged",
+    thread: threadStateById.get(issue.thread_id) ?? thread,
+    issues: listThreadIssues(issue.thread_id),
+    issue_id: issueId,
+    recovery_steps: recoverySteps,
+    interrupt_result: interruptResult
+      ? {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      : null
   };
 }
 
@@ -6174,6 +6319,96 @@ async function publishThreadState(userId, threadId) {
   });
 }
 
+async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId);
+  const unlockReason = String(options.reason ?? "manual_unlock").trim() || "manual_unlock";
+
+  if (!rootThread || rootThread.deleted_at || threadOwners.get(rootThreadId) !== normalizedUserId) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const recoverySteps = [];
+  const clearedInvalidTracking = clearInvalidRunningIssueTracking(rootThreadId);
+
+  if (clearedInvalidTracking) {
+    recoverySteps.push("cleared_invalid_tracking");
+  }
+
+  const trackedIssueId = activeIssueByThreadId.get(rootThreadId) ?? ensureRunningIssueTrackingForThread(rootThreadId);
+  const trackedIssue = trackedIssueId ? issueCardsById.get(trackedIssueId) ?? null : null;
+  let interruptResult = null;
+
+  if (trackedIssue && ["running", "awaiting_input"].includes(trackedIssue.status)) {
+    interruptResult = await interruptThreadExecutionBestEffort(rootThread);
+
+    if (interruptResult.errors.length > 0 && !interruptResult.errors.includes("codex thread not bound")) {
+      console.warn("[OctOP bridge] thread unlock proceeded after stop attempt errors", {
+        ...buildLogContext({
+          root_thread_id: rootThreadId,
+          physical_thread_id: rootThread.active_physical_thread_id ?? null,
+          codex_thread_id: rootThread.codex_thread_id ?? null,
+          issue_id: trackedIssue.id,
+          event_type: "thread.unlock.stopBestEffort.failed"
+        }),
+        errors: interruptResult.errors
+      });
+    }
+
+    updateIssueCard(trackedIssue.id, {
+      status: "failed",
+      progress: Math.max(0, Math.min(Number(trackedIssue.progress ?? 0), 99)),
+      queue_position: null,
+      last_event: "issue.unlocked",
+      last_message:
+        String(trackedIssue.last_message ?? "").trim() ||
+        (unlockReason === "manual_refresh"
+          ? "수동 새로고침으로 마지막 이슈 락을 해제했습니다."
+          : "수동으로 마지막 이슈 락을 해제했습니다.")
+    });
+    clearRunningIssueTracking(rootThreadId);
+    recoverySteps.push("released_last_issue_lock");
+  }
+
+  const hadPendingQueue = ensurePendingQueue(rootThreadId).length > 0;
+
+  if (!activeIssueByThreadId.has(rootThreadId) && hadPendingQueue) {
+    const previousActiveIssueId = activeIssueByThreadId.get(rootThreadId) ?? null;
+
+    await processIssueQueue(normalizedUserId, rootThreadId);
+
+    if (!previousActiveIssueId && activeIssueByThreadId.get(rootThreadId)) {
+      recoverySteps.push("resumed_issue_queue");
+    }
+  }
+
+  updateProjectThreadSnapshot(rootThreadId);
+  persistThreadById(rootThreadId);
+  await publishThreadState(normalizedUserId, rootThreadId);
+
+  return {
+    accepted: true,
+    action:
+      recoverySteps.includes("released_last_issue_lock")
+        ? "unlocked"
+        : recoverySteps.includes("resumed_issue_queue")
+          ? "resumed"
+          : "noop",
+    thread: threadStateById.get(rootThreadId) ?? rootThread,
+    issues: listThreadIssues(rootThreadId),
+    unlocked_issue_id: recoverySteps.includes("released_last_issue_lock") ? trackedIssue?.id ?? null : null,
+    queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
+    recovery_steps: recoverySteps,
+    interrupt_result: interruptResult
+      ? {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      : null
+  };
+}
+
 async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, options = {}) {
   const activeIssueId = activeIssueByThreadId.get(threadId);
   const meta = runningIssueMetaByThreadId.get(threadId);
@@ -7275,6 +7510,33 @@ async function subscribeRequests() {
     }
   })();
 
+  const projectThreadUnlockSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.unlock");
+
+  (async () => {
+    for await (const message of projectThreadUnlockSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await unlockCurrentThreadExecution(
+          userId,
+          String(body.thread_id ?? body.threadId ?? "").trim(),
+          {
+            reason: String(body.reason ?? "manual_unlock").trim() || "manual_unlock"
+          }
+        );
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const projectThreadUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.update");
 
   (async () => {
@@ -7352,6 +7614,27 @@ async function subscribeRequests() {
         }
 
         const result = await deleteThreadIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
+  const threadIssueInterruptSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.interrupt");
+
+  (async () => {
+    for await (const message of threadIssueInterruptSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await interruptThreadIssue(userId, body);
         await respond(message, result);
       } catch (error) {
         await respond(message, { accepted: false, error: error.message });
@@ -7750,6 +8033,19 @@ createServer(async (request, response) => {
     }
   }
 
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/unlock$/.test(url.pathname)) {
+    try {
+      const threadId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await unlockCurrentThreadExecution(userId, threadId, {
+        reason: String(body.reason ?? "manual_unlock").trim() || "manual_unlock"
+      });
+      return sendJson(response, payload.accepted ? 202 : 400, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
   if (request.method === "GET" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
     const issueId = url.pathname.split("/").at(-1);
     return sendJson(response, 200, getIssueDetail(userId, issueId));
@@ -7762,6 +8058,20 @@ createServer(async (request, response) => {
         issue_id: issueId
       });
       return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/issues\/[^/]+\/interrupt$/.test(url.pathname)) {
+    try {
+      const issueId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await interruptThreadIssue(userId, {
+        issue_id: issueId,
+        reason: String(body.reason ?? "manual_interrupt").trim() || "manual_interrupt"
+      });
+      return sendJson(response, payload.accepted ? 202 : 400, payload);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });
     }
