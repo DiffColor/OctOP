@@ -1020,6 +1020,9 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
   const explicitContextUsagePercent = parseTokenCount(
     tokenUsage?.contextUsagePercent ?? tokenUsage?.context_usage_percent
   );
+  const hasExplicitContextUsedTokens = explicitContextUsedTokens !== null;
+  const hasExplicitContextUsagePercent = explicitContextUsagePercent !== null;
+  const hasExplicitContextUsage = hasExplicitContextUsedTokens || hasExplicitContextUsagePercent;
   const lastPromptTokens = derivePromptTokens(last);
   const totalPromptTokens = derivePromptTokens(total);
   const fallbackTotalPromptTokens = derivePromptTokens(fallbackTokenUsage?.total ?? null);
@@ -1057,7 +1060,8 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
     derivedContextUsedTokens === null || derivedContextUsedTokens === undefined
       ? rawFallbackContextUsedTokens
       : derivedContextUsedTokens;
-  const contextUsedTokens =
+  const fallbackContextUsedTokensValue = parseTokenCount(fallback.context_used_tokens);
+  let contextUsedTokens =
     rawContextUsedTokens === null || rawContextUsedTokens === undefined
       ? null
       : Number.isFinite(Number(rawContextUsedTokens))
@@ -1067,16 +1071,44 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
     Number(fallback.context_usage_percent) === 0 && hasTokenUsageActivity
       ? null
       : fallback.context_usage_percent;
-  const contextUsagePercent =
+  const fallbackContextUsagePercentValue =
+    rawContextUsagePercent === null || rawContextUsagePercent === undefined
+      ? null
+      : Number.isFinite(Number(rawContextUsagePercent))
+        ? clampPercent(Number(rawContextUsagePercent))
+        : null;
+  if (hasTokenUsageActivity && !hasExplicitContextUsage && fallbackContextUsedTokensValue !== null) {
+    if (contextUsedTokens === null || contextUsedTokens < fallbackContextUsedTokensValue) {
+      contextUsedTokens = fallbackContextUsedTokensValue;
+    }
+  } else if (
+    !hasExplicitContextUsage &&
+    contextUsedTokens === null &&
+    fallbackContextUsedTokensValue !== null
+  ) {
+    contextUsedTokens = fallbackContextUsedTokensValue;
+  }
+  let contextUsagePercent =
     explicitContextUsagePercent !== null
       ? clampPercent(explicitContextUsagePercent)
       : modelContextWindow && contextUsedTokens !== null
         ? clampPercent((contextUsedTokens / modelContextWindow) * 100)
-      : rawContextUsagePercent === null || rawContextUsagePercent === undefined
-        ? null
-        : Number.isFinite(Number(rawContextUsagePercent))
-          ? Number(rawContextUsagePercent)
-        : null;
+        : fallbackContextUsagePercentValue;
+  if (
+    hasTokenUsageActivity &&
+    !hasExplicitContextUsage &&
+    fallbackContextUsagePercentValue !== null
+  ) {
+    if (contextUsagePercent === null || contextUsagePercent < fallbackContextUsagePercentValue) {
+      contextUsagePercent = fallbackContextUsagePercentValue;
+    }
+  } else if (
+    !hasExplicitContextUsage &&
+    contextUsagePercent === null &&
+    fallbackContextUsagePercentValue !== null
+  ) {
+    contextUsagePercent = fallbackContextUsagePercentValue;
+  }
 
   if (!last && !total && modelContextWindow === null && contextUsedTokens === null && contextUsagePercent === null) {
     return {
