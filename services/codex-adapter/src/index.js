@@ -3306,7 +3306,7 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
   const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
-  await appServer.ensureReady();
+  await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
@@ -3314,7 +3314,7 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
     model: "gpt-5-codex",
     personality: "pragmatic",
     ...instructionOverrides
-  });
+  }, "thread/start.ensureCodexThreadForPhysicalThread");
   const codexThread = threadResponse.result?.thread;
 
   if (!codexThread?.id) {
@@ -3476,7 +3476,7 @@ async function startTurnOnPhysicalThread(
             text: inputPrompt
           }
         ]
-      });
+      }, "turn/start.startTurnOnPhysicalThread");
 
       const turn = turnResponse.result?.turn ?? null;
       const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId);
@@ -4599,9 +4599,11 @@ class AppServerClient {
     this.lastStartedAt = null;
     this.account = null;
     this.readyPromise = null;
+    this.lastReadyReason = null;
+    this.socketConnectAttempt = 0;
   }
 
-  async ensureReady() {
+  async ensureReady(reason = "unspecified") {
     if (this.connected && this.initialized && this.socket?.readyState === WebSocket.OPEN) {
       return this;
     }
@@ -4610,16 +4612,25 @@ class AppServerClient {
       return this.readyPromise;
     }
 
-    this.readyPromise = this.start().finally(() => {
+    this.lastReadyReason = reason;
+    console.warn("[OctOP bridge] app-server ensureReady triggered", {
+      reason,
+      connected: this.connected,
+      initialized: this.initialized,
+      socket_state: describeWebSocketReadyState(this.socket?.readyState),
+      last_error: this.lastError
+    });
+
+    this.readyPromise = this.start(reason).finally(() => {
       this.readyPromise = null;
     });
 
     return this.readyPromise;
   }
 
-  async start() {
-    await this.startProcess();
-    await this.connectSocket();
+  async start(reason = "unspecified") {
+    await this.startProcess(reason);
+    await this.connectSocket(reason);
     await this.requestInternal("initialize", {
       clientInfo: {
         name: "octop-bridge",
@@ -4635,10 +4646,15 @@ class AppServerClient {
     this.initialized = true;
     this.lastError = null;
     this.lastStartedAt = now();
+    console.log("[OctOP bridge] app-server ready", {
+      reason,
+      account_email: this.account?.email ?? null,
+      account_type: this.account?.type ?? null
+    });
     return this;
   }
 
-  async startProcess() {
+  async startProcess(reason = "unspecified") {
     if (!APP_SERVER_AUTOSTART) {
       return;
     }
@@ -4647,6 +4663,10 @@ class AppServerClient {
       return;
     }
 
+    console.warn("[OctOP bridge] starting app-server process", {
+      reason,
+      command: APP_SERVER_COMMAND
+    });
     this.child = spawn(APP_SERVER_COMMAND, {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"]
@@ -4663,21 +4683,34 @@ class AppServerClient {
       this.initialized = false;
       this.socket = null;
       this.lastError = code === 0 ? null : `app-server exited (${code ?? signal ?? "unknown"})`;
+      console.warn("[OctOP bridge] app-server process exited", {
+        code: code ?? null,
+        signal: signal ?? null,
+        last_ready_reason: this.lastReadyReason
+      });
     });
     this.child.on("error", (error) => {
       this.lastError = error.message;
+      console.error("[OctOP bridge] app-server process error", {
+        message: error.message,
+        last_ready_reason: this.lastReadyReason
+      });
     });
   }
 
-  async connectSocket() {
+  async connectSocket(reason = "unspecified") {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < APP_SERVER_STARTUP_TIMEOUT_MS) {
       try {
-        await this.openWebSocket();
+        await this.openWebSocket(reason);
         return;
       } catch (error) {
         this.lastError = error.message;
+        console.warn("[OctOP bridge] app-server websocket open failed", {
+          reason,
+          message: error.message
+        });
         await new Promise((resolve) => setTimeout(resolve, 300));
       }
     }
@@ -4685,8 +4718,14 @@ class AppServerClient {
     throw new Error(`app-server 연결에 실패했습니다: ${this.lastError ?? "timeout"}`);
   }
 
-  async openWebSocket() {
+  async openWebSocket(reason = "unspecified") {
     await new Promise((resolve, reject) => {
+      const attempt = ++this.socketConnectAttempt;
+      console.warn("[OctOP bridge] opening app-server websocket", {
+        reason,
+        attempt,
+        url: APP_SERVER_WS_URL
+      });
       const ws = new WebSocket(APP_SERVER_WS_URL);
       let settled = false;
 
@@ -4703,29 +4742,51 @@ class AppServerClient {
         cleanup();
         this.socket = ws;
         this.connected = true;
+        console.log("[OctOP bridge] app-server websocket connected", {
+          reason,
+          attempt
+        });
         ws.addEventListener("message", (event) => this.handleMessage(event));
-        ws.addEventListener("close", () => {
+        ws.addEventListener("close", (event) => {
           this.connected = false;
           this.initialized = false;
           this.socket = null;
+          this.lastError = formatAppServerSocketCloseError(event);
+          console.warn("[OctOP bridge] app-server websocket closed", {
+            reason,
+            attempt,
+            code: event.code,
+            close_reason: event.reason || null,
+            was_clean: event.wasClean,
+            pending_requests: this.requests.size
+          });
           for (const [id, pending] of this.requests) {
             pending.reject(new Error("app-server socket closed"));
             this.requests.delete(id);
           }
         });
-        ws.addEventListener("error", () => {
+        ws.addEventListener("error", (event) => {
           this.connected = false;
+          console.error("[OctOP bridge] app-server websocket error", {
+            reason,
+            attempt,
+            detail: describeWebSocketErrorEvent(event)
+          });
         });
         resolve();
       };
-      const handleError = () => {
+      const handleError = (event) => {
         if (settled) {
           return;
         }
 
         settled = true;
         cleanup();
-        reject(new Error("WebSocket open failed"));
+        reject(
+          new Error(
+            `WebSocket open failed (${describeWebSocketErrorEvent(event)})`
+          )
+        );
       };
 
       ws.addEventListener("open", handleOpen, { once: true });
@@ -5000,10 +5061,49 @@ class AppServerClient {
     });
   }
 
-  async request(method, params) {
-    await this.ensureReady();
+  async request(method, params, reason = method) {
+    await this.ensureReady(`request:${reason}`);
     return this.requestInternal(method, params);
   }
+}
+
+function describeWebSocketReadyState(state) {
+  switch (state) {
+    case WebSocket.CONNECTING:
+      return "CONNECTING";
+    case WebSocket.OPEN:
+      return "OPEN";
+    case WebSocket.CLOSING:
+      return "CLOSING";
+    case WebSocket.CLOSED:
+      return "CLOSED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function formatAppServerSocketCloseError(event) {
+  const code = Number.isFinite(event?.code) ? event.code : "unknown";
+  const reason = String(event?.reason ?? "").trim();
+  return reason ? `app-server socket closed (${code}: ${reason})` : `app-server socket closed (${code})`;
+}
+
+function describeWebSocketErrorEvent(event) {
+  if (!event) {
+    return "unknown";
+  }
+
+  const details = [];
+
+  if (event.type) {
+    details.push(`type=${event.type}`);
+  }
+
+  if (typeof event.message === "string" && event.message.trim()) {
+    details.push(`message=${event.message.trim()}`);
+  }
+
+  return details.join(", ") || "unknown";
 }
 
 function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId = null) {
@@ -5239,7 +5339,7 @@ async function bridgeStatus(userId) {
   const state = ensureUserState(userId);
 
   try {
-    await appServer.ensureReady();
+    await appServer.ensureReady("bridgeStatus");
   } catch (error) {
     appServer.lastError = error.message;
   }
@@ -5270,7 +5370,11 @@ async function bridgeStatus(userId) {
 }
 
 async function syncThreadListFromAppServer() {
-  const response = await appServer.request("thread/list", { limit: THREAD_LIST_LIMIT });
+  const response = await appServer.request(
+    "thread/list",
+    { limit: THREAD_LIST_LIMIT },
+    "thread/list.syncThreadListFromAppServer"
+  );
   return response.result?.data ?? [];
 }
 
@@ -5423,7 +5527,7 @@ async function reconcileRunningIssues() {
   let remoteThreads = [];
 
   try {
-    await appServer.ensureReady();
+    await appServer.ensureReady("reconcileRunningIssues");
     remoteThreads = await syncThreadListFromAppServer();
   } catch (error) {
     appServer.lastError = error.message;
@@ -5520,7 +5624,7 @@ async function startThreadTurn(userId, threadId) {
           )
         }
       ]
-    });
+    }, "turn/start.startThreadTurn");
 
     const turn = turnResponse.result?.turn ?? null;
 
@@ -5586,7 +5690,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
-  await appServer.ensureReady();
+  await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {
     cwd,
@@ -5595,7 +5699,7 @@ async function createQueuedIssue(userId, payload = {}) {
     model: "gpt-5-codex",
     personality: "pragmatic",
     ...instructionOverrides
-  });
+  }, "thread/start.createQueuedIssue");
   const thread = threadResponse.result?.thread;
 
   if (!thread?.id) {
