@@ -8,18 +8,45 @@ namespace OctOP.Gateway;
 public sealed class BridgeNatsClient : IDisposable
 {
   private readonly string _natsUrl;
+  private readonly int _requestTimeoutMs;
   private readonly object _syncRoot = new();
   private IConnection? _connection;
 
   public BridgeNatsClient(string natsUrl)
   {
     _natsUrl = natsUrl;
+    _requestTimeoutMs = int.TryParse(Environment.GetEnvironmentVariable("OCTOP_NATS_REQUEST_TIMEOUT_MS"), out var parsedTimeout)
+      ? Math.Max(parsedTimeout, 1000)
+      : 30000;
   }
 
   public async Task<JsonNode?> RequestAsync(string subject, object payload, CancellationToken cancellationToken)
   {
     var data = JsonSerializer.SerializeToUtf8Bytes(payload);
-    var response = await Task.Run(() => GetConnection().Request(subject, data, 10000), cancellationToken);
+    Msg response;
+
+    try
+    {
+      response = await Task.Run(() => GetConnection().Request(subject, data, _requestTimeoutMs), cancellationToken);
+    }
+    catch (NATSNoRespondersException exception)
+    {
+      throw new BridgeNatsRequestException(
+        "bridge_no_responders",
+        $"No responders are available for the request. subject={subject}",
+        subject,
+        _requestTimeoutMs,
+        exception);
+    }
+    catch (NATSTimeoutException exception)
+    {
+      throw new BridgeNatsRequestException(
+        "bridge_timeout",
+        $"Timeout occurred while waiting for bridge response. subject={subject}, timeout_ms={_requestTimeoutMs}",
+        subject,
+        _requestTimeoutMs,
+        exception);
+    }
 
     if (response?.Data is null || response.Data.Length == 0)
     {
@@ -72,4 +99,21 @@ public sealed class BridgeNatsClient : IDisposable
       return _connection;
     }
   }
+}
+
+public sealed class BridgeNatsRequestException : Exception
+{
+  public BridgeNatsRequestException(string code, string message, string subject, int timeoutMs, Exception innerException)
+    : base(message, innerException)
+  {
+    Code = code;
+    Subject = subject;
+    TimeoutMs = timeoutMs;
+  }
+
+  public string Code { get; }
+
+  public string Subject { get; }
+
+  public int TimeoutMs { get; }
 }

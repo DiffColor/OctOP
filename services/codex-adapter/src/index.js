@@ -1823,6 +1823,114 @@ function ensureRunningIssueTrackingForThread(threadId) {
   return recoverableIssue.id;
 }
 
+function clearInvalidRunningIssueTracking(threadId) {
+  const activeIssueId = activeIssueByThreadId.get(threadId);
+  const activeIssue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+
+  if (activeIssue && !activeIssue.deleted_at && ["running", "awaiting_input"].includes(activeIssue.status)) {
+    return false;
+  }
+
+  if (!activeIssueId) {
+    return false;
+  }
+
+  clearRunningIssueTracking(threadId);
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+  return true;
+}
+
+function listQueuedIssuesForRecovery(threadId) {
+  return getThreadIssueIds(threadId)
+    .map((issueId) => issueCardsById.get(issueId) ?? null)
+    .filter((issue) => issue && !issue.deleted_at && issue.thread_id === threadId && issue.status === "queued")
+    .sort((left, right) => {
+      const leftQueuePosition = Number.isFinite(left.queue_position) ? left.queue_position : Number.MAX_SAFE_INTEGER;
+      const rightQueuePosition = Number.isFinite(right.queue_position) ? right.queue_position : Number.MAX_SAFE_INTEGER;
+
+      if (leftQueuePosition !== rightQueuePosition) {
+        return leftQueuePosition - rightQueuePosition;
+      }
+
+      return Date.parse(left.created_at ?? 0) - Date.parse(right.created_at ?? 0);
+    });
+}
+
+function findLatestStagedIssueForRecovery(threadId) {
+  return getThreadIssueIds(threadId)
+    .map((issueId) => issueCardsById.get(issueId) ?? null)
+    .filter((issue) => issue && !issue.deleted_at && issue.thread_id === threadId && issue.status === "staged")
+    .sort((left, right) => Date.parse(right.updated_at ?? 0) - Date.parse(left.updated_at ?? 0))[0] ?? null;
+}
+
+function repairCurrentThreadIssueQueue(threadId, { includeLatestStaged = false } = {}) {
+  const currentQueue = [...ensurePendingQueue(threadId)];
+  const queuedIssues = listQueuedIssuesForRecovery(threadId);
+  const nextQueue = [];
+  const seen = new Set();
+  const recoveredQueuedIssueIds = [];
+
+  for (const issueId of currentQueue) {
+    const issue = issueCardsById.get(issueId);
+
+    if (!issue || issue.deleted_at || issue.thread_id !== threadId || issue.status !== "queued" || seen.has(issueId)) {
+      continue;
+    }
+
+    nextQueue.push(issueId);
+    seen.add(issueId);
+  }
+
+  for (const issue of queuedIssues) {
+    if (seen.has(issue.id)) {
+      continue;
+    }
+
+    nextQueue.push(issue.id);
+    seen.add(issue.id);
+    recoveredQueuedIssueIds.push(issue.id);
+  }
+
+  let promotedStagedIssueId = null;
+
+  if (nextQueue.length === 0 && includeLatestStaged) {
+    const stagedIssue = findLatestStagedIssueForRecovery(threadId);
+
+    if (stagedIssue) {
+      promotedStagedIssueId = stagedIssue.id;
+      nextQueue.push(stagedIssue.id);
+      pendingStartQueues.set(threadId, nextQueue);
+      updateIssueCard(stagedIssue.id, {
+        status: "queued",
+        progress: Math.max(stagedIssue.progress ?? 0, 10),
+        last_event: "issue.recovered.queued",
+        prep_position: null
+      });
+    }
+  }
+
+  const queueChanged =
+    promotedStagedIssueId !== null ||
+    currentQueue.length !== nextQueue.length ||
+    currentQueue.some((issueId, index) => issueId !== nextQueue[index]);
+
+  if (queueChanged && promotedStagedIssueId === null) {
+    pendingStartQueues.set(threadId, nextQueue);
+  }
+
+  if (queueChanged) {
+    refreshIssueQueuePositions(threadId);
+  }
+
+  return {
+    queue: nextQueue,
+    queueChanged,
+    recoveredQueuedIssueIds,
+    promotedStagedIssueId
+  };
+}
+
 function ensureIssueMessages(issueId) {
   if (!issueMessagesById.has(issueId)) {
     issueMessagesById.set(issueId, []);
@@ -6212,21 +6320,30 @@ function shouldAttemptNormalizeRollover(rootThread, activePhysicalThread, active
 async function normalizeRootThread(userId, rootThreadId, options = {}) {
   const normalizedUserId = sanitizeUserId(userId);
   const rootThread = threadStateById.get(rootThreadId);
+  const normalizeReason = String(options.reason ?? "manual").trim() || "manual";
 
   if (!rootThread || rootThread.deleted_at || threadOwners.get(rootThreadId) !== normalizedUserId) {
     throw new Error("thread를 찾을 수 없습니다.");
   }
 
-  await appServer.ensureReady(`threadNormalize:${options.reason ?? "manual"}`);
+  await appServer.ensureReady(`threadNormalize:${normalizeReason}`);
   const remoteThreads = await syncThreadListFromAppServer();
   const remoteThreadsByCodexId = new Map((remoteThreads ?? []).map((thread) => [thread.id, thread]));
   const previousThread = threadStateById.get(rootThreadId);
   const previousStatus = previousThread?.status ?? null;
   const previousContinuityStatus = previousThread?.continuity_status ?? null;
+  const recoverySteps = [];
+  const allowStagedResume = normalizeReason === "manual_refresh" || normalizeReason === "recover_current_execution";
+
+  if (clearInvalidRunningIssueTracking(rootThreadId)) {
+    recoverySteps.push("cleared_invalid_tracking");
+  }
+
   const trackedIssueId = ensureRunningIssueTrackingForThread(rootThreadId);
 
   if (trackedIssueId) {
     await reconcileRunningIssue(normalizedUserId, rootThreadId, remoteThreadsByCodexId, { force: true });
+    recoverySteps.push("reconciled_current_issue");
   }
 
   let currentThread = threadStateById.get(rootThreadId);
@@ -6255,6 +6372,7 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
     persistThreadById(rootThreadId);
     await publishThreadState(normalizedUserId, rootThreadId);
     action = trackedIssueId ? "reconciled" : "recovered";
+    recoverySteps.push("recovered_continuity");
   }
 
   if (shouldAttemptNormalizeRollover(currentThread, activePhysicalThread, activeIssue, remoteThread)) {
@@ -6268,20 +6386,60 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
       rollover = rolloverResult;
       currentThread = threadStateById.get(rootThreadId) ?? currentThread;
       action = "rollover";
+      recoverySteps.push("rollover");
     }
   }
 
+  if (!activeIssueByThreadId.has(rootThreadId)) {
+    const queueRecovery = repairCurrentThreadIssueQueue(rootThreadId, {
+      includeLatestStaged: allowStagedResume
+    });
+
+    if (queueRecovery.recoveredQueuedIssueIds.length > 0) {
+      recoverySteps.push("repaired_issue_queue");
+    }
+
+    if (queueRecovery.promotedStagedIssueId) {
+      recoverySteps.push("promoted_staged_issue");
+    }
+
+    if (ensurePendingQueue(rootThreadId).length > 0) {
+      const activeIssueBeforeResume = activeIssueByThreadId.get(rootThreadId) ?? null;
+
+      await processIssueQueue(normalizedUserId, rootThreadId);
+
+      const activeIssueAfterResume = activeIssueByThreadId.get(rootThreadId) ?? null;
+
+      if (!activeIssueBeforeResume && activeIssueAfterResume) {
+        recoverySteps.push("resumed_issue_queue");
+      }
+    }
+  }
+
+  currentThread = threadStateById.get(rootThreadId) ?? currentThread;
+  const currentActiveIssueId = activeIssueByThreadId.get(rootThreadId) ?? null;
+  const currentActiveIssue = currentActiveIssueId ? issueCardsById.get(currentActiveIssueId) ?? null : null;
+  const currentActivePhysicalThread = getActivePhysicalThread(rootThreadId);
+  const currentRemoteThread =
+    currentThread.codex_thread_id ? remoteThreadsByCodexId.get(currentThread.codex_thread_id) ?? null : null;
+  const finalAction = recoverySteps.at(-1) ?? action;
+
   return {
     accepted: true,
-    action,
+    action: finalAction,
     recovered:
+      recoverySteps.length > 0 ||
       action === "rollover" ||
       previousStatus !== currentThread.status ||
       previousContinuityStatus !== currentThread.continuity_status,
     thread: currentThread,
     continuity: getThreadContinuity(normalizedUserId, rootThreadId),
-    active_issue_id: activeIssueId,
-    remote_thread_found: Boolean(remoteThread),
+    active_issue_id: currentActiveIssueId,
+    current_issue_id: currentActiveIssue?.id ?? null,
+    current_physical_thread_id: currentActivePhysicalThread?.id ?? null,
+    queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
+    recovery_steps: recoverySteps,
+    remote_thread_found: Boolean(currentRemoteThread),
     rollover_trigger_percent: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
     rollover
   };

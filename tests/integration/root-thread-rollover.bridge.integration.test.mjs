@@ -1054,6 +1054,79 @@ test("thread/list 누락이 반복되면 stale running issue를 failed 처리한
   }
 });
 
+test("manual refresh normalize는 현재 thread의 staged issue를 다시 실행한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-normalize-current-thread-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-normalize-current-thread-token",
+    userId: "integration-user",
+    bridgeId: `normalize-current-thread-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const createdThread = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Normalize Current Thread Recovery"
+      })
+    });
+    const rootThreadId = createdThread.thread.id;
+    const createdIssue = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Recover Current Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = createdIssue.issue.id;
+
+    const normalized = await bridge.request(`/api/threads/${rootThreadId}/normalize`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_refresh"
+      })
+    });
+
+    assert.equal(normalized.accepted, true);
+    assert.equal(normalized.action, "resumed_issue_queue");
+    assert.equal(normalized.queued_issue_ids.length, 0);
+    assert.equal(Array.isArray(normalized.recovery_steps), true);
+    assert.equal(normalized.recovery_steps.includes("promoted_staged_issue"), true);
+    assert.equal(normalized.recovery_steps.includes("resumed_issue_queue"), true);
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${issueId}`);
+      assert.equal(payload.issue?.status, "running");
+      assert.equal(payload.issue?.last_event, "turn.started");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "manual refresh normalize current issue resume"
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length, 1);
+    assert.equal(fakeAppServer.getRequests("turn/start").length, 1);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-int-"));
   const fakeAppServer = new FakeAppServer();

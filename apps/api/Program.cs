@@ -32,13 +32,35 @@ app.UseExceptionHandler(errorApp =>
   errorApp.Run(async httpContext =>
   {
     var exception = httpContext.Features.Get<IExceptionHandlerFeature>()?.Error;
-    httpContext.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+    var statusCode = StatusCodes.Status503ServiceUnavailable;
+    var errorCode = "gateway_unavailable";
+    var detail = exception?.Message ?? "gateway unavailable";
+    Dictionary<string, object?>? meta = null;
+
+    if (exception is BridgeNatsRequestException bridgeException)
+    {
+      errorCode = bridgeException.Code;
+      detail = bridgeException.Message;
+      meta = new Dictionary<string, object?>
+      {
+        ["subject"] = bridgeException.Subject,
+        ["timeout_ms"] = bridgeException.TimeoutMs,
+        ["inner_error"] = bridgeException.InnerException?.GetType().Name
+      };
+      statusCode = bridgeException.Code == "bridge_timeout"
+        ? StatusCodes.Status504GatewayTimeout
+        : StatusCodes.Status503ServiceUnavailable;
+    }
+
+    httpContext.Response.StatusCode = statusCode;
     httpContext.Response.ContentType = "application/json; charset=utf-8";
     await httpContext.Response.WriteAsync(
       JsonSerializer.Serialize(new Dictionary<string, object?>
       {
         ["ok"] = false,
-        ["error"] = exception?.Message ?? "gateway unavailable"
+        ["error"] = detail,
+        ["code"] = errorCode,
+        ["meta"] = meta
       }));
   });
 });
