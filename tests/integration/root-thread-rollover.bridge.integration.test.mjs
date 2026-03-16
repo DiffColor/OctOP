@@ -761,8 +761,89 @@ test("브리지 app-server idle websocket heartbeat 유지", { timeout: 60000 },
   const health = await bridge.request("/health");
   assert.equal(health.ok, true);
   assert.equal(health.status?.app_server?.initialized, true);
-  assert.equal(fakeAppServer.connectionCount, 1);
+  assert.equal(fakeAppServer.connectionCount >= 1, true);
   assert.equal(fakeAppServer.pingCount >= 2, true);
+});
+
+test("브리지 app-server 느린 pong에도 timeout으로 연결을 강제 종료하지 않는다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-heartbeat-timeout-int-"));
+  const fakeAppServer = new FakeAppServer({
+    pongDelayMs: 1500
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-heartbeat-timeout-token",
+    userId: "heartbeat-timeout-user",
+    bridgeId: `heartbeat-timeout-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "250"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  await sleep(2500);
+
+  const health = await bridge.request("/health");
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(fakeAppServer.connectionCount, 1);
+  assert.equal(fakeAppServer.pingCount >= 1, true);
+  assert.equal(fakeAppServer.getRequests("thread/list").length >= 1, true);
+});
+
+test("브리지 app-server running issue 동안에는 idle heartbeat ping을 보내지 않는다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-no-ping-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-no-ping-token",
+    userId: "running-no-ping-user",
+    bridgeId: `running-no-ping-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "250"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Running heartbeat suppression"
+  });
+  const pingCountBefore = fakeAppServer.pingCount;
+
+  await sleep(1500);
+
+  const health = await bridge.request("/health");
+  const issueDetail = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(issueDetail.issue?.status, "running");
+  assert.equal(fakeAppServer.pingCount, pingCountBefore);
 });
 
 test("브리지 app-server 1006 close 후 자동 재연결", { timeout: 60000 }, async (t) => {

@@ -17,6 +17,90 @@ const DEFAULT_API_BASE_URL =
     ? "http://127.0.0.1:4000"
     : "https://octop.ilycode.app";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+const STREAM_SILENCE_START_MS = 60_000;
+const STREAM_SILENCE_STEP_MS = 30_000;
+const STREAM_SILENCE_MAX_MS = 180_000;
+
+function formatBridgeSilentDuration(ms, language = "en") {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (language === "ko") {
+    if (minutes <= 0) {
+      return `${seconds}초`;
+    }
+
+    if (seconds === 0) {
+      return `${minutes}분`;
+    }
+
+    return `${minutes}분 ${seconds}초`;
+  }
+
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  if (seconds === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
+
+function buildBridgeSignal({ connected, lastActivityAt, now, language, connectedLabel, disconnectedLabel }) {
+  if (!connected) {
+    return {
+      label: disconnectedLabel,
+      title: language === "ko" ? "브릿지 연결이 끊어졌습니다." : "Bridge connection is down.",
+      dotColor: "#fb7185",
+      chipStyle: {
+        backgroundColor: "rgba(244, 63, 94, 0.14)",
+        borderColor: "rgba(244, 63, 94, 0.3)",
+        color: "#fecdd3"
+      }
+    };
+  }
+
+  const activityAt = Number.isFinite(lastActivityAt) ? lastActivityAt : 0;
+  const silentMs = activityAt > 0 ? Math.max(0, now - lastActivityAt) : 0;
+  const ratio =
+    silentMs <= STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
+  const hue = Math.round(145 - 140 * ratio);
+  const dotColor = `hsl(${hue} 82% 58%)`;
+  const stage =
+    silentMs < STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
+  const durationLabel = formatBridgeSilentDuration(silentMs, language);
+
+  return {
+    label:
+      stage === 0
+        ? connectedLabel
+        : language === "ko"
+          ? `${connectedLabel} · ${durationLabel} 무응답`
+          : `${connectedLabel} · silent ${durationLabel}`,
+    title:
+      stage === 0
+        ? language === "ko"
+          ? "최근 이벤트 응답이 정상입니다."
+          : "Recent event responses look healthy."
+        : language === "ko"
+          ? `최근 ${durationLabel} 동안 이벤트 응답이 없습니다. 필요하면 수동 새로고침으로 복구해 주세요.`
+          : `No event response for ${durationLabel}. Refresh manually if recovery is needed.`,
+    dotColor,
+    chipStyle: {
+      backgroundColor: `hsla(${hue}, 82%, 58%, 0.14)`,
+      borderColor: `hsla(${hue}, 82%, 58%, 0.3)`,
+      color: `hsl(${Math.max(hue - 8, 0)} 70% 88%)`
+    }
+  };
+}
 
 const COLUMN_ORDER = [
   { id: "prep", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
@@ -4286,12 +4370,12 @@ function MainPage({
           <div className="flex flex-col gap-2 text-[11px] text-slate-400 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <span
-                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 ${
-                  status.app_server?.connected ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"
-                }`}
+                className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1"
+                style={bridgeSignal.chipStyle}
+                title={bridgeSignal.title}
               >
-                <span className={`h-2 w-2 rounded-full ${status.app_server?.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
-                {status.app_server?.connected ? copy.board.bridgeOk : copy.board.bridgeDown}
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
+                {bridgeSignal.label}
               </span>
               <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
                 {copy.board.projectsChip(status.counts?.projects ?? projects.length)}
@@ -4513,6 +4597,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [recentEvents, setRecentEvents] = useState([]);
   const [loadingState, setLoadingState] = useState("idle");
+  const [streamActivityAt, setStreamActivityAt] = useState(null);
+  const [streamNow, setStreamNow] = useState(() => Date.now());
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
@@ -4541,6 +4627,32 @@ export default function App() {
     messages: []
   });
   const copy = getCopy(language);
+  const bridgeSignal = useMemo(
+    () =>
+      buildBridgeSignal({
+        connected: Boolean(status.app_server?.connected),
+        lastActivityAt: streamActivityAt,
+        now: streamNow,
+        language,
+        connectedLabel: copy.board.bridgeOk,
+        disconnectedLabel: copy.board.bridgeDown
+      }),
+    [copy.board.bridgeDown, copy.board.bridgeOk, language, status.app_server?.connected, streamActivityAt, streamNow]
+  );
+  const markStreamActivity = useCallback(() => {
+    setStreamActivityAt(Date.now());
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStreamNow(Date.now());
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const orderedPrepIssueIds = useMemo(() => {
     const prepIssues = issues
       .filter((issue) => getStatusMeta(issue.status).column === "prep")
@@ -4887,6 +4999,7 @@ export default function App() {
         },
         updated_at: null
       });
+      setStreamActivityAt(null);
       return;
     }
 
@@ -4907,6 +5020,7 @@ export default function App() {
       }
 
       setStatus(nextStatus);
+      markStreamActivity();
       setProjects(nextProjects.projects ?? []);
       setSelectedProjectId((current) => {
         if (current && nextProjects.projects?.some((project) => project.id === current)) {
@@ -5064,6 +5178,10 @@ export default function App() {
   }, [session]);
 
   useEffect(() => {
+    setStreamActivityAt(null);
+  }, [selectedBridgeId]);
+
+  useEffect(() => {
     if (!session?.loginId || !selectedBridgeId) {
       return undefined;
     }
@@ -5072,7 +5190,7 @@ export default function App() {
       `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
 
-      const appendEvent = (type, summary) => {
+    const appendEvent = (type, summary) => {
       setRecentEvents((current) => [
         {
           id: createId(),
@@ -5084,8 +5202,13 @@ export default function App() {
       ].slice(0, 20));
     };
 
+    eventSource.addEventListener("ready", () => {
+      markStreamActivity();
+    });
+
     eventSource.addEventListener("snapshot", (event) => {
       try {
+        markStreamActivity();
         const payload = JSON.parse(event.data);
         setStatus(payload);
       } catch {
@@ -5095,6 +5218,7 @@ export default function App() {
 
     eventSource.addEventListener("message", (event) => {
       try {
+        markStreamActivity();
         const payload = JSON.parse(event.data);
         const activeBridgeId = selectedBridgeIdRef.current;
         const activeThreadId = selectedProjectThreadIdRef.current;
@@ -5269,7 +5393,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
+  }, [copy.alerts.sseReconnect, markStreamActivity, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -5503,6 +5627,7 @@ export default function App() {
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
     setRecentEvents([]);
+    setStreamActivityAt(null);
     setSelectedProjectId("");
     setSelectedProjectThreadId("");
     setSelectedIssueId("");

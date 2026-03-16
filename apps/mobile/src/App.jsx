@@ -33,6 +33,72 @@ const DEFAULT_API_BASE_URL =
     ? "http://127.0.0.1:4000"
     : "https://octop.ilycode.app";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+const STREAM_SILENCE_START_MS = 60_000;
+const STREAM_SILENCE_STEP_MS = 30_000;
+const STREAM_SILENCE_MAX_MS = 180_000;
+
+function formatSilentDuration(ms) {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) {
+    return `${seconds}초`;
+  }
+
+  if (seconds === 0) {
+    return `${minutes}분`;
+  }
+
+  return `${minutes}분 ${seconds}초`;
+}
+
+function buildBridgeSignal({ connected, lastActivityAt, now }) {
+  if (!connected) {
+    return {
+      label: "미연결",
+      title: "브릿지 연결이 끊어졌습니다.",
+      dotColor: "#fb7185",
+      chipStyle: {
+        backgroundColor: "rgba(244, 63, 94, 0.14)",
+        borderColor: "rgba(244, 63, 94, 0.3)",
+        color: "#fecdd3"
+      }
+    };
+  }
+
+  const activityAt = Number.isFinite(lastActivityAt) ? lastActivityAt : 0;
+  const silentMs = activityAt > 0 ? Math.max(0, now - activityAt) : 0;
+  const ratio =
+    silentMs <= STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
+  const hue = Math.round(145 - 140 * ratio);
+  const dotColor = `hsl(${hue} 82% 58%)`;
+  const label =
+    silentMs < STREAM_SILENCE_START_MS
+      ? "연결됨"
+      : `${formatSilentDuration(silentMs)} 무응답`;
+  const stage =
+    silentMs < STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
+
+  return {
+    label,
+    title:
+      stage === 0
+        ? "최근 이벤트 응답이 정상입니다."
+        : `최근 ${formatSilentDuration(silentMs)} 동안 이벤트 응답이 없습니다. 필요하면 수동 새로고침으로 복구해 주세요.`,
+    dotColor,
+    chipStyle: {
+      backgroundColor: `hsla(${hue}, 82%, 58%, 0.14)`,
+      borderColor: `hsla(${hue}, 82%, 58%, 0.3)`,
+      color: `hsl(${Math.max(hue - 8, 0)} 70% 88%)`
+    }
+  };
+}
 
 const STATUS_META = {
   queued: {
@@ -1292,7 +1358,7 @@ function LoginPage({ initialLoginId, loading, error, onSubmit }) {
 function UtilitySheet({
   open,
   session,
-  status,
+  bridgeSignal,
   selectedProject,
   onOpenProjectInstructionDialog,
   onClose,
@@ -1316,11 +1382,14 @@ function UtilitySheet({
             <div className="flex items-center gap-2">
               <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
               <span
-                className={`h-2 w-2 shrink-0 rounded-full ${
-                  status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
-                }`}
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: bridgeSignal.dotColor }}
+                title={bridgeSignal.title}
               />
             </div>
+            <p className="mt-1 text-[11px]" style={{ color: bridgeSignal.chipStyle.color }}>
+              {bridgeSignal.label}
+            </p>
             <p className="truncate text-xs text-slate-400">{session.loginId}</p>
           </div>
         </section>
@@ -1379,15 +1448,14 @@ function UtilitySheet({
   );
 }
 
-function BridgeDropdown({ bridges, selectedBridgeId, status, onSelectBridge }) {
+function BridgeDropdown({ bridges, selectedBridgeId, bridgeSignal, onSelectBridge }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
   const selectedBridge = useMemo(
     () => bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null,
     [bridges, selectedBridgeId]
   );
-  const isConnected = Boolean(status?.app_server?.connected);
-  const statusLabel = isConnected ? "연결됨" : "미연결";
+  const statusLabel = bridgeSignal.label;
 
   useEffect(() => {
     if (!open) {
@@ -1431,7 +1499,7 @@ function BridgeDropdown({ bridges, selectedBridgeId, status, onSelectBridge }) {
         <span className="truncate">
           {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "브릿지 없음"}
         </span>
-        <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? "bg-emerald-300" : "bg-rose-300"}`} />
+        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
         <span>{statusLabel}</span>
         <svg
           className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition ${open ? "rotate-180" : ""}`}
@@ -4118,7 +4186,7 @@ function MainPage({
               <BridgeDropdown
                 bridges={bridges}
                 selectedBridgeId={selectedBridgeId}
-                status={status}
+                bridgeSignal={bridgeSignal}
                 onSelectBridge={onSelectBridge}
               />
             </div>
@@ -4314,7 +4382,7 @@ function MainPage({
       <UtilitySheet
         open={utilityOpen}
         session={session}
-        status={status}
+        bridgeSignal={bridgeSignal}
         selectedProject={selectedProject}
         onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
         onClose={onCloseUtility}
@@ -4384,6 +4452,8 @@ export default function App() {
   const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState("inbox");
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
+  const [streamActivityAt, setStreamActivityAt] = useState(null);
+  const [streamNow, setStreamNow] = useState(() => Date.now());
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
@@ -4403,8 +4473,30 @@ export default function App() {
     [threads, selectedThreadId]
   );
   const selectedProjectId = selectedScope.kind === "project" ? selectedScope.id : "";
+  const bridgeSignal = useMemo(
+    () =>
+      buildBridgeSignal({
+        connected: Boolean(status?.app_server?.connected),
+        lastActivityAt: streamActivityAt,
+        now: streamNow
+      }),
+    [status?.app_server?.connected, streamActivityAt, streamNow]
+  );
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
+  const markStreamActivity = useCallback(() => {
+    setStreamActivityAt(Date.now());
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStreamNow(Date.now());
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
   const updateThreadCache = useCallback((projectId, nextThreads) => {
     const normalizedProjectId = String(projectId ?? "").trim();
 
@@ -4783,6 +4875,7 @@ export default function App() {
       }
 
       setStatus(nextStatus);
+      markStreamActivity();
       setProjects(nextProjects.projects ?? []);
       setTodoChats(mergeTodoChats([], nextTodoChats.chats ?? []));
       setTodoChatDetails({});
@@ -5120,8 +5213,13 @@ export default function App() {
       `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
 
+    eventSource.addEventListener("ready", () => {
+      markStreamActivity();
+    });
+
     eventSource.addEventListener("snapshot", (event) => {
       try {
+        markStreamActivity();
         const payload = JSON.parse(event.data);
         setStatus(payload);
       } catch {
@@ -5131,6 +5229,7 @@ export default function App() {
 
     eventSource.addEventListener("message", (event) => {
       try {
+        markStreamActivity();
         const payload = JSON.parse(event.data);
         const { threadId: eventThreadId, issueId: eventIssueId } = getLiveEventContext(payload);
         const activeThreadId = selectedThreadIdRef.current;
@@ -5312,7 +5411,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [selectedBridgeId, selectedBridgeKnown, session?.loginId]);
+  }, [markStreamActivity, selectedBridgeId, selectedBridgeKnown, session?.loginId]);
 
   useLayoutEffect(() => {
     threadLoadRequestIdRef.current += 1;
@@ -5321,6 +5420,7 @@ export default function App() {
     setProjects([]);
     setThreads([]);
     setStatus(createDefaultStatus());
+    setStreamActivityAt(null);
     setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
     setSelectedTodoChatId("");

@@ -40,10 +40,13 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
 const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
-  process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 15000
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 90000
 );
 const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 45000
+);
+const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
+  process.env.OCTOP_APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS ?? 60000
 );
 const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
@@ -4701,6 +4704,18 @@ async function publishSnapshots(loginId) {
   });
 }
 
+async function publishBridgeStatusUpdates({ ensureReady = false } = {}) {
+  for (const loginId of listKnownLoginIds()) {
+    await publishEvent(loginId, "bridge.status.updated", await bridgeStatus(loginId, { ensureReady }));
+  }
+}
+
+async function publishSnapshotsToKnownUsers() {
+  for (const loginId of listKnownLoginIds()) {
+    await publishSnapshots(loginId);
+  }
+}
+
 function resolveLocalThreadId(threadReference) {
   const candidate = String(threadReference ?? "").trim();
 
@@ -4924,6 +4939,9 @@ class AppServerClient {
     this.heartbeatTimer = null;
     this.lastSocketActivityAt = 0;
     this.heartbeatProbeSentAt = 0;
+    this.lastSilentStateCheckAt = 0;
+    this.lastSilentStateCheckError = null;
+    this.silentStateCheckPromise = null;
     this.reconnectTimer = null;
     this.reconnectAttempt = 0;
   }
@@ -4979,6 +4997,7 @@ class AppServerClient {
     this.lastStartedAt = now();
     this.reconnectAttempt = 0;
     this.clearReconnectTimer();
+    await publishBridgeStatusUpdates({ ensureReady: false });
     console.log("[OctOP bridge] app-server ready", {
       reason,
       account_email: this.account?.email ?? null,
@@ -5012,15 +5031,17 @@ class AppServerClient {
       process.stderr.write(`[app-server] ${chunk.toString()}`);
     });
     this.child.on("exit", (code, signal) => {
-      this.connected = false;
-      this.initialized = false;
-      this.socket = null;
-      this.stopHeartbeat();
+      this.resetSocketState();
       this.lastError = code === 0 ? null : `app-server exited (${code ?? signal ?? "unknown"})`;
       console.warn("[OctOP bridge] app-server process exited", {
         code: code ?? null,
         signal: signal ?? null,
         last_ready_reason: this.lastReadyReason
+      });
+      void publishBridgeStatusUpdates({ ensureReady: false }).catch((error) => {
+        console.warn("[OctOP bridge] failed to publish bridge status after app-server exit", {
+          message: error.message
+        });
       });
     });
     this.child.on("error", (error) => {
@@ -5028,6 +5049,11 @@ class AppServerClient {
       console.error("[OctOP bridge] app-server process error", {
         message: error.message,
         last_ready_reason: this.lastReadyReason
+      });
+      void publishBridgeStatusUpdates({ ensureReady: false }).catch((publishError) => {
+        console.warn("[OctOP bridge] failed to publish bridge status after app-server error", {
+          message: publishError.message
+        });
       });
     });
   }
@@ -5090,12 +5116,7 @@ class AppServerClient {
           this.markSocketActivity();
         });
         ws.on("close", (code, closeReasonBuffer) => {
-          this.connected = false;
-          this.initialized = false;
-          if (this.socket === ws) {
-            this.socket = null;
-          }
-          this.stopHeartbeat(ws);
+          this.resetSocketState(ws, "app-server socket closed");
           const closeReason = normalizeWebSocketCloseReason(closeReasonBuffer);
           this.lastError = formatAppServerSocketCloseError(code, closeReason);
           console.warn("[OctOP bridge] app-server websocket closed", {
@@ -5105,18 +5126,25 @@ class AppServerClient {
             close_reason: closeReason,
             pending_requests: this.requests.size
           });
-          for (const [id, pending] of this.requests) {
-            pending.reject(new Error("app-server socket closed"));
-            this.requests.delete(id);
-          }
+          void publishBridgeStatusUpdates({ ensureReady: false }).catch((error) => {
+            console.warn("[OctOP bridge] failed to publish bridge status after websocket close", {
+              message: error.message
+            });
+          });
           this.scheduleReconnect(`close:${code || "unknown"}`);
         });
         ws.on("error", (error) => {
           this.connected = false;
+          this.lastError = describeWebSocketErrorEvent(error);
           console.error("[OctOP bridge] app-server websocket error", {
             reason,
             attempt,
             detail: describeWebSocketErrorEvent(error)
+          });
+          void publishBridgeStatusUpdates({ ensureReady: false }).catch((publishError) => {
+            console.warn("[OctOP bridge] failed to publish bridge status after websocket error", {
+              message: publishError.message
+            });
           });
         });
         resolve();
@@ -5176,9 +5204,7 @@ class AppServerClient {
         rate_limits: params.rateLimits ?? null
       };
 
-      if (BRIDGE_OWNER_LOGIN_ID) {
-        await publishEvent(BRIDGE_OWNER_LOGIN_ID, "bridge.status.updated", await bridgeStatus(BRIDGE_OWNER_LOGIN_ID));
-      }
+      await publishBridgeStatusUpdates({ ensureReady: false });
 
       return;
     }
@@ -5432,13 +5458,14 @@ class AppServerClient {
   markSocketActivity() {
     this.lastSocketActivityAt = Date.now();
     this.heartbeatProbeSentAt = 0;
+    this.lastSilentStateCheckError = null;
   }
 
   startHeartbeat(ws, context = {}) {
     this.stopHeartbeat();
     this.markSocketActivity();
 
-    if (APP_SERVER_HEARTBEAT_INTERVAL_MS <= 0 || APP_SERVER_HEARTBEAT_TIMEOUT_MS <= 0) {
+    if (APP_SERVER_HEARTBEAT_INTERVAL_MS <= 0) {
       return;
     }
 
@@ -5447,10 +5474,27 @@ class AppServerClient {
         return;
       }
 
+      if (!isBridgeIdle()) {
+        this.heartbeatProbeSentAt = 0;
+        return;
+      }
+
+      const silentForMs = this.lastSocketActivityAt > 0 ? Date.now() - this.lastSocketActivityAt : 0;
+
+      if (
+        APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS > 0 &&
+        silentForMs >= APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS
+      ) {
+        void this.checkLastKnownState("idle_silence", {
+          ...context,
+          silent_for_ms: silentForMs
+        });
+      }
+
       if (this.heartbeatProbeSentAt > 0) {
         const probeAgeMs = Date.now() - this.heartbeatProbeSentAt;
 
-        if (probeAgeMs < APP_SERVER_HEARTBEAT_TIMEOUT_MS) {
+        if (APP_SERVER_HEARTBEAT_TIMEOUT_MS <= 0 || probeAgeMs < APP_SERVER_HEARTBEAT_TIMEOUT_MS) {
           return;
         }
 
@@ -5463,7 +5507,14 @@ class AppServerClient {
             : null
         });
         this.heartbeatProbeSentAt = 0;
-        ws.terminate();
+        void this.checkLastKnownState("heartbeat_timeout", {
+          ...context,
+          probe_age_ms: probeAgeMs
+        });
+        return;
+      }
+
+      if (silentForMs < APP_SERVER_HEARTBEAT_INTERVAL_MS) {
         return;
       }
 
@@ -5482,6 +5533,56 @@ class AppServerClient {
     this.heartbeatTimer.unref?.();
   }
 
+  async checkLastKnownState(trigger = "unspecified", detail = {}) {
+    if (
+      !this.connected ||
+      !this.initialized ||
+      this.socket?.readyState !== WebSocket.OPEN ||
+      this.readyPromise
+    ) {
+      return null;
+    }
+
+    if (this.silentStateCheckPromise) {
+      return this.silentStateCheckPromise;
+    }
+
+    const nowMs = Date.now();
+
+    if (
+      APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS > 0 &&
+      this.lastSilentStateCheckAt > 0 &&
+      nowMs - this.lastSilentStateCheckAt < APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS
+    ) {
+      return null;
+    }
+
+    this.lastSilentStateCheckAt = nowMs;
+    this.silentStateCheckPromise = (async () => {
+      try {
+        await recoverSilentBridgeState(`app-server:${trigger}`);
+        this.lastSilentStateCheckError = null;
+      } catch (error) {
+        this.lastSilentStateCheckError = error.message;
+        this.lastError = error.message;
+        console.warn("[OctOP bridge] silent state check failed", {
+          trigger,
+          ...detail,
+          message: error.message
+        });
+      } finally {
+        this.silentStateCheckPromise = null;
+        void publishBridgeStatusUpdates({ ensureReady: false }).catch((publishError) => {
+          console.warn("[OctOP bridge] failed to publish bridge status after silent state check", {
+            message: publishError.message
+          });
+        });
+      }
+    })();
+
+    return this.silentStateCheckPromise;
+  }
+
   stopHeartbeat(ws = null) {
     if (ws && this.socket && this.socket !== ws) {
       return;
@@ -5493,6 +5594,22 @@ class AppServerClient {
     }
 
     this.heartbeatProbeSentAt = 0;
+  }
+
+  resetSocketState(ws = null, reason = "app-server socket closed") {
+    this.connected = false;
+    this.initialized = false;
+
+    if (!ws || this.socket === ws) {
+      this.socket = null;
+    }
+
+    this.stopHeartbeat(ws);
+
+    for (const [id, pending] of this.requests) {
+      pending.reject(new Error(reason));
+      this.requests.delete(id);
+    }
   }
 
   scheduleReconnect(trigger = "unspecified") {
@@ -5840,17 +5957,24 @@ function hasActiveThreadExecution(userId) {
   return listLocalThreads(userId).some((thread) => ["running", "awaiting_input"].includes(thread.status));
 }
 
-const appServer = new AppServerClient();
-
-async function bridgeStatus(userId) {
-  const state = ensureUserState(userId);
-
-  try {
-    await appServer.ensureReady("bridgeStatus");
-  } catch (error) {
-    appServer.lastError = error.message;
+function isBridgeIdle() {
+  for (const thread of threadStateById.values()) {
+    if (thread && !thread.deleted_at && ["running", "awaiting_input"].includes(thread.status)) {
+      return false;
+    }
   }
 
+  return true;
+}
+
+const appServer = new AppServerClient();
+
+function listKnownLoginIds() {
+  return [...new Set([BRIDGE_OWNER_LOGIN_ID, ...users.keys()].filter(Boolean))];
+}
+
+function collectBridgeStatus(userId) {
+  const state = ensureUserState(userId);
   const threads = listLocalThreads(userId);
 
   return {
@@ -5863,7 +5987,21 @@ async function bridgeStatus(userId) {
       initialized: appServer.initialized,
       account: appServer.account,
       last_started_at: appServer.lastStartedAt,
-      last_error: appServer.lastError
+      last_error: appServer.lastError,
+      last_socket_activity_at: appServer.lastSocketActivityAt
+        ? new Date(appServer.lastSocketActivityAt).toISOString()
+        : null,
+      heartbeat_probe_sent_at: appServer.heartbeatProbeSentAt
+        ? new Date(appServer.heartbeatProbeSentAt).toISOString()
+        : null,
+      last_silent_state_check_at: appServer.lastSilentStateCheckAt
+        ? new Date(appServer.lastSilentStateCheckAt).toISOString()
+        : null,
+      last_silent_state_check_error: appServer.lastSilentStateCheckError,
+      idle_only_heartbeat: true,
+      idle_heartbeat_interval_ms: APP_SERVER_HEARTBEAT_INTERVAL_MS,
+      silent_state_check_interval_ms: APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS,
+      idle: isBridgeIdle()
     },
     nats: {
       connected: !nc.isClosed()
@@ -5874,6 +6012,18 @@ async function bridgeStatus(userId) {
     },
     updated_at: state.updated_at
   };
+}
+
+async function bridgeStatus(userId, { ensureReady = true } = {}) {
+  try {
+    if (ensureReady) {
+      await appServer.ensureReady("bridgeStatus");
+    }
+  } catch (error) {
+    appServer.lastError = error.message;
+  }
+
+  return collectBridgeStatus(userId);
 }
 
 async function syncThreadListFromAppServer() {
@@ -6044,7 +6194,7 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
   }
 }
 
-async function reconcileRunningIssues() {
+async function reconcileRunningIssues(remoteThreads = null) {
   const candidateThreadIds = new Set(activeIssueByThreadId.keys());
 
   for (const threadId of threadStateById.keys()) {
@@ -6057,17 +6207,19 @@ async function reconcileRunningIssues() {
     return;
   }
 
-  let remoteThreads = [];
+  let remoteThreadList = remoteThreads;
 
-  try {
-    await appServer.ensureReady("reconcileRunningIssues");
-    remoteThreads = await syncThreadListFromAppServer();
-  } catch (error) {
-    appServer.lastError = error.message;
-    return;
+  if (!remoteThreadList) {
+    try {
+      await appServer.ensureReady("reconcileRunningIssues");
+      remoteThreadList = await syncThreadListFromAppServer();
+    } catch (error) {
+      appServer.lastError = error.message;
+      return;
+    }
   }
 
-  const remoteThreadsByCodexId = new Map(remoteThreads.map((thread) => [thread.id, thread]));
+  const remoteThreadsByCodexId = new Map((remoteThreadList ?? []).map((thread) => [thread.id, thread]));
 
   for (const threadId of candidateThreadIds) {
     const owner = threadOwners.get(threadId);
@@ -6078,6 +6230,17 @@ async function reconcileRunningIssues() {
 
     await reconcileRunningIssue(owner, threadId, remoteThreadsByCodexId);
   }
+}
+
+async function recoverSilentBridgeState(trigger = "unspecified") {
+  await appServer.ensureReady(`silentStateCheck:${trigger}`);
+  const remoteThreads = await syncThreadListFromAppServer();
+  await reconcileRunningIssues(remoteThreads);
+  await publishSnapshotsToKnownUsers();
+  console.log("[OctOP bridge] silent state recovery completed", {
+    trigger,
+    remote_thread_count: remoteThreads.length
+  });
 }
 
 function listLocalThreads(userId) {
