@@ -1433,6 +1433,112 @@ function UtilitySheet({
   );
 }
 
+function BridgeSelectCombobox({ bridges, selectedBridgeId, status, onSelectBridge }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const selectedBridge = useMemo(
+    () => bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null,
+    [bridges, selectedBridgeId]
+  );
+  const isConnected = Boolean(status?.app_server?.connected);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    function handlePointerDown(event) {
+      if (!containerRef.current) {
+        return;
+      }
+
+      if (!containerRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-left transition hover:border-white/30"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[13px] font-semibold text-white">
+            {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "브릿지를 선택하세요"}
+          </p>
+          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-400">
+            <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? "bg-emerald-300" : "bg-rose-300"}`} />
+            <span>{isConnected ? "연결됨" : "미연결"}</span>
+            {selectedBridge ? <span className="truncate text-slate-500">· {selectedBridge.bridge_id}</span> : null}
+          </div>
+        </div>
+        <svg
+          className={`h-4 w-4 shrink-0 text-slate-400 transition ${open ? "rotate-180" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+        </svg>
+      </button>
+
+      {open ? (
+        <div className="absolute right-0 z-30 mt-2 w-[min(18rem,80vw)] overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 shadow-2xl shadow-black/40 backdrop-blur">
+          <div className="border-b border-white/5 px-4 py-3">
+            <p className="text-xs font-semibold text-white">브릿지 선택</p>
+            <p className="mt-0.5 text-[11px] text-slate-400">연결할 브릿지를 선택하세요.</p>
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            {bridges.length === 0 ? (
+              <p className="px-4 py-5 text-sm text-slate-400">연결된 브릿지가 없습니다.</p>
+            ) : (
+              bridges.map((bridge) => {
+                const active = bridge.bridge_id === selectedBridgeId;
+
+                return (
+                  <button
+                    key={bridge.bridge_id}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => {
+                      onSelectBridge(bridge.bridge_id);
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
+                      active ? "bg-telegram-500/10" : "hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-white">{bridge.device_name ?? bridge.bridge_id}</p>
+                      <p className="truncate text-[11px] text-slate-500">{bridge.bridge_id}</p>
+                    </div>
+                    <div className="text-right text-[11px] text-slate-400">
+                      <p>{formatRelativeTime(bridge.last_seen_at)}</p>
+                      {active ? <p className="mt-0.5 text-telegram-200">선택됨</p> : null}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function InlineIssueComposer({
   busy,
   selectedProject,
@@ -3845,10 +3951,6 @@ function MainPage({
       return matchesProject && matchesSearch;
     });
   }, [searchKeyword, selectedProjectId, threads]);
-  const bridgeLabel =
-    bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ??
-    bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.bridge_id ??
-    "No Bridge";
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
@@ -4061,14 +4163,13 @@ function MainPage({
 
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
-            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-              <span className="truncate">{bridgeLabel}</span>
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
-                }`}
+            <div className="mt-1">
+              <BridgeSelectCombobox
+                bridges={bridges}
+                selectedBridgeId={selectedBridgeId}
+                status={status}
+                onSelectBridge={onSelectBridge}
               />
-              <span>{status.app_server?.connected ? "연결됨" : "미연결"}</span>
             </div>
           </div>
 
