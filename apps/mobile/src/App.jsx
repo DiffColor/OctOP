@@ -16,6 +16,15 @@ const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
+const createDefaultStatus = () => ({
+  app_server: {
+    connected: false,
+    initialized: false,
+    account: null,
+    last_error: null
+  },
+  updated_at: null
+});
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const DEFAULT_API_BASE_URL =
@@ -1047,10 +1056,15 @@ function BottomSheet({ open, title, description, onClose, children, variant = "b
     ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/15 bg-[#0b1622] shadow-[0_30px_90px_rgba(0,0,0,0.65)] ring-1 ring-white/8"
     : "sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft";
 
+  const handleContainerClick = (event) => {
+    if (event.target === event.currentTarget) {
+      onClose();
+    }
+  };
+
   return (
-    <div className={containerClassName}>
-      <button type="button" aria-label="닫기" className="absolute inset-0" onClick={onClose} />
-      <section className={panelClassName}>
+    <div className={containerClassName} onClick={handleContainerClick}>
+      <section className={panelClassName} onClick={(event) => event.stopPropagation()}>
         <div className="border-b border-white/10 bg-white/5 px-5 py-4">
           {isCenterDialog ? null : <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />}
           <div className="flex items-start justify-between gap-4">
@@ -4291,15 +4305,7 @@ export default function App() {
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
-  const [status, setStatus] = useState({
-    app_server: {
-      connected: false,
-      initialized: false,
-      account: null,
-      last_error: null
-    },
-    updated_at: null
-  });
+  const [status, setStatus] = useState(() => createDefaultStatus());
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
   const [threadListsByProjectId, setThreadListsByProjectId] = useState({});
@@ -4704,15 +4710,7 @@ export default function App() {
       setThreadListsByProjectId({});
       setTodoChats([]);
       setTodoChatDetails({});
-      setStatus({
-        app_server: {
-          connected: false,
-          initialized: false,
-          account: null,
-          last_error: null
-        },
-        updated_at: null
-      });
+      setStatus(createDefaultStatus());
       return;
     }
 
@@ -5269,10 +5267,13 @@ export default function App() {
     };
   }, [selectedBridgeId, session?.loginId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     threadLoadRequestIdRef.current += 1;
     todoChatLoadRequestIdRef.current += 1;
 
+    setProjects([]);
+    setThreads([]);
+    setStatus(createDefaultStatus());
     setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
     setSelectedTodoChatId("");
@@ -5285,6 +5286,7 @@ export default function App() {
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
     setActiveView("inbox");
+    setLoadingState(selectedBridgeId ? "loading" : "idle");
   }, [selectedBridgeId]);
 
   useEffect(() => {
