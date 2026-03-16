@@ -100,6 +100,44 @@ function buildBridgeSignal({ connected, lastActivityAt, now }) {
   };
 }
 
+function buildThreadResponseSignal(thread, now) {
+  if (!thread || thread.status !== "running") {
+    return null;
+  }
+
+  const activityAt = Date.parse(thread.updated_at ?? thread.created_at ?? "");
+
+  if (!Number.isFinite(activityAt)) {
+    return null;
+  }
+
+  const silentMs = Math.max(0, now - activityAt);
+  const ratio =
+    silentMs <= STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
+  const hue = Math.round(145 - 140 * ratio);
+  const stage =
+    silentMs < STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
+
+  return {
+    stage,
+    detailLabel: stage === 0 ? "응답 정상" : `${formatSilentDuration(silentMs)} 무응답`,
+    title:
+      stage === 0
+        ? "최근 쓰레드 응답이 정상입니다."
+        : `최근 ${formatSilentDuration(silentMs)} 동안 쓰레드 응답이 없습니다. 필요하면 사용자가 작업을 중단하고 수동 복구해 주세요.`,
+    dotColor: `hsl(${hue} 82% 58%)`,
+    chipStyle: {
+      backgroundColor: `hsla(${hue}, 82%, 58%, 0.14)`,
+      borderColor: `hsla(${hue}, 82%, 58%, 0.3)`,
+      color: `hsl(${Math.max(hue - 8, 0)} 70% 88%)`
+    }
+  };
+}
+
 const STATUS_META = {
   queued: {
     label: "Queued",
@@ -3008,8 +3046,9 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
   );
 }
 
-function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
+function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete }) {
   const status = getStatusMeta(thread.status);
+  const responseSignal = buildThreadResponseSignal(thread, signalNow);
   const contextUsageLabel = formatThreadContextUsage(thread);
   const startPointRef = useRef(null);
   const baseOffsetRef = useRef(0);
@@ -3176,19 +3215,28 @@ function ThreadListItem({ thread, active, onOpen, onRename, onDelete }) {
 
           <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
 
-	          <div className="mt-2 flex items-center gap-2">
-	            <span className={`inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] ${status.chipClassName}`}>
-	              <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
-	              {status.label}
-	            </span>
-	            {contextUsageLabel ? (
-	              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
-	                {contextUsageLabel}
-	              </span>
-	            ) : null}
-	          </div>
-	        </div>
-	      </button>
+          <div className="mt-2 flex items-center gap-2">
+            <span
+              className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[10px] ${
+                responseSignal ? "" : `${status.chipClassName} border-transparent`
+              }`}
+              style={responseSignal?.chipStyle}
+              title={responseSignal?.title}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
+                style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
+              />
+              {status.label}
+            </span>
+            {contextUsageLabel ? (
+              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
+                {contextUsageLabel}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </button>
     </div>
   );
 }
@@ -3291,6 +3339,7 @@ function ThreadDetail({
   project,
   messages,
   issues = [],
+  signalNow,
   messagesLoading,
   messagesError,
   onRefreshMessages,
@@ -3302,6 +3351,7 @@ function ThreadDetail({
   isDraft = false
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
+  const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
   const viewportHeight = useVisualViewportHeight();
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
@@ -3652,17 +3702,28 @@ function ThreadDetail({
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{threadTitle}</p>
-	            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-	              <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
-	              {status ? <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName}`} /> : null}
-	              <span>{status ? status.label : "새 채팅창"}</span>
-	              {contextUsage?.percent !== null ? (
-	                <>
-	                  <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
-	                  <span>{formatThreadContextUsage(thread)}</span>
-	                </>
-	              ) : null}
-	            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+              <span className="truncate">{project?.name ?? "프로젝트 미지정"}</span>
+              {status ? (
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${responseSignal ? "" : status.dotClassName}`}
+                  style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
+                />
+              ) : null}
+              <span>{status ? status.label : "새 채팅창"}</span>
+              {responseSignal?.stage > 0 ? (
+                <>
+                  <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
+                  <span style={{ color: responseSignal.dotColor }}>{responseSignal.detailLabel}</span>
+                </>
+              ) : null}
+              {contextUsage?.percent !== null ? (
+                <>
+                  <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
+                  <span>{formatThreadContextUsage(thread)}</span>
+                </>
+              ) : null}
+            </div>
           </div>
 
           <button
@@ -3795,9 +3856,19 @@ function ThreadDetail({
 
           {status ? (
             <div className="flex justify-center">
-              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
-                <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+              <div
+                className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] ${
+                  responseSignal ? "" : "border-white/10 bg-slate-950/70 text-slate-300"
+                }`}
+                style={responseSignal?.chipStyle}
+                title={responseSignal?.title}
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
+                  style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
+                />
                 <span>{status.label}</span>
+                {responseSignal?.stage > 0 ? <span>{responseSignal.detailLabel}</span> : null}
                 <span className="text-slate-500">{thread.progress}%</span>
                 <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
               </div>
@@ -3844,6 +3915,7 @@ function MainPage({
   bridges,
   status,
   bridgeSignal,
+  signalNow,
   projects,
   threads,
   todoChats,
@@ -4146,6 +4218,7 @@ function MainPage({
           project={threadProject}
           messages={resolvedThread ? threadDetailMessages : []}
           issues={resolvedThread ? threadDetail?.issues ?? [] : []}
+          signalNow={signalNow}
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
@@ -4295,6 +4368,7 @@ function MainPage({
                   key={thread.id}
                   thread={thread}
                   active={thread.id === selectedThreadId}
+                  signalNow={signalNow}
                   onOpen={onSelectThread}
                   onRename={(targetThread) => setThreadBeingEdited(targetThread)}
                   onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
@@ -6580,6 +6654,7 @@ export default function App() {
         bridges={bridges}
         status={status}
         bridgeSignal={bridgeSignal}
+        signalNow={streamNow}
         projects={projects}
         threads={threads}
         todoChats={todoChats}

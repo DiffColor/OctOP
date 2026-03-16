@@ -102,6 +102,56 @@ function buildBridgeSignal({ connected, lastActivityAt, now, language, connected
   };
 }
 
+function buildThreadResponseSignal({ thread, now, language }) {
+  if (!thread || thread.status !== "running") {
+    return null;
+  }
+
+  const activityAt = Date.parse(thread.updated_at ?? thread.created_at ?? "");
+
+  if (!Number.isFinite(activityAt)) {
+    return null;
+  }
+
+  const silentMs = Math.max(0, now - activityAt);
+  const ratio =
+    silentMs <= STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(1, (silentMs - STREAM_SILENCE_START_MS) / (STREAM_SILENCE_MAX_MS - STREAM_SILENCE_START_MS));
+  const hue = Math.round(145 - 140 * ratio);
+  const stage =
+    silentMs < STREAM_SILENCE_START_MS
+      ? 0
+      : Math.min(5, Math.floor((silentMs - STREAM_SILENCE_START_MS) / STREAM_SILENCE_STEP_MS) + 1);
+  const durationLabel = formatBridgeSilentDuration(silentMs, language);
+
+  return {
+    stage,
+    detailLabel:
+      stage === 0
+        ? language === "ko"
+          ? "응답 정상"
+          : "Responsive"
+        : language === "ko"
+          ? `${durationLabel} 무응답`
+          : `silent ${durationLabel}`,
+    title:
+      stage === 0
+        ? language === "ko"
+          ? "최근 쓰레드 응답이 정상입니다."
+          : "Recent thread responses look healthy."
+        : language === "ko"
+          ? `최근 ${durationLabel} 동안 쓰레드 응답이 없습니다. 필요하면 사용자가 작업을 중단하고 수동 복구해 주세요.`
+          : `No thread response for ${durationLabel}. Stop the work manually and recover if needed.`,
+    dotColor: `hsl(${hue} 82% 58%)`,
+    chipStyle: {
+      backgroundColor: `hsla(${hue}, 82%, 58%, 0.14)`,
+      borderColor: `hsla(${hue}, 82%, 58%, 0.3)`,
+      color: `hsl(${Math.max(hue - 8, 0)} 70% 88%)`
+    }
+  };
+}
+
 const COLUMN_ORDER = [
   { id: "prep", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
   { id: "todo", accent: "slate", countClassName: "bg-slate-800 text-slate-300" },
@@ -2698,10 +2748,11 @@ function SidebarThreadItem({
   );
 }
 
-function ThreadDetailModal({ language, open, loading, thread, messages, onClose }) {
+function ThreadDetailModal({ language, open, loading, thread, messages, signalNow, onClose }) {
   const copy = getCopy(language);
   const contextUsageLabel = formatThreadContextUsage(thread, language);
   const contextUsage = getThreadContextUsage(thread);
+  const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
   if (!open) {
     return null;
   }
@@ -2717,8 +2768,13 @@ function ThreadDetailModal({ language, open, loading, thread, messages, onClose 
             </h2>
             {thread ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">
+                <span
+                  className={`rounded-full border px-2.5 py-1 ${responseSignal ? "" : "border-slate-800 bg-slate-900/70"}`}
+                  style={responseSignal?.chipStyle}
+                  title={responseSignal?.title}
+                >
                   {copy.status[getStatusMeta(thread.status).labelKey] ?? copy.status.queued}
+                  {responseSignal?.stage > 0 ? ` · ${responseSignal.detailLabel}` : ""}
                 </span>
                 {contextUsageLabel ? (
                   <span className="rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1">
@@ -2970,9 +3026,21 @@ function getColumnDotClassName(columnId) {
   }
 }
 
-function ThreadCard({ language, thread, active, multiSelected, columnId, onSelect, onSelectionGesture, onDragStart, onDragEnd }) {
+function ThreadCard({
+  language,
+  thread,
+  signalNow,
+  active,
+  multiSelected,
+  columnId,
+  onSelect,
+  onSelectionGesture,
+  onDragStart,
+  onDragEnd
+}) {
   const copy = getCopy(language);
   const status = getStatusMeta(thread.status);
+  const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
   const progressText = getRealtimeProgressText(thread, language);
   const contextUsageLabel = formatThreadContextUsage(thread, language);
   const highlighted = active || multiSelected;
@@ -2997,9 +3065,19 @@ function ThreadCard({ language, thread, active, multiSelected, columnId, onSelec
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <span className={`inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] ${status.chipClassName}`}>
-          <span className={`h-2 w-2 rounded-full ${status.dotClassName}`} />
+        <span
+          className={`inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[11px] ${
+            responseSignal ? "" : `${status.chipClassName} border-transparent`
+          }`}
+          style={responseSignal?.chipStyle}
+          title={responseSignal?.title}
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
+            style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
+          />
           {copy.status[status.labelKey] ?? copy.status.queued}
+          {responseSignal?.stage > 0 ? <span>{responseSignal.detailLabel}</span> : null}
         </span>
         <span className="text-[11px] text-slate-500">{thread.progress}%</span>
       </div>
@@ -3107,6 +3185,7 @@ function MainPage({
   bridges,
   status,
   bridgeSignal,
+  signalNow,
   projects,
   projectThreads,
   issues,
@@ -4314,6 +4393,7 @@ function MainPage({
                               key={thread.id}
                               language={language}
                               thread={thread}
+                              signalNow={signalNow}
                               active={thread.id === selectedIssueId}
                               multiSelected={selectedIssueIds.includes(thread.id)}
                               columnId={column.id}
@@ -4520,6 +4600,7 @@ function MainPage({
         loading={detailState.loading}
         thread={detailState.thread}
         messages={detailState.messages}
+        signalNow={signalNow}
         onClose={onCloseDetail}
       />
       <ThreadContextMenu
@@ -6601,6 +6682,7 @@ export default function App() {
       bridges={bridges}
       status={status}
       bridgeSignal={bridgeSignal}
+      signalNow={streamNow}
       projects={projects}
       projectThreads={projectThreads}
       issues={issues}
