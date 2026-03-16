@@ -108,11 +108,10 @@ public sealed class OctopStore : IAsyncDisposable
   public async Task<JArray> ListBridgesForUserAsync(string userId)
   {
     var connection = await GetConnectionAsync();
-    var bridges = await _r.Db(_db).Table(BridgeNodeTable).RunResultAsync<JArray>(connection);
+    var bridges = await ReadTableRowsAsync(connection, BridgeNodeTable);
 
     return new JArray(
       bridges
-        .OfType<JObject>()
         .Where(bridge => string.Equals(
           bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
           userId,
@@ -124,9 +123,8 @@ public sealed class OctopStore : IAsyncDisposable
   public async Task<JArray> ListProjectsForUserAsync(string userId, string bridgeId)
   {
     var connection = await GetConnectionAsync();
-    var memberships = await _r.Db(_db).Table(ProjectMemberTable).RunResultAsync<JArray>(connection);
+    var memberships = await ReadTableRowsAsync(connection, ProjectMemberTable);
     var projectIds = memberships
-      .OfType<JObject>()
       .Where(item =>
         string.Equals(item.Value<string>("login_id") ?? item.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
         string.Equals(item.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal))
@@ -140,11 +138,10 @@ public sealed class OctopStore : IAsyncDisposable
       return [];
     }
 
-    var projects = await _r.Db(_db).Table(ProjectTable).RunResultAsync<JArray>(connection);
+    var projects = await ReadTableRowsAsync(connection, ProjectTable);
 
     return new JArray(
       projects
-        .OfType<JObject>()
         .Where(project =>
           string.Equals(project.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
           projectIds.Contains(project.Value<string>("id") ?? string.Empty))
@@ -155,11 +152,10 @@ public sealed class OctopStore : IAsyncDisposable
   public async Task<JArray> ListThreadsAsync(string userId, string bridgeId, string? projectId)
   {
     var connection = await GetConnectionAsync();
-    var threads = await _r.Db(_db).Table(ThreadTable).RunResultAsync<JArray>(connection);
+    var threads = await ReadTableRowsAsync(connection, ThreadTable);
 
     return new JArray(
       threads
-        .OfType<JObject>()
         .Where(thread =>
           string.Equals(thread.Value<string>("login_id") ?? thread.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
           string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal))
@@ -176,11 +172,10 @@ public sealed class OctopStore : IAsyncDisposable
     }
 
     var connection = await GetConnectionAsync();
-    var issues = await _r.Db(_db).Table(LogicalThreadIssueBoardTable).RunResultAsync<JArray>(connection);
+    var issues = await ReadTableRowsAsync(connection, LogicalThreadIssueBoardTable);
 
     return new JArray(
       issues
-        .OfType<JObject>()
         .Where(issue =>
           string.Equals(issue.Value<string>("login_id") ?? issue.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
           string.Equals(issue.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
@@ -198,11 +193,10 @@ public sealed class OctopStore : IAsyncDisposable
     }
 
     var connection = await GetConnectionAsync();
-    var entries = await _r.Db(_db).Table(LogicalThreadTimelineTable).RunResultAsync<JArray>(connection);
+    var entries = await ReadTableRowsAsync(connection, LogicalThreadTimelineTable);
 
     return new JArray(
       entries
-        .OfType<JObject>()
         .Where(entry =>
           string.Equals(entry.Value<string>("login_id") ?? entry.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
           string.Equals(entry.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
@@ -303,5 +297,23 @@ public sealed class OctopStore : IAsyncDisposable
     {
       await _r.Db(_db).TableCreate(tableName).RunResultAsync<object>(connection);
     }
+  }
+
+  private async Task<List<JObject>> ReadTableRowsAsync(RethinkConnection connection, string tableName)
+  {
+    using var cursor = await _r.Db(_db).Table(tableName).RunCursorAsync<JObject>(connection, CancellationToken.None);
+    var rows = new List<JObject>();
+
+    while (await cursor.MoveNextAsync(CancellationToken.None))
+    {
+      if (cursor.Current is null)
+      {
+        continue;
+      }
+
+      rows.Add(cursor.Current);
+    }
+
+    return rows;
   }
 }
