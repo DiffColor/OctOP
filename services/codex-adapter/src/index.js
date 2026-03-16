@@ -15,7 +15,7 @@ import {
   writeFileSync
 } from "node:fs";
 import os from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { connect, StringCodec } from "nats";
 import WebSocket from "ws";
 import {
@@ -2117,11 +2117,17 @@ function listWorkspaceRoots(userId) {
 }
 
 function isAllowedWorkspacePath(targetPath) {
-  return WORKSPACE_ROOTS.some((rootPath) => {
-    const normalizedRoot = `${rootPath}${rootPath.endsWith("/") ? "" : "/"}`;
-    const normalizedTarget = `${targetPath}${targetPath.endsWith("/") ? "" : "/"}`;
+  const normalizedTargetPath = resolve(String(targetPath));
 
-    return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(normalizedRoot);
+  return WORKSPACE_ROOTS.some((rootPath) => {
+    const normalizedRootPath = resolve(String(rootPath));
+
+    if (normalizedTargetPath === normalizedRootPath) {
+      return true;
+    }
+
+    const relativePath = relative(normalizedRootPath, normalizedTargetPath);
+    return Boolean(relativePath) && !relativePath.startsWith("..") && !isAbsolute(relativePath);
   });
 }
 
