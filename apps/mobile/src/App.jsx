@@ -1293,21 +1293,13 @@ function UtilitySheet({
   open,
   session,
   status,
-  bridges,
-  selectedBridgeId,
   selectedProject,
-  selectedThread,
-  projects,
-  threads,
   onOpenProjectInstructionDialog,
   onClose,
-  onSelectBridge,
   onOpenProjectComposer,
   onRefresh,
   onLogout
 }) {
-  const selectedBridge = bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null;
-
   return (
     <BottomSheet
       open={open}
@@ -1330,71 +1322,6 @@ function UtilitySheet({
               />
             </div>
             <p className="truncate text-xs text-slate-400">{session.loginId}</p>
-          </div>
-        </section>
-
-        <section className="py-4">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-white">Bridge 선택</p>
-            <span
-              className={`text-[11px] ${
-                status.app_server?.connected ? "text-emerald-200" : "text-rose-200"
-              }`}
-            >
-              {status.app_server?.connected ? "온라인" : "오프라인"}
-            </span>
-          </div>
-
-          {selectedBridge ? (
-            <div className="mb-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">현재 선택된 브릿지</p>
-              <p className="mt-1 truncate text-sm font-semibold text-white">
-                {selectedBridge.device_name ?? selectedBridge.bridge_id}
-              </p>
-              <p className="truncate text-[11px] text-slate-400">{selectedBridge.bridge_id}</p>
-              <p className="mt-1 text-[11px] text-slate-500">
-                마지막 연결 {formatRelativeTime(selectedBridge.last_seen_at)}
-              </p>
-            </div>
-          ) : (
-            <div className="mb-3 rounded-2xl border border-dashed border-white/15 px-4 py-3 text-[12px] text-slate-400">
-              아직 선택된 브릿지가 없습니다. 아래 목록에서 사용 가능한 브릿지를 선택해 주세요.
-            </div>
-          )}
-
-          <div className="divide-y divide-white/10 overflow-hidden rounded-[1.1rem] border border-white/10 bg-black/10">
-            {bridges.length === 0 ? (
-              <div className="px-4 py-4 text-sm text-slate-400">연결된 bridge가 없습니다.</div>
-            ) : (
-              bridges.map((bridge) => {
-                const active = bridge.bridge_id === selectedBridgeId;
-
-                return (
-                  <button
-                    key={bridge.bridge_id}
-                    type="button"
-                    onClick={() => {
-                      onSelectBridge(bridge.bridge_id);
-                      onClose();
-                    }}
-                    className={`w-full px-4 py-3 text-left transition ${
-                      active ? "bg-telegram-500/10" : "bg-transparent hover:bg-white/[0.03]"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-white">{bridge.device_name ?? bridge.bridge_id}</p>
-                        <p className="truncate text-[11px] text-slate-500">{bridge.bridge_id}</p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-[11px] text-slate-400">{formatRelativeTime(bridge.last_seen_at)}</p>
-                        {active ? <p className="mt-0.5 text-[10px] text-telegram-200">현재 선택</p> : null}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
-            )}
           </div>
         </section>
 
@@ -4388,15 +4315,9 @@ function MainPage({
         open={utilityOpen}
         session={session}
         status={status}
-        bridges={bridges}
-        selectedBridgeId={selectedBridgeId}
         selectedProject={selectedProject}
-        selectedThread={selectedThread}
-        projects={projects}
-        threads={threads}
         onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
         onClose={onCloseUtility}
-        onSelectBridge={onSelectBridge}
         onOpenProjectComposer={onOpenProjectComposer}
         onRefresh={onRefresh}
         onLogout={onLogout}
