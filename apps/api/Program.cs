@@ -1399,7 +1399,7 @@ static async Task<string?> ResolveBridgeIdAsync(
 
   if (!string.IsNullOrWhiteSpace(httpContext.Request.Query["bridge_id"]))
   {
-    return await octopStore.UserOwnsBridgeAsync(userId, requested) ? requested : null;
+    return requested;
   }
 
   cancellationToken.ThrowIfCancellationRequested();
