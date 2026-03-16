@@ -6045,9 +6045,7 @@ function shouldTreatMissingRemoteThreadAsTerminal(issue, meta = {}) {
     return false;
   }
 
-  // thread/list 누락은 실서버에서 일시적으로 발생할 수 있으므로, 명시적 종료 신호 없이
-  // running issue를 failed로 확정하지 않는다.
-  return false;
+  return true;
 }
 
 async function publishThreadState(userId, threadId) {
