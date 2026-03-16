@@ -12,7 +12,7 @@ for /f "usebackq delims=" %%I in (`node .\scripts\print-local-agent-ports.mjs`) 
 )
 
 if not defined OCTOP_PORTS (
-  echo [OctOP] local-agent 포트를 확인하지 못했습니다. 정리 없이 시작합니다.
+  echo [OctOP] Failed to resolve local-agent ports. Starting without pre-stop.
   node .\scripts\run-local-agent.mjs %*
   exit /b %ERRORLEVEL%
 )
@@ -47,11 +47,11 @@ if defined OCTOP_STOPPED_PID_%PID% exit /b 0
 set "OCTOP_STOPPED_PID_%PID%=1"
 set "OCTOP_KILLED_ANY=1"
 
-echo [OctOP] Port %PORT% 사용 중인 PID %PID% 종료 중...
+echo [OctOP] Stopping PID %PID% on port %PORT%...
 taskkill /PID %PID% /T /F >nul 2>&1
 if errorlevel 1 (
-  echo [OctOP] PID %PID% 종료 실패
+  echo [OctOP] Failed to stop PID %PID%. Launcher will try a fallback port if needed.
 ) else (
-  echo [OctOP] PID %PID% 종료 완료
+  echo [OctOP] Stop signal sent to PID %PID%.
 )
 exit /b 0

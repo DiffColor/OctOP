@@ -5183,6 +5183,18 @@ class AppServerClient {
       return;
     }
 
+    if (method === "skills/changed") {
+      if (BRIDGE_OWNER_LOGIN_ID) {
+        await publishEvent(
+          BRIDGE_OWNER_LOGIN_ID,
+          "bridge.status.updated",
+          await bridgeStatus(BRIDGE_OWNER_LOGIN_ID)
+        );
+      }
+
+      return;
+    }
+
     cleanupExpiredEventDropTombstones();
 
     const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
