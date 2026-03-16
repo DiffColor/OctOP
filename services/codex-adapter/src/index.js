@@ -5886,6 +5886,18 @@ function inferReconciledTerminalStatus(issue) {
   return hasOutput || hasMeaningfulProgress || hasExecutionTrail ? "completed" : "failed";
 }
 
+function shouldTreatMissingRemoteThreadAsTerminal(issue, meta = {}) {
+  const reconcileAttempts = Number(meta.reconcileAttempts ?? 0);
+
+  if (reconcileAttempts < RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+    return false;
+  }
+
+  // thread/list 누락은 실서버에서 일시적으로 발생할 수 있으므로, 명시적 종료 신호 없이
+  // running issue를 failed로 확정하지 않는다.
+  return false;
+}
+
 async function publishThreadState(userId, threadId) {
   const projectId = threadStateById.get(threadId)?.project_id ?? "";
   await publishEvent(userId, "bridge.projectThreads.updated", {
@@ -5939,7 +5951,17 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
   });
 
   if (!reconciledStatus) {
-    if (reconcileAttempts < RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+    if (!shouldTreatMissingRemoteThreadAsTerminal(issue, { reconcileAttempts })) {
+      if (reconcileAttempts === RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+        console.warn("[OctOP bridge] running issue reconcile skipped: remote thread missing", {
+          thread_id: threadId,
+          issue_id: activeIssueId,
+          reconcile_attempts: reconcileAttempts,
+          socket_connected: appServer.connected,
+          app_server_initialized: appServer.initialized,
+          app_server_last_error: appServer.lastError
+        });
+      }
       return;
     }
 

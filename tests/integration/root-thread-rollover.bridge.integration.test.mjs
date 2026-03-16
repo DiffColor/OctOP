@@ -147,6 +147,7 @@ class FakeAppServer {
     this.options = options;
     this.connectionCount = 0;
     this.pingCount = 0;
+    this.threadListRequestCount = 0;
     this.idleTimerBySocket = new Map();
     this.pongTimers = new Set();
   }
@@ -398,9 +399,18 @@ class FakeAppServer {
         this.respond(message.id, { accepted: true });
         return;
       case "thread/list":
+        this.threadListRequestCount += 1;
+        {
+          const allThreads = [...this.threads.values()];
+          const threadListOmitCount = Number(this.options.threadListOmitCount ?? 0);
+          const data =
+            threadListOmitCount > 0 && this.threadListRequestCount <= threadListOmitCount
+              ? []
+              : allThreads;
         this.respond(message.id, {
-          data: [...this.threads.values()]
+            data
         });
+        }
         return;
       default:
         this.respond(message.id, {});
@@ -879,6 +889,81 @@ test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실�
       timeoutMs: 45000,
       intervalMs: 300,
       label: "recovered issue completed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("thread/list 누락만으로 running issue를 failed 처리하지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-missing-remote-thread-int-"));
+  const fakeAppServer = new FakeAppServer({
+    threadListOmitCount: 4
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-missing-remote-thread-token",
+    userId: "integration-user",
+    bridgeId: `missing-remote-thread-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT: "2"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Missing Remote Thread Reconcile Thread"
+    });
+
+    await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const health = await bridge.request("/health");
+
+      assert.equal(issueDetail.issue?.status, "running");
+      assert.equal(continuity.active_physical_thread?.codex_thread_id, sourceCodexThreadId);
+      assert.equal(health.status?.app_server?.initialized, true);
+      return { issueDetail, continuity, health };
+    }, {
+      timeoutMs: 5000,
+      intervalMs: 250,
+      label: "running issue survives missing remote thread"
+    });
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: sourceCodexThreadId,
+      turnId: "turn-missing-remote-thread-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "issue completed after transient missing remote thread"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
