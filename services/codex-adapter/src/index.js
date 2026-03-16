@@ -42,6 +42,8 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
+const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
+const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
   (process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_ENABLED ?? "true") !== "false";
 const {
@@ -269,6 +271,28 @@ async function connectToNats() {
       await sleep(NATS_RETRY_DELAY_MS);
     }
   }
+}
+
+function normalizeCodexModel(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized || "gpt-5.4";
+}
+
+function normalizeReasoningEffort(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (["none", "low", "medium", "high", "xhigh"].includes(normalized)) {
+    return normalized;
+  }
+
+  console.warn("[OctOP bridge] invalid OCTOP_CODEX_REASONING_EFFORT ignored", {
+    value
+  });
+  return null;
 }
 
 function createIssueTitle(payload = {}) {
@@ -3346,7 +3370,8 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
-    model: "gpt-5-codex",
+    model: CODEX_MODEL,
+    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   }, "thread/start.ensureCodexThreadForPhysicalThread");
@@ -5996,7 +6021,8 @@ async function createQueuedIssue(userId, payload = {}) {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
-    model: "gpt-5-codex",
+    model: CODEX_MODEL,
+    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   }, "thread/start.createQueuedIssue");

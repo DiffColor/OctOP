@@ -75,6 +75,8 @@ export function loadOctopEnv(workspaceRoot) {
     env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT,
     "50"
   );
+  env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.4");
+  env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
 
   return env;
 }

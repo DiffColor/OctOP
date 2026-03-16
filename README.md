@@ -157,6 +157,8 @@ npm run local-agent:start -- -id <loginId> -name "My Mac"
 - `OCTOP_APP_SERVER_MODE`
 - `OCTOP_APP_SERVER_WS_URL`
 - `OCTOP_APP_SERVER_COMMAND`
+- `OCTOP_CODEX_MODEL`
+- `OCTOP_CODEX_REASONING_EFFORT`
 - `OCTOP_CODEX_APPROVAL_POLICY`
 - `OCTOP_CODEX_SANDBOX`
 - `OCTOP_THREAD_CONTEXT_ROLLOVER_ENABLED`
@@ -179,6 +181,8 @@ npm run local-agent:start -- -id <loginId> -name "My Mac"
 - 스레드 상태는 `~/.octop/<bridge-id>-threads.json`에 저장됩니다.
 - 허용 workspace root는 현재 작업 디렉터리와 `OCTOP_WORKSPACE_ROOTS`를 기준으로 계산됩니다.
 - 필요하면 Bridge가 `codex app-server`를 자식 프로세스로 함께 실행합니다.
+- Codex thread 시작 시 기본 모델은 `OCTOP_CODEX_MODEL`으로 제어하며, 기본값은 `gpt-5.4`입니다.
+- reasoning effort는 `OCTOP_CODEX_REASONING_EFFORT`로 제어하며, `none`, `low`, `medium`, `high`, `xhigh`를 사용할 수 있습니다.
 - approval policy와 sandbox 정책은 Bridge 환경 변수로 제어됩니다.
 
 ## 배포 전제
