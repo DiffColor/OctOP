@@ -4904,6 +4904,14 @@ export default function App() {
         return;
       }
 
+      const nextBridges = await loadBridges(sessionArg);
+      const fallbackBridgeId = nextBridges[0]?.bridge_id ?? "";
+
+      if (fallbackBridgeId && fallbackBridgeId !== bridgeId) {
+        setSelectedBridgeId(fallbackBridgeId);
+        return;
+      }
+
       setLoadingState("error");
     }
   }
