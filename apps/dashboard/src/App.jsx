@@ -1288,15 +1288,42 @@ function parseResponseBody(response, text) {
 }
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    cache: options.cache ?? "no-store",
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers ?? {})
+  const method = String(options.method ?? "GET").toUpperCase();
+  const requestUrl = `${API_BASE_URL}${path}`;
+  let response;
+
+  try {
+    response = await fetch(requestUrl, {
+      ...options,
+      cache: options.cache ?? "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers ?? {})
+      }
+    });
+  } catch (error) {
+    const rawMessage = String(error?.message ?? error ?? "unknown error").trim() || "unknown error";
+    const onlineState =
+      typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+        ? "unknown"
+        : navigator.onLine
+          ? "online"
+          : "offline";
+    const lines = [
+      `요청 실패: ${method} ${path}`,
+      `API: ${requestUrl}`,
+      `브라우저 네트워크 상태: ${onlineState}`
+    ];
+
+    if (/failed to fetch/i.test(rawMessage)) {
+      lines.push("설명: 브라우저에서 API 엔드포인트까지 도달하지 못했습니다.");
     }
-  });
+
+    lines.push(`원본 오류: ${rawMessage}`);
+    throw new Error(lines.join("\n"));
+  }
+
   const text = await response.text();
   const payload = parseResponseBody(response, text);
 

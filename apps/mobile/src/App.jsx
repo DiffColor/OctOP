@@ -680,15 +680,50 @@ function parseResponseBody(response, text) {
   }
 }
 
+function formatApiRequestError(path, options = {}, error, contextLabel = "") {
+  const method = String(options.method ?? "GET").toUpperCase();
+  const requestUrl = `${API_BASE_URL}${path}`;
+  const rawMessage = String(error?.message ?? error ?? "unknown error").trim() || "unknown error";
+  const onlineState =
+    typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+      ? "unknown"
+      : navigator.onLine
+        ? "online"
+        : "offline";
+  const lines = [];
+
+  if (contextLabel) {
+    lines.push(contextLabel);
+  }
+
+  lines.push(`요청: ${method} ${path}`);
+  lines.push(`API: ${requestUrl}`);
+  lines.push(`브라우저 네트워크 상태: ${onlineState}`);
+
+  if (/failed to fetch/i.test(rawMessage)) {
+    lines.push("설명: 브라우저에서 API 엔드포인트까지 도달하지 못했습니다. 브릿지가 살아 있어도 현재 모바일 웹 경로에서 이 주소로 접속하지 못하면 이 오류가 발생합니다.");
+  }
+
+  lines.push(`원본 오류: ${rawMessage}`);
+  return lines.join("\n");
+}
+
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers ?? {})
-    }
-  });
+  let response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers ?? {})
+      }
+    });
+  } catch (error) {
+    throw new Error(formatApiRequestError(path, options, error));
+  }
+
   const text = await response.text();
   const payload = parseResponseBody(response, text);
 
@@ -6051,13 +6086,26 @@ export default function App() {
     }
 
     try {
-      const response = await apiRequest(
-        `/api/threads/${encodeURIComponent(selectedThreadId)}/normalize?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({ reason: "manual_refresh" })
-        }
-      );
+      const refreshPath =
+        `/api/threads/${encodeURIComponent(selectedThreadId)}/normalize?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const refreshOptions = {
+        method: "POST",
+        body: JSON.stringify({ reason: "manual_refresh" })
+      };
+      let response;
+
+      try {
+        response = await apiRequest(refreshPath, refreshOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            refreshPath,
+            refreshOptions,
+            error,
+            `쓰레드 새로고침 요청 실패\n- thread_id: ${selectedThreadId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
 
       const normalizedThread = normalizeThread(response?.thread);
 
@@ -6101,28 +6149,54 @@ export default function App() {
         throw new Error("프로젝트를 먼저 선택해 주세요.");
       }
 
-      const createdThread = await apiRequest(
-        `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            name: createThreadTitleFromPrompt(payload.prompt) || "새 채팅창"
-          })
-        }
-      );
+      const createThreadPath =
+        `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const createThreadOptions = {
+        method: "POST",
+        body: JSON.stringify({
+          name: createThreadTitleFromPrompt(payload.prompt) || "새 채팅창"
+        })
+      };
+      let createdThread;
+
+      try {
+        createdThread = await apiRequest(createThreadPath, createThreadOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            createThreadPath,
+            createThreadOptions,
+            error,
+            `새 채팅창 생성 실패\n- project_id: ${projectId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
       const threadId = createdThread?.thread?.id;
 
       if (!threadId) {
         throw new Error("새 채팅창을 생성하지 못했습니다.");
       }
 
-      const createdIssue = await apiRequest(
-        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify(payload)
-        }
-      );
+      const createIssuePath =
+        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const createIssueOptions = {
+        method: "POST",
+        body: JSON.stringify(payload)
+      };
+      let createdIssue;
+
+      try {
+        createdIssue = await apiRequest(createIssuePath, createIssueOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            createIssuePath,
+            createIssueOptions,
+            error,
+            `새 이슈 등록 실패\n- project_id: ${projectId}\n- thread_id: ${threadId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
       const issueId = createdIssue?.issue?.id;
       const optimisticTimestamp = new Date().toISOString();
       const optimisticThread = createdThread?.thread
@@ -6182,15 +6256,28 @@ export default function App() {
         setThreadMessageFilter("all");
 
         if (issueId) {
-          await apiRequest(
-            `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                issue_ids: [issueId]
-              })
-            }
-          );
+          const startIssuePath =
+            `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+          const startIssueOptions = {
+            method: "POST",
+            body: JSON.stringify({
+              issue_ids: [issueId]
+            })
+          };
+
+          try {
+            await apiRequest(startIssuePath, startIssueOptions);
+          } catch (error) {
+            void loadThreadMessages(threadId, { force: true });
+            throw new Error(
+              formatApiRequestError(
+                startIssuePath,
+                startIssueOptions,
+                error,
+                `이슈 실행 시작 실패\n- thread_id: ${threadId}\n- issue_id: ${issueId}\n- bridge_id: ${selectedBridgeId}\n- 설명: 채팅창과 이슈는 생성되었지만 실행 시작 요청이 실패했습니다. 현재 쓰레드는 idle, 이슈는 staged/queued로 남아 있을 수 있습니다.`
+              )
+            );
+          }
         }
       }
 
@@ -6219,13 +6306,26 @@ export default function App() {
     setThreadBusy(true);
 
     try {
-      const createdIssue = await apiRequest(
-        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({ prompt })
-        }
-      );
+      const createIssuePath =
+        `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const createIssueOptions = {
+        method: "POST",
+        body: JSON.stringify({ prompt })
+      };
+      let createdIssue;
+
+      try {
+        createdIssue = await apiRequest(createIssuePath, createIssueOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            createIssuePath,
+            createIssueOptions,
+            error,
+            `추가 이슈 등록 실패\n- thread_id: ${threadId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
       const issueId = createdIssue?.issue?.id;
       const optimisticTimestamp = new Date().toISOString();
       const optimisticIssue = createdIssue?.issue
@@ -6295,13 +6395,26 @@ export default function App() {
       setActiveView("thread");
 
       if (issueId) {
-        await apiRequest(
-          `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-          {
-            method: "POST",
-            body: JSON.stringify({ issue_ids: [issueId] })
-          }
-        );
+        const startIssuePath =
+          `/api/threads/${threadId}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+        const startIssueOptions = {
+          method: "POST",
+          body: JSON.stringify({ issue_ids: [issueId] })
+        };
+
+        try {
+          await apiRequest(startIssuePath, startIssueOptions);
+        } catch (error) {
+          void loadThreadMessages(threadId, { force: true });
+          throw new Error(
+            formatApiRequestError(
+              startIssuePath,
+              startIssueOptions,
+              error,
+              `추가 이슈 실행 시작 실패\n- thread_id: ${threadId}\n- issue_id: ${issueId}\n- bridge_id: ${selectedBridgeId}\n- 설명: 이슈는 생성되었지만 실행 시작 요청이 실패했습니다. 현재 쓰레드는 idle, 이슈는 staged/queued로 남아 있을 수 있습니다.`
+            )
+          );
+        }
       }
       void loadThreadMessages(threadId, { force: true });
       return true;
