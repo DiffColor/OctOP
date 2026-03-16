@@ -4337,6 +4337,7 @@ export default function App() {
   const [installBusy, setInstallBusy] = useState(false);
   const [pwaUpdateVisible, setPwaUpdateVisible] = useState(false);
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
+  const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
   const threadLoadRequestIdRef = useRef(0);
   const todoChatLoadRequestIdRef = useRef(0);
@@ -4386,6 +4387,10 @@ export default function App() {
   }, [selectedThreadId]);
 
   useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+
+  useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
@@ -4415,6 +4420,28 @@ export default function App() {
 
       const requestId = threadLoadRequestIdRef.current + 1;
       threadLoadRequestIdRef.current = requestId;
+
+      const releaseThreadLoadingState = () => {
+        if (selectedThreadIdRef.current === threadId) {
+          return;
+        }
+
+        setThreadDetails((current) => {
+          const currentEntry = current[threadId];
+
+          if (!currentEntry?.loading) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [threadId]: {
+              ...currentEntry,
+              loading: false
+            }
+          };
+        });
+      };
 
       setThreadDetails((current) => {
         const currentEntry = current[threadId];
@@ -4467,6 +4494,7 @@ export default function App() {
         const normalizedThread = normalizeThread(latestThread);
 
         if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+          releaseThreadLoadingState();
           return;
         }
 
@@ -4504,6 +4532,7 @@ export default function App() {
         }
       } catch (error) {
         if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+          releaseThreadLoadingState();
           return;
         }
 
@@ -4625,25 +4654,47 @@ export default function App() {
       return [];
     }
 
-    const nextBridges = (await apiRequest(
+    const rawBridges = (await apiRequest(
       `/api/bridges?login_id=${encodeURIComponent(sessionArg.loginId)}`
     )).bridges ?? [];
+    const normalizedBridges = rawBridges
+      .map((bridge) => {
+        if (!bridge) {
+          return null;
+        }
 
-    setBridges(nextBridges);
+        const normalizedId = String(bridge.bridge_id ?? bridge.id ?? "").trim();
+
+        if (!normalizedId) {
+          return null;
+        }
+
+        if (bridge.bridge_id === normalizedId) {
+          return bridge;
+        }
+
+        return {
+          ...bridge,
+          bridge_id: normalizedId
+        };
+      })
+      .filter(Boolean);
+
+    setBridges(normalizedBridges);
     const storedBridgeId = readStoredBridgeId();
     setSelectedBridgeId((current) => {
-      if (current && nextBridges.some((bridge) => bridge.bridge_id === current)) {
+      if (current && normalizedBridges.some((bridge) => bridge.bridge_id === current)) {
         return current;
       }
 
-      if (storedBridgeId && nextBridges.some((bridge) => bridge.bridge_id === storedBridgeId)) {
+      if (storedBridgeId && normalizedBridges.some((bridge) => bridge.bridge_id === storedBridgeId)) {
         return storedBridgeId;
       }
 
-      return nextBridges[0]?.bridge_id ?? "";
+      return normalizedBridges[0]?.bridge_id ?? "";
     });
 
-    return nextBridges;
+    return normalizedBridges;
   }
 
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
@@ -4858,6 +4909,12 @@ export default function App() {
     };
   }, []);
 
+  const handleBackToInbox = useCallback(() => {
+    setDraftThreadProjectId("");
+    setActiveView("inbox");
+    activeViewRef.current = "inbox";
+  }, [setDraftThreadProjectId, setActiveView]);
+
   useEffect(() => {
     if (typeof window === "undefined" || !window.history?.pushState) {
       return undefined;
@@ -4865,6 +4922,11 @@ export default function App() {
 
     const handlePopState = (event) => {
       event?.preventDefault?.();
+
+      if (activeViewRef.current === "thread") {
+        handleBackToInbox();
+      }
+
       window.history.pushState(null, "", window.location.href);
     };
 
@@ -4874,7 +4936,7 @@ export default function App() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [handleBackToInbox]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -5208,6 +5270,24 @@ export default function App() {
   }, [selectedBridgeId, session?.loginId]);
 
   useEffect(() => {
+    threadLoadRequestIdRef.current += 1;
+    todoChatLoadRequestIdRef.current += 1;
+
+    setSelectedScope({ kind: "project", id: "" });
+    setSelectedThreadId("");
+    setSelectedTodoChatId("");
+    setDraftThreadProjectId("");
+    setThreadListsByProjectId({});
+    setTodoChats([]);
+    setTodoChatDetails({});
+    setThreadDetails({});
+    setWorkspaceRoots([]);
+    setFolderState({ path: "", parent_path: null, entries: [] });
+    setSelectedWorkspacePath("");
+    setActiveView("inbox");
+  }, [selectedBridgeId]);
+
+  useEffect(() => {
     if (!session?.loginId) {
       return;
     }
@@ -5274,24 +5354,6 @@ export default function App() {
     selectedThreadUpdatedAt,
     session?.loginId
   ]);
-
-  useEffect(() => {
-    threadLoadRequestIdRef.current += 1;
-    todoChatLoadRequestIdRef.current += 1;
-
-    setSelectedScope({ kind: "project", id: "" });
-    setSelectedThreadId("");
-    setSelectedTodoChatId("");
-    setDraftThreadProjectId("");
-    setThreadListsByProjectId({});
-    setTodoChats([]);
-    setTodoChatDetails({});
-    setThreadDetails({});
-    setWorkspaceRoots([]);
-    setFolderState({ path: "", parent_path: null, entries: [] });
-    setSelectedWorkspacePath("");
-    setActiveView("inbox");
-  }, [selectedBridgeId]);
 
   useEffect(() => {
     threadLoadRequestIdRef.current += 1;
@@ -6441,10 +6503,7 @@ export default function App() {
         }}
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
-        onBackToInbox={() => {
-          setDraftThreadProjectId("");
-          setActiveView("inbox");
-        }}
+        onBackToInbox={handleBackToInbox}
       />
       <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
     </>
