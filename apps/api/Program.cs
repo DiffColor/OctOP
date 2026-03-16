@@ -84,6 +84,68 @@ app.Use(async (httpContext, next) =>
 
   await next();
 });
+app.Use(async (httpContext, next) =>
+{
+  try
+  {
+    await next();
+  }
+  catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
+  {
+    if (!httpContext.Response.HasStarted)
+    {
+      httpContext.Response.StatusCode = 499;
+    }
+  }
+  catch (JsonException exception)
+  {
+    if (httpContext.Response.HasStarted)
+    {
+      throw;
+    }
+
+    httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+    httpContext.Response.ContentType = "application/json; charset=utf-8";
+    await httpContext.Response.WriteAsync(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "invalid json body",
+        ["code"] = "invalid_json",
+        ["meta"] = new Dictionary<string, object?>
+        {
+          ["method"] = httpContext.Request.Method,
+          ["path"] = httpContext.Request.Path.Value,
+          ["detail"] = exception.Message
+        }
+      }));
+  }
+  catch (BridgeNatsRequestException exception)
+  {
+    if (httpContext.Response.HasStarted)
+    {
+      throw;
+    }
+
+    httpContext.Response.StatusCode = ResolveBridgeNatsStatusCode(exception);
+    httpContext.Response.ContentType = "application/json; charset=utf-8";
+    await httpContext.Response.WriteAsync(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = exception.Message,
+        ["code"] = exception.Code,
+        ["meta"] = new Dictionary<string, object?>
+        {
+          ["method"] = httpContext.Request.Method,
+          ["path"] = httpContext.Request.Path.Value,
+          ["subject"] = exception.Subject,
+          ["timeout_ms"] = exception.TimeoutMs,
+          ["inner_error"] = exception.InnerException?.GetType().Name
+        }
+      }));
+  }
+});
 
 app.MapGet("/health", () =>
 {
@@ -1479,6 +1541,17 @@ static string ResolveIdentityKey(HttpContext httpContext)
   }
 
   return BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+}
+
+static int ResolveBridgeNatsStatusCode(BridgeNatsRequestException exception)
+{
+  return exception.Code switch
+  {
+    "bridge_timeout" => StatusCodes.Status504GatewayTimeout,
+    "bridge_no_responders" => StatusCodes.Status503ServiceUnavailable,
+    "bridge_transport_error" => StatusCodes.Status503ServiceUnavailable,
+    _ => StatusCodes.Status502BadGateway
+  };
 }
 
 static string ResolveRootThreadId(string fallbackThreadId, JsonNode? payload)

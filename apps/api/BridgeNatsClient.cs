@@ -47,6 +47,15 @@ public sealed class BridgeNatsClient : IDisposable
         _requestTimeoutMs,
         exception);
     }
+    catch (NATSException exception)
+    {
+      throw new BridgeNatsRequestException(
+        "bridge_transport_error",
+        $"NATS transport error occurred while contacting bridge. subject={subject}",
+        subject,
+        _requestTimeoutMs,
+        exception);
+    }
 
     if (response?.Data is null || response.Data.Length == 0)
     {
