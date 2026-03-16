@@ -3106,6 +3106,7 @@ function MainPage({
   session,
   bridges,
   status,
+  bridgeSignal,
   projects,
   projectThreads,
   issues,
@@ -6599,6 +6600,7 @@ export default function App() {
       session={session}
       bridges={bridges}
       status={status}
+      bridgeSignal={bridgeSignal}
       projects={projects}
       projectThreads={projectThreads}
       issues={issues}
