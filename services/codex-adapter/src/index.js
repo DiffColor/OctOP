@@ -4139,9 +4139,10 @@ async function interruptThreadIssue(userId, payload = {}) {
 
   if (wasActive) {
     interruptResult = await interruptThreadExecutionBestEffort(thread);
+    const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
-    if (interruptResult.errors.length > 0 && !interruptResult.errors.includes("codex thread not bound")) {
-      console.warn("[OctOP bridge] issue interrupt proceeded after stop attempt errors", {
+    if (blockingStopErrors.length > 0) {
+      console.warn("[OctOP bridge] issue interrupt aborted due to stop attempt errors", {
         ...buildLogContext({
           root_thread_id: issue.thread_id,
           physical_thread_id: thread.active_physical_thread_id ?? null,
@@ -4149,8 +4150,22 @@ async function interruptThreadIssue(userId, payload = {}) {
           issue_id: issueId,
           event_type: "thread.issue.interrupt.stopBestEffort.failed"
         }),
-        errors: interruptResult.errors
+        errors: blockingStopErrors
       });
+
+      return {
+        accepted: false,
+        action: "stop_failed",
+        error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
+        thread,
+        issues: listThreadIssues(issue.thread_id),
+        issue_id: issueId,
+        interrupt_result: {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      };
     }
 
     clearRunningIssueTracking(issue.thread_id);
@@ -6200,14 +6215,57 @@ function hasActiveThreadExecution(userId) {
   return listLocalThreads(userId).some((thread) => ["running", "awaiting_input"].includes(thread.status));
 }
 
-function isBridgeIdle() {
-  for (const thread of threadStateById.values()) {
-    if (thread && !thread.deleted_at && ["running", "awaiting_input"].includes(thread.status)) {
-      return false;
+function hasLocalLiveExecution() {
+  for (const [threadId, issueId] of activeIssueByThreadId.entries()) {
+    const thread = threadStateById.get(threadId);
+    const issue = issueCardsById.get(issueId);
+
+    if (thread?.deleted_at || issue?.deleted_at) {
+      continue;
+    }
+
+    if (["running", "awaiting_input"].includes(issue?.status ?? thread?.status ?? "")) {
+      return true;
     }
   }
 
-  return true;
+  for (const issue of issueCardsById.values()) {
+    if (!issue || issue.deleted_at) {
+      continue;
+    }
+
+    const thread = threadStateById.get(issue.thread_id);
+
+    if (!thread || thread.deleted_at) {
+      continue;
+    }
+
+    if (["running", "awaiting_input"].includes(issue.status ?? "")) {
+      return true;
+    }
+  }
+
+  for (const physicalThread of physicalThreadStateById.values()) {
+    if (!physicalThread || physicalThread.deleted_at || physicalThread.closed_at) {
+      continue;
+    }
+
+    const rootThread = threadStateById.get(physicalThread.root_thread_id);
+
+    if (!rootThread || rootThread.deleted_at) {
+      continue;
+    }
+
+    if (physicalThread.status === "active" || String(physicalThread.turn_id ?? "").trim()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isBridgeIdle() {
+  return !hasLocalLiveExecution();
 }
 
 const appServer = new AppServerClient();
@@ -6341,9 +6399,10 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
 
   if (trackedIssue && ["running", "awaiting_input"].includes(trackedIssue.status)) {
     interruptResult = await interruptThreadExecutionBestEffort(rootThread);
+    const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
-    if (interruptResult.errors.length > 0 && !interruptResult.errors.includes("codex thread not bound")) {
-      console.warn("[OctOP bridge] thread unlock proceeded after stop attempt errors", {
+    if (blockingStopErrors.length > 0) {
+      console.warn("[OctOP bridge] thread unlock aborted due to stop attempt errors", {
         ...buildLogContext({
           root_thread_id: rootThreadId,
           physical_thread_id: rootThread.active_physical_thread_id ?? null,
@@ -6351,8 +6410,24 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
           issue_id: trackedIssue.id,
           event_type: "thread.unlock.stopBestEffort.failed"
         }),
-        errors: interruptResult.errors
+        errors: blockingStopErrors
       });
+
+      return {
+        accepted: false,
+        action: "stop_failed",
+        error: "마지막 이슈를 안전하게 중단하지 못했습니다.",
+        thread: threadStateById.get(rootThreadId) ?? rootThread,
+        issues: listThreadIssues(rootThreadId),
+        unlocked_issue_id: null,
+        queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
+        recovery_steps: recoverySteps,
+        interrupt_result: {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      };
     }
 
     updateIssueCard(trackedIssue.id, {

@@ -317,6 +317,14 @@ class FakeAppServer {
       params: message.params
     });
 
+    const noResponseMethods = Array.isArray(this.options.noResponseMethods)
+      ? this.options.noResponseMethods
+      : [];
+
+    if (noResponseMethods.includes(message.method)) {
+      return;
+    }
+
     switch (message.method) {
       case "initialize":
         this.respond(message.id, {});
@@ -1273,6 +1281,146 @@ test("todo issue를 preparation으로 되돌리면 queued issue가 staged로 이
       timeoutMs: 10000,
       intervalMs: 250,
       label: "todo issue returned to prep"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("thread unlock stop 실패 시 running 추적을 유지한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-unlock-stop-failed-int-"));
+  const fakeAppServer = new FakeAppServer({
+    noResponseMethods: ["thread/realtime/stop"]
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-unlock-stop-failed-token",
+    userId: "integration-user",
+    bridgeId: `thread-unlock-stop-failed-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Thread Unlock Stop Failure"
+    });
+
+    await assert.rejects(
+      bridge.request(`/api/threads/${rootThreadId}/unlock`, {
+        method: "POST",
+        body: JSON.stringify({
+          reason: "manual_refresh"
+        })
+      }),
+      /stop_failed|중단하지 못했습니다/
+    );
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const health = await bridge.request("/health");
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(health.status?.app_server?.idle, false);
+      return { issuePayload, health };
+    }, {
+      timeoutMs: 8000,
+      intervalMs: 250,
+      label: "running issue preserved after unlock failure"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("한 thread의 stop 실패가 다른 thread의 issue 시작을 막지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-cross-thread-isolation-int-"));
+  const fakeAppServer = new FakeAppServer({
+    noResponseMethods: ["thread/realtime/stop"]
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-cross-thread-isolation-token",
+    userId: "integration-user",
+    bridgeId: `cross-thread-isolation-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const firstScenario = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Primary Thread With Stop Failure"
+    });
+
+    await assert.rejects(
+      bridge.request(`/api/threads/${firstScenario.rootThreadId}/unlock`, {
+        method: "POST",
+        body: JSON.stringify({
+          reason: "manual_refresh"
+        })
+      }),
+      /stop_failed|중단하지 못했습니다/
+    );
+
+    const secondThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Independent Secondary Thread"
+      })
+    });
+    const secondThreadId = secondThreadPayload.thread.id;
+    const secondIssuePayload = await bridge.request(`/api/threads/${secondThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Independent Issue",
+        prompt: PROMPT
+      })
+    });
+    const secondIssueId = secondIssuePayload.issue.id;
+
+    const startPayload = await bridge.request(`/api/threads/${secondThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [secondIssueId]
+      })
+    });
+
+    assert.equal(startPayload.accepted, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${secondIssueId}`);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(issuePayload.issue?.thread_id, secondThreadId);
+      return issuePayload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "secondary thread issue started despite primary thread error"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;

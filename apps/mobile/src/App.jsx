@@ -36,6 +36,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 
 function formatSilentDuration(ms) {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -766,6 +767,32 @@ function normalizeThread(thread, fallbackProjectId = null) {
     context_usage_percent: contextUsage?.percent ?? null,
     context_used_tokens: contextUsage?.usedTokens ?? null,
     context_window_tokens: contextUsage?.windowTokens ?? null
+  };
+}
+
+function normalizeIssue(issue, fallbackThreadId = null) {
+  if (!issue?.id || issue.deleted_at) {
+    return null;
+  }
+
+  return {
+    id: issue.id,
+    thread_id: issue.thread_id ?? fallbackThreadId,
+    root_thread_id: issue.root_thread_id ?? issue.thread_id ?? fallbackThreadId,
+    project_id: issue.project_id ?? null,
+    title: issue.title ?? "",
+    status: issue.status ?? "staged",
+    progress: clampProgress(issue.progress),
+    last_event: issue.last_event ?? "issue.created",
+    last_message: issue.last_message ?? "",
+    created_at: issue.created_at ?? new Date().toISOString(),
+    updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
+    prompt: issue.prompt ?? "",
+    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
+    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    continuity: issue.continuity ?? null,
+    created_physical_thread_id: issue.created_physical_thread_id ?? null,
+    executed_physical_thread_id: issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null
   };
 }
 
@@ -3275,7 +3302,7 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
   );
 }
 
-function MessageBubble({ align = "left", tone = "light", title, meta, children }) {
+function MessageBubble({ align = "left", tone = "light", title, meta, children, onLongPress = null, longPressTitle = "" }) {
   const bubbleClassName =
     tone === "brand"
       ? "bg-telegram-500 text-white"
@@ -3290,10 +3317,76 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children }
             : "bg-white text-slate-900";
   const wrapperClassName =
     align === "right" ? "justify-end" : align === "center" ? "justify-center" : "justify-start";
+  const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+
+  const beginLongPress = useCallback(
+    (event) => {
+      if (!onLongPress) {
+        return;
+      }
+
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      longPressTriggeredRef.current = false;
+      clearLongPressTimer();
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTriggeredRef.current = true;
+        onLongPress();
+      }, MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS);
+    },
+    [clearLongPressTimer, onLongPress]
+  );
+
+  const cancelLongPress = useCallback(() => {
+    clearLongPressTimer();
+  }, [clearLongPressTimer]);
+
+  const handleContextMenu = useCallback(
+    (event) => {
+      if (!onLongPress) {
+        return;
+      }
+
+      event.preventDefault();
+    },
+    [onLongPress]
+  );
+
+  const handleClickCapture = useCallback((event) => {
+    if (!longPressTriggeredRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    longPressTriggeredRef.current = false;
+  }, []);
 
   return (
     <div className={`message-enter flex ${wrapperClassName}`} data-testid={`message-bubble-${tone}`}>
-      <article className={`max-w-[86%] rounded-[1.35rem] px-4 py-3 ${bubbleClassName}`}>
+      <article
+        className={`max-w-[86%] rounded-[1.35rem] px-4 py-3 ${bubbleClassName} ${onLongPress ? "select-none" : ""}`}
+        title={longPressTitle || undefined}
+        onPointerDown={beginLongPress}
+        onPointerUp={cancelLongPress}
+        onPointerLeave={cancelLongPress}
+        onPointerCancel={cancelLongPress}
+        onPointerMove={cancelLongPress}
+        onContextMenu={handleContextMenu}
+        onClickCapture={handleClickCapture}
+      >
         {title ? <p className="text-xs font-semibold uppercase tracking-[0.16em] opacity-70">{title}</p> : null}
         <div className={title ? "mt-2" : ""}>{children}</div>
         {meta ? <p className="mt-3 text-right text-[11px] opacity-60">{meta}</p> : null}
@@ -3403,6 +3496,20 @@ function ThreadDetail({
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
   const contextUsage = getThreadContextUsage(thread);
   const safeIssues = Array.isArray(issues) ? issues : [];
+  const issueById = useMemo(() => {
+    const next = new Map();
+
+    safeIssues.forEach((issue) => {
+      const normalized = normalizeIssue(issue, thread?.id);
+
+      if (normalized) {
+        next.set(normalized.id, normalized);
+      }
+    });
+
+    return next;
+  }, [safeIssues, thread?.id]);
+  const activePhysicalThreadId = thread?.active_physical_thread_id ?? null;
   const hasRunningIssue = safeIssues.some((issue) => issue?.status === "running");
   const isInputDisabled = thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
   const chatTimeline = useMemo(() => {
@@ -3428,7 +3535,8 @@ function ThreadDetail({
         id: message.id ?? `${role}-${index}`,
         role,
         content,
-        timestamp
+        timestamp,
+        issueId: message.issue_id ?? null
       };
 
       if (role === "system") {
@@ -3549,13 +3657,6 @@ function ThreadDetail({
     return groups;
   }, [messages, thread?.created_at, thread?.updated_at]);
   const runTimeline = useMemo(() => buildRunTimeline(thread), [thread]);
-  const visibleIssues = useMemo(
-    () =>
-      [...safeIssues].sort(
-        (left, right) => Date.parse(right.updated_at ?? right.created_at ?? 0) - Date.parse(left.updated_at ?? left.created_at ?? 0)
-      ),
-    [safeIssues]
-  );
   const promptTimeline = useMemo(
     () => conversationTimeline.map((entry) => ({ ...entry, responses: [] })),
     [conversationTimeline]
@@ -3727,6 +3828,25 @@ function ThreadDetail({
     }
   };
 
+  const canDeleteIssueFromBubble = useCallback(
+    (issueId) => {
+      if (!issueId || !activePhysicalThreadId) {
+        return false;
+      }
+
+      const issue = issueById.get(issueId);
+
+      if (!issue || ["running", "awaiting_input"].includes(issue.status)) {
+        return false;
+      }
+
+      const issuePhysicalThreadId = issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null;
+
+      return issuePhysicalThreadId === activePhysicalThreadId;
+    },
+    [activePhysicalThreadId, issueById]
+  );
+
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
   const showEmptyState = (() => {
     if (messagesLoading || messagesError) {
@@ -3845,49 +3965,6 @@ function ThreadDetail({
             </span>
           </div>
 
-          {visibleIssues.length > 0 ? (
-            <section className="rounded-[1.6rem] border border-white/8 bg-white/5 px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">이슈 목록</p>
-                  <p className="mt-1 text-sm text-slate-300">개별 이슈를 확인하고 삭제할 수 있습니다.</p>
-                </div>
-                <span className="rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[11px] text-slate-300">
-                  {visibleIssues.length}개
-                </span>
-              </div>
-              <div className="mt-3 space-y-2">
-                {visibleIssues.map((issue) => {
-                  const issueStatus = getStatusMeta(issue.status);
-                  const deleteDisabled = deletingIssueId === issue.id || ["running", "awaiting_input"].includes(issue.status);
-
-                  return (
-                    <div
-                      key={issue.id}
-                      className="flex items-start justify-between gap-3 rounded-[1.15rem] border border-white/8 bg-slate-950/55 px-3 py-3"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={`h-2 w-2 rounded-full ${issueStatus.dotClassName}`} />
-                          <p className="truncate text-sm font-medium text-white">{issue.title ?? "제목 없는 이슈"}</p>
-                        </div>
-                        <p className="mt-1 text-xs leading-5 text-slate-400">{formatRelativeTime(issue.updated_at)}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteIssue(issue.id)}
-                        disabled={deleteDisabled}
-                        className="rounded-full border border-rose-400/20 px-3 py-1.5 text-[11px] font-medium text-rose-100 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500 disabled:opacity-60"
-                      >
-                        {deletingIssueId === issue.id ? "삭제 중" : "삭제"}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
-
           {messagesError ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
               <p>메시지를 불러오는 중 문제가 발생했습니다.</p>
@@ -3911,6 +3988,12 @@ function ThreadDetail({
                 tone={message.tone}
                 title={message.title}
                 meta={formatRelativeTime(message.timestamp)}
+                onLongPress={
+                  canDeleteIssueFromBubble(message.issueId) && deletingIssueId !== message.issueId
+                    ? () => void handleDeleteIssue(message.issueId)
+                    : null
+                }
+                longPressTitle={canDeleteIssueFromBubble(message.issueId) ? "길게 눌러 이슈 삭제" : ""}
               >
                 {message.replyTo ? (
                   <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
@@ -4794,9 +4877,10 @@ export default function App() {
         const issueList = await apiRequest(
           `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
         );
-        const issues = [...(issueList?.issues ?? [])].sort(
-          (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)
-        );
+        const issues = [...(issueList?.issues ?? [])]
+          .map((issue) => normalizeIssue(issue, threadId))
+          .filter(Boolean)
+          .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
         const details = await Promise.all(
           issues.map((issue) =>
             apiRequest(
@@ -6208,6 +6292,31 @@ export default function App() {
       return false;
     }
 
+    const activePhysicalThreadId = selectedThread?.active_physical_thread_id ?? null;
+    const targetIssue = (currentThreadDetail?.issues ?? [])
+      .map((issue) => normalizeIssue(issue, selectedThreadId))
+      .find((issue) => issue?.id === issueId);
+
+    if (!activePhysicalThreadId || !targetIssue) {
+      return false;
+    }
+
+    if (["running", "awaiting_input"].includes(targetIssue.status)) {
+      if (typeof window !== "undefined") {
+        window.alert("실행 중인 이슈는 삭제할 수 없습니다.");
+      }
+      return false;
+    }
+
+    const targetPhysicalThreadId = targetIssue.executed_physical_thread_id ?? targetIssue.created_physical_thread_id ?? null;
+
+    if (targetPhysicalThreadId !== activePhysicalThreadId) {
+      if (typeof window !== "undefined") {
+        window.alert("현재 active thread에 속한 이슈만 삭제할 수 있습니다.");
+      }
+      return false;
+    }
+
     if (typeof window !== "undefined" && !window.confirm("이 이슈를 삭제하시겠습니까? 관련 메시지도 함께 목록에서 사라집니다.")) {
       return false;
     }
@@ -6238,7 +6347,7 @@ export default function App() {
       }
       return false;
     }
-  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session]);
+  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
