@@ -108,6 +108,7 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT ?? 2
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
+const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
 
 if (
   THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON &&
@@ -4061,14 +4062,123 @@ async function publishEvent(loginId, type, payload) {
     timestamp: now()
   };
   ensureUserState(loginId).updated_at = event.timestamp;
-  nc.publish(subjects.events, sc.encode(JSON.stringify(event)));
+  const publishedEvent = publishNatsEventWithFallback(subjects.events, event) ?? event;
   const threadId = resolveLocalThreadId(
     payload?.thread_id ?? payload?.threadId ?? payload?.thread?.id ?? payload?.conversationId
   );
 
   if (threadId) {
-    threadEventsById.set(threadId, event);
+    threadEventsById.set(threadId, publishedEvent);
   }
+}
+
+function publishNatsEventWithFallback(subject, event) {
+  try {
+    nc.publish(subject, sc.encode(JSON.stringify(event)));
+    return event;
+  } catch (error) {
+    if (error?.code !== "MAX_PAYLOAD_EXCEEDED") {
+      throw error;
+    }
+
+    const chunkedEvent = publishChunkedDeltaEvent(subject, event);
+
+    if (chunkedEvent) {
+      return chunkedEvent;
+    }
+
+    console.warn("[OctOP bridge] NATS event dropped: max payload exceeded", {
+      type: event.type,
+      payload_bytes: Buffer.byteLength(JSON.stringify(event), "utf8"),
+      thread_id: event.payload?.thread_id ?? event.payload?.threadId ?? event.payload?.thread?.id ?? null,
+      root_thread_id: event.payload?.root_thread_id ?? null,
+      physical_thread_id: event.payload?.physical_thread_id ?? null,
+      project_id: event.payload?.project_id ?? null,
+      issue_id: event.payload?.issue_id ?? null
+    });
+    return null;
+  }
+}
+
+function publishChunkedDeltaEvent(subject, event) {
+  if (event.type !== "item.agentMessage.delta") {
+    return null;
+  }
+
+  const delta = String(event.payload?.delta ?? "");
+
+  if (!delta) {
+    return null;
+  }
+
+  const chunks = splitTextByUtf8Bytes(delta, NATS_DELTA_CHUNK_MAX_BYTES);
+
+  if (chunks.length <= 1) {
+    return null;
+  }
+
+  let lastChunkEvent = null;
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunkEvent = {
+      ...event,
+      payload: {
+        ...event.payload,
+        delta: chunks[index],
+        delta_chunk_index: index + 1,
+        delta_chunk_count: chunks.length
+      },
+      timestamp: now()
+    };
+
+    nc.publish(subject, sc.encode(JSON.stringify(chunkEvent)));
+    lastChunkEvent = chunkEvent;
+  }
+
+  console.warn("[OctOP bridge] split agent delta event for streaming publish", {
+    original_bytes: Buffer.byteLength(delta, "utf8"),
+    chunk_count: chunks.length,
+    max_chunk_bytes: NATS_DELTA_CHUNK_MAX_BYTES,
+    thread_id: event.payload?.thread_id ?? null,
+    issue_id: event.payload?.issue_id ?? null
+  });
+
+  return lastChunkEvent;
+}
+
+function splitTextByUtf8Bytes(text, maxBytes) {
+  const normalizedText = String(text ?? "");
+
+  if (!normalizedText) {
+    return [""];
+  }
+
+  if (Buffer.byteLength(normalizedText, "utf8") <= maxBytes) {
+    return [normalizedText];
+  }
+
+  const chunks = [];
+  let cursor = 0;
+
+  while (cursor < normalizedText.length) {
+    let end = Math.min(normalizedText.length, cursor + maxBytes);
+    let chunk = normalizedText.slice(cursor, end);
+
+    while (chunk && Buffer.byteLength(chunk, "utf8") > maxBytes) {
+      end -= 1;
+      chunk = normalizedText.slice(cursor, end);
+    }
+
+    if (!chunk) {
+      end = cursor + 1;
+      chunk = normalizedText.slice(cursor, end);
+    }
+
+    chunks.push(chunk);
+    cursor = end;
+  }
+
+  return chunks;
 }
 
 function ensureThreadMessages(threadId) {
@@ -4543,10 +4653,8 @@ function resolveOwnerFromParams(params = {}) {
   return threadOwners.get(threadId) ?? null;
 }
 
-function buildRemoteNotificationPayload(params = {}, context = {}) {
-  const remotePayload = {
-    ...params
-  };
+function buildRemoteNotificationPayload(method, params = {}, context = {}) {
+  const remotePayload = buildCompactRemoteNotificationPayload(method, params);
 
   if (context.codexThreadId && !remotePayload.codex_thread_id) {
     remotePayload.codex_thread_id = context.codexThreadId;
@@ -4573,6 +4681,116 @@ function buildRemoteNotificationPayload(params = {}, context = {}) {
   }
 
   return remotePayload;
+}
+
+function buildCompactRemoteNotificationPayload(method, params = {}) {
+  switch (method) {
+    case "thread/started":
+      return {
+        thread: params.thread?.id ? { id: params.thread.id } : undefined
+      };
+    case "thread/status/changed":
+      return {
+        status: params.status?.type ? { type: params.status.type } : undefined
+      };
+    case "thread/tokenUsage/updated":
+      return {
+        tokenUsage: compactTokenUsage(params.tokenUsage ?? params.token_usage ?? null)
+      };
+    case "turn/started":
+    case "turn/completed":
+      return {
+        turn: params.turn
+          ? {
+              id: params.turn.id ?? null,
+              status: params.turn.status ?? null
+            }
+          : undefined
+      };
+    case "item/agentMessage/delta":
+      return {
+        delta: String(params.delta ?? "")
+      };
+    case "turn/plan/updated":
+    case "turn/diff/updated":
+      return {};
+    default:
+      return compactGenericNotificationPayload(params);
+  }
+}
+
+function compactTokenUsage(tokenUsage) {
+  if (!tokenUsage || typeof tokenUsage !== "object") {
+    return null;
+  }
+
+  return {
+    inputTokens: numericOrNull(tokenUsage.inputTokens ?? tokenUsage.input_tokens),
+    outputTokens: numericOrNull(tokenUsage.outputTokens ?? tokenUsage.output_tokens),
+    totalTokens: numericOrNull(tokenUsage.totalTokens ?? tokenUsage.total_tokens),
+    contextWindowTokens: numericOrNull(
+      tokenUsage.contextWindowTokens ?? tokenUsage.context_window_tokens
+    )
+  };
+}
+
+function compactGenericNotificationPayload(params = {}) {
+  const compact = {};
+
+  if (params.thread?.id) {
+    compact.thread = { id: params.thread.id };
+  }
+
+  if (params.status?.type) {
+    compact.status = { type: params.status.type };
+  }
+
+  if (params.turn) {
+    compact.turn = {
+      id: params.turn.id ?? null,
+      status: params.turn.status ?? null
+    };
+  }
+
+  if (params.delta) {
+    compact.delta = truncateNotificationText(params.delta, 16000);
+  }
+
+  if (params.conversationId) {
+    compact.conversationId = params.conversationId;
+  }
+
+  if (params.threadId) {
+    compact.threadId = params.threadId;
+  }
+
+  if (params.thread_id) {
+    compact.thread_id = params.thread_id;
+  }
+
+  if (params.root_thread_id) {
+    compact.root_thread_id = params.root_thread_id;
+  }
+
+  if (params.physical_thread_id) {
+    compact.physical_thread_id = params.physical_thread_id;
+  }
+
+  return compact;
+}
+
+function truncateNotificationText(value, maxLength = 16000) {
+  const text = String(value ?? "");
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}…[truncated ${text.length - maxLength} chars]`;
+}
+
+function numericOrNull(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 function formatAccount(accountInfo) {
@@ -4976,7 +5194,7 @@ class AppServerClient {
     await publishEvent(
       owner,
       method.replaceAll("/", "."),
-      buildRemoteNotificationPayload(params, {
+      buildRemoteNotificationPayload(method, params, {
         codexThreadId,
         threadId,
         rootThreadId: threadId,
