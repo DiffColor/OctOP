@@ -39,6 +39,15 @@ const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") 
 const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
+const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 15000
+);
+const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 45000
+);
+const APP_SERVER_RECONNECT_DELAY_MS = Number(
+  process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
+);
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
@@ -3474,6 +3483,22 @@ function invalidateCodexThreadBinding(threadId) {
   return nextRootThread;
 }
 
+function shouldInvalidateCodexThreadBindingForFailure(method, params = {}, issuePatch = null) {
+  if (issuePatch?.status !== "failed") {
+    return false;
+  }
+
+  if (method === "thread/status/changed") {
+    return (params.status?.type ?? "") === "error";
+  }
+
+  if (method === "turn/completed") {
+    return params.turn?.status !== "completed";
+  }
+
+  return false;
+}
+
 async function startTurnOnPhysicalThread(
   userId,
   rootThreadId,
@@ -3601,6 +3626,7 @@ async function startTurnOnPhysicalThread(
 
       clearRunningIssueTracking(rootThreadId);
       activeIssueByPhysicalThreadId.delete(physicalThreadId);
+      invalidateCodexThreadBinding(rootThreadId);
       updateIssueCard(issueId, {
         executed_physical_thread_id: physicalThreadId,
         status: "failed",
@@ -4895,6 +4921,10 @@ class AppServerClient {
     this.readyPromise = null;
     this.lastReadyReason = null;
     this.socketConnectAttempt = 0;
+    this.heartbeatTimer = null;
+    this.lastSocketActivityAt = 0;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
   }
 
   async ensureReady(reason = "unspecified") {
@@ -4915,9 +4945,15 @@ class AppServerClient {
       last_error: this.lastError
     });
 
-    this.readyPromise = this.start(reason).finally(() => {
-      this.readyPromise = null;
-    });
+    this.readyPromise = this.start(reason)
+      .catch((error) => {
+        this.lastError = error.message;
+        this.scheduleReconnect(`ensureReady:${reason}`);
+        throw error;
+      })
+      .finally(() => {
+        this.readyPromise = null;
+      });
 
     return this.readyPromise;
   }
@@ -4940,6 +4976,8 @@ class AppServerClient {
     this.initialized = true;
     this.lastError = null;
     this.lastStartedAt = now();
+    this.reconnectAttempt = 0;
+    this.clearReconnectTimer();
     console.log("[OctOP bridge] app-server ready", {
       reason,
       account_email: this.account?.email ?? null,
@@ -4976,6 +5014,7 @@ class AppServerClient {
       this.connected = false;
       this.initialized = false;
       this.socket = null;
+      this.stopHeartbeat();
       this.lastError = code === 0 ? null : `app-server exited (${code ?? signal ?? "unknown"})`;
       console.warn("[OctOP bridge] app-server process exited", {
         code: code ?? null,
@@ -5036,15 +5075,26 @@ class AppServerClient {
         cleanup();
         this.socket = ws;
         this.connected = true;
+        this.markSocketActivity();
         console.log("[OctOP bridge] app-server websocket connected", {
           reason,
           attempt
         });
+        this.startHeartbeat(ws, { reason, attempt });
         ws.on("message", (payload) => this.handleMessage(payload));
+        ws.on("ping", () => {
+          this.markSocketActivity();
+        });
+        ws.on("pong", () => {
+          this.markSocketActivity();
+        });
         ws.on("close", (code, closeReasonBuffer) => {
           this.connected = false;
           this.initialized = false;
-          this.socket = null;
+          if (this.socket === ws) {
+            this.socket = null;
+          }
+          this.stopHeartbeat(ws);
           const closeReason = normalizeWebSocketCloseReason(closeReasonBuffer);
           this.lastError = formatAppServerSocketCloseError(code, closeReason);
           console.warn("[OctOP bridge] app-server websocket closed", {
@@ -5058,6 +5108,7 @@ class AppServerClient {
             pending.reject(new Error("app-server socket closed"));
             this.requests.delete(id);
           }
+          this.scheduleReconnect(`close:${code || "unknown"}`);
         });
         ws.on("error", (error) => {
           this.connected = false;
@@ -5089,6 +5140,7 @@ class AppServerClient {
   }
 
   handleMessage(payload) {
+    this.markSocketActivity();
     const data = JSON.parse(extractWebSocketMessageText(payload));
 
     if (data.id) {
@@ -5232,6 +5284,10 @@ class AppServerClient {
         }
       }
 
+      if (shouldInvalidateCodexThreadBindingForFailure(method, params, issuePatch)) {
+        invalidateCodexThreadBinding(threadId);
+      }
+
       if (method === "item/agentMessage/delta" && params.delta) {
         const activeIssueId =
           (physicalThreadId ? activeIssueByPhysicalThreadId.get(physicalThreadId) : null) ??
@@ -5358,6 +5414,96 @@ class AppServerClient {
   async request(method, params, reason = method) {
     await this.ensureReady(`request:${reason}`);
     return this.requestInternal(method, params);
+  }
+
+  markSocketActivity() {
+    this.lastSocketActivityAt = Date.now();
+  }
+
+  startHeartbeat(ws, context = {}) {
+    this.stopHeartbeat();
+    this.markSocketActivity();
+
+    if (APP_SERVER_HEARTBEAT_INTERVAL_MS <= 0 || APP_SERVER_HEARTBEAT_TIMEOUT_MS <= 0) {
+      return;
+    }
+
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (Date.now() - this.lastSocketActivityAt >= APP_SERVER_HEARTBEAT_TIMEOUT_MS) {
+        console.warn("[OctOP bridge] app-server websocket heartbeat timeout", {
+          ...context,
+          timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS
+        });
+        ws.terminate();
+        return;
+      }
+
+      try {
+        ws.ping();
+      } catch (error) {
+        console.warn("[OctOP bridge] app-server websocket ping failed", {
+          ...context,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }, APP_SERVER_HEARTBEAT_INTERVAL_MS);
+
+    this.heartbeatTimer.unref?.();
+  }
+
+  stopHeartbeat(ws = null) {
+    if (ws && this.socket && this.socket !== ws) {
+      return;
+    }
+
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  scheduleReconnect(trigger = "unspecified") {
+    if (this.reconnectTimer || this.readyPromise) {
+      return;
+    }
+
+    if (this.connected && this.initialized && this.socket?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    const attempt = this.reconnectAttempt + 1;
+    const delayMs = Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt);
+    this.reconnectAttempt = attempt;
+    console.warn("[OctOP bridge] scheduling app-server reconnect", {
+      trigger,
+      attempt,
+      delay_ms: delayMs
+    });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.ensureReady(`reconnect:${trigger}`).catch((error) => {
+        this.lastError = error.message;
+        console.warn("[OctOP bridge] app-server reconnect failed", {
+          trigger,
+          attempt,
+          message: error.message
+        });
+        this.scheduleReconnect(`retry:${trigger}`);
+      });
+    }, delayMs);
+
+    this.reconnectTimer.unref?.();
+  }
+
+  clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 }
 
@@ -5781,6 +5927,9 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
     }
 
     const terminalStatus = inferReconciledTerminalStatus(issue);
+    if (terminalStatus === "failed") {
+      invalidateCodexThreadBinding(threadId);
+    }
     updateIssueCard(activeIssueId, {
       status: terminalStatus,
       progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
@@ -5814,6 +5963,7 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId) {
   }
 
   if (reconciledStatus === "failed") {
+    invalidateCodexThreadBinding(threadId);
     updateIssueCard(activeIssueId, {
       status: "failed",
       progress: 0,

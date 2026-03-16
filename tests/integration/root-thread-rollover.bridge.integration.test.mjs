@@ -50,31 +50,31 @@ async function waitFor(assertion, { timeoutMs = 30000, intervalMs = 200, label =
   throw new Error(`${label} 대기 시간 초과: ${lastError?.message ?? "unknown error"}`);
 }
 
-function encodeWebSocketFrame(payload) {
-  const body = Buffer.from(payload, "utf8");
+function encodeWebSocketFrame(payload, opcode = 0x1) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), "utf8");
   const length = body.length;
 
   if (length < 126) {
-    return Buffer.concat([Buffer.from([0x81, length]), body]);
+    return Buffer.concat([Buffer.from([0x80 | opcode, length]), body]);
   }
 
   if (length < 65536) {
     const header = Buffer.alloc(4);
-    header[0] = 0x81;
+    header[0] = 0x80 | opcode;
     header[1] = 126;
     header.writeUInt16BE(length, 2);
     return Buffer.concat([header, body]);
   }
 
   const header = Buffer.alloc(10);
-  header[0] = 0x81;
+  header[0] = 0x80 | opcode;
   header[1] = 127;
   header.writeBigUInt64BE(BigInt(length), 2);
   return Buffer.concat([header, body]);
 }
 
 function decodeWebSocketFrames(buffer) {
-  const messages = [];
+  const frames = [];
   let offset = 0;
 
   while (offset + 2 <= buffer.length) {
@@ -108,11 +108,6 @@ function decodeWebSocketFrames(buffer) {
       break;
     }
 
-    if (opcode === 0x8) {
-      offset += frameLength;
-      continue;
-    }
-
     let payload = buffer.subarray(offset + headerLength + maskLength, offset + frameLength);
 
     if (masked) {
@@ -126,12 +121,15 @@ function decodeWebSocketFrames(buffer) {
       payload = unmasked;
     }
 
-    messages.push(payload.toString("utf8"));
+    frames.push({
+      opcode,
+      payload
+    });
     offset += frameLength;
   }
 
   return {
-    messages,
+    frames,
     rest: buffer.subarray(offset)
   };
 }
@@ -147,6 +145,9 @@ class FakeAppServer {
     this.threadSequence = 0;
     this.turnSequence = 0;
     this.options = options;
+    this.connectionCount = 0;
+    this.pingCount = 0;
+    this.idleTimerBySocket = new Map();
   }
 
   async start() {
@@ -177,22 +178,29 @@ class FakeAppServer {
 
       this.socket = socket;
       this.sockets.add(socket);
+      this.connectionCount += 1;
       socket.unref();
       this.bufferBySocket.set(socket, Buffer.alloc(0));
+      this.resetIdleDisconnectTimer(socket);
 
       socket.on("data", (chunk) => {
         const previous = this.bufferBySocket.get(socket) ?? Buffer.alloc(0);
-        const { messages, rest } = decodeWebSocketFrames(Buffer.concat([previous, chunk]));
+        const { frames, rest } = decodeWebSocketFrames(Buffer.concat([previous, chunk]));
         this.bufferBySocket.set(socket, rest);
 
-        for (const message of messages) {
-          this.handleMessage(message);
+        for (const frame of frames) {
+          this.handleFrame(socket, frame);
         }
       });
 
       socket.on("close", () => {
         this.bufferBySocket.delete(socket);
         this.sockets.delete(socket);
+        const idleTimer = this.idleTimerBySocket.get(socket);
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          this.idleTimerBySocket.delete(socket);
+        }
         if (this.socket === socket) {
           this.socket = null;
         }
@@ -220,6 +228,11 @@ class FakeAppServer {
       socket.destroy();
     }
 
+    for (const idleTimer of this.idleTimerBySocket.values()) {
+      clearTimeout(idleTimer);
+    }
+
+    this.idleTimerBySocket.clear();
     this.sockets.clear();
     this.socket = null;
 
@@ -237,12 +250,37 @@ class FakeAppServer {
     this.socket.write(encodeWebSocketFrame(JSON.stringify(payload)));
   }
 
+  destroyActiveSocket() {
+    assert.ok(this.socket, "fake app-server socket이 연결되어야 합니다.");
+    this.socket.destroy();
+  }
+
   notify(method, params) {
     this.send({
       jsonrpc: "2.0",
       method,
       params
     });
+  }
+
+  handleFrame(socket, frame) {
+    this.resetIdleDisconnectTimer(socket);
+
+    if (frame.opcode === 0x9) {
+      this.pingCount += 1;
+      socket.write(encodeWebSocketFrame(frame.payload, 0xA));
+      return;
+    }
+
+    if (frame.opcode === 0xA || frame.opcode === 0x8) {
+      return;
+    }
+
+    if (frame.opcode !== 0x1) {
+      return;
+    }
+
+    this.handleMessage(frame.payload.toString("utf8"));
   }
 
   handleMessage(rawMessage) {
@@ -360,16 +398,40 @@ class FakeAppServer {
   getRequests(method) {
     return this.requests.filter((entry) => entry.method === method);
   }
+
+  resetIdleDisconnectTimer(socket) {
+    const timeoutMs = Number(this.options.idleDisconnectAfterMs ?? 0);
+    const previousTimer = this.idleTimerBySocket.get(socket);
+
+    if (previousTimer) {
+      clearTimeout(previousTimer);
+      this.idleTimerBySocket.delete(socket);
+    }
+
+    if (timeoutMs <= 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (this.sockets.has(socket)) {
+        socket.destroy();
+      }
+    }, timeoutMs);
+
+    timer.unref?.();
+    this.idleTimerBySocket.set(socket, timer);
+  }
 }
 
 class BridgeProcess {
-  constructor({ port, token, userId, bridgeId, homeDir, appServerUrl }) {
+  constructor({ port, token, userId, bridgeId, homeDir, appServerUrl, extraEnv = {} }) {
     this.port = port;
     this.token = token;
     this.userId = userId;
     this.bridgeId = bridgeId;
     this.homeDir = homeDir;
     this.appServerUrl = appServerUrl;
+    this.extraEnv = extraEnv;
     this.stdout = [];
     this.stderr = [];
     this.child = null;
@@ -390,7 +452,8 @@ class BridgeProcess {
         OCTOP_APP_SERVER_AUTOSTART: "false",
         OCTOP_APP_SERVER_WS_URL: this.appServerUrl,
         OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "1000",
-        OCTOP_RUNNING_ISSUE_STALE_MS: "10000"
+        OCTOP_RUNNING_ISSUE_STALE_MS: "10000",
+        ...this.extraEnv
       },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -633,6 +696,174 @@ async function triggerPreflightThresholdRollover(
     targetCodexThreadId: rolloverContinuity.active_physical_thread.codex_thread_id
   };
 }
+
+test("브리지 app-server idle websocket heartbeat 유지", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-heartbeat-int-"));
+  const fakeAppServer = new FakeAppServer({
+    idleDisconnectAfterMs: 1200
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-heartbeat-token",
+    userId: "heartbeat-user",
+    bridgeId: `heartbeat-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "250"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  await sleep(3000);
+
+  const health = await bridge.request("/health");
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(fakeAppServer.connectionCount, 1);
+  assert.equal(fakeAppServer.pingCount >= 3, true);
+});
+
+test("브리지 app-server 1006 close 후 자동 재연결", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-reconnect-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-reconnect-token",
+    userId: "reconnect-user",
+    bridgeId: `reconnect-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "250"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  assert.equal(fakeAppServer.connectionCount, 1);
+
+  fakeAppServer.destroyActiveSocket();
+
+  await waitFor(async () => {
+    assert.equal(fakeAppServer.connectionCount >= 2, true);
+    assert.equal(fakeAppServer.getRequests("initialize").length >= 2, true);
+  }, {
+    timeoutMs: 15000,
+    intervalMs: 250,
+    label: "app-server auto reconnect"
+  });
+
+  const health = await bridge.request("/health");
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+});
+
+test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실행된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-failed-issue-recovery-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-failed-issue-recovery-token",
+    userId: "integration-user",
+    bridgeId: `failed-issue-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      stagedIssueId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Failed Issue Recovery Thread"
+    });
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [stagedIssueId]
+      })
+    });
+
+    fakeAppServer.notify("thread/status/changed", {
+      threadId: sourceCodexThreadId,
+      status: {
+        type: "error"
+      }
+    });
+
+    const recoveryContinuity = await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${stagedIssueId}`);
+      const failedIssueDetail = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(failedIssueDetail.issue?.status, "failed");
+      assert.equal(issueDetail.issue?.status, "running");
+      assert.ok(continuity.active_physical_thread?.codex_thread_id);
+      assert.notEqual(continuity.active_physical_thread.codex_thread_id, sourceCodexThreadId);
+      return continuity;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "failed issue recovery"
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length, 2);
+    assert.equal(fakeAppServer.getRequests("turn/start").length, 2);
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: recoveryContinuity.active_physical_thread.codex_thread_id,
+      turnId: "turn-recovered-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "recovered issue completed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
 
 test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-int-"));
