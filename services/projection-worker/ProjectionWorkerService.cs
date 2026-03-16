@@ -24,6 +24,8 @@ public sealed class ProjectionWorkerService : BackgroundService
   private const string LogicalThreadTimelineTable = "logical_thread_timeline";
   private const string LogicalThreadIssueBoardTable = "logical_thread_issue_board";
   private const string EventTable = "event_log";
+  private const string TodoChatTable = "todo_chats";
+  private const string TodoMessageTable = "todo_messages";
 
   private readonly ILogger<ProjectionWorkerService> _logger;
   private readonly string _natsUrl;
@@ -112,6 +114,8 @@ public sealed class ProjectionWorkerService : BackgroundService
     await EnsureTableAsync(connection, tables, HandoffSummaryTable);
     await EnsureTableAsync(connection, tables, LogicalThreadTimelineTable);
     await EnsureTableAsync(connection, tables, LogicalThreadIssueBoardTable);
+    await EnsureTableAsync(connection, tables, TodoChatTable);
+    await EnsureTableAsync(connection, tables, TodoMessageTable);
     await EnsureTableAsync(connection, tables, EventTable);
   }
 
@@ -132,6 +136,8 @@ public sealed class ProjectionWorkerService : BackgroundService
       await UpsertHandoffSummariesAsync(connection, @event);
       await UpsertLogicalThreadTimelineAsync(connection, @event);
       await UpsertLogicalThreadIssueBoardAsync(connection, @event);
+      await UpsertTodoChatsAsync(connection, @event);
+      await UpsertTodoMessagesAsync(connection, @event);
     }
     catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
     {
@@ -648,6 +654,215 @@ public sealed class ProjectionWorkerService : BackgroundService
         .OptArg("conflict", "replace")
         .RunResultAsync<object>(connection);
     }
+  }
+
+  private async Task UpsertTodoChatsAsync(RethinkConnection connection, JObject @event)
+  {
+    var type = (string?)@event["type"];
+
+    if (type != "todo.chat.created" &&
+        type != "todo.chat.updated" &&
+        type != "todo.chat.deleted" &&
+        type != "bridge.todoChats.updated")
+    {
+      return;
+    }
+
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
+    var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
+    var projectedAt = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+
+    if (type == "todo.chat.deleted")
+    {
+      var chatId = @event["payload"]?["todo_chat_id"]?.Value<string>() ??
+                   @event["payload"]?["chat_id"]?.Value<string>();
+
+      if (string.IsNullOrWhiteSpace(chatId))
+      {
+        return;
+      }
+
+      await _r.Db(_rethinkDb)
+        .Table(TodoChatTable)
+        .Get(chatId)
+        .Update(new
+        {
+          deleted_at = projectedAt,
+          updated_at = projectedAt,
+          last_event_type = type,
+          projected_at = projectedAt
+        })
+        .RunResultAsync<object>(connection);
+
+      return;
+    }
+
+    if (type == "bridge.todoChats.updated")
+    {
+      var chats = @event["payload"]?["chats"] as JArray;
+
+      if (chats is null)
+      {
+        return;
+      }
+
+      foreach (var chat in chats.OfType<JObject>())
+      {
+        await UpsertTodoChatDocumentAsync(connection, chat, loginId, bridgeId, type, projectedAt);
+      }
+
+      return;
+    }
+
+    var singleChat = @event["payload"]?["chat"] as JObject;
+
+    if (singleChat is null)
+    {
+      return;
+    }
+
+    await UpsertTodoChatDocumentAsync(connection, singleChat, loginId, bridgeId, type, projectedAt);
+  }
+
+  private async Task UpsertTodoMessagesAsync(RethinkConnection connection, JObject @event)
+  {
+    var type = (string?)@event["type"];
+
+    if (type != "todo.message.created" &&
+        type != "todo.message.updated" &&
+        type != "todo.message.deleted" &&
+        type != "todo.message.transferred")
+    {
+      return;
+    }
+
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
+    var bridgeId = @event.Value<string>("bridge_id") ?? "unknown-bridge";
+    var projectedAt = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+
+    if (type == "todo.message.deleted")
+    {
+      var messageId = @event["payload"]?["todo_message_id"]?.Value<string>() ??
+                      @event["payload"]?["message_id"]?.Value<string>();
+
+      if (string.IsNullOrWhiteSpace(messageId))
+      {
+        return;
+      }
+
+      await _r.Db(_rethinkDb)
+        .Table(TodoMessageTable)
+        .Get(messageId)
+        .Update(new
+        {
+          status = "deleted",
+          deleted_at = projectedAt,
+          updated_at = projectedAt,
+          last_event_type = type,
+          projected_at = projectedAt
+        })
+        .RunResultAsync<object>(connection);
+
+      return;
+    }
+
+    var message = @event["payload"]?["message"] as JObject;
+
+    if (message is null)
+    {
+      return;
+    }
+
+    var normalized = NormalizeTodoMessageDocument(message, loginId, bridgeId, type, projectedAt);
+
+    if (normalized is null)
+    {
+      return;
+    }
+
+    await _r.Db(_rethinkDb)
+      .Table(TodoMessageTable)
+      .Insert(normalized)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  private async Task UpsertTodoChatDocumentAsync(
+    RethinkConnection connection,
+    JObject chat,
+    string loginId,
+    string bridgeId,
+    string eventType,
+    string projectedAt)
+  {
+    var normalized = NormalizeTodoChatDocument(chat, loginId, bridgeId, eventType, projectedAt);
+
+    if (normalized is null)
+    {
+      return;
+    }
+
+    await _r.Db(_rethinkDb)
+      .Table(TodoChatTable)
+      .Insert(normalized)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  private static JObject? NormalizeTodoChatDocument(
+    JObject chat,
+    string loginId,
+    string bridgeId,
+    string eventType,
+    string projectedAt)
+  {
+    var normalized = (JObject)chat.DeepClone();
+    var chatId = normalized.Value<string>("id");
+
+    if (string.IsNullOrWhiteSpace(chatId))
+    {
+      return null;
+    }
+
+    normalized["id"] = chatId;
+    var owner = normalized.Value<string>("login_id") ?? loginId;
+    normalized["login_id"] = owner;
+    normalized["user_id"] = owner;
+    normalized["bridge_id"] = normalized.Value<string>("bridge_id") ?? bridgeId;
+    normalized["created_at"] = normalized.Value<string>("created_at") ?? projectedAt;
+    normalized["updated_at"] = normalized.Value<string>("updated_at") ?? projectedAt;
+    normalized["last_event_type"] = eventType;
+    normalized["projected_at"] = projectedAt;
+    return normalized;
+  }
+
+  private static JObject? NormalizeTodoMessageDocument(
+    JObject message,
+    string loginId,
+    string bridgeId,
+    string eventType,
+    string projectedAt)
+  {
+    var normalized = (JObject)message.DeepClone();
+    var messageId = normalized.Value<string>("id");
+    var chatId = normalized.Value<string>("todo_chat_id") ?? normalized.Value<string>("todoChatId");
+
+    if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(chatId))
+    {
+      return null;
+    }
+
+    normalized["id"] = messageId;
+    normalized["todo_chat_id"] = chatId;
+    var owner = normalized.Value<string>("login_id") ?? loginId;
+    normalized["login_id"] = owner;
+    normalized["user_id"] = owner;
+    normalized["bridge_id"] = normalized.Value<string>("bridge_id") ?? bridgeId;
+    normalized["created_at"] = normalized.Value<string>("created_at") ?? projectedAt;
+    normalized["updated_at"] = normalized.Value<string>("updated_at") ?? projectedAt;
+    normalized["last_event_type"] = eventType;
+    normalized["projected_at"] = projectedAt;
+    return normalized;
   }
 
   private async Task UpsertIssueCardsAsync(RethinkConnection connection, JObject @event)

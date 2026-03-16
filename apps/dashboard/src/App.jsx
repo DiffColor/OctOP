@@ -4496,6 +4496,7 @@ export default function App() {
   const loadedProjectThreadsRef = useRef({});
   const pendingProjectThreadLoadsRef = useRef(new Map());
   const selectedBridgeIdRef = useRef("");
+  const bridgeWorkspaceRequestIdRef = useRef(0);
   const selectedProjectThreadIdRef = useRef("");
   const archivedIssuesStateRef = useRef({});
   const archivedIssueSnapshotsRef = useRef({});
@@ -4850,6 +4851,8 @@ export default function App() {
       return;
     }
 
+    const requestId = bridgeWorkspaceRequestIdRef.current + 1;
+    bridgeWorkspaceRequestIdRef.current = requestId;
     setLoadingState("loading");
 
     try {
@@ -4859,6 +4862,10 @@ export default function App() {
         ),
         apiRequest(`/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`)
       ]);
+
+      if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+        return;
+      }
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
@@ -4878,6 +4885,10 @@ export default function App() {
       setArchivedIssues([]);
       setLoadingState("ready");
     } catch (error) {
+      if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+        return;
+      }
+
       setLoadingState("error");
       setRecentEvents((current) => [
         {
@@ -4901,6 +4912,11 @@ export default function App() {
       `/api/projects/${encodeURIComponent(projectId)}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
     );
     const nextThreads = mergeProjectThreads([], payload?.threads ?? []);
+
+    if (selectedBridgeIdRef.current !== bridgeId) {
+      return [];
+    }
+
     setProjectThreads((current) => replaceProjectThreadsForProject(current, nextThreads, projectId));
     markProjectThreadsLoaded(bridgeId, projectId);
     return nextThreads;

@@ -4308,6 +4308,8 @@ export default function App() {
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
+  const selectedBridgeIdRef = useRef("");
+  const bridgeWorkspaceRequestIdRef = useRef(0);
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
@@ -4342,6 +4344,10 @@ export default function App() {
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    selectedBridgeIdRef.current = selectedBridgeId;
+  }, [selectedBridgeId]);
 
   useEffect(() => {
     return () => {
@@ -4585,6 +4591,8 @@ export default function App() {
       return;
     }
 
+    const requestId = bridgeWorkspaceRequestIdRef.current + 1;
+    bridgeWorkspaceRequestIdRef.current = requestId;
     setLoadingState("loading");
 
     try {
@@ -4599,6 +4607,10 @@ export default function App() {
           `/api/todo/chats?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
         )
       ]);
+
+      if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+        return;
+      }
 
       setStatus(nextStatus);
       setProjects(nextProjects.projects ?? []);
@@ -4624,6 +4636,11 @@ export default function App() {
 
       if (nextProjectId) {
         const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, { applyToInbox: true });
+
+        if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+          return;
+        }
+
         setSelectedThreadId((current) =>
           current && nextThreads.some((thread) => thread.id === current) ? current : nextThreads[0]?.id || ""
         );
@@ -4634,6 +4651,10 @@ export default function App() {
 
       setLoadingState("ready");
     } catch (error) {
+      if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+        return;
+      }
+
       setLoadingState("error");
     }
   }
@@ -4647,6 +4668,10 @@ export default function App() {
       `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
     );
     const nextThreads = mergeThreads([], payload?.threads ?? []);
+
+    if (selectedBridgeIdRef.current !== bridgeId) {
+      return [];
+    }
 
     updateThreadCache(projectId, nextThreads);
 

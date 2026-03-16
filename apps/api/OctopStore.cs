@@ -19,6 +19,8 @@ public sealed class OctopStore : IAsyncDisposable
   private const string LogicalThreadTimelineTable = "logical_thread_timeline";
   private const string LogicalThreadIssueBoardTable = "logical_thread_issue_board";
   private const string DashboardArchiveTable = "dashboard_archives";
+  private const string TodoChatTable = "todo_chats";
+  private const string TodoMessageTable = "todo_messages";
 
   private readonly string _host;
   private readonly int _port;
@@ -82,6 +84,8 @@ public sealed class OctopStore : IAsyncDisposable
       await EnsureTableAsync(connection, tables, HandoffSummaryTable);
       await EnsureTableAsync(connection, tables, LogicalThreadTimelineTable);
       await EnsureTableAsync(connection, tables, LogicalThreadIssueBoardTable);
+      await EnsureTableAsync(connection, tables, TodoChatTable);
+      await EnsureTableAsync(connection, tables, TodoMessageTable);
       await EnsureTableAsync(connection, tables, DashboardArchiveTable);
       _storageEnsured = true;
     }
