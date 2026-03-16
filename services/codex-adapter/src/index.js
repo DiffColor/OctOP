@@ -109,6 +109,7 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
+const INTERRUPTED_THREAD_STATUS_TYPES = new Set(["interrupted", "cancelled", "canceled"]);
 
 if (
   THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON &&
@@ -3985,6 +3986,11 @@ function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
     case "idle":
       nextStatus = "idle";
       break;
+    case "interrupted":
+    case "cancelled":
+    case "canceled":
+      nextStatus = "idle";
+      break;
     case "waitingForInput":
       nextStatus = "awaiting_input";
       break;
@@ -4011,6 +4017,11 @@ function normalizeThreadStatus(rawStatus, currentStatus = "queued") {
   }
 
   return nextStatus;
+}
+
+function isTerminalThreadStatusType(statusType = "") {
+  const normalized = String(statusType ?? "").trim();
+  return normalized === "idle" || normalized === "error" || INTERRUPTED_THREAD_STATUS_TYPES.has(normalized);
 }
 
 function isIssueTerminalStatus(status) {
@@ -5258,7 +5269,7 @@ class AppServerClient {
     if (
       method === "turn/completed" ||
       (method === "thread/status/changed" &&
-        ["idle", "error"].includes(params.status?.type ?? ""))
+        isTerminalThreadStatusType(params.status?.type))
     ) {
       if (threadId) {
         if (physicalThreadId) {
@@ -5416,7 +5427,9 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
     case "thread/status/changed":
       {
         const nextStatus = normalizeThreadStatus(params.status, currentStatus);
-        const nextTurnId = ["idle", "error"].includes(params.status?.type ?? "") ? null : currentPhysicalThread?.turn_id ?? null;
+        const nextTurnId = isTerminalThreadStatusType(params.status?.type)
+          ? null
+          : currentPhysicalThread?.turn_id ?? null;
 
         if (nextStatus === currentStatus && nextTurnId === (currentPhysicalThread?.turn_id ?? null)) {
           return null;
@@ -5539,7 +5552,7 @@ function buildIssuePatch(method, params, issueId) {
         };
       }
 
-      if ((params.status?.type ?? "") === "idle") {
+      if (isTerminalThreadStatusType(params.status?.type)) {
         const terminalStatus = inferReconciledTerminalStatus(current);
         return {
           status: terminalStatus,

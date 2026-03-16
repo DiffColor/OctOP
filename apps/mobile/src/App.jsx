@@ -631,6 +631,9 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
     case "completed":
       return "completed";
     case "idle":
+    case "interrupted":
+    case "cancelled":
+    case "canceled":
       return currentStatus === "running" ? "idle" : currentStatus;
     case "active":
     case "running":
