@@ -608,6 +608,8 @@ app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient br
   }
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var requestedKey = body?["key"]?.GetValue<string>();
+  var normalizedKey = string.IsNullOrWhiteSpace(requestedKey) ? null : requestedKey;
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectCreate,
@@ -617,7 +619,7 @@ app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient br
       user_id = userId,
       bridge_id = bridgeId,
       name = body?["name"]?.GetValue<string>(),
-      key = body?["key"]?.GetValue<string>(),
+      key = normalizedKey,
       description = body?["description"]?.GetValue<string>(),
       workspace_path = body?["workspace_path"]?.GetValue<string>()
     },

@@ -2302,7 +2302,6 @@ function ProjectComposer({
 
     await onSubmit({
       name: name.trim(),
-      key: "",
       description: description.trim(),
       workspace_path: selectedWorkspacePath
     });

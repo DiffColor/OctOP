@@ -2335,6 +2335,7 @@ function persistUserProjects(loginId, projects, deletedWorkspacePaths = []) {
 async function createProject(loginId, payload = {}) {
   const state = ensureUserState(loginId);
   const name = String(payload.name ?? "").trim();
+  const requestedKey = String(payload.key ?? "").trim();
 
   if (!name) {
     throw new Error("프로젝트 이름이 필요합니다.");
@@ -2348,7 +2349,7 @@ async function createProject(loginId, payload = {}) {
       (workspacePath
         ? buildProjectId(loginId, workspacePath)
         : `${BRIDGE_ID}-${sanitizeUserId(loginId)}-${randomUUID().slice(0, 8)}`),
-    key: payload.key ?? name,
+    key: requestedKey || name,
     name,
     description: payload.description ?? "",
     workspace_path: workspacePath,

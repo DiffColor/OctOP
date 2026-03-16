@@ -794,6 +794,57 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
   }
 });
 
+test("프로젝트 생성은 빈 key 요청이어도 workspace별로 연속 성공해야 한다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-project-create-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-project-create-token",
+    userId: "integration-user",
+    bridgeId: `integration-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const firstPayload = await bridge.request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dashboard Workspace",
+        key: "",
+        workspace_path: join(REPO_ROOT, "apps", "dashboard")
+      })
+    });
+    const secondPayload = await bridge.request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Mobile Workspace",
+        key: "",
+        workspace_path: join(REPO_ROOT, "apps", "mobile")
+      })
+    });
+
+    assert.equal(firstPayload.accepted, true);
+    assert.equal(secondPayload.accepted, true);
+    assert.equal(firstPayload.project.key, "DASHBOARD_WORKSPACE");
+    assert.equal(secondPayload.project.key, "MOBILE_WORKSPACE");
+    assert.notEqual(firstPayload.project.id, secondPayload.project.id);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("높은 tokenUsage가 누적된 root thread에서 다음 issue 시작 전에 사전 rollover가 발생한다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-immediate-rollover-int-"));
   const fakeAppServer = new FakeAppServer();
