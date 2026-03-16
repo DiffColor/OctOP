@@ -4034,42 +4034,42 @@ function MainPage({
     <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
         <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={onOpenUtility}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-            >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </button>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onOpenUtility}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
 
-            <div className="min-w-0 flex-1">
-              <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
-              <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-                <span className="truncate">{bridgeLabel}</span>
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
-                  }`}
-                />
-                <span>{status.app_server?.connected ? "연결됨" : "미연결"}</span>
-              </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+              <span className="truncate">{bridgeLabel}</span>
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  status.app_server?.connected ? "bg-emerald-300" : "bg-rose-300"
+                }`}
+              />
+              <span>{status.app_server?.connected ? "연결됨" : "미연결"}</span>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setSearchOpen((current) => !current)}
-              className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
-                searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
-              }`}
-            >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setSearchOpen((current) => !current)}
+            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+              searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
+            }`}
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+        </div>
 
           {searchOpen ? (
             <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
@@ -4464,6 +4464,7 @@ export default function App() {
           details.at(-1)?.thread ??
           threads.find((thread) => thread.id === threadId) ??
           null;
+        const normalizedThread = normalizeThread(latestThread);
 
         if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
           return;
@@ -4476,16 +4477,31 @@ export default function App() {
             error: "",
             messages,
             issues,
-            thread: latestThread ?? current[threadId]?.thread ?? null,
+            thread: normalizedThread ?? current[threadId]?.thread ?? null,
             fetchedAt: Date.now(),
             version:
               version ??
-              latestThread?.updated_at ??
-              latestThread?.created_at ??
+              normalizedThread?.updated_at ??
+              normalizedThread?.created_at ??
               current[threadId]?.version ??
               null
           }
         }));
+
+        if (normalizedThread) {
+          setThreads((current) => upsertThread(current, normalizedThread));
+
+          if (normalizedThread.project_id) {
+            setThreadListsByProjectId((current) => {
+              const nextList = upsertThread(current[normalizedThread.project_id] ?? [], normalizedThread);
+
+              return {
+                ...current,
+                [normalizedThread.project_id]: nextList
+              };
+            });
+          }
+        }
       } catch (error) {
         if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
           return;
