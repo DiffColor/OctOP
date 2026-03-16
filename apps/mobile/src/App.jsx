@@ -15,6 +15,7 @@ const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
+const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const DEFAULT_API_BASE_URL =
@@ -137,6 +138,34 @@ function dismissPwaPrompt() {
   }
 
   window.localStorage.setItem(PWA_PROMPT_DISMISSED_KEY, PWA_PROMPT_DISMISSED_VALUE);
+}
+
+function readStoredBridgeId() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  try {
+    return window.localStorage.getItem(SELECTED_BRIDGE_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeSelectedBridgeId(bridgeId) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (bridgeId) {
+      window.localStorage.setItem(SELECTED_BRIDGE_STORAGE_KEY, bridgeId);
+    } else {
+      window.localStorage.removeItem(SELECTED_BRIDGE_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
 }
 
 function formatDateTime(value) {
@@ -4278,7 +4307,9 @@ export default function App() {
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
   const [folderLoading, setFolderLoading] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
-  const [selectedBridgeId, setSelectedBridgeId] = useState("");
+  const [selectedBridgeId, setSelectedBridgeId] = useState(() =>
+    typeof window === "undefined" ? "" : readStoredBridgeId()
+  );
   const [selectedScope, setSelectedScope] = useState({ kind: "project", id: "" });
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [selectedTodoChatId, setSelectedTodoChatId] = useState("");
@@ -4347,6 +4378,7 @@ export default function App() {
 
   useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
+    storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
 
   useEffect(() => {
@@ -4561,9 +4593,14 @@ export default function App() {
     )).bridges ?? [];
 
     setBridges(nextBridges);
+    const storedBridgeId = readStoredBridgeId();
     setSelectedBridgeId((current) => {
       if (current && nextBridges.some((bridge) => bridge.bridge_id === current)) {
         return current;
+      }
+
+      if (storedBridgeId && nextBridges.some((bridge) => bridge.bridge_id === storedBridgeId)) {
+        return storedBridgeId;
       }
 
       return nextBridges[0]?.bridge_id ?? "";
@@ -5310,6 +5347,7 @@ export default function App() {
   const handleLogout = () => {
     clearSessionStorage();
     setSession(null);
+    setSelectedBridgeId("");
     setBridges([]);
     setProjects([]);
     setThreads([]);
