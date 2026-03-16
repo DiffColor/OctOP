@@ -469,9 +469,9 @@ public sealed class ProjectionWorkerService : BackgroundService
 
     foreach (var tableName in tables)
     {
-      var rows = await _r.Db(_rethinkDb).Table(tableName).RunResultAsync<JArray>(connection);
+      var rows = await ReadTableRowsAsync(connection, tableName);
 
-      foreach (var row in rows.OfType<JObject>())
+      foreach (var row in rows)
       {
         var rowId = row.Value<string>("id");
         var rowRootThreadId = row.Value<string>("root_thread_id") ?? row.Value<string>("thread_id") ?? row.Value<string>("id");
@@ -560,9 +560,9 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var existingRows = await _r.Db(_rethinkDb).Table(LogicalThreadTimelineTable).RunResultAsync<JArray>(connection);
+    var existingRows = await ReadTableRowsAsync(connection, LogicalThreadTimelineTable);
 
-    foreach (var row in existingRows.OfType<JObject>().Where(row =>
+    foreach (var row in existingRows.Where(row =>
                string.Equals(row.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal)))
     {
       var rowId = row.Value<string>("id");
@@ -614,9 +614,9 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var existingIssues = await _r.Db(_rethinkDb).Table(LogicalThreadIssueBoardTable).RunResultAsync<JArray>(connection);
+    var existingIssues = await ReadTableRowsAsync(connection, LogicalThreadIssueBoardTable);
 
-    foreach (var issue in existingIssues.OfType<JObject>().Where(issue =>
+    foreach (var issue in existingIssues.Where(issue =>
                string.Equals(issue.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal)))
     {
       var issueId = issue.Value<string>("id");
@@ -1011,9 +1011,9 @@ public sealed class ProjectionWorkerService : BackgroundService
     string bridgeId,
     HashSet<string> activeProjectIds)
   {
-    var existingProjects = await _r.Db(_rethinkDb).Table(ProjectTable).RunResultAsync<JArray>(connection);
+    var existingProjects = await ReadTableRowsAsync(connection, ProjectTable);
 
-    foreach (var project in existingProjects.OfType<JObject>())
+    foreach (var project in existingProjects)
     {
       var projectId = project.Value<string>("id");
 
@@ -1031,9 +1031,9 @@ public sealed class ProjectionWorkerService : BackgroundService
       }
     }
 
-    var memberships = await _r.Db(_rethinkDb).Table(ProjectMemberTable).RunResultAsync<JArray>(connection);
+    var memberships = await ReadTableRowsAsync(connection, ProjectMemberTable);
 
-    foreach (var membership in memberships.OfType<JObject>())
+    foreach (var membership in memberships)
     {
       var membershipId = membership.Value<string>("id");
       var projectId = membership.Value<string>("project_id");
@@ -1066,9 +1066,9 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var existingThreads = await _r.Db(_rethinkDb).Table(tableName).RunResultAsync<JArray>(connection);
+    var existingThreads = await ReadTableRowsAsync(connection, tableName);
 
-    foreach (var thread in existingThreads.OfType<JObject>())
+    foreach (var thread in existingThreads)
     {
       var threadId = thread.Value<string>("id");
 
@@ -1100,9 +1100,9 @@ public sealed class ProjectionWorkerService : BackgroundService
       return;
     }
 
-    var existingIssues = await _r.Db(_rethinkDb).Table(ThreadIssueCardTable).RunResultAsync<JArray>(connection);
+    var existingIssues = await ReadTableRowsAsync(connection, ThreadIssueCardTable);
 
-    foreach (var issue in existingIssues.OfType<JObject>())
+    foreach (var issue in existingIssues)
     {
       var issueId = issue.Value<string>("id");
 
@@ -1120,5 +1120,23 @@ public sealed class ProjectionWorkerService : BackgroundService
         await _r.Db(_rethinkDb).Table(ThreadIssueCardTable).Get(issueId).Delete().RunResultAsync<object>(connection);
       }
     }
+  }
+
+  private async Task<List<JObject>> ReadTableRowsAsync(RethinkConnection connection, string tableName)
+  {
+    using var cursor = await _r.Db(_rethinkDb).Table(tableName).RunCursorAsync<JObject>(connection, CancellationToken.None);
+    var rows = new List<JObject>();
+
+    while (await cursor.MoveNextAsync(CancellationToken.None))
+    {
+      if (cursor.Current is null)
+      {
+        continue;
+      }
+
+      rows.Add(cursor.Current);
+    }
+
+    return rows;
   }
 }
