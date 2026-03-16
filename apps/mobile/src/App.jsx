@@ -4476,6 +4476,7 @@ export default function App() {
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
+  const selectedBridgeKnown = !selectedBridgeId || bridges.some((bridge) => bridge.bridge_id === selectedBridgeId);
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
@@ -5190,7 +5191,7 @@ export default function App() {
   }, [session]);
 
   useEffect(() => {
-    if (!session?.loginId || !selectedBridgeId) {
+    if (!session?.loginId || !selectedBridgeId || !selectedBridgeKnown) {
       return undefined;
     }
 
@@ -5390,7 +5391,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [selectedBridgeId, session?.loginId]);
+  }, [selectedBridgeId, selectedBridgeKnown, session?.loginId]);
 
   useLayoutEffect(() => {
     threadLoadRequestIdRef.current += 1;
@@ -5411,16 +5412,16 @@ export default function App() {
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
     setActiveView("inbox");
-    setLoadingState(selectedBridgeId ? "loading" : "idle");
-  }, [selectedBridgeId]);
+    setLoadingState(selectedBridgeId && selectedBridgeKnown ? "loading" : "idle");
+  }, [selectedBridgeId, selectedBridgeKnown]);
 
   useEffect(() => {
-    if (!session?.loginId) {
+    if (!session?.loginId || !selectedBridgeKnown) {
       return;
     }
 
     void loadBridgeWorkspace(session, selectedBridgeId);
-  }, [session, selectedBridgeId]);
+  }, [selectedBridgeId, selectedBridgeKnown, session]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
