@@ -148,6 +148,7 @@ class FakeAppServer {
     this.connectionCount = 0;
     this.pingCount = 0;
     this.idleTimerBySocket = new Map();
+    this.pongTimers = new Set();
   }
 
   async start() {
@@ -232,6 +233,11 @@ class FakeAppServer {
       clearTimeout(idleTimer);
     }
 
+    for (const pongTimer of this.pongTimers) {
+      clearTimeout(pongTimer);
+    }
+
+    this.pongTimers.clear();
     this.idleTimerBySocket.clear();
     this.sockets.clear();
     this.socket = null;
@@ -268,7 +274,21 @@ class FakeAppServer {
 
     if (frame.opcode === 0x9) {
       this.pingCount += 1;
-      socket.write(encodeWebSocketFrame(frame.payload, 0xA));
+      const pongDelayMs = Number(this.options.pongDelayMs ?? 0);
+
+      if (pongDelayMs > 0) {
+        const timer = setTimeout(() => {
+          this.pongTimers.delete(timer);
+
+          if (!socket.destroyed) {
+            socket.write(encodeWebSocketFrame(frame.payload, 0xA));
+          }
+        }, pongDelayMs);
+
+        this.pongTimers.add(timer);
+      } else {
+        socket.write(encodeWebSocketFrame(frame.payload, 0xA));
+      }
       return;
     }
 
@@ -700,7 +720,8 @@ async function triggerPreflightThresholdRollover(
 test("브리지 app-server idle websocket heartbeat 유지", { timeout: 60000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-heartbeat-int-"));
   const fakeAppServer = new FakeAppServer({
-    idleDisconnectAfterMs: 1200
+    idleDisconnectAfterMs: 1200,
+    pongDelayMs: 800
   });
   const appServerUrl = await fakeAppServer.start();
   const bridgePort = await getFreePort();
@@ -731,7 +752,7 @@ test("브리지 app-server idle websocket heartbeat 유지", { timeout: 60000 },
   assert.equal(health.ok, true);
   assert.equal(health.status?.app_server?.initialized, true);
   assert.equal(fakeAppServer.connectionCount, 1);
-  assert.equal(fakeAppServer.pingCount >= 3, true);
+  assert.equal(fakeAppServer.pingCount >= 2, true);
 });
 
 test("브리지 app-server 1006 close 후 자동 재연결", { timeout: 60000 }, async (t) => {

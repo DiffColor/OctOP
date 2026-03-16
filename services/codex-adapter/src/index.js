@@ -4923,6 +4923,7 @@ class AppServerClient {
     this.socketConnectAttempt = 0;
     this.heartbeatTimer = null;
     this.lastSocketActivityAt = 0;
+    this.heartbeatProbeSentAt = 0;
     this.reconnectTimer = null;
     this.reconnectAttempt = 0;
   }
@@ -5418,6 +5419,7 @@ class AppServerClient {
 
   markSocketActivity() {
     this.lastSocketActivityAt = Date.now();
+    this.heartbeatProbeSentAt = 0;
   }
 
   startHeartbeat(ws, context = {}) {
@@ -5433,18 +5435,31 @@ class AppServerClient {
         return;
       }
 
-      if (Date.now() - this.lastSocketActivityAt >= APP_SERVER_HEARTBEAT_TIMEOUT_MS) {
+      if (this.heartbeatProbeSentAt > 0) {
+        const probeAgeMs = Date.now() - this.heartbeatProbeSentAt;
+
+        if (probeAgeMs < APP_SERVER_HEARTBEAT_TIMEOUT_MS) {
+          return;
+        }
+
         console.warn("[OctOP bridge] app-server websocket heartbeat timeout", {
           ...context,
-          timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS
+          timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
+          probe_age_ms: probeAgeMs,
+          last_activity_at: this.lastSocketActivityAt
+            ? new Date(this.lastSocketActivityAt).toISOString()
+            : null
         });
+        this.heartbeatProbeSentAt = 0;
         ws.terminate();
         return;
       }
 
       try {
+        this.heartbeatProbeSentAt = Date.now();
         ws.ping();
       } catch (error) {
+        this.heartbeatProbeSentAt = 0;
         console.warn("[OctOP bridge] app-server websocket ping failed", {
           ...context,
           message: error instanceof Error ? error.message : String(error)
@@ -5464,6 +5479,8 @@ class AppServerClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+
+    this.heartbeatProbeSentAt = 0;
   }
 
   scheduleReconnect(trigger = "unspecified") {
