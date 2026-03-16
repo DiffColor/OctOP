@@ -17,6 +17,7 @@ import {
 import os from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { connect, StringCodec } from "nats";
+import WebSocket from "ws";
 import {
   bridgeSubjects,
   sanitizeBridgeId,
@@ -4730,8 +4731,8 @@ class AppServerClient {
       let settled = false;
 
       const cleanup = () => {
-        ws.removeEventListener("open", handleOpen);
-        ws.removeEventListener("error", handleError);
+        ws.off("open", handleOpen);
+        ws.off("error", handleError);
       };
       const handleOpen = () => {
         if (settled) {
@@ -4746,18 +4747,18 @@ class AppServerClient {
           reason,
           attempt
         });
-        ws.addEventListener("message", (event) => this.handleMessage(event));
-        ws.addEventListener("close", (event) => {
+        ws.on("message", (payload) => this.handleMessage(payload));
+        ws.on("close", (code, closeReasonBuffer) => {
           this.connected = false;
           this.initialized = false;
           this.socket = null;
-          this.lastError = formatAppServerSocketCloseError(event);
+          const closeReason = normalizeWebSocketCloseReason(closeReasonBuffer);
+          this.lastError = formatAppServerSocketCloseError(code, closeReason);
           console.warn("[OctOP bridge] app-server websocket closed", {
             reason,
             attempt,
-            code: event.code,
-            close_reason: event.reason || null,
-            was_clean: event.wasClean,
+            code,
+            close_reason: closeReason,
             pending_requests: this.requests.size
           });
           for (const [id, pending] of this.requests) {
@@ -4765,17 +4766,17 @@ class AppServerClient {
             this.requests.delete(id);
           }
         });
-        ws.addEventListener("error", (event) => {
+        ws.on("error", (error) => {
           this.connected = false;
           console.error("[OctOP bridge] app-server websocket error", {
             reason,
             attempt,
-            detail: describeWebSocketErrorEvent(event)
+            detail: describeWebSocketErrorEvent(error)
           });
         });
         resolve();
       };
-      const handleError = (event) => {
+      const handleError = (error) => {
         if (settled) {
           return;
         }
@@ -4784,18 +4785,18 @@ class AppServerClient {
         cleanup();
         reject(
           new Error(
-            `WebSocket open failed (${describeWebSocketErrorEvent(event)})`
+            `WebSocket open failed (${describeWebSocketErrorEvent(error)})`
           )
         );
       };
 
-      ws.addEventListener("open", handleOpen, { once: true });
-      ws.addEventListener("error", handleError, { once: true });
+      ws.once("open", handleOpen);
+      ws.once("error", handleError);
     });
   }
 
-  handleMessage(event) {
-    const data = JSON.parse(String(event.data));
+  handleMessage(payload) {
+    const data = JSON.parse(extractWebSocketMessageText(payload));
 
     if (data.id) {
       const pending = this.requests.get(String(data.id));
@@ -5082,25 +5083,61 @@ function describeWebSocketReadyState(state) {
   }
 }
 
-function formatAppServerSocketCloseError(event) {
-  const code = Number.isFinite(event?.code) ? event.code : "unknown";
-  const reason = String(event?.reason ?? "").trim();
+function formatAppServerSocketCloseError(codeOrEvent, reasonOverride = "") {
+  const code =
+    typeof codeOrEvent === "number"
+      ? codeOrEvent
+      : Number.isFinite(codeOrEvent?.code)
+        ? codeOrEvent.code
+        : "unknown";
+  const reason =
+    reasonOverride ||
+    normalizeWebSocketCloseReason(codeOrEvent?.reason);
   return reason ? `app-server socket closed (${code}: ${reason})` : `app-server socket closed (${code})`;
 }
 
-function describeWebSocketErrorEvent(event) {
-  if (!event) {
+function normalizeWebSocketCloseReason(reason) {
+  if (Buffer.isBuffer(reason)) {
+    const text = reason.toString("utf8").trim();
+    return text || "";
+  }
+
+  return String(reason ?? "").trim();
+}
+
+function extractWebSocketMessageText(payload) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (Buffer.isBuffer(payload)) {
+    return payload.toString("utf8");
+  }
+
+  if (payload instanceof ArrayBuffer) {
+    return Buffer.from(payload).toString("utf8");
+  }
+
+  if (Array.isArray(payload)) {
+    return Buffer.concat(payload.map((chunk) => Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))).toString("utf8");
+  }
+
+  return String(payload);
+}
+
+function describeWebSocketErrorEvent(error) {
+  if (!error) {
     return "unknown";
   }
 
   const details = [];
 
-  if (event.type) {
-    details.push(`type=${event.type}`);
+  if (error.type) {
+    details.push(`type=${error.type}`);
   }
 
-  if (typeof event.message === "string" && event.message.trim()) {
-    details.push(`message=${event.message.trim()}`);
+  if (typeof error.message === "string" && error.message.trim()) {
+    details.push(`message=${error.message.trim()}`);
   }
 
   return details.join(", ") || "unknown";
