@@ -5803,6 +5803,15 @@ class AppServerClient {
     this.notify("initialized", {});
     const accountInfo = await this.requestInternal("account/read", { refreshToken: false });
     this.account = formatAccount(accountInfo.result ?? accountInfo);
+    appendDiagnosticLog("info", "app_server.account.read", "app-server account/read completed", {
+      reason,
+      raw_account_info: accountInfo.result ?? accountInfo,
+      formatted_account: this.account,
+      env_home: process.env.HOME ?? null,
+      env_user: process.env.USER ?? process.env.LOGNAME ?? null,
+      os_home: os.homedir(),
+      app_server_command: APP_SERVER_COMMAND
+    });
     this.initialized = true;
     this.lastError = getAppServerAuthenticationError(this.account);
     this.lastStartedAt = now();
@@ -5822,6 +5831,13 @@ class AppServerClient {
 
     if (authenticationError) {
       this.lastError = authenticationError;
+      appendDiagnosticLog("error", "app_server.auth_required", "app-server requires authentication", {
+        account: this.account,
+        env_home: process.env.HOME ?? null,
+        env_user: process.env.USER ?? process.env.LOGNAME ?? null,
+        os_home: os.homedir(),
+        app_server_command: APP_SERVER_COMMAND
+      });
       throw new Error(authenticationError);
     }
   }
