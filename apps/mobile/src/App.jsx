@@ -36,6 +36,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
@@ -839,6 +840,57 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     created_physical_thread_id: issue.created_physical_thread_id ?? null,
     executed_physical_thread_id: issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null
   };
+}
+
+function buildIssueReloadFingerprint(issues = [], fallbackThreadId = null) {
+  return issues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean)
+    .map((issue) =>
+      [
+        issue.id,
+        issue.status,
+        issue.progress,
+        issue.last_event,
+        issue.updated_at,
+        issue.executed_physical_thread_id ?? "",
+        issue.created_physical_thread_id ?? ""
+      ].join(":")
+    )
+    .join("|");
+}
+
+function shouldReloadThreadFromIssueSnapshot(currentIssues = [], nextIssues = [], fallbackThreadId = null) {
+  const normalizedCurrent = currentIssues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean);
+  const normalizedNext = nextIssues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean);
+
+  if (normalizedCurrent.length === 0) {
+    return normalizedNext.length > 0;
+  }
+
+  if (normalizedCurrent.length !== normalizedNext.length) {
+    return true;
+  }
+
+  const currentIds = normalizedCurrent.map((issue) => issue.id).join("|");
+  const nextIds = normalizedNext.map((issue) => issue.id).join("|");
+
+  if (currentIds !== nextIds) {
+    return true;
+  }
+
+  const currentFingerprint = buildIssueReloadFingerprint(normalizedCurrent, fallbackThreadId);
+  const nextFingerprint = buildIssueReloadFingerprint(normalizedNext, fallbackThreadId);
+
+  if (currentFingerprint === nextFingerprint) {
+    return false;
+  }
+
+  return normalizedNext.some((issue) => ["awaiting_input", "completed", "failed"].includes(issue.status));
 }
 
 function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
@@ -5034,6 +5086,7 @@ export default function App() {
   const threadLoadRequestIdByIdRef = useRef(new Map());
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
+  const threadReloadMetaByIdRef = useRef(new Map());
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5095,6 +5148,7 @@ export default function App() {
   const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
+  const selectedThreadStatus = selectedThread?.status ?? "queued";
   const selectedProjectIdRef = useRef(selectedProjectId);
   const selectedTodoChatIdRef = useRef(selectedTodoChatId);
 
@@ -5142,6 +5196,13 @@ export default function App() {
       threadLoadRequestIdByIdRef.current.set(threadId, nextRequestId);
 
       const releaseThreadLoadingState = () => {
+        const reloadMeta = threadReloadMetaByIdRef.current.get(threadId) ?? {};
+        threadReloadMetaByIdRef.current.set(threadId, {
+          ...reloadMeta,
+          inFlight: false,
+          lastCompletedAt: Date.now()
+        });
+
         setThreadDetails((current) => {
           const currentEntry = current[threadId];
 
@@ -5158,6 +5219,13 @@ export default function App() {
           };
         });
       };
+
+      const reloadMeta = threadReloadMetaByIdRef.current.get(threadId) ?? {};
+      threadReloadMetaByIdRef.current.set(threadId, {
+        ...reloadMeta,
+        inFlight: true,
+        lastStartedAt: Date.now()
+      });
 
       setThreadDetails((current) => {
         const currentEntry = current[threadId];
@@ -5233,6 +5301,19 @@ export default function App() {
           }
         }));
 
+        const completedMeta = threadReloadMetaByIdRef.current.get(threadId) ?? {};
+        threadReloadMetaByIdRef.current.set(threadId, {
+          ...completedMeta,
+          inFlight: false,
+          lastCompletedAt: Date.now(),
+          lastVersion:
+            version ??
+            normalizedThread?.updated_at ??
+            normalizedThread?.created_at ??
+            threadDetailsRef.current?.[threadId]?.version ??
+            null
+        });
+
         if (normalizedThread) {
           setThreads((current) => upsertThread(current, normalizedThread));
 
@@ -5261,6 +5342,13 @@ export default function App() {
             error: error.message ?? "메시지를 불러오지 못했습니다."
           }
         }));
+
+        const completedMeta = threadReloadMetaByIdRef.current.get(threadId) ?? {};
+        threadReloadMetaByIdRef.current.set(threadId, {
+          ...completedMeta,
+          inFlight: false,
+          lastCompletedAt: Date.now()
+        });
       }
     },
     [selectedBridgeId, session?.loginId, threads]
@@ -5349,8 +5437,26 @@ export default function App() {
       return;
     }
 
-    const { delay = 180, suppressLoadingIndicator = false, ...loadOptions } = options;
+    const {
+      delay = 180,
+      suppressLoadingIndicator = false,
+      bypassThrottle = false,
+      reason = "unspecified",
+      ...loadOptions
+    } = options;
     const currentTimer = threadReloadTimersByIdRef.current.get(threadId);
+    const reloadMeta = threadReloadMetaByIdRef.current.get(threadId) ?? {};
+    const now = Date.now();
+    const lastActivityAt = Math.max(
+      reloadMeta.lastScheduledAt ?? 0,
+      reloadMeta.lastStartedAt ?? 0,
+      reloadMeta.lastCompletedAt ?? 0
+    );
+    const throttleDelay =
+      bypassThrottle || lastActivityAt <= 0
+        ? 0
+        : Math.max(0, THREAD_RELOAD_MIN_INTERVAL_MS - (now - lastActivityAt));
+    const effectiveDelay = Math.max(delay, throttleDelay, reloadMeta.inFlight ? 400 : 0);
 
     if (currentTimer) {
       window.clearTimeout(currentTimer);
@@ -5360,9 +5466,14 @@ export default function App() {
     const timerId = window.setTimeout(() => {
       threadReloadTimersByIdRef.current.delete(threadId);
       void loadThreadMessages(threadId, { ...loadOptions, suppressLoadingIndicator });
-    }, delay);
+    }, effectiveDelay);
 
     threadReloadTimersByIdRef.current.set(threadId, timerId);
+    threadReloadMetaByIdRef.current.set(threadId, {
+      ...reloadMeta,
+      lastScheduledAt: now,
+      lastReason: reason
+    });
   }, [loadThreadMessages]);
   const scheduleThreadMessagesReloadRef = useRef(scheduleThreadMessagesReload);
   useEffect(() => {
@@ -5972,6 +6083,11 @@ export default function App() {
           const nextIssues = payload.payload?.issues ?? [];
 
           if (threadId) {
+            const currentIssues = threadDetailsRef.current?.[threadId]?.issues ?? [];
+            const shouldReload =
+              threadId === activeThreadId &&
+              shouldReloadThreadFromIssueSnapshot(currentIssues, nextIssues, threadId);
+
             setThreadDetails((current) => ({
               ...current,
               [threadId]: {
@@ -5979,8 +6095,12 @@ export default function App() {
                 issues: nextIssues
               }
             }));
-            if (scheduleReload && (threadId === activeThreadId || Boolean(threadDetailsRef.current?.[threadId]))) {
-              scheduleReload(threadId, { force: true, suppressLoadingIndicator: true });
+            if (scheduleReload && shouldReload) {
+              scheduleReload(threadId, {
+                force: true,
+                suppressLoadingIndicator: true,
+                reason: "thread_issues_updated"
+              });
             }
           }
           return;
@@ -5992,7 +6112,13 @@ export default function App() {
           (payload.type === "turn.completed" || payload.type === "thread.status.changed")
         ) {
           if (scheduleReload) {
-            scheduleReload(eventThreadId, { force: true, delay: 0, suppressLoadingIndicator: true });
+            scheduleReload(eventThreadId, {
+              force: true,
+              delay: 0,
+              suppressLoadingIndicator: true,
+              bypassThrottle: true,
+              reason: payload.type
+            });
           }
           return;
         }
@@ -6035,6 +6161,7 @@ export default function App() {
       window.clearTimeout(timerId);
     }
     threadReloadTimersByIdRef.current.clear();
+    threadReloadMetaByIdRef.current = new Map();
 
     setProjects([]);
     setThreads([]);
@@ -6099,11 +6226,16 @@ export default function App() {
       return;
     }
 
+    if (hasCurrentThreadDetail && ["running", "awaiting_input"].includes(selectedThreadStatus)) {
+      return;
+    }
+
     if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
       scheduleThreadMessagesReload(selectedThreadId, {
         version: selectedThreadUpdatedAt,
         delay: 0,
-        suppressLoadingIndicator: hasCurrentThreadDetail
+        suppressLoadingIndicator: hasCurrentThreadDetail,
+        reason: "thread_version_mismatch"
       });
     }
   }, [
@@ -6114,6 +6246,7 @@ export default function App() {
     scheduleThreadMessagesReload,
     selectedBridgeId,
     selectedThreadId,
+    selectedThreadStatus,
     selectedThreadUpdatedAt,
     session?.loginId
   ]);
