@@ -112,6 +112,7 @@ const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
 const issueQueueProcessingStateByThreadId = new Map();
+let runningIssueBackfillPromise = null;
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -127,6 +128,9 @@ const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSU
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
 const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT ?? 2
+);
+const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
+  process.env.OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS ?? 5000
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
@@ -1862,7 +1866,11 @@ function markRunningIssueActivity(threadId, patch = {}) {
     lastReconciledAt: null,
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
-    lastSeenCodexThreadId: null
+    lastSeenCodexThreadId: null,
+    backfillRequestedAt: null,
+    backfillTrigger: null,
+    backfillLastPolledAt: null,
+    backfillLastError: null
   };
   const next = {
     ...current,
@@ -1978,7 +1986,11 @@ function ensureRunningIssueTrackingForThread(threadId) {
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
     lastReconciledAt: null,
-    lastSeenCodexThreadId: thread.codex_thread_id ?? null
+    lastSeenCodexThreadId: thread.codex_thread_id ?? null,
+    backfillRequestedAt: null,
+    backfillTrigger: null,
+    backfillLastPolledAt: null,
+    backfillLastError: null
   });
   return recoverableIssue.id;
 }
@@ -2191,6 +2203,93 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     content: String(delta ?? ""),
     timestamp: now()
   });
+}
+
+function findLatestAssistantMessage(issueId, physicalThreadId = null) {
+  const messages = ensureIssueMessages(issueId);
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+
+    if (candidate?.deleted_at || candidate?.role !== "assistant") {
+      continue;
+    }
+
+    if (
+      physicalThreadId !== null &&
+      (candidate.physical_thread_id ?? null) !== physicalThreadId
+    ) {
+      continue;
+    }
+
+    return candidate;
+  }
+
+  return null;
+}
+
+function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId = null) {
+  const issue = issueCardsById.get(issueId) ?? null;
+  const normalizedText = String(fullText ?? "");
+  const resolvedPhysicalThreadId =
+    physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
+
+  if (!normalizedText) {
+    return {
+      changed: false,
+      appendedDelta: "",
+      replaced: false,
+      content: ""
+    };
+  }
+
+  const lastAssistantMessage = findLatestAssistantMessage(issueId, resolvedPhysicalThreadId);
+
+  if (!lastAssistantMessage) {
+    pushIssueMessage(issueId, {
+      role: "assistant",
+      kind: "message",
+      message_class: "assistant",
+      content: normalizedText,
+      physical_thread_id: resolvedPhysicalThreadId
+    });
+    return {
+      changed: true,
+      appendedDelta: normalizedText,
+      replaced: false,
+      content: normalizedText
+    };
+  }
+
+  const currentText = String(lastAssistantMessage.content ?? "");
+
+  if (currentText === normalizedText) {
+    return {
+      changed: false,
+      appendedDelta: "",
+      replaced: false,
+      content: normalizedText
+    };
+  }
+
+  lastAssistantMessage.content = normalizedText;
+  lastAssistantMessage.timestamp = now();
+
+  if (normalizedText.startsWith(currentText)) {
+    return {
+      changed: true,
+      appendedDelta: normalizedText.slice(currentText.length),
+      replaced: false,
+      content: normalizedText
+    };
+  }
+
+  return {
+    changed: true,
+    appendedDelta: "",
+    replaced: true,
+    content: normalizedText
+  };
 }
 
 function listIssueMessages(issueId) {
@@ -3877,7 +3976,11 @@ async function startTurnOnPhysicalThread(
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
     lastReconciledAt: null,
-    lastSeenCodexThreadId: codexThreadId
+    lastSeenCodexThreadId: codexThreadId,
+    backfillRequestedAt: null,
+    backfillTrigger: null,
+    backfillLastPolledAt: null,
+    backfillLastError: null
   });
   updateIssueCard(issueId, {
     executed_physical_thread_id: physicalThreadId,
@@ -5850,6 +5953,9 @@ class AppServerClient {
       account_email: this.account?.email ?? null,
       account_type: this.account?.type ?? null
     });
+    queueMicrotask(() => {
+      void backfillRequestedRunningIssues(`ready:${reason}`);
+    });
     return this;
   }
 
@@ -5991,6 +6097,7 @@ class AppServerClient {
           this.resetSocketState(ws, "app-server socket closed");
           const closeReason = normalizeWebSocketCloseReason(closeReasonBuffer);
           this.lastError = formatAppServerSocketCloseError(code, closeReason);
+          requestRunningIssueBackfill(`close:${code || "unknown"}`);
           appendDiagnosticLog("error", "app_server.websocket.close", "app-server websocket closed", {
             reason,
             attempt,
@@ -6176,6 +6283,10 @@ class AppServerClient {
         markRunningIssueActivity(threadId, {
           reconcileAttempts: 0,
           missingRemoteAttempts: 0,
+          backfillRequestedAt: null,
+          backfillTrigger: null,
+          backfillLastError: null,
+          backfillLastPolledAt: now(),
           ...(codexThreadId ? { lastSeenCodexThreadId: codexThreadId } : {})
         });
       }
@@ -7076,6 +7187,440 @@ async function syncThreadListFromAppServer() {
     "thread/list.syncThreadListFromAppServer"
   );
   return response.result?.data ?? [];
+}
+
+function requestRunningIssueBackfill(reason = "unspecified") {
+  for (const threadId of activeIssueByThreadId.keys()) {
+    const meta = runningIssueMetaByThreadId.get(threadId);
+    const issueId = activeIssueByThreadId.get(threadId) ?? null;
+    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
+    const thread = threadStateById.get(threadId) ?? null;
+
+    if (
+      !meta ||
+      !issue ||
+      !thread ||
+      thread.deleted_at ||
+      issue.deleted_at ||
+      !["running", "awaiting_input"].includes(issue.status)
+    ) {
+      continue;
+    }
+
+    markRunningIssueActivity(threadId, {
+      lastActivityAt: meta.lastActivityAt,
+      backfillRequestedAt: meta.backfillRequestedAt ?? now(),
+      backfillTrigger: reason,
+      backfillLastError: null
+    });
+  }
+}
+
+function clearRunningIssueBackfill(threadId) {
+  const meta = runningIssueMetaByThreadId.get(threadId);
+
+  if (!meta) {
+    return;
+  }
+
+  markRunningIssueActivity(threadId, {
+    lastActivityAt: meta.lastActivityAt,
+    backfillRequestedAt: null,
+    backfillTrigger: null,
+    backfillLastError: null,
+    backfillLastPolledAt: now()
+  });
+}
+
+async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecified") {
+  const response = await appServer.request(
+    "thread/read",
+    {
+      threadId: codexThreadId,
+      includeTurns: true
+    },
+    `thread/read.${reason}`
+  );
+  return response.result?.thread ?? response.thread ?? null;
+}
+
+function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
+  const turns = Array.isArray(remoteThread?.turns) ? remoteThread.turns : [];
+
+  if (turns.length === 0) {
+    return null;
+  }
+
+  if (expectedTurnId) {
+    const matchedTurn = turns.find((turn) => String(turn?.id ?? "").trim() === String(expectedTurnId).trim());
+
+    if (matchedTurn) {
+      return matchedTurn;
+    }
+  }
+
+  return turns.at(-1) ?? null;
+}
+
+function collectAssistantTextFromRemoteTurn(turn) {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  return items
+    .map((item) => String(item?.agentMessage?.text ?? ""))
+    .filter(Boolean)
+    .join("");
+}
+
+function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {
+  const turnStatus = String(turn?.status ?? "").trim();
+
+  if (turnStatus === "completed") {
+    return "completed";
+  }
+
+  if (turnStatus === "failed") {
+    return "failed";
+  }
+
+  if (turnStatus === "interrupted" || turnStatus === "cancelled" || turnStatus === "canceled") {
+    return "failed";
+  }
+
+  if (turnStatus === "inProgress" || turnStatus === "running") {
+    return "running";
+  }
+
+  const threadStatus = normalizeThreadStatus(remoteThread?.status, fallbackStatus);
+
+  if (threadStatus === "awaiting_input") {
+    return "awaiting_input";
+  }
+
+  if (threadStatus === "failed") {
+    return "failed";
+  }
+
+  if (threadStatus === "idle" || threadStatus === "completed") {
+    return "completed";
+  }
+
+  return "running";
+}
+
+function updateBackfilledPhysicalThread(rootThreadId, physicalThreadId, patch = {}) {
+  if (!physicalThreadId) {
+    return null;
+  }
+
+  const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId);
+
+  if (!currentPhysicalThread || currentPhysicalThread.deleted_at || currentPhysicalThread.closed_at) {
+    return null;
+  }
+
+  const nextPhysicalThread = {
+    ...currentPhysicalThread,
+    ...patch,
+    updated_at: patch.updated_at ?? now()
+  };
+
+  physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
+  syncRootThreadFromActivePhysicalThread(rootThreadId);
+  return nextPhysicalThread;
+}
+
+async function publishSyntheticRemoteEvent(userId, method, params, context = {}) {
+  await publishEvent(
+    userId,
+    method.replaceAll("/", "."),
+    buildRemoteNotificationPayload(method, params, context)
+  );
+}
+
+async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unspecified") {
+  const owner = sanitizeUserId(userId);
+  const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
+  const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
+  const thread = threadStateById.get(threadId) ?? null;
+  const issue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+  const physicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    thread?.active_physical_thread_id ??
+    null;
+  const physicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) ?? null : null;
+  const codexThreadId = String(
+    physicalThread?.codex_thread_id ??
+    thread?.codex_thread_id ??
+    meta?.lastSeenCodexThreadId ??
+    ""
+  ).trim();
+
+  if (!activeIssueId || !meta || !thread || !issue || thread.deleted_at || issue.deleted_at || !codexThreadId) {
+    return { accepted: false, skipped: true };
+  }
+
+  markRunningIssueActivity(threadId, {
+    lastActivityAt: meta.lastActivityAt,
+    backfillLastPolledAt: now()
+  });
+
+  const remoteThread = await readThreadSnapshotFromAppServer(codexThreadId, `runningIssueBackfill:${reason}`);
+
+  if (!remoteThread?.id) {
+    throw new Error("thread/read 응답에 thread가 없습니다.");
+  }
+
+  const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
+  const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+  const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
+  const syncedAssistant = syncAssistantSnapshotToIssue(activeIssueId, remoteAssistantText, physicalThreadId);
+  const shouldContinuePolling = remoteStatus === "running";
+  const recoveredMessage =
+    syncedAssistant.content ||
+    extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
+    String(issue.last_message ?? "").trim();
+
+  if (syncedAssistant.changed) {
+    updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      status: "running",
+      progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
+      last_event: "item.agentMessage.delta",
+      last_message: recoveredMessage,
+      turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
+    });
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: physicalThreadId,
+      status: "running",
+      progress: Math.max(Number(issue.progress ?? 0), 90),
+      last_event: "item.agentMessage.delta",
+      last_message: recoveredMessage
+    });
+  }
+
+  if (remoteStatus === "running") {
+    updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      status: "running",
+      progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : "turn.started",
+      last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
+      turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
+    });
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: physicalThreadId,
+      status: "running",
+      progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : "turn.started",
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+  } else if (remoteStatus === "awaiting_input") {
+    updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      status: "awaiting_input",
+      progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
+      last_event: "thread.status.changed",
+      last_message: recoveredMessage,
+      turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
+    });
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: physicalThreadId,
+      status: "awaiting_input",
+      progress: Math.max(Number(issue.progress ?? 0), 90),
+      last_event: "thread.status.changed",
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+  } else if (remoteStatus === "completed") {
+    settlePhysicalThreadExecutionState(threadId, {
+      issue,
+      status: "idle",
+      progress: 100,
+      turnId: null,
+      lastEvent: "turn.completed",
+      lastMessage: recoveredMessage
+    });
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: physicalThreadId,
+      status: "completed",
+      progress: 100,
+      last_event: "turn.completed",
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+    if (physicalThreadId) {
+      activeIssueByPhysicalThreadId.delete(physicalThreadId);
+    }
+    clearRunningIssueTracking(threadId);
+  } else if (remoteStatus === "failed") {
+    settlePhysicalThreadExecutionState(threadId, {
+      issue,
+      status: "failed",
+      progress: 0,
+      turnId: null,
+      lastEvent: "turn.completed",
+      lastMessage: recoveredMessage
+    });
+    updateIssueCard(activeIssueId, {
+      executed_physical_thread_id: physicalThreadId,
+      status: "failed",
+      progress: 0,
+      last_event: "turn.completed",
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+    if (physicalThreadId) {
+      activeIssueByPhysicalThreadId.delete(physicalThreadId);
+    }
+    clearRunningIssueTracking(threadId);
+  }
+
+  const currentThread = threadStateById.get(threadId) ?? thread;
+  const shouldPublishState =
+    syncedAssistant.changed ||
+    currentThread.continuity_status === "degraded" ||
+    remoteStatus !== "running";
+  threadStateById.set(threadId, {
+    ...currentThread,
+    continuity_status: "healthy",
+    updated_at: now()
+  });
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+
+  const eventContext = {
+    codexThreadId: remoteThread.id,
+    threadId,
+    rootThreadId: threadId,
+    physicalThreadId,
+    projectId: thread.project_id,
+    issueId: activeIssueId
+  };
+
+  if (syncedAssistant.appendedDelta) {
+    await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
+      threadId: remoteThread.id,
+      delta: syncedAssistant.appendedDelta
+    }, eventContext);
+  }
+
+  if (remoteStatus === "awaiting_input") {
+    await publishSyntheticRemoteEvent(owner, "thread/status/changed", {
+      threadId: remoteThread.id,
+      status: {
+        type: "waitingForInput"
+      }
+    }, eventContext);
+  } else if (remoteStatus === "completed") {
+    await publishSyntheticRemoteEvent(owner, "turn/completed", {
+      threadId: remoteThread.id,
+      turn: {
+        id: remoteTurn?.id ?? null,
+        status: "completed"
+      }
+    }, eventContext);
+    await publishSyntheticRemoteEvent(owner, "thread/status/changed", {
+      threadId: remoteThread.id,
+      status: {
+        type: "idle"
+      }
+    }, eventContext);
+    void scheduleQueuedIssuesForUser(owner, {
+      preferredThreadId: threadId
+    });
+  } else if (remoteStatus === "failed") {
+    await publishSyntheticRemoteEvent(owner, "turn/completed", {
+      threadId: remoteThread.id,
+      turn: {
+        id: remoteTurn?.id ?? null,
+        status: "failed",
+        error: recoveredMessage
+          ? {
+              message: recoveredMessage
+            }
+          : undefined
+      }
+    }, eventContext);
+    await publishSyntheticRemoteEvent(owner, "thread/status/changed", {
+      threadId: remoteThread.id,
+      status: {
+        type: "error",
+        ...(recoveredMessage ? { message: recoveredMessage } : {})
+      }
+    }, eventContext);
+    void scheduleQueuedIssuesForUser(owner, {
+      preferredThreadId: threadId
+    });
+  }
+
+  if (shouldPublishState) {
+    await publishThreadState(owner, threadId);
+  }
+
+  if (shouldContinuePolling) {
+    markRunningIssueActivity(threadId, {
+      lastActivityAt: meta.lastActivityAt,
+      backfillRequestedAt: meta.backfillRequestedAt ?? now(),
+      backfillTrigger: reason,
+      backfillLastError: null,
+      backfillLastPolledAt: now()
+    });
+  } else {
+    clearRunningIssueBackfill(threadId);
+  }
+
+  return {
+    accepted: true,
+    remote_status: remoteStatus,
+    appended_delta: syncedAssistant.appendedDelta,
+    replaced: syncedAssistant.replaced
+  };
+}
+
+async function backfillRequestedRunningIssues(trigger = "interval") {
+  const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
+    const meta = runningIssueMetaByThreadId.get(threadId);
+    const issueId = activeIssueByThreadId.get(threadId) ?? null;
+    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
+    return Boolean(meta?.backfillRequestedAt && issue && !issue.deleted_at);
+  });
+
+  if (candidateThreadIds.length === 0) {
+    return;
+  }
+
+  if (runningIssueBackfillPromise) {
+    return runningIssueBackfillPromise;
+  }
+
+  runningIssueBackfillPromise = (async () => {
+    for (const threadId of candidateThreadIds) {
+      const owner = threadOwners.get(threadId) ?? BRIDGE_OWNER_LOGIN_ID;
+
+      if (!owner) {
+        continue;
+      }
+
+      try {
+        await backfillRunningIssueFromSnapshot(owner, threadId, trigger);
+      } catch (error) {
+        const meta = runningIssueMetaByThreadId.get(threadId);
+
+        if (meta) {
+          markRunningIssueActivity(threadId, {
+            lastActivityAt: meta.lastActivityAt,
+            backfillLastError: error.message,
+            backfillLastPolledAt: now()
+          });
+        }
+
+        appServer.lastError = error.message;
+        appendDiagnosticLog("error", "running_issue.backfill.failed", "running issue backfill failed", {
+          thread_id: threadId,
+          trigger,
+          error
+        });
+      }
+    }
+  })().finally(() => {
+    runningIssueBackfillPromise = null;
+  });
+
+  return runningIssueBackfillPromise;
 }
 
 function inferReconciledTerminalStatus(issue) {
@@ -8578,6 +9123,12 @@ setInterval(() => {
 setInterval(() => {
   void reconcileRunningIssues();
 }, RUNNING_ISSUE_WATCHDOG_INTERVAL_MS).unref();
+
+if (RUNNING_ISSUE_BACKFILL_INTERVAL_MS > 0) {
+  setInterval(() => {
+    void backfillRequestedRunningIssues();
+  }, RUNNING_ISSUE_BACKFILL_INTERVAL_MS).unref();
+}
 
 await publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
 

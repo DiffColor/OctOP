@@ -263,11 +263,104 @@ class FakeAppServer {
   }
 
   notify(method, params) {
+    this.recordNotification(method, params);
     this.send({
       jsonrpc: "2.0",
       method,
       params
     });
+  }
+
+  recordNotification(method, params) {
+    const threadId = String(params?.threadId ?? params?.thread?.id ?? "").trim();
+    const thread = threadId ? this.threads.get(threadId) ?? null : null;
+
+    if (!thread) {
+      return;
+    }
+
+    thread.updatedAt = Math.floor(Date.now() / 1000);
+
+    switch (method) {
+      case "item/agentMessage/delta": {
+        const currentTurn = this.getCurrentTurn(threadId);
+
+        if (!currentTurn) {
+          return;
+        }
+
+        const delta = String(params?.delta ?? "");
+        const existingMessageItem = currentTurn.items.find((item) => item.agentMessage);
+
+        if (existingMessageItem?.agentMessage) {
+          existingMessageItem.agentMessage.text = `${existingMessageItem.agentMessage.text ?? ""}${delta}`;
+          return;
+        }
+
+        currentTurn.items.push({
+          agentMessage: {
+            id: `msg-${randomUUID().slice(0, 8)}`,
+            text: delta
+          }
+        });
+        return;
+      }
+      case "turn/completed": {
+        const currentTurn = this.getTurn(threadId, params?.turn?.id) ?? this.getCurrentTurn(threadId);
+
+        if (!currentTurn) {
+          return;
+        }
+
+        currentTurn.status = params?.turn?.status ?? currentTurn.status;
+        if (params?.turn?.error) {
+          currentTurn.error = params.turn.error;
+        }
+        return;
+      }
+      case "thread/status/changed":
+        thread.status = params?.status ?? thread.status;
+        return;
+      case "thread/tokenUsage/updated":
+        thread.tokenUsage = params?.tokenUsage ?? params?.token_usage ?? null;
+        return;
+      case "turn/started": {
+        const currentTurn = this.getTurn(threadId, params?.turn?.id) ?? this.getCurrentTurn(threadId);
+
+        if (currentTurn) {
+          currentTurn.status = params?.turn?.status ?? currentTurn.status;
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  getTurn(threadId, turnId) {
+    const thread = this.threads.get(String(threadId ?? "").trim());
+
+    if (!thread) {
+      return null;
+    }
+
+    const normalizedTurnId = String(turnId ?? "").trim();
+
+    if (!normalizedTurnId) {
+      return null;
+    }
+
+    return (thread.turns ?? []).find((turn) => turn.id === normalizedTurnId) ?? null;
+  }
+
+  getCurrentTurn(threadId) {
+    const thread = this.threads.get(String(threadId ?? "").trim());
+
+    if (!thread) {
+      return null;
+    }
+
+    return this.getTurn(threadId, thread.currentTurnId) ?? thread.turns?.at(-1) ?? null;
   }
 
   handleFrame(socket, frame) {
@@ -386,7 +479,9 @@ class FakeAppServer {
           name: `Fake Thread ${this.threadSequence}`,
           preview: "",
           status: { type: "idle" },
-          tokenUsage: null
+          tokenUsage: null,
+          turns: [],
+          currentTurnId: null
         };
         this.threads.set(threadId, record);
         this.respond(message.id, {
@@ -405,6 +500,12 @@ class FakeAppServer {
         if (thread) {
           thread.status = { type: "active" };
           thread.updatedAt = Math.floor(Date.now() / 1000);
+          thread.currentTurnId = turnId;
+          thread.turns.push({
+            id: turnId,
+            status: "inProgress",
+            items: []
+          });
         }
 
         this.respond(message.id, {
@@ -434,6 +535,10 @@ class FakeAppServer {
         if (thread) {
           thread.status = { type: "idle" };
           thread.updatedAt = Math.floor(Date.now() / 1000);
+          const currentTurn = this.getCurrentTurn(threadId);
+          if (currentTurn) {
+            currentTurn.status = "interrupted";
+          }
         }
 
         this.respond(message.id, { accepted: true });
@@ -460,6 +565,19 @@ class FakeAppServer {
         });
         }
         return;
+      case "thread/read": {
+        const threadId = String(message.params?.threadId ?? "").trim();
+        const thread = this.threads.get(threadId) ?? null;
+        this.respond(message.id, {
+          thread: thread
+            ? {
+                ...thread,
+                turns: message.params?.includeTurns ? thread.turns ?? [] : []
+              }
+            : null
+        });
+        return;
+      }
       default:
         this.respond(message.id, {});
     }
@@ -937,6 +1055,95 @@ test("브리지 app-server 1006 close 후 자동 재연결", { timeout: 60000 },
   const health = await bridge.request("/health");
   assert.equal(health.ok, true);
   assert.equal(health.status?.app_server?.initialized, true);
+});
+
+test("브리지 app-server reconnect 후 thread/read로 누락된 출력과 완료 상태를 복구한다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-backfill-int-"));
+  const fakeAppServer = new FakeAppServer();
+  let reconnectScenario = null;
+  fakeAppServer.options.onTurnStart = ({ server, threadId, turnId }) => {
+    reconnectScenario = { threadId, turnId };
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+    setTimeout(() => {
+      server.destroyActiveSocket();
+    }, 150);
+    setTimeout(() => {
+      server.recordNotification("item/agentMessage/delta", {
+        threadId,
+        delta: " 이후 복구된 문장"
+      });
+      server.recordNotification("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "completed"
+        }
+      });
+      server.recordNotification("thread/status/changed", {
+        threadId,
+        status: {
+          type: "idle"
+        }
+      });
+    }, 1200);
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-backfill-token",
+    userId: "backfill-user",
+    bridgeId: `backfill-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "200",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "300"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Reconnect Backfill Thread"
+  });
+
+  await waitFor(async () => {
+    assert.ok(reconnectScenario?.threadId);
+    assert.ok(reconnectScenario?.turnId);
+  }, {
+    timeoutMs: 10000,
+    intervalMs: 100,
+    label: "backfill scenario start"
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const assistantMessages = payload.messages.filter((message) => message.role === "assistant");
+    assert.equal(payload.issue?.status, "completed");
+    assert.equal(assistantMessages.length >= 1, true);
+    assert.equal(assistantMessages.at(-1)?.content, "첫 문장 이후 복구된 문장");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "backfilled issue completion"
+  });
+
+  assert.equal(issueDetail.issue?.last_event, "turn.completed");
+  assert.equal(fakeAppServer.connectionCount >= 2, true);
 });
 
 test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실행된다", { timeout: 120000 }, async (t) => {
