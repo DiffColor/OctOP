@@ -3879,7 +3879,9 @@ async function startTurnOnPhysicalThread(
         thread_id: rootThreadId,
         entries: listThreadTimeline(rootThreadId)
       });
-      void processIssueQueue(userId, rootThreadId);
+      void scheduleQueuedIssuesForUser(userId, {
+        preferredThreadId: rootThreadId
+      });
       return {
         accepted: false,
         error: error.message
@@ -4052,10 +4054,17 @@ async function startThreadIssues(userId, payload = {}) {
     project_id: threadStateById.get(threadId)?.project_id ?? null,
     threads: listProjectThreads(userId, threadStateById.get(threadId)?.project_id ?? "")
   });
-  await processIssueQueue(userId, threadId);
+  const blockingThreadId = findBlockingActiveExecutionThreadId(userId, {
+    excludeThreadId: threadId
+  });
+
+  if (!blockingThreadId) {
+    await processIssueQueue(userId, threadId);
+  }
 
   return {
     accepted: true,
+    blocked_by_thread_id: blockingThreadId,
     issues: listThreadIssues(threadId)
   };
 }
@@ -4323,9 +4332,22 @@ async function interruptThreadIssue(userId, payload = {}) {
   persistThreadById(issue.thread_id);
   await publishThreadState(userId, issue.thread_id);
 
-  if (wasActive && previousActiveIssueId === issueId && ensurePendingQueue(issue.thread_id).length > 0) {
-    await processIssueQueue(userId, issue.thread_id);
-    recoverySteps.push("resumed_issue_queue");
+  if (wasActive && previousActiveIssueId === issueId) {
+    const scheduleResult = await scheduleQueuedIssuesForUser(userId, {
+      preferredThreadId: issue.thread_id
+    });
+
+    if (scheduleResult.started) {
+      recoverySteps.push("resumed_issue_queue");
+    }
+  } else if (!wasActive && ensurePendingQueue(issue.thread_id).length > 0) {
+    const blockingThreadId = findBlockingActiveExecutionThreadId(userId, {
+      excludeThreadId: issue.thread_id
+    });
+
+    if (!blockingThreadId) {
+      await processIssueQueue(userId, issue.thread_id);
+    }
   }
 
   return {
@@ -5959,7 +5981,9 @@ class AppServerClient {
           activeIssueByPhysicalThreadId.delete(physicalThreadId);
         }
         clearRunningIssueTracking(threadId);
-        void processIssueQueue(owner, threadId);
+        void scheduleQueuedIssuesForUser(owner, {
+          preferredThreadId: threadId
+        });
       }
     }
 
@@ -6499,8 +6523,99 @@ function hasRunningThread(userId) {
   return listLocalThreads(userId).some((thread) => thread.status === "running");
 }
 
+function findBlockingActiveExecutionThreadId(userId, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const excludedThreadIds = new Set(
+    [options.excludeThreadId].flat().map((value) => String(value ?? "").trim()).filter(Boolean)
+  );
+
+  for (const [threadId, issueId] of activeIssueByThreadId.entries()) {
+    if (excludedThreadIds.has(threadId)) {
+      continue;
+    }
+
+    if (threadOwners.get(threadId) !== normalizedUserId) {
+      continue;
+    }
+
+    const thread = threadStateById.get(threadId);
+    const issue = issueCardsById.get(issueId);
+
+    if (!thread || !issue || thread.deleted_at || issue.deleted_at) {
+      continue;
+    }
+
+    if (["running", "awaiting_input"].includes(issue.status ?? thread.status ?? "")) {
+      return threadId;
+    }
+  }
+
+  return null;
+}
+
 function hasActiveThreadExecution(userId) {
   return listLocalThreads(userId).some((thread) => ["running", "awaiting_input"].includes(thread.status));
+}
+
+async function scheduleQueuedIssuesForUser(userId, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const preferredThreadId = String(options.preferredThreadId ?? "").trim() || null;
+  const blockingThreadId = findBlockingActiveExecutionThreadId(normalizedUserId, {
+    excludeThreadId: preferredThreadId
+  });
+
+  if (blockingThreadId) {
+    return {
+      accepted: false,
+      started: false,
+      blocked_by_thread_id: blockingThreadId
+    };
+  }
+
+  const state = ensureUserState(normalizedUserId);
+  const candidateThreadIds = [];
+
+  if (
+    preferredThreadId &&
+    threadOwners.get(preferredThreadId) === normalizedUserId &&
+    ensurePendingQueue(preferredThreadId).length > 0
+  ) {
+    candidateThreadIds.push(preferredThreadId);
+  }
+
+  for (const threadId of state.threadIds) {
+    if (
+      candidateThreadIds.includes(threadId) ||
+      threadOwners.get(threadId) !== normalizedUserId ||
+      ensurePendingQueue(threadId).length === 0
+    ) {
+      continue;
+    }
+
+    candidateThreadIds.push(threadId);
+  }
+
+  for (const threadId of candidateThreadIds) {
+    if (activeIssueByThreadId.has(threadId)) {
+      continue;
+    }
+
+    await processIssueQueue(normalizedUserId, threadId);
+
+    if (activeIssueByThreadId.has(threadId)) {
+      return {
+        accepted: true,
+        started: true,
+        thread_id: threadId
+      };
+    }
+  }
+
+  return {
+    accepted: true,
+    started: false,
+    blocked_by_thread_id: null
+  };
 }
 
 function hasLocalLiveExecution() {
@@ -6761,14 +6876,12 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
     recoverySteps.push("released_last_issue_lock");
   }
 
-  const hadPendingQueue = ensurePendingQueue(rootThreadId).length > 0;
+  if (!activeIssueByThreadId.has(rootThreadId)) {
+    const scheduleResult = await scheduleQueuedIssuesForUser(normalizedUserId, {
+      preferredThreadId: rootThreadId
+    });
 
-  if (!activeIssueByThreadId.has(rootThreadId) && hadPendingQueue) {
-    const previousActiveIssueId = activeIssueByThreadId.get(rootThreadId) ?? null;
-
-    await processIssueQueue(normalizedUserId, rootThreadId);
-
-    if (!previousActiveIssueId && activeIssueByThreadId.get(rootThreadId)) {
+    if (scheduleResult.started) {
       recoverySteps.push("resumed_issue_queue");
     }
   }
@@ -6925,7 +7038,9 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
-    void processIssueQueue(userId, threadId);
+    void scheduleQueuedIssuesForUser(userId, {
+      preferredThreadId: threadId
+    });
     return;
   }
 
@@ -6947,7 +7062,9 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
-    void processIssueQueue(userId, threadId);
+    void scheduleQueuedIssuesForUser(userId, {
+      preferredThreadId: threadId
+    });
   }
 }
 
