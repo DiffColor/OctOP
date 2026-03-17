@@ -444,8 +444,12 @@ class FakeAppServer {
         {
           const allThreads = [...this.threads.values()];
           const threadListOmitCount = Number(this.options.threadListOmitCount ?? 0);
+          const threadListOmitRequestNumbers = Array.isArray(this.options.threadListOmitRequestNumbers)
+            ? this.options.threadListOmitRequestNumbers.map((value) => Number(value)).filter(Number.isFinite)
+            : [];
+          const shouldOmitForRequestNumber = threadListOmitRequestNumbers.includes(this.threadListRequestCount);
           const data =
-            threadListOmitCount > 0 && this.threadListRequestCount <= threadListOmitCount
+            shouldOmitForRequestNumber || (threadListOmitCount > 0 && this.threadListRequestCount <= threadListOmitCount)
               ? []
               : allThreads;
         this.respond(message.id, {
@@ -1258,6 +1262,84 @@ test("degraded thread는 후속 정상 이벤트를 받으면 continuity를 자�
       timeoutMs: 45000,
       intervalMs: 300,
       label: "recovered degraded issue completion"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("긴 응답 공백 중 thread/list가 한 번 비어도 running issue를 중단하지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-long-gap-running-int-"));
+  const fakeAppServer = new FakeAppServer({
+    threadListOmitRequestNumbers: [2]
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-long-gap-running-token",
+    userId: "integration-user",
+    bridgeId: `long-gap-running-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT: "2"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Long Gap Running Thread"
+    });
+
+    await waitFor(async () => {
+      assert.equal(fakeAppServer.getRequests("thread/list").length >= 3, true);
+      const issueDetail = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const health = await bridge.request("/health");
+
+      assert.equal(issueDetail.issue?.status, "running");
+      assert.notEqual(issueDetail.issue?.last_event, "watchdog.degraded");
+      assert.equal(continuity.root_thread?.continuity_status, "healthy");
+      assert.equal(health.status?.app_server?.idle, false);
+      return { issueDetail, continuity, health };
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "running issue survives single missing thread/list during long gap"
+    });
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: sourceCodexThreadId,
+      turnId: "turn-long-gap-running-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      assert.equal(payload.issue?.last_event, "turn.completed");
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "running issue completes after long silent gap"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;

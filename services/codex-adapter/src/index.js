@@ -693,7 +693,9 @@ function restoreThreadCentricState(loginId, stored) {
       startedAt: issue.updated_at ?? thread.updated_at ?? now(),
       lastActivityAt: issue.updated_at ?? thread.updated_at ?? now(),
       reconcileAttempts: 0,
-      lastReconciledAt: null
+      missingRemoteAttempts: 0,
+      lastReconciledAt: null,
+      lastSeenCodexThreadId: thread.codex_thread_id ?? null
     });
   }
 
@@ -1764,6 +1766,7 @@ function markRunningIssueActivity(threadId, patch = {}) {
     lastActivityAt: now(),
     lastReconciledAt: null,
     reconcileAttempts: 0,
+    missingRemoteAttempts: 0,
     lastSeenCodexThreadId: null
   };
   const next = {
@@ -1878,7 +1881,9 @@ function ensureRunningIssueTrackingForThread(threadId) {
     startedAt: recoverableIssue.updated_at ?? thread.updated_at ?? now(),
     lastActivityAt: recoverableIssue.updated_at ?? thread.updated_at ?? now(),
     reconcileAttempts: 0,
-    lastReconciledAt: null
+    missingRemoteAttempts: 0,
+    lastReconciledAt: null,
+    lastSeenCodexThreadId: thread.codex_thread_id ?? null
   });
   return recoverableIssue.id;
 }
@@ -3739,6 +3744,7 @@ async function startTurnOnPhysicalThread(
     startedAt: now(),
     lastActivityAt: now(),
     reconcileAttempts: 0,
+    missingRemoteAttempts: 0,
     lastReconciledAt: null,
     lastSeenCodexThreadId: codexThreadId
   });
@@ -5827,6 +5833,7 @@ class AppServerClient {
       ) {
         markRunningIssueActivity(threadId, {
           reconcileAttempts: 0,
+          missingRemoteAttempts: 0,
           ...(codexThreadId ? { lastSeenCodexThreadId: codexThreadId } : {})
         });
       }
@@ -6631,9 +6638,9 @@ function inferReconciledTerminalStatus(issue) {
 }
 
 function shouldTreatMissingRemoteThreadAsTerminal(issue, meta = {}) {
-  const reconcileAttempts = Number(meta.reconcileAttempts ?? 0);
+  const missingRemoteAttempts = Number(meta.missingRemoteAttempts ?? 0);
 
-  if (reconcileAttempts < RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+  if (missingRemoteAttempts < RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
     return false;
   }
 
@@ -6823,20 +6830,24 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
     ? normalizeThreadStatus(remoteThread.status, thread.status ?? issue.status ?? "running")
     : null;
   const reconcileAttempts = Number(meta.reconcileAttempts ?? 0) + 1;
+  const missingRemoteAttempts = remoteThread ? 0 : Number(meta.missingRemoteAttempts ?? 0) + 1;
 
   markRunningIssueActivity(threadId, {
     lastReconciledAt: now(),
     reconcileAttempts,
-    lastActivityAt: meta.lastActivityAt
+    missingRemoteAttempts,
+    lastActivityAt: meta.lastActivityAt,
+    ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
   });
 
   if (!reconciledStatus) {
-    if (!shouldTreatMissingRemoteThreadAsTerminal(issue, { reconcileAttempts })) {
-      if (reconcileAttempts === RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
+    if (!shouldTreatMissingRemoteThreadAsTerminal(issue, { missingRemoteAttempts })) {
+      if (missingRemoteAttempts === RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT) {
         console.warn("[OctOP bridge] running issue reconcile skipped: remote thread missing", {
           thread_id: threadId,
           issue_id: activeIssueId,
           reconcile_attempts: reconcileAttempts,
+          missing_remote_attempts: missingRemoteAttempts,
           socket_connected: appServer.connected,
           app_server_initialized: appServer.initialized,
           app_server_last_error: appServer.lastError
@@ -6871,10 +6882,20 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
   }
 
   if (reconciledStatus === "running") {
+    markRunningIssueActivity(threadId, {
+      lastActivityAt: now(),
+      missingRemoteAttempts: 0,
+      ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
+    });
     return;
   }
 
   if (reconciledStatus === "awaiting_input") {
+    markRunningIssueActivity(threadId, {
+      lastActivityAt: now(),
+      missingRemoteAttempts: 0,
+      ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
+    });
     updateIssueCard(activeIssueId, {
       status: "awaiting_input",
       last_event: "watchdog.awaiting_input"
