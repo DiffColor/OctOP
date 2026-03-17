@@ -150,6 +150,13 @@ class FakeAppServer {
     this.threadListRequestCount = 0;
     this.idleTimerBySocket = new Map();
     this.pongTimers = new Set();
+    this.noResponseOnceMethods = new Set(
+      Array.isArray(options.noResponseOnceMethods) ? options.noResponseOnceMethods : []
+    );
+    this.zombieAfterMethods = new Set(
+      Array.isArray(options.zombieAfterMethods) ? options.zombieAfterMethods : []
+    );
+    this.zombieSockets = new WeakSet();
   }
 
   async start() {
@@ -400,10 +407,10 @@ class FakeAppServer {
       return;
     }
 
-    this.handleMessage(frame.payload.toString("utf8"));
+    this.handleMessage(socket, frame.payload.toString("utf8"));
   }
 
-  handleMessage(rawMessage) {
+  handleMessage(socket, rawMessage) {
     const message = JSON.parse(rawMessage);
 
     if (!message.id) {
@@ -416,9 +423,15 @@ class FakeAppServer {
       params: message.params
     });
 
+    if (this.zombieSockets.has(socket)) {
+      return;
+    }
+
     const noResponseMethods = Array.isArray(this.options.noResponseMethods)
       ? this.options.noResponseMethods
       : [];
+    const noResponseOnceMethods = this.noResponseOnceMethods;
+    const zombieAfterMethods = this.zombieAfterMethods;
 
     const errorMethods = this.options.errorMethods && typeof this.options.errorMethods === "object"
       ? this.options.errorMethods
@@ -428,6 +441,17 @@ class FakeAppServer {
       : null;
 
     if (noResponseMethods.includes(message.method)) {
+      return;
+    }
+
+    if (noResponseOnceMethods.has(message.method)) {
+      noResponseOnceMethods.delete(message.method);
+      return;
+    }
+
+    if (zombieAfterMethods.has(message.method)) {
+      zombieAfterMethods.delete(message.method);
+      this.zombieSockets.add(socket);
       return;
     }
 
@@ -1200,6 +1224,112 @@ test("브리지 app-server reconnect 후 thread/read로 누락된 출력과 완�
   });
 
   assert.equal(issueDetail.issue?.last_event, "turn.completed");
+  assert.equal(fakeAppServer.connectionCount >= 2, true);
+});
+
+test("app-server RPC timeout zombie 상태에서도 강제 reconnect 후 backfill로 메시지와 상태를 복구한다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-timeout-backfill-int-"));
+  const fakeAppServer = new FakeAppServer({
+    zombieAfterMethods: ["thread/list"]
+  });
+  fakeAppServer.options.onTurnStart = ({ server, threadId, turnId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+    setTimeout(() => {
+      server.recordNotification("thread/tokenUsage/updated", {
+        threadId,
+        tokenUsage: {
+          modelContextWindow: 100000,
+          last: {
+            inputTokens: 86000,
+            outputTokens: 1200,
+            totalTokens: 87200
+          },
+          total: {
+            inputTokens: 86000,
+            outputTokens: 1200,
+            totalTokens: 87200
+          }
+        }
+      });
+      server.recordNotification("item/agentMessage/delta", {
+        threadId,
+        delta: " 이후 복구된 문장"
+      });
+      server.recordNotification("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "completed"
+        }
+      });
+      server.recordNotification("thread/status/changed", {
+        threadId,
+        status: {
+          type: "idle"
+        }
+      });
+    }, 900);
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-timeout-backfill-token",
+    userId: "timeout-backfill-user",
+    bridgeId: `timeout-backfill-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "200",
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "200"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "RPC timeout backfill thread"
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const assistantMessages = payload.messages.filter((message) => message.role === "assistant");
+    assert.equal(payload.issue?.status, "completed");
+    assert.equal(assistantMessages.at(-1)?.content, "첫 문장 이후 복구된 문장");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "timeout backfill completion"
+  });
+
+  const continuity = await waitFor(async () => {
+    const payload = await bridge.request(`/api/threads/${scenario.rootThreadId}/continuity`);
+    assert.equal(payload.active_physical_thread?.context_used_tokens, 86000);
+    assert.equal(payload.active_physical_thread?.context_usage_percent, 86);
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "timeout backfill token usage sync"
+  });
+
+  assert.equal(issueDetail.issue?.last_event, "turn.completed");
+  assert.equal(continuity.root_thread?.continuity_status, "healthy");
+  assert.equal(fakeAppServer.getRequests("thread/read").length >= 1, true);
   assert.equal(fakeAppServer.connectionCount >= 2, true);
 });
 

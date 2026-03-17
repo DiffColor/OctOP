@@ -40,6 +40,9 @@ const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") 
 const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
+const APP_SERVER_REQUEST_TIMEOUT_MS = Number(
+  process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 20000
+);
 const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 90000
 );
@@ -1885,6 +1888,64 @@ function markRunningIssueActivity(threadId, patch = {}) {
   return next;
 }
 
+function areThreadTokenUsageStatesEqual(left = {}, right = {}) {
+  const normalizeComparableNumber = (value) => {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+
+  return (
+    JSON.stringify(left?.token_usage ?? null) === JSON.stringify(right?.token_usage ?? null) &&
+    normalizeComparableNumber(left?.context_window_tokens) === normalizeComparableNumber(right?.context_window_tokens) &&
+    normalizeComparableNumber(left?.context_used_tokens) === normalizeComparableNumber(right?.context_used_tokens) &&
+    normalizeComparableNumber(left?.context_usage_percent) === normalizeComparableNumber(right?.context_usage_percent)
+  );
+}
+
+function captureBackfillComparableState(thread = null, issue = null, physicalThread = null) {
+  return {
+    thread: thread
+      ? {
+          status: thread.status ?? null,
+          progress: Number(thread.progress ?? 0),
+          last_event: thread.last_event ?? null,
+          last_message: String(thread.last_message ?? ""),
+          continuity_status: thread.continuity_status ?? null,
+          turn_id: thread.turn_id ?? null,
+          token_usage: thread.token_usage ?? null,
+          context_window_tokens: thread.context_window_tokens ?? null,
+          context_used_tokens: thread.context_used_tokens ?? null,
+          context_usage_percent: thread.context_usage_percent ?? null
+        }
+      : null,
+    issue: issue
+      ? {
+          status: issue.status ?? null,
+          progress: Number(issue.progress ?? 0),
+          last_event: issue.last_event ?? null,
+          last_message: String(issue.last_message ?? "")
+        }
+      : null,
+    physicalThread: physicalThread
+      ? {
+          status: physicalThread.status ?? null,
+          progress: Number(physicalThread.progress ?? 0),
+          last_event: physicalThread.last_event ?? null,
+          last_message: String(physicalThread.last_message ?? ""),
+          turn_id: physicalThread.turn_id ?? null,
+          token_usage: physicalThread.token_usage ?? null,
+          context_window_tokens: physicalThread.context_window_tokens ?? null,
+          context_used_tokens: physicalThread.context_used_tokens ?? null,
+          context_usage_percent: physicalThread.context_usage_percent ?? null
+        }
+      : null
+  };
+}
+
 function clearRunningIssueTracking(threadId) {
   const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
   activeIssueByThreadId.delete(threadId);
@@ -2033,6 +2094,7 @@ async function markRunningIssueContinuityDegraded(
   details = {}
 ) {
   const degradedMessage = String(message ?? "").trim() || String(issue?.last_message ?? "").trim();
+  const currentMeta = runningIssueMetaByThreadId.get(threadId) ?? null;
   const nextThread = {
     ...thread,
     continuity_status: "degraded",
@@ -2051,7 +2113,10 @@ async function markRunningIssueContinuityDegraded(
   }
 
   markRunningIssueActivity(threadId, {
-    lastActivityAt: now(),
+    lastActivityAt: currentMeta?.lastActivityAt ?? now(),
+    backfillRequestedAt: currentMeta?.backfillRequestedAt ?? now(),
+    backfillTrigger: details.backfillTrigger ?? "continuity_degraded",
+    backfillLastError: null,
     ...(details.remoteThreadId ? { lastSeenCodexThreadId: details.remoteThreadId } : {})
   });
   updateProjectThreadSnapshot(threadId);
@@ -6653,8 +6718,16 @@ class AppServerClient {
             ? new Date(this.lastSocketActivityAt).toISOString()
             : null
         });
+        requestRunningIssueBackfill(`request_timeout:${method}`);
+        this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+          method,
+          request_id: id,
+          last_socket_activity_at: this.lastSocketActivityAt
+            ? new Date(this.lastSocketActivityAt).toISOString()
+            : null
+        });
         reject(new Error(`app-server request timeout: ${method}`));
-      }, 20000);
+      }, APP_SERVER_REQUEST_TIMEOUT_MS);
     });
   }
 
@@ -7402,6 +7475,7 @@ function collectBridgeStatus(userId) {
       last_silent_state_check_error: appServer.lastSilentStateCheckError,
       idle_only_heartbeat: false,
       heartbeat_interval_ms: APP_SERVER_HEARTBEAT_INTERVAL_MS,
+      request_timeout_ms: APP_SERVER_REQUEST_TIMEOUT_MS,
       heartbeat_timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
       heartbeat_timeout_count: appServer.heartbeatTimeoutCount,
       active_heartbeat_force_reconnect_misses: APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES,
@@ -7610,6 +7684,8 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     return { accepted: false, skipped: true };
   }
 
+  const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
+
   markRunningIssueActivity(threadId, {
     lastActivityAt: meta.lastActivityAt,
     backfillLastPolledAt: now()
@@ -7625,14 +7701,26 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
   const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
   const syncedAssistant = syncAssistantSnapshotToIssue(activeIssueId, remoteAssistantText, physicalThreadId);
+  const tokenUsageState = normalizeThreadTokenUsage(
+    remoteThread.tokenUsage ?? remoteThread.token_usage ?? null,
+    physicalThread ?? thread ?? {}
+  );
   const shouldContinuePolling = remoteStatus === "running";
   const recoveredMessage =
     syncedAssistant.content ||
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
     String(issue.last_message ?? "").trim();
+  const tokenUsageChanged = !areThreadTokenUsageStatesEqual(previousComparableState.physicalThread ?? {}, tokenUsageState);
+
+  if (physicalThreadId && tokenUsageChanged) {
+    updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      ...tokenUsageState
+    });
+  }
 
   if (syncedAssistant.changed) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      ...tokenUsageState,
       status: "running",
       progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
       last_event: "item.agentMessage.delta",
@@ -7650,6 +7738,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 
   if (remoteStatus === "running") {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      ...tokenUsageState,
       status: "running",
       progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
       last_event: syncedAssistant.changed ? "item.agentMessage.delta" : "turn.started",
@@ -7665,6 +7754,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     });
   } else if (remoteStatus === "awaiting_input") {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+      ...tokenUsageState,
       status: "awaiting_input",
       progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
       last_event: "thread.status.changed",
@@ -7721,17 +7811,21 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   }
 
   const currentThread = threadStateById.get(threadId) ?? thread;
-  const shouldPublishState =
-    syncedAssistant.changed ||
-    currentThread.continuity_status === "degraded" ||
-    remoteStatus !== "running";
-  threadStateById.set(threadId, {
+  const nextThread = {
     ...currentThread,
     continuity_status: "healthy",
     updated_at: now()
-  });
+  };
+  threadStateById.set(threadId, nextThread);
   updateProjectThreadSnapshot(threadId);
   persistThreadById(threadId);
+  const nextIssue = issueCardsById.get(activeIssueId) ?? issue;
+  const nextPhysicalThread = physicalThreadId
+    ? physicalThreadStateById.get(physicalThreadId) ?? physicalThread
+    : physicalThread;
+  const nextComparableState = captureBackfillComparableState(nextThread, nextIssue, nextPhysicalThread);
+  const shouldPublishState =
+    JSON.stringify(previousComparableState) !== JSON.stringify(nextComparableState);
 
   const eventContext = {
     codexThreadId: remoteThread.id,
@@ -7746,6 +7840,13 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
       threadId: remoteThread.id,
       delta: syncedAssistant.appendedDelta
+    }, eventContext);
+  }
+
+  if (tokenUsageChanged) {
+    await publishSyntheticRemoteEvent(owner, "thread/tokenUsage/updated", {
+      threadId: remoteThread.id,
+      tokenUsage: remoteThread.tokenUsage ?? remoteThread.token_usage ?? null
     }, eventContext);
   }
 
