@@ -11,52 +11,10 @@ const LANGUAGE_STORAGE_KEY = "octop.dashboard.language";
 const SIDEBAR_WIDTH_STORAGE_KEY = "octop.dashboard.sidebar.width";
 const ARCHIVE_STORAGE_KEY = "octop.dashboard.archives";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.dashboard.selectedBridge";
-function isLocalRuntimeHostname(hostname = "") {
-  const normalized = String(hostname ?? "").trim().toLowerCase();
-
-  if (!normalized) {
-    return false;
-  }
-
-  if (
-    normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized === "[::1]" ||
-    normalized === "0.0.0.0" ||
-    normalized === "wsl.localhost"
-  ) {
-    return true;
-  }
-
-  if (normalized.endsWith(".local")) {
-    return true;
-  }
-
-  const ipv4Match = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u);
-
-  if (!ipv4Match) {
-    return false;
-  }
-
-  const octets = ipv4Match.slice(1).map((value) => Number(value));
-
-  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
-    return false;
-  }
-
-  return (
-    octets[0] === 10 ||
-    octets[0] === 127 ||
-    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
-    (octets[0] === 192 && octets[1] === 168)
-  );
-}
-
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
-  isLocalRuntimeHostname(window.location.hostname)
-    ? `http://${window.location.hostname}:4000`
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+    ? "http://127.0.0.1:4000"
     : "https://octop.ilycode.app";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
 const STREAM_SILENCE_START_MS = 60_000;

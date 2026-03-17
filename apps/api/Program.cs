@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Net;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
 using Newtonsoft.Json.Linq;
@@ -21,70 +20,6 @@ var corsOrigins = (Environment.GetEnvironmentVariable("OCTOP_DASHBOARD_ORIGIN")
 var licenseHubApiBaseUrl =
   Environment.GetEnvironmentVariable("OCTOP_LICENSEHUB_API_BASE_URL") ?? "https://licensehub.ilycode.app";
 var allowedOriginSet = corsOrigins.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-static bool IsLoopbackOrPrivateHost(string? host)
-{
-  var normalized = host?.Trim().Trim('[', ']').ToLowerInvariant();
-
-  if (string.IsNullOrWhiteSpace(normalized))
-  {
-    return false;
-  }
-
-  if (
-    normalized is "localhost" or "127.0.0.1" or "::1" or "0.0.0.0" or "wsl.localhost" ||
-    normalized.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
-  {
-    return true;
-  }
-
-  if (!IPAddress.TryParse(normalized, out var address))
-  {
-    return false;
-  }
-
-  if (IPAddress.IsLoopback(address))
-  {
-    return true;
-  }
-
-  if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
-  {
-    return false;
-  }
-
-  var bytes = address.GetAddressBytes();
-  return
-    bytes[0] == 10 ||
-    bytes[0] == 127 ||
-    (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
-    (bytes[0] == 192 && bytes[1] == 168);
-}
-
-static bool IsAllowedCorsOrigin(string? origin, HashSet<string> allowedOrigins)
-{
-  if (string.IsNullOrWhiteSpace(origin))
-  {
-    return false;
-  }
-
-  if (allowedOrigins.Contains(origin))
-  {
-    return true;
-  }
-
-  if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
-  {
-    return false;
-  }
-
-  if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
-  {
-    return false;
-  }
-
-  return IsLoopbackOrPrivateHost(uri.Host);
-}
 
 builder.WebHost.UseUrls($"http://{gatewayHost}:{gatewayPort}");
 builder.Services.AddHttpClient();
@@ -133,7 +68,7 @@ app.Use(async (httpContext, next) =>
 {
   var origin = httpContext.Request.Headers.Origin.ToString();
 
-  if (IsAllowedCorsOrigin(origin, allowedOriginSet))
+  if (!string.IsNullOrWhiteSpace(origin) && allowedOriginSet.Contains(origin))
   {
     httpContext.Response.Headers.AccessControlAllowOrigin = origin;
     httpContext.Response.Headers.AccessControlAllowMethods = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
