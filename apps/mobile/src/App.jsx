@@ -3154,20 +3154,34 @@ function TodoChatDetail({
 
 function ProjectInstructionDialog({ open, busy, project, instructionType, onClose, onSubmit }) {
   const [value, setValue] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const draftScopeRef = useRef("");
+  const instructionValue = instructionType === "developer" ? (project?.developer_instructions ?? "") : (project?.base_instructions ?? "");
+  const draftScope = open && project ? `${project.id}:${instructionType}` : "";
 
   useEffect(() => {
     if (!open) {
       setValue("");
+      setDirty(false);
+      draftScopeRef.current = "";
       return;
     }
 
-    if (instructionType === "developer") {
-      setValue(project?.developer_instructions ?? "");
+    if (!project) {
       return;
     }
 
-    setValue(project?.base_instructions ?? "");
-  }, [instructionType, open, project]);
+    if (draftScopeRef.current !== draftScope) {
+      draftScopeRef.current = draftScope;
+      setValue(instructionValue);
+      setDirty(false);
+      return;
+    }
+
+    if (!dirty) {
+      setValue(instructionValue);
+    }
+  }, [dirty, draftScope, instructionValue, open, project]);
 
   if (!open || !project) {
     return null;
@@ -3201,7 +3215,10 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
             id="project-instruction-input"
             rows="10"
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setDirty(true);
+            }}
             placeholder={
               isDeveloperInstruction
                 ? "예: 코드 스타일, 테스트 기준, 금지사항 같은 개발 규칙을 입력해 주세요."
