@@ -331,7 +331,11 @@ const COPY = {
       bridgeDown: "Bridge Down",
       projectsChip: (count) => `Projects ${count}`,
       threadsChip: (count) => `Threads ${count}`,
-      deleteProjectConfirm: "Delete this project? Its issues will be removed as well."
+      deleteProjectConfirm: "Delete this project? Its issues will be removed as well.",
+      deleteBridge: "Delete Bridge",
+      deletingBridge: "Deleting...",
+      deleteBridgeConfirm: (name) =>
+        `Delete ${name}? Stored projects, threads, and issue history for this bridge will be removed.`
     },
     footer: {
       languageKorean: "Korean",
@@ -491,7 +495,11 @@ const COPY = {
       bridgeDown: "브릿지 끊김",
       projectsChip: (count) => `프로젝트 ${count}`,
       threadsChip: (count) => `쓰레드 ${count}`,
-      deleteProjectConfirm: "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다."
+      deleteProjectConfirm: "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.",
+      deleteBridge: "브릿지 삭제",
+      deletingBridge: "삭제 중...",
+      deleteBridgeConfirm: (name) =>
+        `${name} 브릿지를 삭제하시겠습니까? 이 브릿지에 저장된 프로젝트, 쓰레드, 이슈 기록도 함께 제거됩니다.`
     },
     footer: {
       languageKorean: "한국어",
@@ -897,6 +905,16 @@ function removeArchivedIssuesStateScope(currentState, bridgeId = "", threadId = 
   };
 }
 
+function removeArchivedIssuesStateBridge(currentState, bridgeId = "") {
+  if (!bridgeId || !currentState?.[bridgeId]) {
+    return currentState;
+  }
+
+  const nextState = { ...currentState };
+  delete nextState[bridgeId];
+  return nextState;
+}
+
 function replaceArchivedIssueSnapshotForScope(currentState, bridgeId = "", threadId = "", issues = []) {
   if (!bridgeId || !threadId) {
     return currentState;
@@ -994,6 +1012,16 @@ function pruneArchivedIssueSnapshotsForBridge(currentSnapshots, bridgeId = "", v
   }
 
   nextSnapshots[bridgeId] = nextBridgeSnapshots;
+  return nextSnapshots;
+}
+
+function removeBridgeIssueSnapshots(currentSnapshots, bridgeId = "") {
+  if (!bridgeId || !currentSnapshots?.[bridgeId]) {
+    return currentSnapshots;
+  }
+
+  const nextSnapshots = { ...currentSnapshots };
+  delete nextSnapshots[bridgeId];
   return nextSnapshots;
 }
 
@@ -3214,6 +3242,7 @@ function MainPage({
   status,
   bridgeSignal,
   signalNow,
+  bridgeDeleteBusy,
   projects,
   projectThreads,
   issues,
@@ -3245,6 +3274,7 @@ function MainPage({
   threadMenuState,
   onSearchChange,
   onSelectBridge,
+  onDeleteBridge,
   onSelectProject,
   onExpandProject,
   onSelectProjectThread,
@@ -3937,6 +3967,16 @@ function MainPage({
                     ))
                   )}
                 </select>
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onDeleteBridge}
+                    disabled={!selectedBridge || bridgeDeleteBusy}
+                    className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:border-rose-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {bridgeDeleteBusy ? copy.board.deletingBridge : copy.board.deleteBridge}
+                  </button>
+                </div>
               </div>
 
               <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
@@ -4185,6 +4225,16 @@ function MainPage({
                       ))
                     )}
                   </select>
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={onDeleteBridge}
+                      disabled={!selectedBridge || bridgeDeleteBusy}
+                      className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:border-rose-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {bridgeDeleteBusy ? copy.board.deletingBridge : copy.board.deleteBridge}
+                    </button>
+                  </div>
                 </label>
                 <label className="block">
                   <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</span>
@@ -4664,6 +4714,7 @@ export default function App() {
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
+  const [bridgeDeleteBusy, setBridgeDeleteBusy] = useState(false);
   const [status, setStatus] = useState({
     app_server: {
       connected: false,
@@ -5171,6 +5222,77 @@ export default function App() {
       ].slice(0, 20));
     }
   }
+
+  const handleDeleteBridge = async () => {
+    if (!session?.loginId || !selectedBridgeId || bridgeDeleteBusy) {
+      return;
+    }
+
+    const bridgeLabel =
+      bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ?? selectedBridgeId;
+
+    if (!window.confirm(copy.board.deleteBridgeConfirm(bridgeLabel))) {
+      return;
+    }
+
+    setBridgeDeleteBusy(true);
+
+    try {
+      const response = await apiRequest(
+        `/api/bridges/${encodeURIComponent(selectedBridgeId)}?login_id=${encodeURIComponent(session.loginId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+
+      const deletedBridgeId = response?.deleted_bridge_id ?? selectedBridgeId;
+      const nextBridges = Array.isArray(response?.bridges) ? response.bridges : [];
+      const nextArchivedState = removeArchivedIssuesStateBridge(archivedIssuesStateRef.current, deletedBridgeId);
+      const nextLoadedProjectThreads = { ...loadedProjectThreadsRef.current };
+
+      delete nextLoadedProjectThreads[deletedBridgeId];
+      loadedProjectThreadsRef.current = nextLoadedProjectThreads;
+
+      const nextPendingProjectThreadLoads = new Map(pendingProjectThreadLoadsRef.current);
+      for (const cacheKey of nextPendingProjectThreadLoads.keys()) {
+        if (cacheKey.startsWith(`${deletedBridgeId}:`)) {
+          nextPendingProjectThreadLoads.delete(cacheKey);
+        }
+      }
+      pendingProjectThreadLoadsRef.current = nextPendingProjectThreadLoads;
+
+      archivedIssueSnapshotsRef.current = removeBridgeIssueSnapshots(archivedIssueSnapshotsRef.current, deletedBridgeId);
+      visibleIssueSnapshotsRef.current = removeBridgeIssueSnapshots(visibleIssueSnapshotsRef.current, deletedBridgeId);
+      updateArchivedIssuesState(nextArchivedState);
+      syncArchivedIssuesState(session, nextArchivedState);
+
+      setBridges(nextBridges);
+      setSelectedBridgeId((current) => {
+        if (current && current !== deletedBridgeId && nextBridges.some((bridge) => bridge.bridge_id === current)) {
+          return current;
+        }
+
+        return nextBridges[0]?.bridge_id ?? "";
+      });
+      setProjectComposerOpen(false);
+      setProjectInstructionDialogOpen(false);
+      setComposerOpen(false);
+      setIssueEditorOpen(false);
+      setEditingIssueId("");
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "bridge.delete.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setBridgeDeleteBusy(false);
+    }
+  };
 
   async function loadProjectThreads(sessionArg, bridgeId, projectId) {
     if (!sessionArg?.loginId || !bridgeId || !projectId) {
@@ -6812,6 +6934,7 @@ export default function App() {
       status={status}
       bridgeSignal={bridgeSignal}
       signalNow={streamNow}
+      bridgeDeleteBusy={bridgeDeleteBusy}
       projects={projects}
       projectThreads={projectThreads}
       issues={issues}
@@ -6842,6 +6965,7 @@ export default function App() {
       threadMenuState={threadMenuState}
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
+      onDeleteBridge={() => void handleDeleteBridge()}
       onSelectProject={setSelectedProjectId}
       onExpandProject={(projectId) => ensureProjectThreadsLoaded(session, selectedBridgeId, projectId)}
       onSelectProjectThread={setSelectedProjectThreadId}

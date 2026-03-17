@@ -219,6 +219,46 @@ app.MapGet("/api/bridges", async (HttpContext httpContext, OctopStore octopStore
   return Results.Text(new JObject { ["bridges"] = bridges }.ToString(), "application/json; charset=utf-8");
 });
 
+app.MapDelete("/api/bridges/{bridgeId}", async (
+  string bridgeId,
+  HttpContext httpContext,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var normalizedBridgeId = BridgeSubjects.SanitizeBridgeId(bridgeId);
+
+  if (string.IsNullOrWhiteSpace(normalizedBridgeId))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  cancellationToken.ThrowIfCancellationRequested();
+
+  if (!await octopStore.UserOwnsBridgeAsync(userId, normalizedBridgeId))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  await octopStore.DeleteBridgeForUserAsync(userId, normalizedBridgeId);
+  var bridges = await octopStore.ListBridgesForUserAsync(userId);
+
+  return Results.Text(
+    new JObject
+    {
+      ["ok"] = true,
+      ["deleted_bridge_id"] = normalizedBridgeId,
+      ["bridges"] = bridges
+    }.ToString(),
+    "application/json; charset=utf-8");
+});
+
 app.MapGet("/api/dashboard/archives", async (HttpContext httpContext, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
