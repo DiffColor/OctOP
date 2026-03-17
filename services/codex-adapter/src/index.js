@@ -933,15 +933,6 @@ function normalizeProjectLookupName(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function normalizeWorkspaceBasename(value) {
-  const normalized = String(value ?? "").trim();
-  if (!normalized) {
-    return "";
-  }
-
-  return basename(normalized).trim().toLowerCase();
-}
-
 function isUsableWorkspacePath(workspacePath) {
   if (!workspacePath) {
     return false;
@@ -958,7 +949,6 @@ function findDiscoveredProjectReplacement(project, discoveredProjects, occupiedW
 
   const normalizedKey = normalizeProjectLookupKey(project.key ?? project.name);
   const normalizedName = normalizeProjectLookupName(project.name);
-  const normalizedWorkspaceBasename = normalizeWorkspaceBasename(project.workspace_path);
 
   return discoveredProjects.find((candidate) => {
     if (!candidate?.workspace_path || occupiedWorkspacePaths.has(candidate.workspace_path)) {
@@ -967,11 +957,7 @@ function findDiscoveredProjectReplacement(project, discoveredProjects, occupiedW
 
     return (
       normalizeProjectLookupKey(candidate.key ?? candidate.name) === normalizedKey ||
-      normalizeProjectLookupName(candidate.name) === normalizedName ||
-      (
-        normalizedWorkspaceBasename &&
-        normalizeWorkspaceBasename(candidate.workspace_path) === normalizedWorkspaceBasename
-      )
+      normalizeProjectLookupName(candidate.name) === normalizedName
     );
   }) ?? null;
 }
@@ -3673,12 +3659,11 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
   }
 
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
-  const workspacePath = resolveProjectWorkspace(userId, physicalThread.project_id);
-  const cwd = buildAppServerCwd(workspacePath);
+  const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
   const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
-    ...(cwd ? { cwd } : {}),
+    cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
@@ -3811,8 +3796,7 @@ async function startTurnOnPhysicalThread(
   }
 
   const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
-  const workspacePath = resolveProjectWorkspace(userId, rootThread.project_id);
-  const cwd = buildAppServerCwd(workspacePath);
+  const cwd = resolveProjectWorkspace(userId, rootThread.project_id);
   activeIssueByThreadId.set(rootThreadId, issueId);
   activeIssueByPhysicalThreadId.set(physicalThreadId, issueId);
   markRunningIssueActivity(rootThreadId, {
@@ -3858,7 +3842,7 @@ async function startTurnOnPhysicalThread(
       const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
       const turnResponse = await appServer.request("turn/start", {
         threadId: activeCodexThreadId,
-        ...(cwd ? { cwd } : {}),
+        cwd,
         approvalPolicy: CODEX_APPROVAL_POLICY,
         input: [
           {
@@ -7481,13 +7465,12 @@ async function startThreadTurn(userId, threadId) {
     throw new Error("시작할 thread를 찾을 수 없습니다.");
   }
 
-  const workspacePath = resolveProjectWorkspace(userId, current.project_id);
-  const cwd = buildAppServerCwd(workspacePath);
+  const cwd = resolveProjectWorkspace(userId, current.project_id);
 
   try {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
-      ...(cwd ? { cwd } : {}),
+      cwd,
       approvalPolicy: CODEX_APPROVAL_POLICY,
       input: [
         {
@@ -7559,15 +7542,14 @@ async function processStartQueue(userId) {
 async function createQueuedIssue(userId, payload = {}) {
   const state = ensureUserState(userId);
   const projectId = payload.project_id ?? state.projects[0]?.id ?? null;
-  const workspacePath = resolveProjectWorkspace(userId, projectId);
-  const cwd = buildAppServerCwd(workspacePath);
+  const cwd = resolveProjectWorkspace(userId, projectId);
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
   await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {
-    ...(cwd ? { cwd } : {}),
+    cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
@@ -7816,12 +7798,6 @@ function resolveProjectWorkspace(userId, projectId) {
   }
 
   return replacement?.workspace_path ?? process.cwd();
-}
-
-function buildAppServerCwd(workspacePath) {
-  const resolvedWorkspacePath = resolve(String(workspacePath ?? process.cwd()));
-  const resolvedProcessCwd = resolve(process.cwd());
-  return resolvedWorkspacePath === resolvedProcessCwd ? null : resolvedWorkspacePath;
 }
 
 async function respond(message, payload) {
