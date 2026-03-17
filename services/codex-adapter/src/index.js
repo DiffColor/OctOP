@@ -82,6 +82,8 @@ const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
 const BRIDGE_STORAGE_DIR = resolve(os.homedir(), ".octop");
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
+const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
+const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 
 dns.setDefaultResultOrder("ipv4first");
@@ -171,6 +173,80 @@ function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
 
 function now() {
   return new Date().toISOString();
+}
+
+function truncateDiagnosticText(value, maxLength = 4000) {
+  const text = String(value ?? "");
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}…[truncated ${text.length - maxLength} chars]`;
+}
+
+function serializeDiagnosticValue(value, depth = 0) {
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: truncateDiagnosticText(value.message),
+      stack: truncateDiagnosticText(value.stack ?? "", 8000)
+    };
+  }
+
+  if (value === null || value === undefined) {
+    return value ?? null;
+  }
+
+  if (depth >= 4) {
+    return "[truncated_depth]";
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => serializeDiagnosticValue(item, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 40)
+        .map(([key, entryValue]) => [key, serializeDiagnosticValue(entryValue, depth + 1)])
+    );
+  }
+
+  if (typeof value === "string") {
+    return truncateDiagnosticText(value);
+  }
+
+  return value;
+}
+
+function appendDiagnosticLog(level, event, message, details = {}) {
+  if (!DIAGNOSTIC_LOG_ENABLED) {
+    return;
+  }
+
+  const entry = {
+    timestamp: now(),
+    level,
+    event,
+    message: truncateDiagnosticText(message),
+    bridge_id: BRIDGE_ID,
+    device_name: DEVICE_NAME,
+    details: serializeDiagnosticValue(details)
+  };
+
+  try {
+    mkdirSync(dirname(DIAGNOSTIC_LOG_PATH), { recursive: true });
+    writeFileSync(DIAGNOSTIC_LOG_PATH, `${JSON.stringify(entry)}\n`, {
+      encoding: "utf8",
+      flag: "a"
+    });
+  } catch (error) {
+    process.stderr.write(
+      `[OctOP bridge] diagnostic log write failed: ${error instanceof Error ? error.message : String(error)}\n`
+    );
+  }
 }
 
 function buildLogContext(overrides = {}) {
@@ -3887,6 +3963,16 @@ async function startTurnOnPhysicalThread(
       clearRunningIssueTracking(rootThreadId);
       activeIssueByPhysicalThreadId.delete(physicalThreadId);
       invalidateCodexThreadBinding(rootThreadId);
+      appendDiagnosticLog("error", "turn.start.failed", "turn/start failed on physical thread", {
+        user_id: userId,
+        root_thread_id: rootThreadId,
+        physical_thread_id: physicalThreadId,
+        issue_id: issueId,
+        attempt,
+        active_codex_thread_id: activeCodexThreadId,
+        cwd,
+        error
+      });
       settlePhysicalThreadExecutionState(rootThreadId, {
         issue,
         status: "failed",
@@ -3986,6 +4072,16 @@ async function processIssueQueueOnce(userId, threadId, options = {}) {
     return await startIssueTurn(userId, normalizedThreadId, nextIssueId);
   } catch (error) {
     const issue = issueCardsById.get(nextIssueId) ?? null;
+    appendDiagnosticLog("error", "thread.issue.start.pipeline.failed", "issue start pipeline failed", {
+      user_id: userId,
+      thread_id: normalizedThreadId,
+      issue_id: nextIssueId,
+      issue_status: issue?.status ?? null,
+      queue_snapshot: ensurePendingQueue(normalizedThreadId),
+      active_issue_id: activeIssueByThreadId.get(normalizedThreadId) ?? null,
+      active_physical_thread_id: threadStateById.get(normalizedThreadId)?.active_physical_thread_id ?? null,
+      error
+    });
     const shouldRestoreQueue =
       issue &&
       !issue.deleted_at &&
@@ -5757,6 +5853,11 @@ class AppServerClient {
     this.child.on("exit", (code, signal) => {
       this.resetSocketState();
       this.lastError = code === 0 ? null : `app-server exited (${code ?? signal ?? "unknown"})`;
+      appendDiagnosticLog("error", "app_server.process.exit", "app-server process exited", {
+        code: code ?? null,
+        signal: signal ?? null,
+        last_ready_reason: this.lastReadyReason
+      });
       console.warn("[OctOP bridge] app-server process exited", {
         code: code ?? null,
         signal: signal ?? null,
@@ -5770,6 +5871,10 @@ class AppServerClient {
     });
     this.child.on("error", (error) => {
       this.lastError = error.message;
+      appendDiagnosticLog("error", "app_server.process.error", "app-server process error", {
+        error,
+        last_ready_reason: this.lastReadyReason
+      });
       console.error("[OctOP bridge] app-server process error", {
         message: error.message,
         last_ready_reason: this.lastReadyReason
@@ -5843,6 +5948,14 @@ class AppServerClient {
           this.resetSocketState(ws, "app-server socket closed");
           const closeReason = normalizeWebSocketCloseReason(closeReasonBuffer);
           this.lastError = formatAppServerSocketCloseError(code, closeReason);
+          appendDiagnosticLog("error", "app_server.websocket.close", "app-server websocket closed", {
+            reason,
+            attempt,
+            code,
+            close_reason: closeReason,
+            pending_requests: this.requests.size,
+            last_ready_reason: this.lastReadyReason
+          });
           console.warn("[OctOP bridge] app-server websocket closed", {
             reason,
             attempt,
@@ -5860,6 +5973,11 @@ class AppServerClient {
         ws.on("error", (error) => {
           this.connected = false;
           this.lastError = describeWebSocketErrorEvent(error);
+          appendDiagnosticLog("error", "app_server.websocket.error", "app-server websocket error", {
+            reason,
+            attempt,
+            error
+          });
           console.error("[OctOP bridge] app-server websocket error", {
             reason,
             attempt,
@@ -6184,6 +6302,17 @@ class AppServerClient {
         }
 
         this.requests.delete(id);
+        appendDiagnosticLog("error", "app_server.request.timeout", "app-server request timeout", {
+          method,
+          params,
+          request_id: id,
+          socket_state: describeWebSocketReadyState(this.socket?.readyState),
+          connected: this.connected,
+          initialized: this.initialized,
+          last_socket_activity_at: this.lastSocketActivityAt
+            ? new Date(this.lastSocketActivityAt).toISOString()
+            : null
+        });
         reject(new Error(`app-server request timeout: ${method}`));
       }, 20000);
     });
@@ -6843,6 +6972,8 @@ function collectBridgeStatus(userId) {
       mode: APP_SERVER_MODE,
       connected: appServer.connected,
       initialized: appServer.initialized,
+      diagnostic_log_path: DIAGNOSTIC_LOG_PATH,
+      diagnostic_log_enabled: DIAGNOSTIC_LOG_ENABLED,
       account: appServer.account,
       last_started_at: appServer.lastStartedAt,
       last_error: appServer.lastError,
@@ -8637,15 +8768,23 @@ createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && /^\/api\/threads\/[^/]+\/issues\/start$/.test(url.pathname)) {
+    let body = null;
     try {
       const threadId = url.pathname.split("/")[3];
-      const body = await readJsonBody(request);
+      body = await readJsonBody(request);
       const payload = await startThreadIssues(userId, {
         ...body,
         thread_id: threadId
       });
       return sendJson(response, 202, payload);
     } catch (error) {
+      appendDiagnosticLog("error", "http.thread.issues.start.failed", "HTTP issue start request failed", {
+        user_id: userId,
+        thread_id: url.pathname.split("/")[3],
+        path: url.pathname,
+        body,
+        error
+      });
       return sendJson(response, 400, { accepted: false, error: error.message });
     }
   }
