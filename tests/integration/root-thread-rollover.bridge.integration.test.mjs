@@ -1763,6 +1763,95 @@ test("긴 응답 공백 중 thread/list가 한 번 비어도 running issue를 �
   }
 });
 
+test("실시간 delta가 끊겨도 thread/list가 running이면 즉시 thread/read backfill로 running 상태를 복구한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-thread-read-backfill-int-"));
+  const fakeAppServer = new FakeAppServer();
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+
+    setTimeout(() => {
+      server.recordNotification("thread/tokenUsage/updated", {
+        threadId,
+        tokenUsage: {
+          modelContextWindow: 100000,
+          last: {
+            inputTokens: 91000,
+            outputTokens: 1800,
+            totalTokens: 92800
+          },
+          total: {
+            inputTokens: 91000,
+            outputTokens: 1800,
+            totalTokens: 92800
+          }
+        }
+      });
+      server.recordNotification("item/agentMessage/delta", {
+        threadId,
+        delta: " 이후 RPC 복구 문장"
+      });
+    }, 1200);
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-thread-read-backfill-token",
+    userId: "integration-user",
+    bridgeId: `running-thread-read-backfill-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "200"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Running Thread Read Backfill"
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const assistantMessages = issuePayload.messages.filter((message) => message.role === "assistant");
+
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(assistantMessages.at(-1)?.content, "첫 문장 이후 RPC 복구 문장");
+      assert.equal(continuityPayload.active_physical_thread?.context_used_tokens, 91000);
+      assert.equal(continuityPayload.active_physical_thread?.context_usage_percent, 91);
+      assert.equal(continuityPayload.root_thread?.continuity_status, "healthy");
+      assert.equal(fakeAppServer.getRequests("thread/read").length >= 1, true);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "running thread/read backfill while remote stays active"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("thread/list 종료 상태만으로 running issue를 terminal 처리하지 않는다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-remote-terminal-observation-int-"));
   const fakeAppServer = new FakeAppServer();

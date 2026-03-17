@@ -8307,20 +8307,56 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
   }
 
   if (reconciledStatus === "running") {
-    markRunningIssueActivity(threadId, {
-      lastActivityAt: now(),
-      missingRemoteAttempts: 0,
-      ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
-    });
+    await markRunningIssueContinuityDegraded(
+      userId,
+      threadId,
+      activeIssueId,
+      thread,
+      issue,
+      String(issue.last_message ?? "").trim() ||
+        "실시간 이벤트가 끊겨 RPC 상태 복구를 시도합니다.",
+      {
+        remoteThreadId: remoteThread?.id ?? null,
+        backfillTrigger: "reconcile_remote_running"
+      }
+    );
+    try {
+      await backfillRunningIssueFromSnapshot(userId, threadId, "reconcile:running");
+    } catch (error) {
+      appServer.lastError = error.message;
+      appendDiagnosticLog("error", "running_issue.backfill.failed", "running issue backfill failed", {
+        thread_id: threadId,
+        trigger: "reconcile:running",
+        error
+      });
+    }
     return;
   }
 
   if (reconciledStatus === "awaiting_input") {
-    markRunningIssueActivity(threadId, {
-      lastActivityAt: now(),
-      missingRemoteAttempts: 0,
-      ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
-    });
+    await markRunningIssueContinuityDegraded(
+      userId,
+      threadId,
+      activeIssueId,
+      thread,
+      issue,
+      String(issue.last_message ?? "").trim() ||
+        "실시간 이벤트가 끊겨 RPC 상태 복구를 시도합니다.",
+      {
+        remoteThreadId: remoteThread?.id ?? null,
+        backfillTrigger: "reconcile_remote_awaiting_input"
+      }
+    );
+    try {
+      await backfillRunningIssueFromSnapshot(userId, threadId, "reconcile:awaiting_input");
+    } catch (error) {
+      appServer.lastError = error.message;
+      appendDiagnosticLog("error", "running_issue.backfill.failed", "running issue backfill failed", {
+        thread_id: threadId,
+        trigger: "reconcile:awaiting_input",
+        error
+      });
+    }
     return;
   }
 
