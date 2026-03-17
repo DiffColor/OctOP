@@ -263,6 +263,80 @@ public sealed class OctopStore : IAsyncDisposable
       .RunResultAsync<object>(connection);
   }
 
+  public async Task DeleteBridgeForUserAsync(string userId, string bridgeId)
+  {
+    var connection = await GetConnectionAsync();
+    var bridge = await _r.Db(_db)
+      .Table(BridgeNodeTable)
+      .Get(bridgeId)
+      .RunResultAsync<JObject?>(connection);
+
+    if (
+      bridge is null ||
+      !string.Equals(
+        bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
+        userId,
+        StringComparison.Ordinal))
+    {
+      return;
+    }
+
+    foreach (var tableName in new[]
+    {
+      ProjectMemberTable,
+      ProjectTable,
+      ThreadTable,
+      ProjectThreadTable,
+      ThreadIssueCardTable,
+      RootThreadTable,
+      PhysicalThreadTable,
+      HandoffSummaryTable,
+      LogicalThreadTimelineTable,
+      LogicalThreadIssueBoardTable,
+      TodoChatTable,
+      TodoMessageTable
+    })
+    {
+      await DeleteRowsByBridgeIdAsync(connection, tableName, bridgeId);
+    }
+
+    await _r.Db(_db)
+      .Table(BridgeNodeTable)
+      .Get(bridgeId)
+      .Delete()
+      .RunResultAsync<object>(connection);
+
+    await RemoveBridgeArchiveStateAsync(userId, bridgeId);
+  }
+
+  public async Task RemoveBridgeArchiveStateAsync(string userId, string bridgeId)
+  {
+    var connection = await GetConnectionAsync();
+    var document = await _r.Db(_db)
+      .Table(DashboardArchiveTable)
+      .Get(userId)
+      .RunResultAsync<JObject?>(connection);
+
+    if (document?["archives"] is not JObject archives)
+    {
+      return;
+    }
+
+    if (!archives.Remove(bridgeId))
+    {
+      return;
+    }
+
+    document["archives"] = archives;
+    document["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
+
+    await _r.Db(_db)
+      .Table(DashboardArchiveTable)
+      .Insert(document)
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
   public async ValueTask DisposeAsync()
   {
     if (_connection is not null)
@@ -315,5 +389,17 @@ public sealed class OctopStore : IAsyncDisposable
     }
 
     return rows;
+  }
+
+  private async Task DeleteRowsByBridgeIdAsync(RethinkConnection connection, string tableName, string bridgeId)
+  {
+    await _r.Db(_db)
+      .Table(tableName)
+      .Filter(new JObject
+      {
+        ["bridge_id"] = bridgeId
+      })
+      .Delete()
+      .RunResultAsync<object>(connection);
   }
 }
