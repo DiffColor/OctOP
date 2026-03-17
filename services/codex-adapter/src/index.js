@@ -7538,6 +7538,26 @@ function requestRunningIssueBackfill(reason = "unspecified") {
       backfillTrigger: reason,
       backfillLastError: null
     });
+
+    if (reason !== "interval") {
+      appendDiagnosticLog("info", "running_issue.backfill.requested", "running issue backfill requested", {
+        thread_id: threadId,
+        issue_id: issueId,
+        reason,
+        issue_status: issue?.status ?? null,
+        continuity_status: thread.continuity_status ?? null,
+        backfill_requested_at: meta.backfillRequestedAt ?? now(),
+        active_physical_thread_id: issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? thread.active_physical_thread_id ?? null,
+        codex_thread_id:
+          issue?.executed_physical_thread_id
+            ? (physicalThreadStateById.get(issue.executed_physical_thread_id)?.codex_thread_id ?? null)
+            : issue?.created_physical_thread_id
+              ? (physicalThreadStateById.get(issue.created_physical_thread_id)?.codex_thread_id ?? null)
+              : thread.codex_thread_id ?? meta.lastSeenCodexThreadId ?? null,
+        last_seen_codex_thread_id: meta.lastSeenCodexThreadId ?? null,
+        last_activity_at: meta.lastActivityAt ?? null
+      });
+    }
   }
 }
 
@@ -7681,7 +7701,38 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   ).trim();
 
   if (!activeIssueId || !meta || !thread || !issue || thread.deleted_at || issue.deleted_at || !codexThreadId) {
+    if (reason !== "interval") {
+      appendDiagnosticLog("warn", "running_issue.backfill.skipped", "running issue backfill skipped", {
+        thread_id: threadId,
+        reason,
+        active_issue_id: activeIssueId,
+        has_meta: Boolean(meta),
+        has_thread: Boolean(thread),
+        has_issue: Boolean(issue),
+        thread_deleted: Boolean(thread?.deleted_at),
+        issue_deleted: Boolean(issue?.deleted_at),
+        active_physical_thread_id: issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? thread?.active_physical_thread_id ?? null,
+        physical_thread_found: Boolean(physicalThread),
+        thread_codex_thread_id: thread?.codex_thread_id ?? null,
+        physical_codex_thread_id: physicalThread?.codex_thread_id ?? null,
+        last_seen_codex_thread_id: meta?.lastSeenCodexThreadId ?? null
+      });
+    }
     return { accepted: false, skipped: true };
+  }
+
+  if (reason !== "interval") {
+    appendDiagnosticLog("info", "running_issue.backfill.started", "running issue backfill started", {
+      thread_id: threadId,
+      issue_id: activeIssueId,
+      reason,
+      active_physical_thread_id: physicalThreadId,
+      codex_thread_id: codexThreadId,
+      issue_status: issue.status ?? null,
+      continuity_status: thread.continuity_status ?? null,
+      backfill_trigger: meta.backfillTrigger ?? null,
+      last_activity_at: meta.lastActivityAt ?? null
+    });
   }
 
   const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
@@ -7901,6 +7952,23 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 
   if (shouldPublishState) {
     await publishThreadState(owner, threadId);
+  }
+
+  if (reason !== "interval") {
+    appendDiagnosticLog("info", "running_issue.backfill.completed", "running issue backfill completed", {
+      thread_id: threadId,
+      issue_id: activeIssueId,
+      reason,
+      active_physical_thread_id: physicalThreadId,
+      codex_thread_id: remoteThread.id,
+      remote_status: remoteStatus,
+      appended_delta_length: syncedAssistant.appendedDelta.length,
+      token_usage_changed: tokenUsageChanged,
+      state_changed: shouldPublishState,
+      should_continue_polling: shouldContinuePolling,
+      issue_status: (issueCardsById.get(activeIssueId) ?? issue)?.status ?? null,
+      physical_thread_status: (physicalThreadId ? physicalThreadStateById.get(physicalThreadId) : null)?.status ?? null
+    });
   }
 
   if (shouldContinuePolling) {
