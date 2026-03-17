@@ -5730,6 +5730,15 @@ function getAppServerAuthenticationError(account) {
     return null;
   }
 
+  const hasSignedInAccount = Boolean(
+    String(account?.email ?? "").trim() &&
+    String(account?.type ?? "").trim()
+  );
+
+  if (hasSignedInAccount) {
+    return null;
+  }
+
   return "codex app-server 인증이 필요합니다. WSL에서 `codex login`을 완료한 뒤 bridge와 app-server를 다시 시작하세요.";
 }
 

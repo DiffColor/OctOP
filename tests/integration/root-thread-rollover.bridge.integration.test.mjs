@@ -363,15 +363,18 @@ class FakeAppServer {
         this.respond(message.id, {});
         return;
       case "account/read":
-        this.respond(message.id, {
-          account: {
-            type: "chatgpt",
-            email: "integration@octop.test",
-            planType: "pro"
-          },
-          requiresOpenaiAuth: false,
-          rateLimits: null
-        });
+        this.respond(
+          message.id,
+          this.options.accountReadResult ?? {
+            account: {
+              type: "chatgpt",
+              email: "integration@octop.test",
+              planType: "pro"
+            },
+            requiresOpenaiAuth: false,
+            rateLimits: null
+          }
+        );
         return;
       case "thread/start": {
         this.threadSequence += 1;
@@ -2677,5 +2680,79 @@ test("브리지 재시작 후 closed/deleted late event 차단 유지", { timeou
     bridge?.dispose();
     void fakeAppServer.stop();
     void rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("account/read가 signed-in account와 requiresOpenaiAuth를 함께 반환해도 실행을 차단하지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-auth-flag-with-account-int-"));
+  const fakeAppServer = new FakeAppServer({
+    accountReadResult: {
+      account: {
+        type: "chatgpt",
+        email: "integration@octop.test",
+        planType: "pro"
+      },
+      requiresOpenaiAuth: true,
+      rateLimits: null
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-auth-flag-with-account-token",
+    userId: "integration-user",
+    bridgeId: `auth-flag-with-account-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const createdThread = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Auth Flag With Account Thread"
+      })
+    });
+    const threadId = createdThread.thread.id;
+
+    const createdIssue = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Auth Flag With Account Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = createdIssue.issue.id;
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+    assert.equal(startPayload.accepted, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${issueId}`);
+      assert.equal(issuePayload.issue?.status, "running");
+      return issuePayload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "signed-in account bypasses false auth-required gate"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
   }
 });
