@@ -46,6 +46,9 @@ const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
 const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 45000
 );
+const APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES = Number(
+  process.env.OCTOP_APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES ?? 2
+);
 const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
   process.env.OCTOP_APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS ?? 60000
 );
@@ -6059,6 +6062,7 @@ class AppServerClient {
     this.heartbeatTimer = null;
     this.lastSocketActivityAt = 0;
     this.heartbeatProbeSentAt = 0;
+    this.heartbeatTimeoutCount = 0;
     this.lastSilentStateCheckAt = 0;
     this.lastSilentStateCheckError = null;
     this.silentStateCheckPromise = null;
@@ -6663,6 +6667,7 @@ class AppServerClient {
   markSocketActivity() {
     this.lastSocketActivityAt = Date.now();
     this.heartbeatProbeSentAt = 0;
+    this.heartbeatTimeoutCount = 0;
     this.lastSilentStateCheckError = null;
   }
 
@@ -6679,10 +6684,7 @@ class AppServerClient {
         return;
       }
 
-      if (!isBridgeIdle()) {
-        this.heartbeatProbeSentAt = 0;
-        return;
-      }
+      const bridgeIdle = isBridgeIdle();
 
       const silentForMs = this.lastSocketActivityAt > 0 ? Date.now() - this.lastSocketActivityAt : 0;
 
@@ -6693,8 +6695,12 @@ class AppServerClient {
           return;
         }
 
+        const timeoutCount = Number(this.heartbeatTimeoutCount ?? 0) + 1;
+        this.heartbeatTimeoutCount = timeoutCount;
         console.warn("[OctOP bridge] app-server websocket heartbeat timeout", {
           ...context,
+          idle: bridgeIdle,
+          timeout_count: timeoutCount,
           timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
           probe_age_ms: probeAgeMs,
           last_activity_at: this.lastSocketActivityAt
@@ -6704,8 +6710,25 @@ class AppServerClient {
         this.heartbeatProbeSentAt = 0;
         void this.checkLastKnownState("heartbeat_timeout", {
           ...context,
+          idle: bridgeIdle,
+          timeout_count: timeoutCount,
           probe_age_ms: probeAgeMs
         });
+
+        if (
+          !bridgeIdle &&
+          APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES > 0 &&
+          timeoutCount >= APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES
+        ) {
+          this.forceReconnect(ws, "heartbeat_timeout_active", {
+            ...context,
+            timeout_count: timeoutCount,
+            probe_age_ms: probeAgeMs,
+            last_activity_at: this.lastSocketActivityAt
+              ? new Date(this.lastSocketActivityAt).toISOString()
+              : null
+          });
+        }
         return;
       }
 
@@ -6789,6 +6812,7 @@ class AppServerClient {
     }
 
     this.heartbeatProbeSentAt = 0;
+    this.heartbeatTimeoutCount = 0;
   }
 
   resetSocketState(ws = null, reason = "app-server socket closed") {
@@ -6805,6 +6829,50 @@ class AppServerClient {
       pending.reject(new Error(reason));
       this.requests.delete(id);
     }
+  }
+
+  forceReconnect(ws = null, trigger = "unspecified", detail = {}) {
+    if (!ws || this.socket !== ws) {
+      return false;
+    }
+
+    appendDiagnosticLog("warn", "app_server.websocket.force_reconnect", "forcing app-server websocket reconnect", {
+      trigger,
+      detail,
+      pending_requests: this.requests.size,
+      last_ready_reason: this.lastReadyReason
+    });
+    console.warn("[OctOP bridge] forcing app-server websocket reconnect", {
+      trigger,
+      pending_requests: this.requests.size,
+      ...detail
+    });
+
+    this.lastError = `app-server websocket forced reconnect (${trigger})`;
+    requestRunningIssueBackfill(`forced_reconnect:${trigger}`);
+    this.resetSocketState(ws, `app-server socket forced reconnect (${trigger})`);
+    void publishBridgeStatusUpdates({ ensureReady: false }).catch((error) => {
+      console.warn("[OctOP bridge] failed to publish bridge status after forced reconnect", {
+        trigger,
+        message: error.message
+      });
+    });
+    this.scheduleReconnect(`forced:${trigger}`);
+
+    try {
+      if (typeof ws.terminate === "function") {
+        ws.terminate();
+      } else {
+        ws.close();
+      }
+    } catch (error) {
+      console.warn("[OctOP bridge] app-server websocket forced reconnect close failed", {
+        trigger,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return true;
   }
 
   scheduleReconnect(trigger = "unspecified") {
@@ -7332,8 +7400,11 @@ function collectBridgeStatus(userId) {
         ? new Date(appServer.lastSilentStateCheckAt).toISOString()
         : null,
       last_silent_state_check_error: appServer.lastSilentStateCheckError,
-      idle_only_heartbeat: true,
-      idle_heartbeat_interval_ms: APP_SERVER_HEARTBEAT_INTERVAL_MS,
+      idle_only_heartbeat: false,
+      heartbeat_interval_ms: APP_SERVER_HEARTBEAT_INTERVAL_MS,
+      heartbeat_timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
+      heartbeat_timeout_count: appServer.heartbeatTimeoutCount,
+      active_heartbeat_force_reconnect_misses: APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES,
       silent_state_check_interval_ms: APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS,
       idle: isBridgeIdle()
     },
