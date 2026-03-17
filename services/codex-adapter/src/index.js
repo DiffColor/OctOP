@@ -389,7 +389,7 @@ function ensureUserState(userId) {
   }
 
   const discoveredProjects = discoverProjectsForUser(normalized, state.deletedWorkspacePaths);
-  const mergedProjects = mergeProjects(state.projects, discoveredProjects, normalized);
+  const mergedProjects = mergeProjects(state.projects, discoveredProjects);
 
   if (hasProjectSetChanged(state.projects, mergedProjects)) {
     state.projects = mergedProjects;
@@ -865,14 +865,13 @@ function loadProjectsForUser(loginId, projectEntry = loadProjectEntry(loginId)) 
   if (Array.isArray(storedProjects) && storedProjects.length > 0) {
     return mergeProjects(
       storedProjects.map((project) => normalizeProject(loginId, project)),
-      discoveredProjects,
-      loginId
+      discoveredProjects
     );
   }
 
   const project = discoveredProjects[0] ?? buildDefaultProject(loginId);
   persisted[loginId] = {
-    projects: mergeProjects([project], discoveredProjects, loginId),
+    projects: mergeProjects([project], discoveredProjects),
     deleted_workspace_paths: projectEntry.deletedWorkspacePaths,
     updated_at: now()
   };
@@ -920,46 +919,6 @@ function normalizeProject(loginId, project = {}) {
     created_at: project.created_at ?? now(),
     updated_at: project.updated_at ?? now()
   };
-}
-
-function normalizeProjectLookupKey(value) {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]/g, "_");
-}
-
-function normalizeProjectLookupName(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function isUsableWorkspacePath(workspacePath) {
-  if (!workspacePath) {
-    return false;
-  }
-
-  const resolvedWorkspacePath = resolve(String(workspacePath));
-  return existsSync(resolvedWorkspacePath) && canUseAsWorkspace(resolvedWorkspacePath);
-}
-
-function findDiscoveredProjectReplacement(project, discoveredProjects, occupiedWorkspacePaths = new Set()) {
-  if (!project || !Array.isArray(discoveredProjects) || discoveredProjects.length === 0) {
-    return null;
-  }
-
-  const normalizedKey = normalizeProjectLookupKey(project.key ?? project.name);
-  const normalizedName = normalizeProjectLookupName(project.name);
-
-  return discoveredProjects.find((candidate) => {
-    if (!candidate?.workspace_path || occupiedWorkspacePaths.has(candidate.workspace_path)) {
-      return false;
-    }
-
-    return (
-      normalizeProjectLookupKey(candidate.key ?? candidate.name) === normalizedKey ||
-      normalizeProjectLookupName(candidate.name) === normalizedName
-    );
-  }) ?? null;
 }
 
 function normalizeProjectThread(loginId, thread = {}) {
@@ -2497,50 +2456,37 @@ function dedupeProjects(projects) {
   return result;
 }
 
-function mergeProjects(currentProjects, discoveredProjects, loginId = BRIDGE_OWNER_LOGIN_ID) {
+function mergeProjects(currentProjects, discoveredProjects) {
   const mergedById = new Map();
   const discoveredByPath = new Map(
     discoveredProjects
       .filter((project) => project.workspace_path)
       .map((project) => [project.workspace_path, project])
   );
-  const claimedWorkspacePaths = new Set();
 
   for (const project of currentProjects) {
-    const normalized = normalizeProject(loginId, project);
-    let discovered = normalized.workspace_path
+    const normalized = normalizeProject(project.owner_login_id ?? BRIDGE_OWNER_LOGIN_ID, project);
+    const discovered = normalized.workspace_path
       ? discoveredByPath.get(normalized.workspace_path)
       : null;
 
-    if (!discovered && !isUsableWorkspacePath(normalized.workspace_path)) {
-      discovered = findDiscoveredProjectReplacement(normalized, discoveredProjects, claimedWorkspacePaths);
-    }
-
-    const mergedProject = {
+    mergedById.set(normalized.id, {
       ...normalized,
       ...(discovered
         ? {
             key: normalized.key || discovered.key,
             name: normalized.name || discovered.name,
             description: normalized.description || discovered.description,
-            workspace_path: discovered.workspace_path,
             source: discovered.source,
             updated_at: discovered.updated_at
           }
         : {})
-    };
-
-    mergedById.set(normalized.id, mergedProject);
-
-    if (mergedProject.workspace_path) {
-      claimedWorkspacePaths.add(mergedProject.workspace_path);
-    }
+    });
   }
 
   for (const project of discoveredProjects) {
-    if (!claimedWorkspacePaths.has(project.workspace_path)) {
+    if (![...mergedById.values()].some((current) => current.workspace_path === project.workspace_path)) {
       mergedById.set(project.id, project);
-      claimedWorkspacePaths.add(project.workspace_path);
     }
   }
 
@@ -2704,11 +2650,7 @@ async function updateProject(loginId, payload = {}) {
 
 function resolveWorkspaceFromPayload(loginId, payload = {}) {
   if (payload.workspace_path) {
-    const requestedWorkspacePath = resolve(String(payload.workspace_path));
-
-    if (isAllowedWorkspacePath(requestedWorkspacePath) && isUsableWorkspacePath(requestedWorkspacePath)) {
-      return requestedWorkspacePath;
-    }
+    return resolve(String(payload.workspace_path));
   }
 
   const discoveredProjects = discoverProjectsForUser(loginId);
@@ -7767,37 +7709,7 @@ function resolveProjectWorkspace(userId, projectId) {
     state.projects.find((item) => item.workspace_path) ??
     null;
 
-  if (isUsableWorkspacePath(project?.workspace_path)) {
-    return project.workspace_path;
-  }
-
-  const discoveredProjects = discoverProjectsForUser(userId, state.deletedWorkspacePaths);
-  const occupiedWorkspacePaths = new Set(
-    state.projects
-      .filter((item) => item.id !== project?.id && isUsableWorkspacePath(item.workspace_path))
-      .map((item) => item.workspace_path)
-  );
-  const replacement =
-    findDiscoveredProjectReplacement(project, discoveredProjects, occupiedWorkspacePaths) ??
-    state.projects.find((item) => item.id !== project?.id && isUsableWorkspacePath(item.workspace_path)) ??
-    discoveredProjects[0] ??
-    null;
-
-  if (project && replacement?.workspace_path) {
-    const reboundProject = {
-      ...project,
-      workspace_path: replacement.workspace_path,
-      source: replacement.source ?? project.source,
-      description: project.description || replacement.description,
-      updated_at: now()
-    };
-
-    state.projects = state.projects.map((item) => (item.id === project.id ? reboundProject : item));
-    persistUserProjects(sanitizeUserId(userId), state.projects, state.deletedWorkspacePaths);
-    return reboundProject.workspace_path;
-  }
-
-  return replacement?.workspace_path ?? process.cwd();
+  return project?.workspace_path ?? process.cwd();
 }
 
 async function respond(message, payload) {
