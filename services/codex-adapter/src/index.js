@@ -5580,17 +5580,25 @@ function numericOrNull(value) {
 }
 
 function formatAccount(accountInfo) {
-  if (!accountInfo?.account) {
+  if (!accountInfo?.account && !accountInfo?.requiresOpenaiAuth && !accountInfo?.rateLimits) {
     return null;
   }
 
   return {
-    type: accountInfo.account.type ?? null,
-    email: accountInfo.account.email ?? null,
-    plan_type: accountInfo.account.planType ?? null,
+    type: accountInfo?.account?.type ?? null,
+    email: accountInfo?.account?.email ?? null,
+    plan_type: accountInfo?.account?.planType ?? null,
     requires_openai_auth: Boolean(accountInfo.requiresOpenaiAuth),
     rate_limits: accountInfo.rateLimits ?? null
   };
+}
+
+function getAppServerAuthenticationError(account) {
+  if (!account?.requires_openai_auth) {
+    return null;
+  }
+
+  return "codex app-server 인증이 필요합니다. WSL에서 `codex login`을 완료한 뒤 bridge와 app-server를 다시 시작하세요.";
 }
 
 class AppServerClient {
@@ -5618,6 +5626,7 @@ class AppServerClient {
 
   async ensureReady(reason = "unspecified") {
     if (this.connected && this.initialized && this.socket?.readyState === WebSocket.OPEN) {
+      this.assertUsable();
       return this;
     }
 
@@ -5663,7 +5672,7 @@ class AppServerClient {
     const accountInfo = await this.requestInternal("account/read", { refreshToken: false });
     this.account = formatAccount(accountInfo.result ?? accountInfo);
     this.initialized = true;
-    this.lastError = null;
+    this.lastError = getAppServerAuthenticationError(this.account);
     this.lastStartedAt = now();
     this.reconnectAttempt = 0;
     this.clearReconnectTimer();
@@ -5674,6 +5683,15 @@ class AppServerClient {
       account_type: this.account?.type ?? null
     });
     return this;
+  }
+
+  assertUsable() {
+    const authenticationError = getAppServerAuthenticationError(this.account);
+
+    if (authenticationError) {
+      this.lastError = authenticationError;
+      throw new Error(authenticationError);
+    }
   }
 
   async startProcess(reason = "unspecified") {
@@ -6137,6 +6155,7 @@ class AppServerClient {
 
   async request(method, params, reason = method) {
     await this.ensureReady(`request:${reason}`);
+    this.assertUsable();
     return this.requestInternal(method, params);
   }
 
@@ -6403,6 +6422,24 @@ function describeWebSocketErrorEvent(error) {
   return details.join(", ") || "unknown";
 }
 
+function extractAppServerErrorMessage(params = {}) {
+  const primaryMessage = String(
+    params.turn?.error?.message ??
+      params.error?.message ??
+      params.status?.message ??
+      ""
+  ).trim();
+  const detailMessage = String(
+    params.turn?.error?.additionalDetails ?? params.error?.additionalDetails ?? ""
+  ).trim();
+
+  if (primaryMessage && detailMessage && !primaryMessage.includes(detailMessage)) {
+    return `${primaryMessage}\n${detailMessage}`;
+  }
+
+  return primaryMessage || detailMessage || "";
+}
+
 function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId = null) {
   const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
   const resolvedPhysicalThreadId =
@@ -6429,15 +6466,21 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         const nextTurnId = isTerminalThreadStatusType(params.status?.type)
           ? null
           : currentPhysicalThread?.turn_id ?? null;
+        const errorMessage = nextStatus === "failed" ? extractAppServerErrorMessage(params) : "";
 
-        if (nextStatus === currentStatus && nextTurnId === (currentPhysicalThread?.turn_id ?? null)) {
+        if (
+          nextStatus === currentStatus &&
+          nextTurnId === (currentPhysicalThread?.turn_id ?? null) &&
+          (!errorMessage || errorMessage === String(currentPhysicalThread?.last_message ?? "").trim())
+        ) {
           return null;
         }
 
         return {
           status: nextStatus,
           last_event: "thread.status.changed",
-          turn_id: nextTurnId
+          turn_id: nextTurnId,
+          ...(errorMessage ? { last_message: errorMessage } : {})
         };
       }
     case "thread/tokenUsage/updated":
@@ -6475,13 +6518,15 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
       {
         const nextStatus = params.turn?.status === "completed" ? "idle" : "failed";
         const nextProgress = params.turn?.status === "completed" ? 100 : 0;
+        const errorMessage = nextStatus === "failed" ? extractAppServerErrorMessage(params) : "";
 
         if (
           currentPhysicalThread &&
           currentPhysicalThread.status === nextStatus &&
           Number(currentPhysicalThread.progress ?? 0) === nextProgress &&
           currentPhysicalThread.last_event === "turn.completed" &&
-          (currentPhysicalThread.turn_id ?? null) === null
+          (currentPhysicalThread.turn_id ?? null) === null &&
+          (!errorMessage || errorMessage === String(currentPhysicalThread.last_message ?? "").trim())
         ) {
           return null;
         }
@@ -6490,7 +6535,8 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
           status: nextStatus,
           progress: nextProgress,
           last_event: "turn.completed",
-          turn_id: null
+          turn_id: null,
+          ...(errorMessage ? { last_message: errorMessage } : {})
         };
       }
     default:
@@ -6544,29 +6590,37 @@ function buildIssuePatch(method, params, issueId) {
       }
 
       if ((params.status?.type ?? "") === "error") {
+        const errorMessage = extractAppServerErrorMessage(params);
         return {
           status: "failed",
           progress: 0,
-          last_event: "thread.status.changed"
+          last_event: "thread.status.changed",
+          ...(errorMessage ? { last_message: errorMessage } : {})
         };
       }
 
       if (isTerminalThreadStatusType(params.status?.type)) {
         const terminalStatus = inferReconciledTerminalStatus(current);
+        const errorMessage = terminalStatus === "failed" ? extractAppServerErrorMessage(params) : "";
         return {
           status: terminalStatus,
           progress: terminalStatus === "completed" ? 100 : Math.max(current.progress ?? 0, 0),
-          last_event: "thread.status.changed"
+          last_event: "thread.status.changed",
+          ...(errorMessage ? { last_message: errorMessage } : {})
         };
       }
 
       return null;
     case "turn/completed":
-      return {
-        status: params.turn?.status === "completed" ? "completed" : "failed",
-        progress: params.turn?.status === "completed" ? 100 : 0,
-        last_event: "turn.completed"
-      };
+      {
+        const errorMessage = params.turn?.status === "completed" ? "" : extractAppServerErrorMessage(params);
+        return {
+          status: params.turn?.status === "completed" ? "completed" : "failed",
+          progress: params.turn?.status === "completed" ? 100 : 0,
+          last_event: "turn.completed",
+          ...(errorMessage ? { last_message: errorMessage } : {})
+        };
+      }
     default:
       return null;
   }
