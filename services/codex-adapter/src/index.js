@@ -7778,6 +7778,23 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     physicalThread ?? thread ?? {}
   );
   const shouldContinuePolling = remoteStatus === "running";
+  const preservedRunningLastEvent = [
+    "item.agentMessage.delta",
+    "turn.diff.updated",
+    "turn.plan.updated",
+    "turn.started",
+    "turn.starting"
+  ].includes(physicalThread?.last_event ?? "")
+    ? physicalThread?.last_event
+    : [
+          "item.agentMessage.delta",
+          "turn.diff.updated",
+          "turn.plan.updated",
+          "turn.started",
+          "turn.starting"
+        ].includes(issue?.last_event ?? "")
+      ? issue?.last_event
+      : "turn.started";
   const recoveredMessage =
     syncedAssistant.content ||
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
@@ -7813,7 +7830,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       ...tokenUsageState,
       status: "running",
       progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : "turn.started",
+      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
       last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
       turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
     });
@@ -7821,7 +7838,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       executed_physical_thread_id: physicalThreadId,
       status: "running",
       progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : "turn.started",
+      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
       ...(recoveredMessage ? { last_message: recoveredMessage } : {})
     });
   } else if (remoteStatus === "awaiting_input") {

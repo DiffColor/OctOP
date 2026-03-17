@@ -1852,6 +1852,70 @@ test("실시간 delta가 끊겨도 thread/list가 running이면 즉시 thread/re
   }
 });
 
+test("running backfill은 새 delta가 없어도 기존 item.agentMessage.delta 상태를 turn.started로 되돌리지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-backfill-preserve-last-event-int-"));
+  const fakeAppServer = new FakeAppServer();
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-backfill-preserve-last-event-token",
+    userId: "integration-user",
+    bridgeId: `running-backfill-preserve-last-event-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "200"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Running Backfill Preserve Last Event"
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(fakeAppServer.getRequests("thread/read").length >= 1, true);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(issuePayload.issue?.last_event, "item.agentMessage.delta");
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "item.agentMessage.delta");
+      assert.equal(continuityPayload.root_thread?.last_event, "item.agentMessage.delta");
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "running backfill preserves item delta event"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("thread/list 종료 상태만으로 running issue를 terminal 처리하지 않는다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-remote-terminal-observation-int-"));
   const fakeAppServer = new FakeAppServer();
