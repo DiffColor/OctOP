@@ -1590,6 +1590,83 @@ test("thread unlock은 마지막 running issue 락을 해제하고 다음 queued
   }
 });
 
+test("진행 중인 issue 삭제는 강제 중단 후 바로 삭제하고 다음 queued issue를 재개한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-delete-running-issue-int-"));
+  const fakeAppServer = new FakeAppServer({
+    errorMethods: {
+      "thread/realtime/stop": "thread not found: missing-codex-thread"
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-delete-running-issue-token",
+    userId: "integration-user",
+    bridgeId: `delete-running-issue-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId, stagedIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Delete Running Issue Thread"
+    });
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [stagedIssueId]
+      })
+    });
+
+    await waitFor(async () => {
+      const queuedIssue = await bridge.request(`/api/issues/${stagedIssueId}`);
+      assert.equal(queuedIssue.issue?.status, "queued");
+      return queuedIssue;
+    }, {
+      timeoutMs: 5000,
+      intervalMs: 250,
+      label: "next issue queued before deleting active issue"
+    });
+
+    const deletePayload = await bridge.request(`/api/issues/${activeIssueId}`, {
+      method: "DELETE"
+    });
+
+    assert.equal(deletePayload.accepted, true);
+    assert.equal(deletePayload.deleted_issue_id, activeIssueId);
+    assert.equal(deletePayload.recovery_steps.includes("forced_release_after_delete_stop_failed"), true);
+
+    await waitFor(async () => {
+      const deletedIssue = await bridge.request(`/api/issues/${activeIssueId}`);
+      const nextIssue = await bridge.request(`/api/issues/${stagedIssueId}`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(deletedIssue.issue, null);
+      assert.equal(nextIssue.issue?.status, "running");
+      assert.ok(continuity.active_physical_thread?.codex_thread_id);
+      return { deletedIssue, nextIssue, continuity };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "running issue deleted and next queued issue resumed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("todo issue를 preparation으로 되돌리면 queued issue가 staged로 이동한다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-issue-interrupt-int-"));
   const fakeAppServer = new FakeAppServer();

@@ -6559,13 +6559,6 @@ export default function App() {
       return false;
     }
 
-    if (["running", "awaiting_input"].includes(targetIssue.status)) {
-      if (typeof window !== "undefined") {
-        window.alert("실행 중인 이슈는 삭제할 수 없습니다.");
-      }
-      return false;
-    }
-
     const targetPhysicalThreadId = targetIssue.executed_physical_thread_id ?? targetIssue.created_physical_thread_id ?? null;
 
     if (targetPhysicalThreadId !== activePhysicalThreadId) {

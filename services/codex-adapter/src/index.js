@@ -1797,7 +1797,7 @@ function clearRunningIssueTracking(threadId) {
 }
 
 function shouldForceUnlockAfterStopFailure(unlockReason, errors = []) {
-  return unlockReason === "manual_refresh" && Array.isArray(errors) && errors.length > 0;
+  return ["manual_refresh", "delete_issue"].includes(unlockReason) && Array.isArray(errors) && errors.length > 0;
 }
 
 function settlePhysicalThreadExecutionState(
@@ -4214,11 +4214,71 @@ async function deleteThreadIssue(userId, payload = {}) {
     throw new Error("이슈를 찾을 수 없습니다.");
   }
 
-  if (
+  const wasActive =
     activeIssueByThreadId.get(issue.thread_id) === issueId ||
-    [...activeIssueByPhysicalThreadId.values()].includes(issueId)
-  ) {
-    throw new Error("실행 중인 이슈는 삭제할 수 없습니다.");
+    [...activeIssueByPhysicalThreadId.values()].includes(issueId);
+  let interruptResult = null;
+  const recoverySteps = [];
+
+  if (wasActive) {
+    interruptResult = await interruptThreadExecutionBestEffort(thread);
+    const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
+
+    if (blockingStopErrors.length > 0) {
+      const forcedRecovery = shouldForceUnlockAfterStopFailure("delete_issue", blockingStopErrors);
+
+      console.warn(
+        forcedRecovery
+          ? "[OctOP bridge] issue delete continuing with forced recovery after stop attempt errors"
+          : "[OctOP bridge] issue delete aborted due to stop attempt errors",
+        {
+          ...buildLogContext({
+            root_thread_id: issue.thread_id,
+            physical_thread_id: thread.active_physical_thread_id ?? null,
+            codex_thread_id: thread.codex_thread_id ?? null,
+            issue_id: issueId,
+            event_type: forcedRecovery
+              ? "thread.issue.delete.stopBestEffort.forcedRecovery"
+              : "thread.issue.delete.stopBestEffort.failed"
+          }),
+          errors: blockingStopErrors
+        }
+      );
+
+      if (!forcedRecovery) {
+        return {
+          accepted: false,
+          action: "stop_failed",
+          error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
+          thread,
+          issues: listThreadIssues(issue.thread_id),
+          issue_id: issueId,
+          interrupt_result: {
+            interrupted: interruptResult.interrupted,
+            stopped_realtime: interruptResult.stoppedRealtime,
+            errors: interruptResult.errors
+          }
+        };
+      }
+
+      const invalidatedThread = invalidateCodexThreadBinding(issue.thread_id);
+      recoverySteps.push("forced_release_after_delete_stop_failed");
+
+      if (invalidatedThread) {
+        recoverySteps.push("invalidated_active_binding");
+      }
+    }
+
+    clearRunningIssueTracking(issue.thread_id);
+    settlePhysicalThreadExecutionState(issue.thread_id, {
+      issue,
+      status: "idle",
+      progress: Math.max(0, Math.min(Number(issue.progress ?? 0), 99)),
+      lastEvent: "issue.deleted",
+      lastMessage:
+        String(issue.last_message ?? "").trim() || "실행 중인 이슈를 강제 중단 후 삭제했습니다."
+    });
+    recoverySteps.push("released_active_issue_lock");
   }
 
   issueCardsById.delete(issueId);
@@ -4251,9 +4311,24 @@ async function deleteThreadIssue(userId, payload = {}) {
     threads: listProjectThreads(userId, issue.project_id)
   });
 
+  if (wasActive) {
+    await scheduleQueuedIssuesForUser(userId, {
+      preferredThreadId: issue.thread_id
+    });
+  }
+
   return {
     accepted: true,
-    issues: listThreadIssues(issue.thread_id)
+    issues: listThreadIssues(issue.thread_id),
+    deleted_issue_id: issueId,
+    recovery_steps: recoverySteps,
+    interrupt_result: interruptResult
+      ? {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      : null
   };
 }
 
