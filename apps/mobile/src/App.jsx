@@ -37,6 +37,7 @@ const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
+const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
 function formatSilentDuration(ms) {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -707,6 +708,50 @@ function formatApiRequestError(path, options = {}, error, contextLabel = "") {
 
   lines.push(`원본 오류: ${rawMessage}`);
   return lines.join("\n");
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text ?? "");
+
+  if (!value) {
+    throw new Error("복사할 텍스트가 없습니다.");
+  }
+
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (error) {
+      // secure context가 아니거나 브라우저가 clipboard API를 거부하면 fallback으로 내려갑니다.
+    }
+  }
+
+  if (typeof document === "undefined") {
+    throw new Error("현재 환경에서는 텍스트를 복사할 수 없습니다.");
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  try {
+    const copied = document.execCommand("copy");
+
+    if (!copied) {
+      throw new Error("브라우저가 복사 명령을 지원하지 않습니다.");
+    }
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 async function apiRequest(path, options = {}) {
@@ -2702,6 +2747,58 @@ function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTr
   );
 }
 
+function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onInterrupt, onDelete }) {
+  if (!open || !message) {
+    return null;
+  }
+
+  return (
+    <BottomSheet open={open} title="메시지 작업" onClose={busy ? () => {} : onClose}>
+      <div className="space-y-3 px-5 py-5">
+        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3">
+          <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400">
+            <span>{message.title ?? "메시지"}</span>
+            {message.meta ? <span>{message.meta}</span> : null}
+          </div>
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-200">
+            {message.content || "내용이 없습니다."}
+          </p>
+        </div>
+        {onCopy ? (
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={busy}
+            className="w-full rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            텍스트 복사
+          </button>
+        ) : null}
+        {onInterrupt ? (
+          <button
+            type="button"
+            onClick={onInterrupt}
+            disabled={busy}
+            className="w-full rounded-full bg-amber-500/90 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            이슈 중단
+          </button>
+        ) : null}
+        {onDelete ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            이슈 제거
+          </button>
+        ) : null}
+      </div>
+    </BottomSheet>
+  );
+}
+
 function TodoTransferSheet({
   open,
   busy,
@@ -3319,6 +3416,7 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
     align === "right" ? "justify-end" : align === "center" ? "justify-center" : "justify-start";
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
+  const pointerStartRef = useRef(null);
 
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -3327,7 +3425,12 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
     }
   }, []);
 
-  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  const resetLongPressState = useCallback(() => {
+    clearLongPressTimer();
+    pointerStartRef.current = null;
+  }, [clearLongPressTimer]);
+
+  useEffect(() => () => resetLongPressState(), [resetLongPressState]);
 
   const beginLongPress = useCallback(
     (event) => {
@@ -3340,18 +3443,43 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
       }
 
       longPressTriggeredRef.current = false;
-      clearLongPressTimer();
+      resetLongPressState();
+      pointerStartRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        pointerId: event.pointerId
+      };
       longPressTimerRef.current = window.setTimeout(() => {
         longPressTriggeredRef.current = true;
         onLongPress();
       }, MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS);
     },
-    [clearLongPressTimer, onLongPress]
+    [onLongPress, resetLongPressState]
   );
 
   const cancelLongPress = useCallback(() => {
-    clearLongPressTimer();
-  }, [clearLongPressTimer]);
+    resetLongPressState();
+  }, [resetLongPressState]);
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      if (!onLongPress || !pointerStartRef.current) {
+        return;
+      }
+
+      if (pointerStartRef.current.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - pointerStartRef.current.x;
+      const deltaY = event.clientY - pointerStartRef.current.y;
+
+      if (Math.hypot(deltaX, deltaY) > MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX) {
+        resetLongPressState();
+      }
+    },
+    [onLongPress, resetLongPressState]
+  );
 
   const handleContextMenu = useCallback(
     (event) => {
@@ -3383,7 +3511,7 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
         onPointerUp={cancelLongPress}
         onPointerLeave={cancelLongPress}
         onPointerCancel={cancelLongPress}
-        onPointerMove={cancelLongPress}
+        onPointerMove={handlePointerMove}
         onContextMenu={handleContextMenu}
         onClickCapture={handleClickCapture}
       >
@@ -3470,6 +3598,7 @@ function ThreadDetail({
   messagesLoading,
   messagesError,
   onRefreshMessages,
+  onInterruptIssue,
   onDeleteIssue,
   onSubmitPrompt,
   submitBusy,
@@ -3489,7 +3618,9 @@ function ThreadDetail({
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [refreshPending, setRefreshPending] = useState(false);
+  const [interruptingIssueId, setInterruptingIssueId] = useState("");
   const [deletingIssueId, setDeletingIssueId] = useState("");
+  const [activeMessageAction, setActiveMessageAction] = useState(null);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -3816,15 +3947,31 @@ function ThreadDetail({
 
   const handleDeleteIssue = async (issueId) => {
     if (!issueId || !onDeleteIssue || deletingIssueId) {
-      return;
+      return false;
     }
 
     setDeletingIssueId(issueId);
 
     try {
-      await onDeleteIssue(issueId);
+      const accepted = await onDeleteIssue(issueId);
+      return accepted !== false;
     } finally {
       setDeletingIssueId((current) => (current === issueId ? "" : current));
+    }
+  };
+
+  const handleInterruptIssue = async (issueId) => {
+    if (!issueId || !onInterruptIssue || interruptingIssueId) {
+      return false;
+    }
+
+    setInterruptingIssueId(issueId);
+
+    try {
+      const accepted = await onInterruptIssue(issueId);
+      return accepted !== false;
+    } finally {
+      setInterruptingIssueId((current) => (current === issueId ? "" : current));
     }
   };
 
@@ -3846,6 +3993,49 @@ function ThreadDetail({
     },
     [activePhysicalThreadId, issueById]
   );
+
+  const canInterruptIssueFromBubble = useCallback(
+    (issueId) => {
+      if (!issueId || !activePhysicalThreadId) {
+        return false;
+      }
+
+      const issue = issueById.get(issueId);
+
+      if (!issue || !["running", "awaiting_input"].includes(issue.status)) {
+        return false;
+      }
+
+      const issuePhysicalThreadId = issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null;
+
+      return issuePhysicalThreadId === activePhysicalThreadId;
+    },
+    [activePhysicalThreadId, issueById]
+  );
+
+  const handleCopyMessage = useCallback(async (content) => {
+    try {
+      await copyTextToClipboard(content);
+
+      if (typeof window !== "undefined") {
+        window.alert("텍스트를 복사했습니다.");
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message ?? "텍스트를 복사하지 못했습니다.");
+      }
+
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    setActiveMessageAction(null);
+    setInterruptingIssueId("");
+    setDeletingIssueId("");
+  }, [thread?.id]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
   const showEmptyState = (() => {
@@ -3981,31 +4171,48 @@ function ThreadDetail({
           {messageFilter === "runs" ? (
             <RunTimeline entries={runTimeline} />
           ) : viewMode === "chat" ? (
-            visibleChatTimeline.map((message) => (
-              <MessageBubble
-                key={message.id}
-                align={message.align}
-                tone={message.tone}
-                title={message.title}
-                meta={formatRelativeTime(message.timestamp)}
-                onLongPress={
-                  canDeleteIssueFromBubble(message.issueId) && deletingIssueId !== message.issueId
-                    ? () => void handleDeleteIssue(message.issueId)
-                    : null
-                }
-                longPressTitle={canDeleteIssueFromBubble(message.issueId) ? "길게 눌러 이슈 삭제" : ""}
-              >
-                {message.replyTo ? (
-                  <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
-                    <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
-                  </div>
-                ) : null}
-                <p className="whitespace-pre-wrap text-sm leading-6">
-                  {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
-                </p>
-              </MessageBubble>
-            ))
+            visibleChatTimeline.map((message) => {
+              const canCopy = Boolean(String(message.content ?? "").trim());
+              const canInterrupt = canInterruptIssueFromBubble(message.issueId);
+              const canDelete = canDeleteIssueFromBubble(message.issueId);
+              const canOpenActionSheet = canCopy || canInterrupt || canDelete;
+
+              return (
+                <MessageBubble
+                  key={message.id}
+                  align={message.align}
+                  tone={message.tone}
+                  title={message.title}
+                  meta={formatRelativeTime(message.timestamp)}
+                  onLongPress={
+                    canOpenActionSheet
+                      ? () =>
+                          setActiveMessageAction({
+                            id: message.id,
+                            title: message.title,
+                            content: message.content ?? "",
+                            meta: formatRelativeTime(message.timestamp),
+                            issueId: message.issueId,
+                            canCopy,
+                            canInterrupt,
+                            canDelete
+                          })
+                      : null
+                  }
+                  longPressTitle={canOpenActionSheet ? "길게 눌러 메시지 작업 열기" : ""}
+                >
+                  {message.replyTo ? (
+                    <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
+                      <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
+                    </div>
+                  ) : null}
+                  <p className="whitespace-pre-wrap text-sm leading-6">
+                    {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
+                  </p>
+                </MessageBubble>
+              );
+            })
           ) : messageFilter === "prompts" ? (
             <ConversationTimeline entries={promptTimeline} />
           ) : messageFilter === "responses" ? (
@@ -4081,6 +4288,55 @@ function ThreadDetail({
           <div ref={scrollAnchorRef} />
         </div>
       </div>
+
+      <ThreadMessageActionSheet
+        open={Boolean(activeMessageAction)}
+        message={activeMessageAction}
+        busy={
+          Boolean(
+            activeMessageAction?.issueId &&
+              (interruptingIssueId === activeMessageAction.issueId || deletingIssueId === activeMessageAction.issueId)
+          )
+        }
+        onClose={() => {
+          if (!interruptingIssueId && !deletingIssueId) {
+            setActiveMessageAction(null);
+          }
+        }}
+        onCopy={
+          activeMessageAction?.canCopy
+            ? async () => {
+                const copied = await handleCopyMessage(activeMessageAction.content);
+
+                if (copied) {
+                  setActiveMessageAction(null);
+                }
+              }
+            : null
+        }
+        onInterrupt={
+          activeMessageAction?.canInterrupt
+            ? async () => {
+                const interrupted = await handleInterruptIssue(activeMessageAction.issueId);
+
+                if (interrupted !== false) {
+                  setActiveMessageAction(null);
+                }
+              }
+            : null
+        }
+        onDelete={
+          activeMessageAction?.canDelete
+            ? async () => {
+                const deleted = await handleDeleteIssue(activeMessageAction.issueId);
+
+                if (deleted !== false) {
+                  setActiveMessageAction(null);
+                }
+              }
+            : null
+        }
+      />
 
       <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl">
@@ -4171,6 +4427,7 @@ function MainPage({
   onEnsureProjectThreads,
   onRefreshTodoChat,
   onRefreshThreadDetail,
+  onInterruptThreadIssue,
   onDeleteThreadIssue,
   onRefresh,
   onLogout,
@@ -4410,6 +4667,7 @@ function MainPage({
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
+          onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
           onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
@@ -6349,6 +6607,67 @@ export default function App() {
     }
   }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
 
+  const handleInterruptThreadIssue = useCallback(async (issueId) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
+      return false;
+    }
+
+    const activePhysicalThreadId = selectedThread?.active_physical_thread_id ?? null;
+    const targetIssue = (currentThreadDetail?.issues ?? [])
+      .map((issue) => normalizeIssue(issue, selectedThreadId))
+      .find((issue) => issue?.id === issueId);
+
+    if (!activePhysicalThreadId || !targetIssue) {
+      return false;
+    }
+
+    if (!["running", "awaiting_input"].includes(targetIssue.status)) {
+      if (typeof window !== "undefined") {
+        window.alert("실행 중이거나 입력 대기 상태인 이슈만 중단할 수 있습니다.");
+      }
+      return false;
+    }
+
+    const targetPhysicalThreadId = targetIssue.executed_physical_thread_id ?? targetIssue.created_physical_thread_id ?? null;
+
+    if (targetPhysicalThreadId !== activePhysicalThreadId) {
+      if (typeof window !== "undefined") {
+        window.alert("현재 active thread에 속한 이슈만 중단할 수 있습니다.");
+      }
+      return false;
+    }
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason: "mobile_long_press"
+          })
+        }
+      );
+
+      if (Array.isArray(response?.issues)) {
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            issues: response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+          }
+        }));
+      }
+
+      await loadThreadMessages(selectedThreadId, { force: true });
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
+
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
       return;
@@ -7095,6 +7414,7 @@ export default function App() {
         onEnsureProjectThreads={ensureProjectThreadsLoaded}
         onRefreshTodoChat={handleRefreshTodoChat}
         onRefreshThreadDetail={handleRefreshThreadDetail}
+        onInterruptThreadIssue={handleInterruptThreadIssue}
         onDeleteThreadIssue={handleDeleteThreadIssue}
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
