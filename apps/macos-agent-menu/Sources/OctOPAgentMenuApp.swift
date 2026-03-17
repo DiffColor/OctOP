@@ -1,4 +1,6 @@
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 enum AgentRuntimeState: String {
@@ -22,8 +24,25 @@ final class AgentMenuModel: ObservableObject {
   private var stderrPipe: Pipe? = nil
   private let maxLines = 2000
 
+  lazy var colorMenuBarImage: NSImage = {
+    Self.makeMenuBarImage(grayscale: false) ?? NSImage(systemSymbolName: "terminal.fill", accessibilityDescription: nil) ?? NSImage()
+  }()
+
+  lazy var grayscaleMenuBarImage: NSImage = {
+    Self.makeMenuBarImage(grayscale: true) ?? colorMenuBarImage
+  }()
+
   var isRunning: Bool {
     runtimeState == .running || runtimeState == .starting || runtimeState == .stopping
+  }
+
+  var menuBarImage: NSImage {
+    switch runtimeState {
+    case .running, .starting:
+      colorMenuBarImage
+    case .stopping, .stopped, .failed:
+      grayscaleMenuBarImage
+    }
   }
 
   var repoRootURL: URL {
@@ -171,6 +190,47 @@ final class AgentMenuModel: ObservableObject {
     stdoutPipe = nil
     stderrPipe = nil
   }
+
+  private static func makeMenuBarImage(grayscale: Bool) -> NSImage? {
+    guard let sourceURL = Bundle.module.url(forResource: "icon", withExtension: "png"),
+          let sourceImage = NSImage(contentsOf: sourceURL),
+          let tiffData = sourceImage.tiffRepresentation,
+          let ciImage = CIImage(data: tiffData) else {
+      return nil
+    }
+
+    let outputImage: CIImage
+    if grayscale {
+      let filter = CIFilter.colorControls()
+      filter.inputImage = ciImage
+      filter.saturation = 0
+      filter.brightness = 0
+      filter.contrast = 1.05
+      outputImage = filter.outputImage ?? ciImage
+    } else {
+      outputImage = ciImage
+    }
+
+    let targetSize = CGSize(width: 18, height: 18)
+    let scale = min(targetSize.width / outputImage.extent.width, targetSize.height / outputImage.extent.height)
+    let scaledWidth = outputImage.extent.width * scale
+    let scaledHeight = outputImage.extent.height * scale
+    let translatedX = (targetSize.width - scaledWidth) / 2
+    let translatedY = (targetSize.height - scaledHeight) / 2
+    let transformed = outputImage
+      .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+      .transformed(by: CGAffineTransform(translationX: translatedX, y: translatedY))
+    let context = CIContext(options: nil)
+    let bounds = CGRect(origin: .zero, size: targetSize)
+
+    guard let cgImage = context.createCGImage(transformed, from: bounds) else {
+      return nil
+    }
+
+    let image = NSImage(cgImage: cgImage, size: NSSize(width: targetSize.width, height: targetSize.height))
+    image.isTemplate = false
+    return image
+  }
 }
 
 struct AgentLogWindow: View {
@@ -310,8 +370,11 @@ struct OctOPAgentMenuApp: App {
   }
 
   var body: some Scene {
-    MenuBarExtra("OctOP Agent", systemImage: "terminal.fill") {
+    MenuBarExtra {
       AgentMenuContent(model: model)
+    } label: {
+      Image(nsImage: model.menuBarImage)
+        .renderingMode(.original)
     }
 
     WindowGroup(id: "logs") {
