@@ -3242,7 +3242,6 @@ function MainPage({
   status,
   bridgeSignal,
   signalNow,
-  bridgeDeleteBusy,
   projects,
   projectThreads,
   issues,
@@ -3967,16 +3966,6 @@ function MainPage({
                     ))
                   )}
                 </select>
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={onDeleteBridge}
-                    disabled={!selectedBridge || bridgeDeleteBusy}
-                    className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:border-rose-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {bridgeDeleteBusy ? copy.board.deletingBridge : copy.board.deleteBridge}
-                  </button>
-                </div>
               </div>
 
               <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
@@ -4225,16 +4214,6 @@ function MainPage({
                       ))
                     )}
                   </select>
-                  <div className="mt-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={onDeleteBridge}
-                      disabled={!selectedBridge || bridgeDeleteBusy}
-                      className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-medium text-rose-200 transition hover:border-rose-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {bridgeDeleteBusy ? copy.board.deletingBridge : copy.board.deleteBridge}
-                    </button>
-                  </div>
                 </label>
                 <label className="block">
                   <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</span>
@@ -4538,7 +4517,19 @@ function MainPage({
               <span
                 className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1"
                 style={bridgeSignal.chipStyle}
-                title={bridgeSignal.title}
+                title={
+                  selectedBridge
+                    ? `${bridgeSignal.title} ${language === "ko" ? "우클릭으로 브릿지를 삭제할 수 있습니다." : "Right-click to delete this bridge."}`
+                    : bridgeSignal.title
+                }
+                onContextMenu={(event) => {
+                  if (!selectedBridge) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  onDeleteBridge();
+                }}
               >
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
                 {bridgeSignal.label}
@@ -6934,7 +6925,6 @@ export default function App() {
       status={status}
       bridgeSignal={bridgeSignal}
       signalNow={streamNow}
-      bridgeDeleteBusy={bridgeDeleteBusy}
       projects={projects}
       projectThreads={projectThreads}
       issues={issues}
