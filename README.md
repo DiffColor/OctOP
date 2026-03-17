@@ -111,6 +111,7 @@ npm run dev:projector
 npm run app-server:start
 npm run bridge:start
 npm run local-agent:start
+npm run local-agent:menu
 ```
 
 직접 실행:
@@ -135,6 +136,14 @@ Bridge 또는 local agent 실행 시 인자를 넘길 수 있습니다.
 npm run bridge:start -- -id <loginId> -name "My Mac"
 npm run local-agent:start -- -id <loginId> -name "My Mac"
 ```
+
+macOS 메뉴바에서 local agent를 시작/중지하고 로그를 보려면:
+
+```bash
+npm run local-agent:menu
+```
+
+이 실행기는 macOS 상단 메뉴바에 아이콘을 만들고, `npm run local-agent:start`를 직접 실행/중지하며 stdout/stderr 로그를 별도 창에서 보여줍니다.
 
 ## 환경 변수
 
