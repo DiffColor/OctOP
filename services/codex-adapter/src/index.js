@@ -6198,10 +6198,12 @@ class AppServerClient {
             persistThreadById(threadId);
           }
 
-          await publishEvent(owner ?? threadOwners.get(threadId) ?? BRIDGE_OWNER_LOGIN_ID, "physicalThread.updated", {
-            root_thread_id: threadId,
-            physical_thread: nextPhysicalThread
-          });
+          if (method !== "item/agentMessage/delta") {
+            await publishEvent(owner ?? threadOwners.get(threadId) ?? BRIDGE_OWNER_LOGIN_ID, "physicalThread.updated", {
+              root_thread_id: threadId,
+              physical_thread: nextPhysicalThread
+            });
+          }
         }
 
         syncRootThreadFromActivePhysicalThread(threadId);
@@ -6272,7 +6274,7 @@ class AppServerClient {
       })
     );
 
-    if (threadId && (eventPatch || issuePatch || (method === "item/agentMessage/delta" && params.delta))) {
+    if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params)) {
       await publishEvent(owner, "bridge.projectThreads.updated", {
         scope: projectId ? "project" : "all",
         project_id: projectId,
@@ -6832,6 +6834,14 @@ function buildIssuePatch(method, params, issueId) {
     default:
       return null;
   }
+}
+
+function shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params = {}) {
+  if (method === "item/agentMessage/delta" && String(params.delta ?? "")) {
+    return false;
+  }
+
+  return Boolean(eventPatch || issuePatch);
 }
 
 function getThreadDetail(userId, threadId) {
