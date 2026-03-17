@@ -1914,6 +1914,42 @@ function clearInvalidRunningIssueTracking(threadId) {
   return true;
 }
 
+async function markRunningIssueContinuityDegraded(
+  userId,
+  threadId,
+  issueId,
+  thread,
+  issue,
+  message,
+  details = {}
+) {
+  const degradedMessage = String(message ?? "").trim() || String(issue?.last_message ?? "").trim();
+  const nextThread = {
+    ...thread,
+    continuity_status: "degraded",
+    last_event: "watchdog.degraded",
+    last_message: degradedMessage,
+    updated_at: now()
+  };
+
+  threadStateById.set(threadId, nextThread);
+
+  if (issueId && issue && !isIssueTerminalStatus(issue.status)) {
+    updateIssueCard(issueId, {
+      last_event: "watchdog.degraded",
+      ...(degradedMessage ? { last_message: degradedMessage } : {})
+    });
+  }
+
+  markRunningIssueActivity(threadId, {
+    lastActivityAt: now(),
+    ...(details.remoteThreadId ? { lastSeenCodexThreadId: details.remoteThreadId } : {})
+  });
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+  await publishThreadState(userId, threadId);
+}
+
 function listQueuedIssuesForRecovery(threadId) {
   return getThreadIssueIds(threadId)
     .map((issueId) => issueCardsById.get(issueId) ?? null)
@@ -7087,28 +7123,15 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
       return;
     }
 
-    const degradedMessage =
+    await markRunningIssueContinuityDegraded(
+      userId,
+      threadId,
+      activeIssueId,
+      thread,
+      issue,
       String(issue.last_message ?? "").trim() ||
-      "Codex thread가 thread/list에 보이지 않아 추적을 일시 보류했습니다. normalize 또는 unlock으로 복구해 주세요.";
-    const nextThread = {
-      ...thread,
-      continuity_status: "degraded",
-      last_event: "watchdog.degraded",
-      last_message: degradedMessage,
-      updated_at: now()
-    };
-
-    threadStateById.set(threadId, nextThread);
-    updateIssueCard(activeIssueId, {
-      last_event: "watchdog.degraded",
-      last_message: degradedMessage
-    });
-    markRunningIssueActivity(threadId, {
-      lastActivityAt: now()
-    });
-    updateProjectThreadSnapshot(threadId);
-    persistThreadById(threadId);
-    await publishThreadState(userId, threadId);
+        "Codex thread가 thread/list에 보이지 않아 추적을 일시 보류했습니다. normalize 또는 unlock으로 복구해 주세요."
+    );
     return;
   }
 
@@ -7127,62 +7150,37 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
       missingRemoteAttempts: 0,
       ...(remoteThread?.id ? { lastSeenCodexThreadId: remoteThread.id } : {})
     });
-    updateIssueCard(activeIssueId, {
-      status: "awaiting_input",
-      last_event: "watchdog.awaiting_input"
-    });
-    updateProjectThreadSnapshot(threadId);
-    persistThreadById(threadId);
-    await publishThreadState(userId, threadId);
     return;
   }
 
   if (reconciledStatus === "failed") {
-    invalidateCodexThreadBinding(threadId);
-    updateIssueCard(activeIssueId, {
-      status: "failed",
-      progress: 0,
-      last_event: "watchdog.failed",
-      last_message: issue.last_message || "Codex 실행 상태를 재확인하는 중 실패로 판정되었습니다."
-    });
-    clearRunningIssueTracking(threadId);
-    settlePhysicalThreadExecutionState(threadId, {
+    await markRunningIssueContinuityDegraded(
+      userId,
+      threadId,
+      activeIssueId,
+      thread,
       issue,
-      status: "failed",
-      progress: 0,
-      lastEvent: "watchdog.failed",
-      lastMessage: issue.last_message || "Codex 실행 상태를 재확인하는 중 실패로 판정되었습니다."
-    });
-    updateProjectThreadSnapshot(threadId);
-    persistThreadById(threadId);
-    await publishThreadState(userId, threadId);
-    void scheduleQueuedIssuesForUser(userId, {
-      preferredThreadId: threadId
-    });
+      issue.last_message || "Codex 실행 상태를 재확인하는 중 원격 실패 상태가 관측되었습니다. 실제 종료 이벤트를 기다립니다.",
+      {
+        remoteThreadId: remoteThread?.id ?? null
+      }
+    );
     return;
   }
 
   if (reconciledStatus === "idle" || reconciledStatus === "completed") {
-    const terminalStatus = reconciledStatus === "completed" ? "completed" : inferReconciledTerminalStatus(issue);
-    updateIssueCard(activeIssueId, {
-      status: terminalStatus,
-      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
-      last_event: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed"
-    });
-    clearRunningIssueTracking(threadId);
-    settlePhysicalThreadExecutionState(threadId, {
+    await markRunningIssueContinuityDegraded(
+      userId,
+      threadId,
+      activeIssueId,
+      thread,
       issue,
-      status: terminalStatus === "failed" ? "failed" : "idle",
-      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
-      lastEvent: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
-      lastMessage: issue.last_message
-    });
-    updateProjectThreadSnapshot(threadId);
-    persistThreadById(threadId);
-    await publishThreadState(userId, threadId);
-    void scheduleQueuedIssuesForUser(userId, {
-      preferredThreadId: threadId
-    });
+      issue.last_message ||
+        "Codex thread가 thread/list에서 종료 상태로 보였지만 실제 완료 이벤트를 받지 못해 추적을 일시 보류했습니다.",
+      {
+        remoteThreadId: remoteThread?.id ?? null
+      }
+    );
   }
 }
 
@@ -7228,7 +7226,7 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
   const previousStatus = previousThread?.status ?? null;
   const previousContinuityStatus = previousThread?.continuity_status ?? null;
   const recoverySteps = [];
-  const allowStagedResume = normalizeReason === "manual_refresh" || normalizeReason === "recover_current_execution";
+  const allowStagedResume = normalizeReason === "manual_refresh";
 
   if (clearInvalidRunningIssueTracking(rootThreadId)) {
     recoverySteps.push("cleared_invalid_tracking");
