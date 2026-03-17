@@ -6061,17 +6061,12 @@ export default function App() {
 
     void (async () => {
       const roots = await loadWorkspaceRoots(session, selectedBridgeId);
-      const currentProjectWorkspace =
-        projects.find((project) => project.id === selectedProjectId)?.workspace_path ?? "";
-      const preferredPath =
-        currentProjectWorkspace ||
-        roots[0]?.path ||
-        "";
+      const preferredPath = roots[0]?.path || "";
 
       setSelectedWorkspacePath((current) => current || preferredPath);
       await browseWorkspacePath(preferredPath, selectedBridgeId);
     })();
-  }, [projectComposerOpen, projects, selectedBridgeId, selectedProjectId, session]);
+  }, [projectComposerOpen, selectedBridgeId, session]);
 
   useEffect(() => {
     if (
@@ -7304,10 +7299,7 @@ export default function App() {
     }
 
     const roots = await loadWorkspaceRoots(session, selectedBridgeId);
-    const preferredPath =
-      projects.find((project) => project.id === selectedProjectId)?.workspace_path ??
-      roots[0]?.path ??
-      "";
+    const preferredPath = roots[0]?.path ?? "";
 
     if (preferredPath) {
       setSelectedWorkspacePath(preferredPath);
