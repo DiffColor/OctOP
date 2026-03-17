@@ -2414,8 +2414,176 @@ test("stale workspace path로 저장된 프로젝트도 현재 workspace로 재�
 
     const threadStartRequest = fakeAppServer.getRequests("thread/start")[0];
     const turnStartRequest = fakeAppServer.getRequests("turn/start")[0];
-    assert.equal(threadStartRequest?.params?.cwd, REPO_ROOT);
-    assert.equal(turnStartRequest?.params?.cwd, REPO_ROOT);
+    assert.equal("cwd" in (threadStartRequest?.params ?? {}), false);
+    assert.equal("cwd" in (turnStartRequest?.params ?? {}), false);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("프로젝트명이 달라도 stale workspace basename이 같으면 현재 workspace로 재바인딩되어야 한다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-project-basename-rebind-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-project-basename-rebind-token",
+    userId: "integration-user",
+    bridgeId: `integration-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    const projectStateDir = join(homeDir, ".octop");
+    const projectStatePath = join(projectStateDir, `${bridge.bridgeId}-projects.json`);
+    const now = new Date().toISOString();
+    const persistedProjectId = "persisted-custom-project";
+
+    await mkdir(projectStateDir, { recursive: true });
+    await writeFile(projectStatePath, JSON.stringify({
+      [bridge.userId]: {
+        projects: [
+          {
+            id: persistedProjectId,
+            key: "CUSTOM_WORKSPACE",
+            name: "Custom Workspace",
+            description: "stale custom workspace path",
+            workspace_path: join(homeDir, "old-root", "OctOP"),
+            source: "workspace",
+            created_at: now,
+            updated_at: now
+          }
+        ],
+        deleted_workspace_paths: [],
+        updated_at: now
+      }
+    }, null, 2));
+
+    await bridge.start();
+
+    const projectsPayload = await bridge.request("/api/projects");
+    const reboundProject = projectsPayload.projects.find((item) => item.id === persistedProjectId);
+    assert.ok(reboundProject, "저장된 custom 프로젝트가 유지되어야 합니다.");
+    assert.equal(reboundProject.workspace_path, REPO_ROOT);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("기본 workspace에서는 app-server 요청에 cwd를 생략하고 다른 workspace에서는 cwd를 유지해야 한다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-cwd-omit-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-cwd-omit-token",
+    userId: "integration-user",
+    bridgeId: `integration-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const rootProject = await getWorkspaceProject(bridge);
+    const rootThreadPayload = await bridge.request(`/api/projects/${rootProject.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Root Workspace Thread"
+      })
+    });
+    const rootIssuePayload = await bridge.request(`/api/threads/${rootThreadPayload.thread.id}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Root Workspace Issue",
+        prompt: PROMPT
+      })
+    });
+    await bridge.request(`/api/threads/${rootThreadPayload.thread.id}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [rootIssuePayload.issue.id]
+      })
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${rootIssuePayload.issue.id}`);
+      assert.equal(payload.issue?.status, "running");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "root workspace issue running"
+    });
+
+    const rootThreadStartRequest = fakeAppServer.getRequests("thread/start")[0];
+    const rootTurnStartRequest = fakeAppServer.getRequests("turn/start")[0];
+    assert.equal("cwd" in (rootThreadStartRequest?.params ?? {}), false);
+    assert.equal("cwd" in (rootTurnStartRequest?.params ?? {}), false);
+
+    const createdProject = await bridge.request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dashboard Workspace",
+        key: "",
+        workspace_path: join(REPO_ROOT, "apps", "dashboard")
+      })
+    });
+    const nestedProject = createdProject.project;
+    const nestedThreadPayload = await bridge.request(`/api/projects/${nestedProject.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Nested Workspace Thread"
+      })
+    });
+    const nestedIssuePayload = await bridge.request(`/api/threads/${nestedThreadPayload.thread.id}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Nested Workspace Issue",
+        prompt: PROMPT
+      })
+    });
+    await bridge.request(`/api/threads/${nestedThreadPayload.thread.id}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [nestedIssuePayload.issue.id]
+      })
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${nestedIssuePayload.issue.id}`);
+      assert.equal(payload.issue?.status, "running");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "nested workspace issue running"
+    });
+
+    const threadStartRequests = fakeAppServer.getRequests("thread/start");
+    const turnStartRequests = fakeAppServer.getRequests("turn/start");
+    const nestedThreadStartRequest = threadStartRequests[threadStartRequests.length - 1];
+    const nestedTurnStartRequest = turnStartRequests[turnStartRequests.length - 1];
+    assert.equal(nestedThreadStartRequest?.params?.cwd, join(REPO_ROOT, "apps", "dashboard"));
+    assert.equal(nestedTurnStartRequest?.params?.cwd, join(REPO_ROOT, "apps", "dashboard"));
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;
