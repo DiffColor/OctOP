@@ -3675,13 +3675,12 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const workspacePath = resolveProjectWorkspace(userId, physicalThread.project_id);
   const cwd = buildAppServerCwd(workspacePath);
-  const sandbox = resolveThreadStartSandbox(workspacePath);
   const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     ...(cwd ? { cwd } : {}),
     approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox,
+    sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
@@ -3814,7 +3813,6 @@ async function startTurnOnPhysicalThread(
   const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
   const workspacePath = resolveProjectWorkspace(userId, rootThread.project_id);
   const cwd = buildAppServerCwd(workspacePath);
-  const sandboxPolicy = buildTurnSandboxPolicy(workspacePath);
   activeIssueByThreadId.set(rootThreadId, issueId);
   activeIssueByPhysicalThreadId.set(physicalThreadId, issueId);
   markRunningIssueActivity(rootThreadId, {
@@ -3862,7 +3860,6 @@ async function startTurnOnPhysicalThread(
         threadId: activeCodexThreadId,
         ...(cwd ? { cwd } : {}),
         approvalPolicy: CODEX_APPROVAL_POLICY,
-        ...(sandboxPolicy ? { sandboxPolicy } : {}),
         input: [
           {
             type: "text",
@@ -7486,14 +7483,12 @@ async function startThreadTurn(userId, threadId) {
 
   const workspacePath = resolveProjectWorkspace(userId, current.project_id);
   const cwd = buildAppServerCwd(workspacePath);
-  const sandboxPolicy = buildTurnSandboxPolicy(workspacePath);
 
   try {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
       ...(cwd ? { cwd } : {}),
       approvalPolicy: CODEX_APPROVAL_POLICY,
-      ...(sandboxPolicy ? { sandboxPolicy } : {}),
       input: [
         {
           type: "text",
@@ -7566,7 +7561,6 @@ async function createQueuedIssue(userId, payload = {}) {
   const projectId = payload.project_id ?? state.projects[0]?.id ?? null;
   const workspacePath = resolveProjectWorkspace(userId, projectId);
   const cwd = buildAppServerCwd(workspacePath);
-  const sandbox = resolveThreadStartSandbox(workspacePath);
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
@@ -7575,7 +7569,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const threadResponse = await appServer.request("thread/start", {
     ...(cwd ? { cwd } : {}),
     approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox,
+    sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
@@ -7828,29 +7822,6 @@ function buildAppServerCwd(workspacePath) {
   const resolvedWorkspacePath = resolve(String(workspacePath ?? process.cwd()));
   const resolvedProcessCwd = resolve(process.cwd());
   return resolvedWorkspacePath === resolvedProcessCwd ? null : resolvedWorkspacePath;
-}
-
-function isWslMountedWorkspacePath(workspacePath) {
-  const normalizedPath = String(workspacePath ?? "").trim();
-  return /^\/mnt\/[a-z]\//i.test(normalizedPath);
-}
-
-function resolveThreadStartSandbox(workspacePath) {
-  if (CODEX_SANDBOX === "workspace-write" && isWslMountedWorkspacePath(workspacePath)) {
-    return "danger-full-access";
-  }
-
-  return CODEX_SANDBOX;
-}
-
-function buildTurnSandboxPolicy(workspacePath) {
-  if (CODEX_SANDBOX === "workspace-write" && isWslMountedWorkspacePath(workspacePath)) {
-    return {
-      type: "dangerFullAccess"
-    };
-  }
-
-  return null;
 }
 
 async function respond(message, payload) {
