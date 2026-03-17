@@ -105,6 +105,7 @@ const todoMessageIdsByChatId = new Map();
 const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
+const issueQueueProcessingStateByThreadId = new Map();
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -3926,46 +3927,49 @@ async function startIssueTurn(userId, threadId, issueId) {
   );
 }
 
-async function processIssueQueue(userId, threadId, options = {}) {
-  if (activeIssueByThreadId.has(threadId)) {
+async function processIssueQueueOnce(userId, threadId, options = {}) {
+  const normalizedThreadId = sanitizeBridgeId(threadId);
+  ensureRunningIssueTrackingForThread(normalizedThreadId);
+
+  if (activeIssueByThreadId.has(normalizedThreadId)) {
     return;
   }
 
-  const queue = ensurePendingQueue(threadId);
+  const queue = ensurePendingQueue(normalizedThreadId);
   const nextIssueId = queue.shift();
 
   if (!nextIssueId) {
-    updateProjectThreadSnapshot(threadId);
-    persistThreadById(threadId);
+    updateProjectThreadSnapshot(normalizedThreadId);
+    persistThreadById(normalizedThreadId);
     return;
   }
 
-  refreshIssueQueuePositions(threadId);
+  refreshIssueQueuePositions(normalizedThreadId);
 
   try {
-    return await startIssueTurn(userId, threadId, nextIssueId);
+    return await startIssueTurn(userId, normalizedThreadId, nextIssueId);
   } catch (error) {
     const issue = issueCardsById.get(nextIssueId) ?? null;
     const shouldRestoreQueue =
       issue &&
       !issue.deleted_at &&
-      issue.thread_id === threadId &&
+      issue.thread_id === normalizedThreadId &&
       ["queued", "staged"].includes(issue.status ?? "");
 
     if (shouldRestoreQueue) {
-      const nextQueue = ensurePendingQueue(threadId);
+      const nextQueue = ensurePendingQueue(normalizedThreadId);
       if (!nextQueue.includes(nextIssueId)) {
         nextQueue.unshift(nextIssueId);
-        refreshIssueQueuePositions(threadId);
+        refreshIssueQueuePositions(normalizedThreadId);
       }
     }
 
     if (options.allowRecovery !== false) {
-      await normalizeRootThread(userId, threadId, {
+      await normalizeRootThread(userId, normalizedThreadId, {
         reason: "recover_current_execution"
       });
 
-      if (activeIssueByThreadId.has(threadId)) {
+      if (activeIssueByThreadId.has(normalizedThreadId)) {
         return {
           accepted: true,
           recovered: true
@@ -3975,6 +3979,44 @@ async function processIssueQueue(userId, threadId, options = {}) {
 
     throw error;
   }
+}
+
+async function processIssueQueue(userId, threadId, options = {}) {
+  const normalizedThreadId = sanitizeBridgeId(threadId);
+  const existingState = issueQueueProcessingStateByThreadId.get(normalizedThreadId);
+
+  if (existingState) {
+    existingState.rerun = true;
+    return existingState.promise;
+  }
+
+  const state = {
+    rerun: false,
+    promise: null
+  };
+
+  state.promise = (async () => {
+    try {
+      let result;
+
+      do {
+        state.rerun = false;
+        result = await processIssueQueueOnce(userId, normalizedThreadId, options);
+      } while (
+        state.rerun &&
+        !activeIssueByThreadId.has(normalizedThreadId) &&
+        ensurePendingQueue(normalizedThreadId).length > 0
+      );
+
+      return result;
+    } finally {
+      if (issueQueueProcessingStateByThreadId.get(normalizedThreadId) === state) {
+        issueQueueProcessingStateByThreadId.delete(normalizedThreadId);
+      }
+    }
+  })();
+  issueQueueProcessingStateByThreadId.set(normalizedThreadId, state);
+  return state.promise;
 }
 
 function refreshIssueQueuePositions(threadId) {
@@ -4054,17 +4096,11 @@ async function startThreadIssues(userId, payload = {}) {
     project_id: threadStateById.get(threadId)?.project_id ?? null,
     threads: listProjectThreads(userId, threadStateById.get(threadId)?.project_id ?? "")
   });
-  const blockingThreadId = findBlockingActiveExecutionThreadId(userId, {
-    excludeThreadId: threadId
-  });
-
-  if (!blockingThreadId) {
-    await processIssueQueue(userId, threadId);
-  }
+  await processIssueQueue(userId, threadId);
 
   return {
     accepted: true,
-    blocked_by_thread_id: blockingThreadId,
+    blocked_by_thread_id: null,
     issues: listThreadIssues(threadId)
   };
 }
@@ -4341,13 +4377,7 @@ async function interruptThreadIssue(userId, payload = {}) {
       recoverySteps.push("resumed_issue_queue");
     }
   } else if (!wasActive && ensurePendingQueue(issue.thread_id).length > 0) {
-    const blockingThreadId = findBlockingActiveExecutionThreadId(userId, {
-      excludeThreadId: issue.thread_id
-    });
-
-    if (!blockingThreadId) {
-      await processIssueQueue(userId, issue.thread_id);
-    }
+    await processIssueQueue(userId, issue.thread_id);
   }
 
   return {
@@ -6523,36 +6553,6 @@ function hasRunningThread(userId) {
   return listLocalThreads(userId).some((thread) => thread.status === "running");
 }
 
-function findBlockingActiveExecutionThreadId(userId, options = {}) {
-  const normalizedUserId = sanitizeUserId(userId);
-  const excludedThreadIds = new Set(
-    [options.excludeThreadId].flat().map((value) => String(value ?? "").trim()).filter(Boolean)
-  );
-
-  for (const [threadId, issueId] of activeIssueByThreadId.entries()) {
-    if (excludedThreadIds.has(threadId)) {
-      continue;
-    }
-
-    if (threadOwners.get(threadId) !== normalizedUserId) {
-      continue;
-    }
-
-    const thread = threadStateById.get(threadId);
-    const issue = issueCardsById.get(issueId);
-
-    if (!thread || !issue || thread.deleted_at || issue.deleted_at) {
-      continue;
-    }
-
-    if (["running", "awaiting_input"].includes(issue.status ?? thread.status ?? "")) {
-      return threadId;
-    }
-  }
-
-  return null;
-}
-
 function hasActiveThreadExecution(userId) {
   return listLocalThreads(userId).some((thread) => ["running", "awaiting_input"].includes(thread.status));
 }
@@ -6560,18 +6560,6 @@ function hasActiveThreadExecution(userId) {
 async function scheduleQueuedIssuesForUser(userId, options = {}) {
   const normalizedUserId = sanitizeUserId(userId);
   const preferredThreadId = String(options.preferredThreadId ?? "").trim() || null;
-  const blockingThreadId = findBlockingActiveExecutionThreadId(normalizedUserId, {
-    excludeThreadId: preferredThreadId
-  });
-
-  if (blockingThreadId) {
-    return {
-      accepted: false,
-      started: false,
-      blocked_by_thread_id: blockingThreadId
-    };
-  }
-
   const state = ensureUserState(normalizedUserId);
   const candidateThreadIds = [];
 
@@ -6595,25 +6583,26 @@ async function scheduleQueuedIssuesForUser(userId, options = {}) {
     candidateThreadIds.push(threadId);
   }
 
-  for (const threadId of candidateThreadIds) {
-    if (activeIssueByThreadId.has(threadId)) {
-      continue;
-    }
+  const startResults = await Promise.all(
+    candidateThreadIds.map(async (threadId) => {
+      ensureRunningIssueTrackingForThread(threadId);
 
-    await processIssueQueue(normalizedUserId, threadId);
+      if (activeIssueByThreadId.has(threadId)) {
+        return false;
+      }
 
-    if (activeIssueByThreadId.has(threadId)) {
-      return {
-        accepted: true,
-        started: true,
-        thread_id: threadId
-      };
-    }
-  }
+      await processIssueQueue(normalizedUserId, threadId);
+      return activeIssueByThreadId.has(threadId);
+    })
+  );
+
+  const startedThreadIds = candidateThreadIds.filter((threadId, index) => startResults[index] === true);
 
   return {
     accepted: true,
-    started: false,
+    started: startedThreadIds.length > 0,
+    thread_id: startedThreadIds[0] ?? null,
+    started_thread_ids: startedThreadIds,
     blocked_by_thread_id: null
   };
 }
@@ -7182,8 +7171,11 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
 
     if (ensurePendingQueue(rootThreadId).length > 0) {
       const activeIssueBeforeResume = activeIssueByThreadId.get(rootThreadId) ?? null;
-
-      await processIssueQueue(normalizedUserId, rootThreadId, { allowRecovery: false });
+      if (issueQueueProcessingStateByThreadId.has(rootThreadId)) {
+        await processIssueQueueOnce(normalizedUserId, rootThreadId, { allowRecovery: false });
+      } else {
+        await processIssueQueue(normalizedUserId, rootThreadId, { allowRecovery: false });
+      }
 
       const activeIssueAfterResume = activeIssueByThreadId.get(rootThreadId) ?? null;
 
