@@ -1791,6 +1791,65 @@ function clearRunningIssueTracking(threadId) {
   }
 }
 
+function shouldForceUnlockAfterStopFailure(unlockReason, errors = []) {
+  return unlockReason === "manual_refresh" && Array.isArray(errors) && errors.length > 0;
+}
+
+function settlePhysicalThreadExecutionState(
+  rootThreadId,
+  {
+    issue = null,
+    status = "idle",
+    progress = null,
+    turnId = null,
+    lastEvent = "thread.execution.settled",
+    lastMessage = undefined,
+    updatedAt = undefined
+  } = {}
+) {
+  const rootThread = threadStateById.get(rootThreadId);
+  const targetPhysicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    rootThread?.active_physical_thread_id ??
+    null;
+
+  if (!targetPhysicalThreadId) {
+    return null;
+  }
+
+  const currentPhysicalThread = physicalThreadStateById.get(targetPhysicalThreadId);
+
+  if (!currentPhysicalThread || currentPhysicalThread.deleted_at || currentPhysicalThread.closed_at) {
+    return null;
+  }
+
+  const nextPhysicalThread = {
+    ...currentPhysicalThread,
+    status,
+    progress: progress ?? (
+      status === "failed"
+        ? 0
+        : status === "idle"
+          ? Math.max(Number(currentPhysicalThread.progress ?? 0), 100)
+          : currentPhysicalThread.progress ?? 0
+    ),
+    turn_id: turnId,
+    last_event: lastEvent,
+    last_message: lastMessage ?? currentPhysicalThread.last_message,
+    updated_at: updatedAt ?? now()
+  };
+
+  physicalThreadStateById.set(targetPhysicalThreadId, nextPhysicalThread);
+  const nextRootThread = syncRootThreadFromActivePhysicalThread(rootThreadId);
+
+  if (nextRootThread) {
+    persistThreadById(rootThreadId);
+  }
+
+  return nextPhysicalThread;
+}
+
 function findRecoverableRunningIssue(threadId) {
   return getThreadIssueIds(threadId)
     .map((issueId) => issueCardsById.get(issueId))
@@ -1836,6 +1895,13 @@ function clearInvalidRunningIssueTracking(threadId) {
   }
 
   clearRunningIssueTracking(threadId);
+  settlePhysicalThreadExecutionState(threadId, {
+    issue: activeIssue,
+    status: isIssueTerminalStatus(activeIssue?.status) ? "idle" : "failed",
+    progress: activeIssue?.status === "completed" ? 100 : 0,
+    lastEvent: activeIssue?.last_event ?? "thread.execution.recovered",
+    lastMessage: activeIssue?.last_message
+  });
   updateProjectThreadSnapshot(threadId);
   persistThreadById(threadId);
   return true;
@@ -3776,6 +3842,13 @@ async function startTurnOnPhysicalThread(
       clearRunningIssueTracking(rootThreadId);
       activeIssueByPhysicalThreadId.delete(physicalThreadId);
       invalidateCodexThreadBinding(rootThreadId);
+      settlePhysicalThreadExecutionState(rootThreadId, {
+        issue,
+        status: "failed",
+        progress: 0,
+        lastEvent: "turn.start.failed",
+        lastMessage: error.message
+      });
       updateIssueCard(issueId, {
         executed_physical_thread_id: physicalThreadId,
         status: "failed",
@@ -4169,6 +4242,17 @@ async function interruptThreadIssue(userId, payload = {}) {
     }
 
     clearRunningIssueTracking(issue.thread_id);
+    settlePhysicalThreadExecutionState(issue.thread_id, {
+      issue,
+      status: "idle",
+      progress: Math.max(0, Math.min(Number(issue.progress ?? 0), 99)),
+      lastEvent: "issue.interrupted",
+      lastMessage:
+        String(issue.last_message ?? "").trim() ||
+        (interruptReason === "drag_to_prep"
+          ? "Preparation으로 이동하면서 이슈를 중단했습니다."
+          : "수동으로 이슈를 중단했습니다.")
+    });
     recoverySteps.push("cleared_active_lock");
   }
 
@@ -6402,32 +6486,49 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
     if (blockingStopErrors.length > 0) {
-      console.warn("[OctOP bridge] thread unlock aborted due to stop attempt errors", {
-        ...buildLogContext({
-          root_thread_id: rootThreadId,
-          physical_thread_id: rootThread.active_physical_thread_id ?? null,
-          codex_thread_id: rootThread.codex_thread_id ?? null,
-          issue_id: trackedIssue.id,
-          event_type: "thread.unlock.stopBestEffort.failed"
-        }),
-        errors: blockingStopErrors
-      });
-
-      return {
-        accepted: false,
-        action: "stop_failed",
-        error: "마지막 이슈를 안전하게 중단하지 못했습니다.",
-        thread: threadStateById.get(rootThreadId) ?? rootThread,
-        issues: listThreadIssues(rootThreadId),
-        unlocked_issue_id: null,
-        queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
-        recovery_steps: recoverySteps,
-        interrupt_result: {
-          interrupted: interruptResult.interrupted,
-          stopped_realtime: interruptResult.stoppedRealtime,
-          errors: interruptResult.errors
+      const forcedRecovery = shouldForceUnlockAfterStopFailure(unlockReason, blockingStopErrors);
+      console.warn(
+        forcedRecovery
+          ? "[OctOP bridge] thread unlock continuing with forced recovery after stop attempt errors"
+          : "[OctOP bridge] thread unlock aborted due to stop attempt errors",
+        {
+          ...buildLogContext({
+            root_thread_id: rootThreadId,
+            physical_thread_id: rootThread.active_physical_thread_id ?? null,
+            codex_thread_id: rootThread.codex_thread_id ?? null,
+            issue_id: trackedIssue.id,
+            event_type: forcedRecovery
+              ? "thread.unlock.stopBestEffort.forcedRecovery"
+              : "thread.unlock.stopBestEffort.failed"
+          }),
+          errors: blockingStopErrors
         }
-      };
+      );
+
+      if (!forcedRecovery) {
+        return {
+          accepted: false,
+          action: "stop_failed",
+          error: "마지막 이슈를 안전하게 중단하지 못했습니다.",
+          thread: threadStateById.get(rootThreadId) ?? rootThread,
+          issues: listThreadIssues(rootThreadId),
+          unlocked_issue_id: null,
+          queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
+          recovery_steps: recoverySteps,
+          interrupt_result: {
+            interrupted: interruptResult.interrupted,
+            stopped_realtime: interruptResult.stoppedRealtime,
+            errors: interruptResult.errors
+          }
+        };
+      }
+
+      const invalidatedThread = invalidateCodexThreadBinding(rootThreadId);
+      recoverySteps.push("forced_release_after_stop_failed");
+
+      if (invalidatedThread) {
+        recoverySteps.push("invalidated_active_binding");
+      }
     }
 
     updateIssueCard(trackedIssue.id, {
@@ -6442,6 +6543,17 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
           : "수동으로 마지막 이슈 락을 해제했습니다.")
     });
     clearRunningIssueTracking(rootThreadId);
+    settlePhysicalThreadExecutionState(rootThreadId, {
+      issue: trackedIssue,
+      status: "idle",
+      progress: Math.max(0, Math.min(Number(trackedIssue.progress ?? 0), 99)),
+      lastEvent: "issue.unlocked",
+      lastMessage:
+        String(trackedIssue.last_message ?? "").trim() ||
+        (unlockReason === "manual_refresh"
+          ? "수동 새로고침으로 마지막 이슈 락을 해제했습니다."
+          : "수동으로 마지막 이슈 락을 해제했습니다.")
+    });
     recoverySteps.push("released_last_issue_lock");
   }
 
@@ -6464,7 +6576,9 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
   return {
     accepted: true,
     action:
-      recoverySteps.includes("released_last_issue_lock")
+      recoverySteps.includes("forced_release_after_stop_failed")
+        ? "forced_unlock"
+        : recoverySteps.includes("released_last_issue_lock")
         ? "unlocked"
         : recoverySteps.includes("resumed_issue_queue")
           ? "resumed"
@@ -6548,6 +6662,16 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
           : issue.last_message
     });
     clearRunningIssueTracking(threadId);
+    settlePhysicalThreadExecutionState(threadId, {
+      issue,
+      status: terminalStatus === "failed" ? "failed" : "idle",
+      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
+      lastEvent: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
+      lastMessage:
+        terminalStatus === "failed" && !String(issue.last_message ?? "").trim()
+          ? "Codex thread를 찾지 못해 stale 실행을 종료했습니다."
+          : issue.last_message
+    });
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
@@ -6579,6 +6703,13 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
       last_message: issue.last_message || "Codex 실행 상태를 재확인하는 중 실패로 판정되었습니다."
     });
     clearRunningIssueTracking(threadId);
+    settlePhysicalThreadExecutionState(threadId, {
+      issue,
+      status: "failed",
+      progress: 0,
+      lastEvent: "watchdog.failed",
+      lastMessage: issue.last_message || "Codex 실행 상태를 재확인하는 중 실패로 판정되었습니다."
+    });
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
@@ -6594,6 +6725,13 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
       last_event: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed"
     });
     clearRunningIssueTracking(threadId);
+    settlePhysicalThreadExecutionState(threadId, {
+      issue,
+      status: terminalStatus === "failed" ? "failed" : "idle",
+      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
+      lastEvent: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
+      lastMessage: issue.last_message
+    });
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
