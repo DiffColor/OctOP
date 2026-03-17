@@ -2745,7 +2745,12 @@ function SidebarThreadItem({
   onChangeRename,
   onSubmitRename,
   onCancelRename,
-  onContextMenu
+  onContextMenu,
+  issueDropActive,
+  canAcceptIssueDrop,
+  onIssueDragOver,
+  onIssueDragLeave,
+  onIssueDrop
 }) {
   const compactUpdatedAt = formatCompactRelativeTime(thread.updated_at);
   const updatedAtTitle = formatRelativeTime(thread.updated_at, language);
@@ -2753,8 +2758,35 @@ function SidebarThreadItem({
   return (
     <div
       onContextMenu={(event) => onContextMenu(event, thread)}
+      onDragOver={(event) => {
+        if (!canAcceptIssueDrop) {
+          return;
+        }
+
+        event.preventDefault();
+        onIssueDragOver?.(thread.id);
+      }}
+      onDragLeave={() => {
+        if (!canAcceptIssueDrop) {
+          return;
+        }
+
+        onIssueDragLeave?.(thread.id);
+      }}
+      onDrop={(event) => {
+        if (!canAcceptIssueDrop) {
+          return;
+        }
+
+        event.preventDefault();
+        onIssueDrop?.(thread.id);
+      }}
       className={`group ml-2.5 flex items-center rounded-md px-1.5 py-1.5 transition ${
-        active ? "bg-sky-500/10 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+        issueDropActive
+          ? "border border-emerald-400/40 bg-emerald-500/10 text-white"
+          : active
+            ? "bg-sky-500/10 text-white"
+            : "text-slate-400 hover:bg-slate-800 hover:text-white"
       }`}
     >
       {editing ? (
@@ -2894,6 +2926,7 @@ function PrepThreadCard({
   onToggle,
   onDelete,
   onDragStart,
+  onDragEnd,
   onDrop,
   onEdit,
   onSelectionGesture
@@ -2912,6 +2945,7 @@ function PrepThreadCard({
       data-testid={`issue-card-${thread.id}`}
       draggable
       onDragStart={() => onDragStart(thread.id)}
+      onDragEnd={() => onDragEnd?.()}
       onDoubleClick={() => onEdit(thread.id)}
       onDragOver={(event) => {
         event.preventDefault();
@@ -3293,6 +3327,12 @@ function MainPage({
   onCloseThreadMenu,
   onDragQueueIssue,
   onDragPrepIssues,
+  onDragMovableIssue,
+  draggingMovableIssueIds,
+  issueMoveTargetThreadId,
+  onIssueMoveTargetOver,
+  onIssueMoveTargetLeave,
+  onMoveIssuesToThread,
   onDragArchiveIssues,
   onInterruptIssueToPrep,
   onEditPrepIssue,
@@ -4111,6 +4151,11 @@ function MainPage({
                                 onSubmitRename={submitThreadRename}
                                 onCancelRename={cancelThreadRename}
                                 onContextMenu={onOpenThreadMenu}
+                                issueDropActive={issueMoveTargetThreadId === thread.id}
+                                canAcceptIssueDrop={draggingMovableIssueIds.length > 0 && thread.id !== selectedProjectThreadId}
+                                onIssueDragOver={onIssueMoveTargetOver}
+                                onIssueDragLeave={onIssueMoveTargetLeave}
+                                onIssueDrop={onMoveIssuesToThread}
                               />
                             ))}
                           </div>
@@ -4407,6 +4452,7 @@ function MainPage({
                               onToggle={handleTogglePrepSelection}
                               onDelete={onDeleteIssue}
                               onDragStart={onDragPrepIssues.start}
+                              onDragEnd={onDragMovableIssue.clear}
                               onDrop={(threadId) => onInterruptIssueToPrep(threadId)}
                               onEdit={onEditPrepIssue}
                               onSelectionGesture={handleIssueSelectionGesture}
@@ -4463,8 +4509,20 @@ function MainPage({
                               onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                               onSelectionGesture={handleIssueSelectionGesture}
                               onDelete={column.id === "review" ? onDeleteIssue : undefined}
-                              onDragStart={column.id === "review" ? onDragArchiveIssues.start : undefined}
-                              onDragEnd={column.id === "review" ? onDragArchiveIssues.clear : undefined}
+                              onDragStart={
+                                column.id === "review"
+                                  ? onDragArchiveIssues.start
+                                  : column.id === "running"
+                                    ? onDragMovableIssue.start
+                                    : undefined
+                              }
+                              onDragEnd={
+                                column.id === "review"
+                                  ? onDragArchiveIssues.clear
+                                  : column.id === "running"
+                                    ? onDragMovableIssue.clear
+                                    : undefined
+                              }
                             />
                           );
                         })
@@ -4737,6 +4795,8 @@ export default function App() {
   const [prepIssueOrderIds, setPrepIssueOrderIds] = useState([]);
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
+  const [draggingMovableIssueIds, setDraggingMovableIssueIds] = useState([]);
+  const [issueMoveTargetThreadId, setIssueMoveTargetThreadId] = useState("");
   const [draggingArchiveIssueIds, setDraggingArchiveIssueIds] = useState([]);
   const [archivedIssuesState, setArchivedIssuesState] = useState({});
   const [archivedIssues, setArchivedIssues] = useState([]);
@@ -5666,6 +5726,8 @@ export default function App() {
     setPrepIssueOrderIds([]);
     setDraggingIssueId("");
     setDraggingPrepIssueIds([]);
+    setDraggingMovableIssueIds([]);
+    setIssueMoveTargetThreadId("");
     setDraggingArchiveIssueIds([]);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
@@ -6139,10 +6201,16 @@ export default function App() {
     }
   };
 
+  const clearMovableIssueDrag = useCallback(() => {
+    setDraggingMovableIssueIds([]);
+    setIssueMoveTargetThreadId("");
+  }, []);
+
   const handleDragQueueIssue = {
     start: (threadId) => {
       setDraggingIssueId(threadId);
       setDraggingPrepIssueIds([]);
+      clearMovableIssueDrag();
     },
     over: () => {},
     drop: (targetId) => {
@@ -6214,6 +6282,7 @@ export default function App() {
 
     if (normalizedQueuedThreadIds.length === 0) {
       setDraggingPrepIssueIds([]);
+      clearMovableIssueDrag();
       return;
     }
 
@@ -6294,6 +6363,7 @@ export default function App() {
     } finally {
       setStartBusy(false);
       setDraggingPrepIssueIds([]);
+      clearMovableIssueDrag();
     }
   };
 
@@ -6314,6 +6384,9 @@ export default function App() {
       const draggedIds = currentPrepIds.includes(threadId) ? normalizeIds(currentPrepIds) : normalizeIds([threadId]);
       setDraggingIssueId("");
       setDraggingPrepIssueIds(draggedIds);
+      setDraggingArchiveIssueIds([]);
+      setDraggingMovableIssueIds(draggedIds);
+      setIssueMoveTargetThreadId("");
     },
     reorder: (targetId) => {
       const draggedIds = draggingPrepIssueIds.length > 0 ? draggingPrepIssueIds : [];
@@ -6377,6 +6450,26 @@ export default function App() {
     }
   };
 
+  const handleDragMovableIssue = {
+    start: (threadId) => {
+      const selectedIdsInRunning = selectedIssueIds.filter((selectedId) => {
+        const issue = issues.find((item) => item.id === selectedId);
+        return (
+          issue &&
+          issue.thread_id === selectedProjectThreadId &&
+          getStatusMeta(issue.status).column === "running"
+        );
+      });
+      const draggedIds = selectedIdsInRunning.includes(threadId) ? selectedIdsInRunning : [threadId];
+      setDraggingIssueId("");
+      setDraggingPrepIssueIds([]);
+      setDraggingArchiveIssueIds([]);
+      setDraggingMovableIssueIds(draggedIds);
+      setIssueMoveTargetThreadId("");
+    },
+    clear: clearMovableIssueDrag
+  };
+
   const handleDragArchiveIssues = {
     start: (threadId, columnId) => {
       const selectedIdsInColumn = selectedIssueIds.filter((selectedId) => {
@@ -6386,6 +6479,7 @@ export default function App() {
       const draggedIds = selectedIdsInColumn.includes(threadId) ? selectedIdsInColumn : [threadId];
       setDraggingIssueId("");
       setDraggingPrepIssueIds([]);
+      clearMovableIssueDrag();
       setSelectedIssueIds(draggedIds);
       setSelectedIssueId(threadId);
       setDraggingArchiveIssueIds(draggedIds);
@@ -6402,6 +6496,18 @@ export default function App() {
       setDraggingArchiveIssueIds([]);
     }
   };
+
+  const handleIssueMoveTargetOver = useCallback((threadId) => {
+    if (!threadId || draggingMovableIssueIds.length === 0) {
+      return;
+    }
+
+    setIssueMoveTargetThreadId(threadId);
+  }, [draggingMovableIssueIds]);
+
+  const handleIssueMoveTargetLeave = useCallback((threadId) => {
+    setIssueMoveTargetThreadId((current) => (current === threadId ? "" : current));
+  }, []);
 
   const handleCreateProject = async (payload) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -6820,6 +6926,106 @@ export default function App() {
     }
   };
 
+  const handleMoveIssuesToThread = useCallback(async (targetThreadId) => {
+    const issueIds = draggingMovableIssueIds.filter(Boolean);
+    clearMovableIssueDrag();
+
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId || !targetThreadId || issueIds.length === 0) {
+      return;
+    }
+
+    const movableIssueIds = issueIds.filter((issueId) => {
+      const issue = issues.find((item) => item.id === issueId);
+      const columnId = getStatusMeta(issue?.status).column;
+      return issue && issue.thread_id === selectedProjectThreadId && ["prep", "running"].includes(columnId);
+    });
+
+    if (movableIssueIds.length === 0) {
+      return;
+    }
+
+    try {
+      let latestSourceIssues = null;
+      let latestTargetIssues = null;
+      let latestSourceThread = null;
+      let latestTargetThread = null;
+
+      for (const issueId of movableIssueIds) {
+        const response = await apiRequest(
+          `/api/issues/${encodeURIComponent(issueId)}/move?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              target_thread_id: targetThreadId
+            })
+          }
+        );
+
+        if (Array.isArray(response?.source_issues)) {
+          latestSourceIssues = response.source_issues;
+        }
+
+        if (Array.isArray(response?.target_issues)) {
+          latestTargetIssues = response.target_issues;
+        }
+
+        if (response?.source_thread?.id) {
+          latestSourceThread = response.source_thread;
+        }
+
+        if (response?.target_thread?.id) {
+          latestTargetThread = response.target_thread;
+        }
+      }
+
+      if (Array.isArray(latestSourceIssues)) {
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, latestSourceIssues);
+      } else {
+        await loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
+      }
+
+      if (Array.isArray(latestTargetIssues)) {
+        applyIssueStateForScope(selectedBridgeId, targetThreadId, latestTargetIssues);
+      }
+
+      setProjectThreads((current) => {
+        let next = current;
+
+        if (latestSourceThread?.id) {
+          next = upsertProjectThread(next, latestSourceThread);
+        }
+
+        if (latestTargetThread?.id) {
+          next = upsertProjectThread(next, latestTargetThread);
+        }
+
+        return next;
+      });
+
+      setSelectedIssueIds((current) => current.filter((issueId) => !movableIssueIds.includes(issueId)));
+      setSelectedIssueId((current) => (movableIssueIds.includes(current) ? "" : current));
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.move.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    }
+  }, [
+    applyIssueStateForScope,
+    clearMovableIssueDrag,
+    draggingMovableIssueIds,
+    issues,
+    loadThreadIssues,
+    selectedBridgeId,
+    selectedProjectThreadId,
+    session
+  ]);
+
   const handleRefresh = async () => {
     if (!session?.loginId) {
       return;
@@ -6985,6 +7191,12 @@ export default function App() {
       }
       onDragQueueIssue={handleDragQueueIssue}
       onDragPrepIssues={handleDragPrepIssues}
+      onDragMovableIssue={handleDragMovableIssue}
+      draggingMovableIssueIds={draggingMovableIssueIds}
+      issueMoveTargetThreadId={issueMoveTargetThreadId}
+      onIssueMoveTargetOver={handleIssueMoveTargetOver}
+      onIssueMoveTargetLeave={handleIssueMoveTargetLeave}
+      onMoveIssuesToThread={(threadId) => void handleMoveIssuesToThread(threadId)}
       onDragArchiveIssues={handleDragArchiveIssues}
       onInterruptIssueToPrep={(threadId) => void handleInterruptIssueToPrep(threadId)}
       onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}

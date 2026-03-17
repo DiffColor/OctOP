@@ -4725,6 +4725,186 @@ async function interruptThreadIssue(userId, payload = {}) {
   };
 }
 
+async function moveThreadIssue(userId, payload = {}) {
+  const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
+  const targetThreadId = String(payload.target_thread_id ?? payload.targetThreadId ?? "").trim();
+
+  if (!issueId) {
+    throw new Error("이동할 이슈 id가 필요합니다.");
+  }
+
+  if (!targetThreadId) {
+    throw new Error("이동할 대상 thread id가 필요합니다.");
+  }
+
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue || issue.deleted_at) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  const sourceThreadId = String(issue.thread_id ?? "").trim();
+  const sourceThread = threadStateById.get(sourceThreadId);
+  const targetThread = threadStateById.get(targetThreadId);
+  const normalizedUserId = sanitizeUserId(userId);
+
+  if (!sourceThread || sourceThread.deleted_at || threadOwners.get(sourceThreadId) !== normalizedUserId) {
+    throw new Error("이동할 source thread를 찾을 수 없습니다.");
+  }
+
+  if (!targetThread || targetThread.deleted_at || threadOwners.get(targetThreadId) !== normalizedUserId) {
+    throw new Error("이동할 target thread를 찾을 수 없습니다.");
+  }
+
+  if (sourceThreadId === targetThreadId) {
+    return {
+      accepted: true,
+      action: "noop",
+      issue,
+      source_thread: sourceThread,
+      target_thread: targetThread,
+      source_issues: listThreadIssues(sourceThreadId),
+      target_issues: listThreadIssues(targetThreadId)
+    };
+  }
+
+  const issueStatus = String(issue.status ?? "").trim();
+
+  if (!["staged", "queued", "idle", "running", "awaiting_input"].includes(issueStatus)) {
+    throw new Error("Preparation 또는 In Progress 상태의 이슈만 이동할 수 있습니다.");
+  }
+
+  const sourceQueue = ensurePendingQueue(sourceThreadId);
+  const wasQueued = sourceQueue.includes(issueId);
+  const wasActive =
+    activeIssueByThreadId.get(sourceThreadId) === issueId || [...activeIssueByPhysicalThreadId.values()].includes(issueId);
+  const previousActiveIssueId = activeIssueByThreadId.get(sourceThreadId) ?? null;
+  const recoverySteps = [];
+  let interruptResult = null;
+
+  if (wasActive) {
+    interruptResult = await interruptThreadExecutionBestEffort(sourceThread);
+    const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
+
+    if (blockingStopErrors.length > 0) {
+      console.warn("[OctOP bridge] issue move aborted due to stop attempt errors", {
+        ...buildLogContext({
+          root_thread_id: sourceThreadId,
+          physical_thread_id: sourceThread.active_physical_thread_id ?? null,
+          codex_thread_id: sourceThread.codex_thread_id ?? null,
+          issue_id: issueId,
+          event_type: "thread.issue.move.stopBestEffort.failed"
+        }),
+        target_thread_id: targetThreadId,
+        errors: blockingStopErrors
+      });
+
+      return {
+        accepted: false,
+        action: "stop_failed",
+        error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
+        issue_id: issueId,
+        source_thread: sourceThread,
+        target_thread: targetThread,
+        source_issues: listThreadIssues(sourceThreadId),
+        target_issues: listThreadIssues(targetThreadId),
+        interrupt_result: {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      };
+    }
+
+    clearRunningIssueTracking(sourceThreadId);
+    settlePhysicalThreadExecutionState(sourceThreadId, {
+      issue,
+      status: "idle",
+      progress: Math.max(0, Math.min(Number(issue.progress ?? 0), 99)),
+      lastEvent: "issue.moved",
+      lastMessage: "다른 쓰레드로 이동하면서 이슈를 중단했습니다."
+    });
+    recoverySteps.push("cleared_active_lock");
+  }
+
+  if (wasQueued) {
+    pendingStartQueues.set(
+      sourceThreadId,
+      sourceQueue.filter((queuedIssueId) => queuedIssueId !== issueId)
+    );
+    recoverySteps.push("removed_from_source_queue");
+  }
+
+  setThreadIssueIds(
+    sourceThreadId,
+    getThreadIssueIds(sourceThreadId).filter((currentIssueId) => currentIssueId !== issueId)
+  );
+  setThreadIssueIds(
+    targetThreadId,
+    [...getThreadIssueIds(targetThreadId).filter((currentIssueId) => currentIssueId !== issueId), issueId]
+  );
+
+  const nextIssue = updateIssueCard(issueId, {
+    thread_id: targetThreadId,
+    root_thread_id: targetThreadId,
+    project_id: targetThread.project_id,
+    status: "staged",
+    progress: 0,
+    queue_position: null,
+    prep_position: getNextPrepPosition(targetThreadId),
+    created_physical_thread_id: null,
+    executed_physical_thread_id: null,
+    last_event: "issue.moved",
+    last_message: `다른 쓰레드로 이동했습니다. 대상: ${targetThread.name || targetThread.id}`,
+    updated_at: now()
+  });
+
+  refreshIssueQueuePositions(sourceThreadId);
+  refreshIssueQueuePositions(targetThreadId);
+  updateProjectThreadSnapshot(sourceThreadId);
+  updateProjectThreadSnapshot(targetThreadId);
+  persistThreadById(sourceThreadId);
+  persistThreadById(targetThreadId);
+
+  if (wasActive && previousActiveIssueId === issueId) {
+    const scheduleResult = await scheduleQueuedIssuesForUser(userId, {
+      preferredThreadId: sourceThreadId
+    });
+
+    if (scheduleResult.started) {
+      recoverySteps.push("resumed_source_queue");
+    }
+  } else if (!wasActive && ensurePendingQueue(sourceThreadId).length > 0) {
+    await processIssueQueue(userId, sourceThreadId);
+  }
+
+  await publishEvent(userId, "issue.moved", {
+    issue: nextIssue,
+    source_thread_id: sourceThreadId,
+    target_thread_id: targetThreadId
+  });
+  await publishThreadState(userId, sourceThreadId);
+  await publishThreadState(userId, targetThreadId);
+
+  return {
+    accepted: true,
+    action: "moved",
+    issue: nextIssue,
+    source_thread: threadStateById.get(sourceThreadId) ?? sourceThread,
+    target_thread: threadStateById.get(targetThreadId) ?? targetThread,
+    source_issues: listThreadIssues(sourceThreadId),
+    target_issues: listThreadIssues(targetThreadId),
+    recovery_steps: recoverySteps,
+    interrupt_result: interruptResult
+      ? {
+          interrupted: interruptResult.interrupted,
+          stopped_realtime: interruptResult.stoppedRealtime,
+          errors: interruptResult.errors
+        }
+      : null
+  };
+}
+
 async function updateThreadIssue(userId, payload = {}) {
   const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
   const prompt = String(payload.prompt ?? "").trim();
@@ -9031,6 +9211,27 @@ async function subscribeRequests() {
     }
   })();
 
+  const threadIssueMoveSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.move");
+
+  (async () => {
+    for await (const message of threadIssueMoveSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await moveThreadIssue(userId, body);
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const threadIssuesStartSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issues.start");
 
   (async () => {
@@ -9475,6 +9676,20 @@ createServer(async (request, response) => {
         reason: String(body.reason ?? "manual_interrupt").trim() || "manual_interrupt"
       });
       return sendJson(response, payload.accepted ? 202 : 400, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/issues\/[^/]+\/move$/.test(url.pathname)) {
+    try {
+      const issueId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await moveThreadIssue(userId, {
+        issue_id: issueId,
+        target_thread_id: String(body.target_thread_id ?? "").trim()
+      });
+      return sendJson(response, payload.accepted ? 200 : 400, payload);
     } catch (error) {
       return sendJson(response, 400, { accepted: false, error: error.message });
     }
