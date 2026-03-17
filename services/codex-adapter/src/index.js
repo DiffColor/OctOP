@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { connect, StringCodec } from "nats";
 import WebSocket from "ws";
 import {
@@ -85,6 +86,9 @@ const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
+const CURRENT_FILE_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(CURRENT_FILE_PATH), "../../..");
+const BRIDGE_REVISION = resolveBridgeRevision();
 
 dns.setDefaultResultOrder("ipv4first");
 
@@ -232,6 +236,7 @@ function appendDiagnosticLog(level, event, message, details = {}) {
     event,
     message: truncateDiagnosticText(message),
     bridge_id: BRIDGE_ID,
+    bridge_revision: BRIDGE_REVISION,
     device_name: DEVICE_NAME,
     details: serializeDiagnosticValue(details)
   };
@@ -246,6 +251,19 @@ function appendDiagnosticLog(level, event, message, details = {}) {
     process.stderr.write(
       `[OctOP bridge] diagnostic log write failed: ${error instanceof Error ? error.message : String(error)}\n`
     );
+  }
+}
+
+function resolveBridgeRevision() {
+  try {
+    const revision = execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+
+    return revision || "unknown";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -6992,6 +7010,7 @@ function collectBridgeStatus(userId) {
   return {
     bridge_mode: BRIDGE_MODE,
     bridge_id: BRIDGE_ID,
+    bridge_revision: BRIDGE_REVISION,
     device_name: DEVICE_NAME,
     app_server: {
       mode: APP_SERVER_MODE,
@@ -8926,5 +8945,11 @@ createServer(async (request, response) => {
 
   return sendJson(response, 404, { error: "Not found" });
 }).listen(PORT, HOST, () => {
+  appendDiagnosticLog("info", "bridge.startup", "bridge server started", {
+    host: HOST,
+    port: PORT,
+    bridge_revision: BRIDGE_REVISION,
+    repo_root: REPO_ROOT
+  });
   console.log(`OctOP bridge listening on http://${HOST}:${PORT}`);
 });
