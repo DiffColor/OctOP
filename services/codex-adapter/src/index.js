@@ -7778,6 +7778,8 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     physicalThread ?? thread ?? {}
   );
   const shouldContinuePolling = remoteStatus === "running";
+  const previousTurnId = physicalThread?.turn_id ?? thread.turn_id ?? null;
+  const previousStatus = issue.status ?? thread.status ?? "running";
   const preservedRunningLastEvent = [
     "item.agentMessage.delta",
     "turn.diff.updated",
@@ -7800,6 +7802,15 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
     String(issue.last_message ?? "").trim();
   const tokenUsageChanged = !areThreadTokenUsageStatesEqual(previousComparableState.physicalThread ?? {}, tokenUsageState);
+  const remoteTurnChanged =
+    Boolean(remoteTurn?.id) &&
+    String(remoteTurn.id).trim() !== String(previousTurnId ?? "").trim();
+  const remoteStatusChanged = remoteStatus !== previousStatus;
+  const remoteMessageChanged =
+    Boolean(recoveredMessage) &&
+    recoveredMessage !== String(issue.last_message ?? physicalThread?.last_message ?? "");
+  const hasObservableRunningProgress =
+    syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
 
   if (physicalThreadId && tokenUsageChanged) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
@@ -7826,21 +7837,23 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   }
 
   if (remoteStatus === "running") {
-    updateBackfilledPhysicalThread(threadId, physicalThreadId, {
-      ...tokenUsageState,
-      status: "running",
-      progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
-      last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
-      turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
-    });
-    updateIssueCard(activeIssueId, {
-      executed_physical_thread_id: physicalThreadId,
-      status: "running",
-      progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-      last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
-      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
-    });
+    if (hasObservableRunningProgress) {
+      updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+        ...tokenUsageState,
+        status: "running",
+        progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+        last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
+        last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
+        turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
+      });
+      updateIssueCard(activeIssueId, {
+        executed_physical_thread_id: physicalThreadId,
+        status: "running",
+        progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+        last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
+        ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+      });
+    }
   } else if (remoteStatus === "awaiting_input") {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
       ...tokenUsageState,
@@ -7900,11 +7913,15 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   }
 
   const currentThread = threadStateById.get(threadId) ?? thread;
-  const nextThread = {
-    ...currentThread,
-    continuity_status: "healthy",
-    updated_at: now()
-  };
+  const shouldRestoreHealthyContinuity =
+    remoteStatus !== "running" || hasObservableRunningProgress;
+  const nextThread = shouldRestoreHealthyContinuity
+    ? {
+        ...currentThread,
+        continuity_status: "healthy",
+        updated_at: now()
+      }
+    : currentThread;
   threadStateById.set(threadId, nextThread);
   updateProjectThreadSnapshot(threadId);
   persistThreadById(threadId);
@@ -8002,6 +8019,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       remote_status: remoteStatus,
       appended_delta_length: syncedAssistant.appendedDelta.length,
       token_usage_changed: tokenUsageChanged,
+      observable_progress: hasObservableRunningProgress,
       state_changed: shouldPublishState,
       should_continue_polling: shouldContinuePolling,
       issue_status: (issueCardsById.get(activeIssueId) ?? issue)?.status ?? null,
@@ -8011,7 +8029,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 
   if (shouldContinuePolling) {
     markRunningIssueActivity(threadId, {
-      lastActivityAt: meta.lastActivityAt,
+      lastActivityAt: hasObservableRunningProgress ? now() : meta.lastActivityAt,
       backfillRequestedAt: meta.backfillRequestedAt ?? now(),
       backfillTrigger: reason,
       backfillLastError: null,
