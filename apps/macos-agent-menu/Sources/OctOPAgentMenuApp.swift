@@ -144,10 +144,6 @@ final class AgentMenuModel: ObservableObject {
     appendLog("로그를 초기화했습니다.")
   }
 
-  func openRepository() {
-    NSWorkspace.shared.open(repoRootURL)
-  }
-
   private func appendStreamText(_ data: Data) {
     let text = String(decoding: data, as: UTF8.self)
     for rawLine in text.split(whereSeparator: \.isNewline) {
@@ -329,10 +325,6 @@ struct AgentMenuContent: View {
 
       Button("로그 보기") {
         openWindow(id: "logs")
-      }
-
-      Button("워크스페이스 열기") {
-        model.openRepository()
       }
 
       if let lastError = model.lastError, !lastError.isEmpty {
