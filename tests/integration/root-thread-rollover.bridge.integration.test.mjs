@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -2320,6 +2320,102 @@ test("프로젝트 생성은 빈 key 요청이어도 workspace별로 연속 성�
     assert.equal(firstPayload.project.key, "DASHBOARD_WORKSPACE");
     assert.equal(secondPayload.project.key, "MOBILE_WORKSPACE");
     assert.notEqual(firstPayload.project.id, secondPayload.project.id);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("stale workspace path로 저장된 프로젝트도 현재 workspace로 재바인딩되어 issue 실행이 가능해야 한다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-project-rebind-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-project-rebind-token",
+    userId: "integration-user",
+    bridgeId: `integration-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    const projectStateDir = join(homeDir, ".octop");
+    const projectStatePath = join(projectStateDir, `${bridge.bridgeId}-projects.json`);
+    const now = new Date().toISOString();
+    const persistedProjectId = "persisted-stale-project";
+
+    await mkdir(projectStateDir, { recursive: true });
+    await writeFile(projectStatePath, JSON.stringify({
+      [bridge.userId]: {
+        projects: [
+          {
+            id: persistedProjectId,
+            key: "OctOP",
+            name: "OctOP",
+            description: "stale workspace path",
+            workspace_path: join(homeDir, "nonexistent", "OctOP"),
+            source: "workspace",
+            created_at: now,
+            updated_at: now
+          }
+        ],
+        deleted_workspace_paths: [],
+        updated_at: now
+      }
+    }, null, 2));
+
+    await bridge.start();
+
+    const projectsPayload = await bridge.request("/api/projects");
+    const reboundProject = projectsPayload.projects.find((item) => item.id === persistedProjectId);
+    assert.ok(reboundProject, "저장된 프로젝트가 유지되어야 합니다.");
+    assert.equal(reboundProject.workspace_path, REPO_ROOT);
+
+    const createdThread = await bridge.request(`/api/projects/${persistedProjectId}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "WSL Rebound Thread"
+      })
+    });
+    const rootThreadId = createdThread.thread.id;
+    const createdIssue = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "WSL Rebound Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = createdIssue.issue.id;
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${issueId}`);
+      assert.equal(payload.issue?.status, "running");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "rebound project issue running"
+    });
+
+    const threadStartRequest = fakeAppServer.getRequests("thread/start")[0];
+    const turnStartRequest = fakeAppServer.getRequests("turn/start")[0];
+    assert.equal(threadStartRequest?.params?.cwd, REPO_ROOT);
+    assert.equal(turnStartRequest?.params?.cwd, REPO_ROOT);
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;
