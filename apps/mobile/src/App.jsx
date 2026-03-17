@@ -1002,7 +1002,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
 }
 
 function upsertLiveThread(currentThreads, event) {
-  const { threadId } = getLiveEventContext(event);
+  const { payload, threadId, projectId } = getLiveEventContext(event);
 
   if (!threadId) {
     return currentThreads;
@@ -1010,14 +1010,27 @@ function upsertLiveThread(currentThreads, event) {
 
   const currentThread = currentThreads.find((thread) => thread.id === threadId) ?? null;
   const patch = buildLiveThreadPatch(event, currentThread);
+  const fallbackThread =
+    normalizeThread(payload.thread, projectId || null) ??
+    normalizeThread({
+      id: threadId,
+      title: "새 채팅창",
+      project_id: projectId || currentThread?.project_id || null,
+      status: patch?.status ?? currentThread?.status ?? "queued",
+      progress: patch?.progress ?? currentThread?.progress ?? 0,
+      last_event: patch?.last_event ?? currentThread?.last_event ?? "thread.started",
+      last_message: patch?.last_message ?? currentThread?.last_message ?? "",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, projectId || null);
 
-  if (!patch || !currentThread) {
+  if (!patch && !currentThread && !fallbackThread) {
     return currentThreads;
   }
 
   return upsertThread(currentThreads, {
-    ...currentThread,
-    ...patch
+    ...(currentThread ?? fallbackThread ?? {}),
+    ...(patch ?? {})
   });
 }
 
@@ -1075,6 +1088,24 @@ function mergeThreads(currentThreads, nextThreads) {
   return [...nextById.values()].sort(
     (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
   );
+}
+
+function groupThreadsByProjectId(threads) {
+  const grouped = new Map();
+
+  for (const thread of threads) {
+    const normalized = normalizeThread(thread);
+    const projectId = String(normalized?.project_id ?? "").trim();
+
+    if (!normalized || !projectId) {
+      continue;
+    }
+
+    const current = grouped.get(projectId) ?? [];
+    grouped.set(projectId, [...current, normalized]);
+  }
+
+  return grouped;
 }
 
 function upsertThread(currentThreads, thread) {
@@ -4983,9 +5014,9 @@ export default function App() {
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
-  const threadLoadRequestIdRef = useRef(0);
+  const threadLoadRequestIdByIdRef = useRef(new Map());
   const todoChatLoadRequestIdRef = useRef(0);
-  const threadReloadTimerRef = useRef(null);
+  const threadReloadTimersByIdRef = useRef(new Map());
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5006,6 +5037,7 @@ export default function App() {
   );
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
+  const threadDetailsRef = useRef(threadDetails);
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
@@ -5063,6 +5095,10 @@ export default function App() {
   }, [selectedBridgeId]);
 
   useEffect(() => {
+    threadDetailsRef.current = threadDetails;
+  }, [threadDetails]);
+
+  useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
   }, [selectedProjectId]);
 
@@ -5072,10 +5108,10 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (threadReloadTimerRef.current) {
-        window.clearTimeout(threadReloadTimerRef.current);
-        threadReloadTimerRef.current = null;
+      for (const timerId of threadReloadTimersByIdRef.current.values()) {
+        window.clearTimeout(timerId);
       }
+      threadReloadTimersByIdRef.current.clear();
     };
   }, []);
 
@@ -5085,14 +5121,10 @@ export default function App() {
         return;
       }
 
-      const requestId = threadLoadRequestIdRef.current + 1;
-      threadLoadRequestIdRef.current = requestId;
+      const nextRequestId = (threadLoadRequestIdByIdRef.current.get(threadId) ?? 0) + 1;
+      threadLoadRequestIdByIdRef.current.set(threadId, nextRequestId);
 
       const releaseThreadLoadingState = () => {
-        if (selectedThreadIdRef.current === threadId) {
-          return;
-        }
-
         setThreadDetails((current) => {
           const currentEntry = current[threadId];
 
@@ -5161,7 +5193,7 @@ export default function App() {
           null;
         const normalizedThread = normalizeThread(latestThread);
 
-        if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+        if (threadLoadRequestIdByIdRef.current.get(threadId) !== nextRequestId) {
           releaseThreadLoadingState();
           return;
         }
@@ -5199,7 +5231,7 @@ export default function App() {
           }
         }
       } catch (error) {
-        if (threadLoadRequestIdRef.current !== requestId || selectedThreadIdRef.current !== threadId) {
+        if (threadLoadRequestIdByIdRef.current.get(threadId) !== nextRequestId) {
           releaseThreadLoadingState();
           return;
         }
@@ -5301,16 +5333,19 @@ export default function App() {
     }
 
     const { delay = 180, suppressLoadingIndicator = false, ...loadOptions } = options;
+    const currentTimer = threadReloadTimersByIdRef.current.get(threadId);
 
-    if (threadReloadTimerRef.current) {
-      window.clearTimeout(threadReloadTimerRef.current);
-      threadReloadTimerRef.current = null;
+    if (currentTimer) {
+      window.clearTimeout(currentTimer);
+      threadReloadTimersByIdRef.current.delete(threadId);
     }
 
-    threadReloadTimerRef.current = window.setTimeout(() => {
-      threadReloadTimerRef.current = null;
+    const timerId = window.setTimeout(() => {
+      threadReloadTimersByIdRef.current.delete(threadId);
       void loadThreadMessages(threadId, { ...loadOptions, suppressLoadingIndicator });
     }, delay);
+
+    threadReloadTimersByIdRef.current.set(threadId, timerId);
   }, [loadThreadMessages]);
   const scheduleThreadMessagesReloadRef = useRef(scheduleThreadMessagesReload);
   useEffect(() => {
@@ -5754,7 +5789,7 @@ export default function App() {
       try {
         markStreamActivity();
         const payload = JSON.parse(event.data);
-        const { threadId: eventThreadId, issueId: eventIssueId } = getLiveEventContext(payload);
+        const { threadId: eventThreadId, issueId: eventIssueId, projectId: eventProjectId } = getLiveEventContext(payload);
         const activeThreadId = selectedThreadIdRef.current;
         const activeProjectId = selectedProjectIdRef.current;
         const activeTodoChatId = selectedTodoChatIdRef.current;
@@ -5763,36 +5798,61 @@ export default function App() {
 
         if (eventThreadId) {
           setThreads((current) => upsertLiveThread(current, payload));
-        }
-
-        if (eventThreadId && eventThreadId === activeThreadId) {
           setThreadDetails((current) => {
-            const currentEntry = current[eventThreadId];
+            const currentEntry = current[eventThreadId] ?? null;
+            const currentIssues = currentEntry?.issues ?? [];
+            const livePatch = buildLiveThreadPatch(payload, currentEntry?.thread ?? null);
+            const baseThread =
+              currentEntry?.thread ??
+              normalizeThread(payload.payload?.thread, eventProjectId || null) ??
+              (livePatch || payload.type === "item.agentMessage.delta"
+                ? normalizeThread({
+                    id: eventThreadId,
+                    title: "새 채팅창",
+                    project_id: eventProjectId || null,
+                    status: livePatch?.status ?? "running",
+                    progress: livePatch?.progress ?? 0,
+                    last_event: livePatch?.last_event ?? payload.type ?? "thread.started",
+                    last_message: livePatch?.last_message ?? "",
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                  }, eventProjectId || null)
+                : null);
 
-            if (!currentEntry) {
+            if (!currentEntry && !baseThread) {
               return current;
             }
 
-            const nextThread = currentEntry.thread
+            const nextThread = baseThread
               ? {
-                  ...currentEntry.thread,
-                  ...(buildLiveThreadPatch(payload, currentEntry.thread) ?? {})
+                  ...baseThread,
+                  ...(livePatch ?? {})
                 }
-              : currentEntry.thread;
+              : currentEntry?.thread ?? null;
 
             return {
               ...current,
               [eventThreadId]: {
-                ...currentEntry,
+                ...(currentEntry ?? {}),
                 thread: nextThread,
-                messages: appendLiveAssistantMessage(currentEntry.messages ?? [], payload, {
+                messages: appendLiveAssistantMessage(currentEntry?.messages ?? [], payload, {
                   issue_id: eventIssueId,
-                  issue_title: currentEntry.issues?.find((issue) => issue.id === eventIssueId)?.title ?? "",
-                  issue_status: currentEntry.issues?.find((issue) => issue.id === eventIssueId)?.status ?? "running"
-                })
+                  issue_title: currentIssues.find((issue) => issue.id === eventIssueId)?.title ?? "",
+                  issue_status: currentIssues.find((issue) => issue.id === eventIssueId)?.status ?? "running"
+                }),
+                issues: currentIssues,
+                loading: currentEntry?.loading ?? false,
+                error: currentEntry?.error ?? ""
               }
             };
           });
+
+          if (eventProjectId) {
+            setThreadListsByProjectId((current) => ({
+              ...current,
+              [eventProjectId]: upsertLiveThread(current[eventProjectId] ?? [], payload)
+            }));
+          }
         }
 
         if (payload.type === "bridge.status.updated") {
@@ -5855,6 +5915,20 @@ export default function App() {
 
           if (projectId) {
             applyThreadCacheUpdate?.(projectId, nextThreads);
+          } else {
+            const groupedThreads = groupThreadsByProjectId(nextThreads);
+
+            if (groupedThreads.size > 0) {
+              setThreadListsByProjectId((current) => {
+                const nextCache = { ...current };
+
+                for (const [groupedProjectId, groupedProjectThreads] of groupedThreads.entries()) {
+                  nextCache[groupedProjectId] = mergeThreads([], groupedProjectThreads);
+                }
+
+                return nextCache;
+              });
+            }
           }
 
           if (!projectId || projectId === activeProjectId) {
@@ -5878,16 +5952,17 @@ export default function App() {
 
         if (payload.type === "bridge.threadIssues.updated") {
           const threadId = payload.payload?.thread_id ?? "";
+          const nextIssues = payload.payload?.issues ?? [];
 
-          if (threadId && threadId === activeThreadId) {
+          if (threadId) {
             setThreadDetails((current) => ({
               ...current,
               [threadId]: {
                 ...(current[threadId] ?? {}),
-                issues: payload.payload?.issues ?? current[threadId]?.issues ?? []
+                issues: nextIssues
               }
             }));
-            if (scheduleReload) {
+            if (scheduleReload && (threadId === activeThreadId || Boolean(threadDetailsRef.current?.[threadId]))) {
               scheduleReload(threadId, { force: true, suppressLoadingIndicator: true });
             }
           }
@@ -5937,8 +6012,12 @@ export default function App() {
   }, [markStreamActivity, selectedBridgeId, selectedBridgeKnown, session?.loginId]);
 
   useLayoutEffect(() => {
-    threadLoadRequestIdRef.current += 1;
+    threadLoadRequestIdByIdRef.current = new Map();
     todoChatLoadRequestIdRef.current += 1;
+    for (const timerId of threadReloadTimersByIdRef.current.values()) {
+      window.clearTimeout(timerId);
+    }
+    threadReloadTimersByIdRef.current.clear();
 
     setProjects([]);
     setThreads([]);
@@ -6026,10 +6105,6 @@ export default function App() {
     selectedThreadUpdatedAt,
     session?.loginId
   ]);
-
-  useEffect(() => {
-    threadLoadRequestIdRef.current += 1;
-  }, [selectedThreadId]);
 
   useEffect(() => {
     if (selectedScope.kind === "todo") {
