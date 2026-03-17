@@ -3916,7 +3916,7 @@ async function startIssueTurn(userId, threadId, issueId) {
   );
 }
 
-async function processIssueQueue(userId, threadId) {
+async function processIssueQueue(userId, threadId, options = {}) {
   if (activeIssueByThreadId.has(threadId)) {
     return;
   }
@@ -3931,7 +3931,40 @@ async function processIssueQueue(userId, threadId) {
   }
 
   refreshIssueQueuePositions(threadId);
-  await startIssueTurn(userId, threadId, nextIssueId);
+
+  try {
+    return await startIssueTurn(userId, threadId, nextIssueId);
+  } catch (error) {
+    const issue = issueCardsById.get(nextIssueId) ?? null;
+    const shouldRestoreQueue =
+      issue &&
+      !issue.deleted_at &&
+      issue.thread_id === threadId &&
+      ["queued", "staged"].includes(issue.status ?? "");
+
+    if (shouldRestoreQueue) {
+      const nextQueue = ensurePendingQueue(threadId);
+      if (!nextQueue.includes(nextIssueId)) {
+        nextQueue.unshift(nextIssueId);
+        refreshIssueQueuePositions(threadId);
+      }
+    }
+
+    if (options.allowRecovery !== false) {
+      await normalizeRootThread(userId, threadId, {
+        reason: "recover_current_execution"
+      });
+
+      if (activeIssueByThreadId.has(threadId)) {
+        return {
+          accepted: true,
+          recovered: true
+        };
+      }
+    }
+
+    throw error;
+  }
 }
 
 function refreshIssueQueuePositions(threadId) {
@@ -6854,7 +6887,7 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
     if (ensurePendingQueue(rootThreadId).length > 0) {
       const activeIssueBeforeResume = activeIssueByThreadId.get(rootThreadId) ?? null;
 
-      await processIssueQueue(normalizedUserId, rootThreadId);
+      await processIssueQueue(normalizedUserId, rootThreadId, { allowRecovery: false });
 
       const activeIssueAfterResume = activeIssueByThreadId.get(rootThreadId) ?? null;
 

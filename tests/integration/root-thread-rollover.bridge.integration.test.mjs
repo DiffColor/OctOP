@@ -321,7 +321,40 @@ class FakeAppServer {
       ? this.options.noResponseMethods
       : [];
 
+    const errorMethods = this.options.errorMethods && typeof this.options.errorMethods === "object"
+      ? this.options.errorMethods
+      : null;
+    const errorOnceMethods = this.options.errorOnceMethods && typeof this.options.errorOnceMethods === "object"
+      ? this.options.errorOnceMethods
+      : null;
+
     if (noResponseMethods.includes(message.method)) {
+      return;
+    }
+
+    if (errorOnceMethods && errorOnceMethods[message.method]) {
+      const errorMessage = String(errorOnceMethods[message.method]);
+      delete errorOnceMethods[message.method];
+      this.send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32000,
+          message: errorMessage
+        }
+      });
+      return;
+    }
+
+    if (errorMethods && errorMethods[message.method]) {
+      this.send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32000,
+          message: String(errorMethods[message.method])
+        }
+      });
       return;
     }
 
@@ -1454,6 +1487,210 @@ test("한 thread의 강제 unlock recovery가 다른 thread의 issue 시작을 �
       timeoutMs: 15000,
       intervalMs: 250,
       label: "secondary thread issue started despite primary thread error"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("thread not found stop error 후 manual_refresh recovery 뒤에도 같은 thread와 새 thread에서 issue 시작이 가능하다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-unlock-thread-not-found-int-"));
+  const fakeAppServer = new FakeAppServer({
+    errorMethods: {
+      "thread/realtime/stop": "thread not found: missing-codex-thread"
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-unlock-thread-not-found-token",
+    userId: "integration-user",
+    bridgeId: `thread-unlock-thread-not-found-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Thread Unlock Thread Not Found"
+    });
+
+    const unlockPayload = await bridge.request(`/api/threads/${rootThreadId}/unlock`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_refresh"
+      })
+    });
+
+    assert.equal(unlockPayload.accepted, true);
+    assert.equal(unlockPayload.action, "forced_unlock");
+    assert.equal(unlockPayload.unlocked_issue_id, activeIssueId);
+
+    await waitFor(async () => {
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const failedIssuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(failedIssuePayload.issue?.status, "failed");
+      assert.equal(continuityPayload.active_physical_thread?.codex_thread_id ?? null, null);
+      assert.equal(continuityPayload.active_physical_thread?.turn_id ?? null, null);
+      return { continuityPayload, failedIssuePayload };
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "forced unlock cleared missing-thread binding"
+    });
+
+    const nextIssuePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Restart On Same Thread",
+        prompt: PROMPT
+      })
+    });
+    const nextIssueId = nextIssuePayload.issue.id;
+
+    const sameThreadStartPayload = await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [nextIssueId]
+      })
+    });
+
+    assert.equal(sameThreadStartPayload.accepted, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${nextIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.ok(continuityPayload.active_physical_thread?.codex_thread_id);
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "same thread issue restarted after forced unlock recovery"
+    });
+
+    const secondThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Fresh Thread After Forced Unlock"
+      })
+    });
+    const secondThreadId = secondThreadPayload.thread.id;
+    const secondIssuePayload = await bridge.request(`/api/threads/${secondThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Fresh Thread Issue",
+        prompt: PROMPT
+      })
+    });
+    const secondIssueId = secondIssuePayload.issue.id;
+
+    const secondStartPayload = await bridge.request(`/api/threads/${secondThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [secondIssueId]
+      })
+    });
+
+    assert.equal(secondStartPayload.accepted, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${secondIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${secondThreadId}/continuity`);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.ok(continuityPayload.active_physical_thread?.codex_thread_id);
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "new thread issue started after forced unlock recovery"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("issue start 준비 단계 예외가 발생해도 queued issue를 복구하고 재개한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-queue-recovery-on-start-error-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-queue-recovery-on-start-error-token",
+    userId: "integration-user",
+    bridgeId: `queue-recovery-on-start-error-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const threadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Queue Recovery Thread"
+      })
+    });
+    const threadId = threadPayload.thread.id;
+
+    const issuePayload = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Queue Recovery Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = issuePayload.issue.id;
+
+    fakeAppServer.options.errorOnceMethods = {
+      "thread/start": "temporary thread/start failure"
+    };
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+
+    assert.equal(startPayload.accepted, true);
+
+    await waitFor(async () => {
+      const currentIssuePayload = await bridge.request(`/api/issues/${issueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${threadId}/continuity`);
+      assert.equal(currentIssuePayload.issue?.status, "running");
+      assert.equal(currentIssuePayload.issue?.queue_position ?? null, null);
+      assert.ok(continuityPayload.active_physical_thread?.codex_thread_id);
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      return { currentIssuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "queued issue resumed after thread/start preparation failure"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
