@@ -1901,7 +1901,7 @@ test("running backfill은 새 delta가 없어도 기존 item.agentMessage.delta 
       assert.equal(fakeAppServer.getRequests("thread/read").length >= 2, true);
       assert.equal(issuePayload.issue?.status, "running");
       assert.notEqual(issuePayload.issue?.last_event, "turn.started");
-      assert.equal(continuityPayload.active_physical_thread?.last_event, "item.agentMessage.delta");
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "watchdog.degraded");
       assert.notEqual(continuityPayload.root_thread?.last_event, "turn.started");
       assert.equal(continuityPayload.root_thread?.continuity_status, "degraded");
       return { issuePayload, continuityPayload };
@@ -1909,6 +1909,69 @@ test("running backfill은 새 delta가 없어도 기존 item.agentMessage.delta 
       timeoutMs: 15000,
       intervalMs: 250,
       label: "running backfill preserves item delta event"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("연속 무진전 running backfill은 websocket 강제 재연결로 승격된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-backfill-force-reconnect-int-"));
+  const fakeAppServer = new FakeAppServer();
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-backfill-force-reconnect-token",
+    userId: "integration-user",
+    bridgeId: `running-backfill-force-reconnect-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT: "2"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Running Backfill Force Reconnect"
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(fakeAppServer.connectionCount >= 2, true);
+      assert.equal(fakeAppServer.getRequests("thread/read").length >= 2, true);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(issuePayload.issue?.last_event, "watchdog.degraded");
+      assert.equal(continuityPayload.root_thread?.continuity_status, "degraded");
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "watchdog.degraded");
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "running backfill forces reconnect after repeated no-progress polls"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;

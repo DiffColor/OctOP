@@ -138,6 +138,9 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
 const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS ?? 5000
 );
+const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
+  process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
+);
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
 const INTERRUPTED_THREAD_STATUS_TYPES = new Set(["interrupted", "cancelled", "canceled"]);
@@ -1872,6 +1875,7 @@ function markRunningIssueActivity(threadId, patch = {}) {
     lastReconciledAt: null,
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
+    noProgressBackfillCount: 0,
     lastSeenCodexThreadId: null,
     backfillRequestedAt: null,
     backfillTrigger: null,
@@ -2049,6 +2053,7 @@ function ensureRunningIssueTrackingForThread(threadId) {
     lastActivityAt: recoverableIssue.updated_at ?? thread.updated_at ?? now(),
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
+    noProgressBackfillCount: 0,
     lastReconciledAt: null,
     lastSeenCodexThreadId: thread.codex_thread_id ?? null,
     backfillRequestedAt: null,
@@ -2095,12 +2100,25 @@ async function markRunningIssueContinuityDegraded(
 ) {
   const degradedMessage = String(message ?? "").trim() || String(issue?.last_message ?? "").trim();
   const currentMeta = runningIssueMetaByThreadId.get(threadId) ?? null;
+  const activePhysicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    thread?.active_physical_thread_id ??
+    null;
+  const currentPhysicalThread = activePhysicalThreadId
+    ? physicalThreadStateById.get(activePhysicalThreadId) ?? null
+    : null;
+  const shouldRefreshDegradedProjection =
+    thread.continuity_status !== "degraded" ||
+    thread.last_event !== "watchdog.degraded" ||
+    issue?.last_event !== "watchdog.degraded" ||
+    currentPhysicalThread?.last_event !== "watchdog.degraded";
   const nextThread = {
     ...thread,
     continuity_status: "degraded",
     last_event: "watchdog.degraded",
     last_message: degradedMessage,
-    updated_at: now()
+    updated_at: shouldRefreshDegradedProjection ? now() : thread.updated_at
   };
 
   threadStateById.set(threadId, nextThread);
@@ -2108,7 +2126,19 @@ async function markRunningIssueContinuityDegraded(
   if (issueId && issue && !isIssueTerminalStatus(issue.status)) {
     updateIssueCard(issueId, {
       last_event: "watchdog.degraded",
+      ...(shouldRefreshDegradedProjection ? { updated_at: now() } : {}),
       ...(degradedMessage ? { last_message: degradedMessage } : {})
+    });
+  }
+
+  if (activePhysicalThreadId && currentPhysicalThread && !currentPhysicalThread.deleted_at && !currentPhysicalThread.closed_at) {
+    updateBackfilledPhysicalThread(threadId, activePhysicalThreadId, {
+      status: currentPhysicalThread.status ?? "running",
+      progress: currentPhysicalThread.progress,
+      turn_id: currentPhysicalThread.turn_id ?? null,
+      last_event: "watchdog.degraded",
+      last_message: degradedMessage,
+      updated_at: shouldRefreshDegradedProjection ? now() : currentPhysicalThread.updated_at
     });
   }
 
@@ -2117,6 +2147,7 @@ async function markRunningIssueContinuityDegraded(
     backfillRequestedAt: currentMeta?.backfillRequestedAt ?? now(),
     backfillTrigger: details.backfillTrigger ?? "continuity_degraded",
     backfillLastError: null,
+    noProgressBackfillCount: currentMeta?.noProgressBackfillCount ?? 0,
     ...(details.remoteThreadId ? { lastSeenCodexThreadId: details.remoteThreadId } : {})
   });
   updateProjectThreadSnapshot(threadId);
@@ -4043,6 +4074,7 @@ async function startTurnOnPhysicalThread(
     lastActivityAt: now(),
     reconcileAttempts: 0,
     missingRemoteAttempts: 0,
+    noProgressBackfillCount: 0,
     lastReconciledAt: null,
     lastSeenCodexThreadId: codexThreadId,
     backfillRequestedAt: null,
@@ -6553,6 +6585,7 @@ class AppServerClient {
         markRunningIssueActivity(threadId, {
           reconcileAttempts: 0,
           missingRemoteAttempts: 0,
+          noProgressBackfillCount: 0,
           backfillRequestedAt: null,
           backfillTrigger: null,
           backfillLastError: null,
@@ -7594,7 +7627,8 @@ function clearRunningIssueBackfill(threadId) {
     backfillRequestedAt: null,
     backfillTrigger: null,
     backfillLastError: null,
-    backfillLastPolledAt: now()
+    backfillLastPolledAt: now(),
+    noProgressBackfillCount: 0
   });
 }
 
@@ -7811,6 +7845,10 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     recoveredMessage !== String(issue.last_message ?? physicalThread?.last_message ?? "");
   const hasObservableRunningProgress =
     syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
+  const nextNoProgressBackfillCount =
+    remoteStatus === "running" && !hasObservableRunningProgress
+      ? Number(meta.noProgressBackfillCount ?? 0) + 1
+      : 0;
 
   if (physicalThreadId && tokenUsageChanged) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
@@ -7853,6 +7891,47 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
         last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
         ...(recoveredMessage ? { last_message: recoveredMessage } : {})
       });
+    } else {
+      const currentRunningThread = threadStateById.get(threadId) ?? thread;
+      const currentRunningIssue = issueCardsById.get(activeIssueId) ?? issue;
+      const currentRunningPhysicalThread = physicalThreadId
+        ? physicalThreadStateById.get(physicalThreadId) ?? physicalThread
+        : physicalThread;
+      const shouldRefreshDegradedProjection =
+        currentRunningThread.continuity_status !== "degraded" ||
+        currentRunningThread.last_event !== "watchdog.degraded" ||
+        currentRunningIssue?.last_event !== "watchdog.degraded" ||
+        currentRunningPhysicalThread?.last_event !== "watchdog.degraded";
+
+      if (shouldRefreshDegradedProjection) {
+        const degradedUpdatedAt = now();
+        if (physicalThreadId) {
+          updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+            ...tokenUsageState,
+            status: "running",
+            progress: currentRunningPhysicalThread?.progress ?? physicalThread?.progress ?? 90,
+            last_event: "watchdog.degraded",
+            last_message: recoveredMessage || String(currentRunningPhysicalThread?.last_message ?? physicalThread?.last_message ?? ""),
+            turn_id: remoteTurn?.id ?? currentRunningPhysicalThread?.turn_id ?? physicalThread?.turn_id ?? null,
+            updated_at: degradedUpdatedAt
+          });
+        }
+        updateIssueCard(activeIssueId, {
+          executed_physical_thread_id: physicalThreadId,
+          status: "running",
+          progress: currentRunningIssue?.progress ?? issue.progress ?? 90,
+          last_event: "watchdog.degraded",
+          updated_at: degradedUpdatedAt,
+          ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+        });
+        threadStateById.set(threadId, {
+          ...currentRunningThread,
+          continuity_status: "degraded",
+          last_event: "watchdog.degraded",
+          ...(recoveredMessage ? { last_message: recoveredMessage } : {}),
+          updated_at: degradedUpdatedAt
+        });
+      }
     }
   } else if (remoteStatus === "awaiting_input") {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
@@ -8020,6 +8099,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       appended_delta_length: syncedAssistant.appendedDelta.length,
       token_usage_changed: tokenUsageChanged,
       observable_progress: hasObservableRunningProgress,
+      no_progress_backfill_count: nextNoProgressBackfillCount,
       state_changed: shouldPublishState,
       should_continue_polling: shouldContinuePolling,
       issue_status: (issueCardsById.get(activeIssueId) ?? issue)?.status ?? null,
@@ -8033,10 +8113,42 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       backfillRequestedAt: meta.backfillRequestedAt ?? now(),
       backfillTrigger: reason,
       backfillLastError: null,
-      backfillLastPolledAt: now()
+      backfillLastPolledAt: now(),
+      noProgressBackfillCount: nextNoProgressBackfillCount
     });
   } else {
     clearRunningIssueBackfill(threadId);
+  }
+
+  if (
+    remoteStatus === "running" &&
+    !hasObservableRunningProgress &&
+    nextNoProgressBackfillCount >= RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT
+  ) {
+    const activeSocket = appServer.socket;
+
+    if (activeSocket && appServer.connected && appServer.initialized) {
+      appServer.forceReconnect(activeSocket, "running_backfill_no_progress", {
+        thread_id: threadId,
+        issue_id: activeIssueId,
+        active_physical_thread_id: physicalThreadId,
+        codex_thread_id: remoteThread.id,
+        no_progress_backfill_count: nextNoProgressBackfillCount,
+        reason
+      });
+    }
+
+    const refreshedMeta = runningIssueMetaByThreadId.get(threadId);
+    if (refreshedMeta) {
+      markRunningIssueActivity(threadId, {
+        lastActivityAt: refreshedMeta.lastActivityAt,
+        backfillRequestedAt: refreshedMeta.backfillRequestedAt ?? now(),
+        backfillTrigger: `forced_reconnect:${reason}`,
+        backfillLastError: null,
+        backfillLastPolledAt: now(),
+        noProgressBackfillCount: 0
+      });
+    }
   }
 
   return {
