@@ -1763,7 +1763,8 @@ function markRunningIssueActivity(threadId, patch = {}) {
     startedAt: now(),
     lastActivityAt: now(),
     lastReconciledAt: null,
-    reconcileAttempts: 0
+    reconcileAttempts: 0,
+    lastSeenCodexThreadId: null
   };
   const next = {
     ...current,
@@ -3738,7 +3739,8 @@ async function startTurnOnPhysicalThread(
     startedAt: now(),
     lastActivityAt: now(),
     reconcileAttempts: 0,
-    lastReconciledAt: null
+    lastReconciledAt: null,
+    lastSeenCodexThreadId: codexThreadId
   });
   updateIssueCard(issueId, {
     executed_physical_thread_id: physicalThreadId,
@@ -5138,6 +5140,99 @@ function resolveLocalThreadId(threadReference) {
   return null;
 }
 
+function tryRebindOwnerlessCodexThread(codexThreadId) {
+  const candidate = String(codexThreadId ?? "").trim();
+
+  if (!candidate) {
+    return null;
+  }
+
+  const resolvedPhysicalThreadId = resolvePhysicalThreadIdByCodexThreadId(candidate);
+  const resolvedThreadId = resolveLocalThreadId(candidate);
+
+  if (resolvedPhysicalThreadId || resolvedThreadId) {
+    return {
+      threadId:
+        resolvedThreadId ??
+        physicalThreadStateById.get(resolvedPhysicalThreadId)?.root_thread_id ??
+        null,
+      physicalThreadId: resolvedPhysicalThreadId ?? null,
+      rebound: false
+    };
+  }
+
+  for (const [threadId, activeIssueId] of activeIssueByThreadId.entries()) {
+    const rootThread = threadStateById.get(threadId);
+    const activeIssue = issueCardsById.get(activeIssueId);
+    const activePhysicalThread = getActivePhysicalThread(threadId);
+    const meta = runningIssueMetaByThreadId.get(threadId);
+
+    if (
+      !rootThread ||
+      !activeIssue ||
+      !activePhysicalThread ||
+      rootThread.deleted_at ||
+      activeIssue.deleted_at ||
+      activePhysicalThread.deleted_at ||
+      activePhysicalThread.closed_at
+    ) {
+      continue;
+    }
+
+    if (rootThread.continuity_status !== "degraded") {
+      continue;
+    }
+
+    if (!["running", "awaiting_input"].includes(activeIssue.status ?? rootThread.status ?? "")) {
+      continue;
+    }
+
+    if (String(meta?.lastSeenCodexThreadId ?? "").trim() !== candidate) {
+      continue;
+    }
+
+    const nextPhysicalThread = {
+      ...activePhysicalThread,
+      codex_thread_id: candidate,
+      updated_at: now(),
+      last_event: "physicalThread.binding.rebound"
+    };
+
+    physicalThreadStateById.set(activePhysicalThread.id, nextPhysicalThread);
+    codexThreadToPhysicalThreadId.set(candidate, activePhysicalThread.id);
+    codexThreadToThreadId.set(candidate, threadId);
+
+    const nextRootThread = {
+      ...rootThread,
+      codex_thread_id: candidate,
+      active_physical_thread_id: activePhysicalThread.id,
+      updated_at: now(),
+      last_event: "thread.binding.rebound"
+    };
+
+    threadStateById.set(threadId, nextRootThread);
+    persistThreadById(threadId);
+
+    console.warn("[OctOP bridge] rebound ownerless codex thread binding", {
+      ...buildLogContext({
+        root_thread_id: threadId,
+        physical_thread_id: activePhysicalThread.id,
+        codex_thread_id: candidate,
+        event_type: "thread.binding.rebound"
+      }),
+      rebound_reason: "degraded_running_issue_last_seen_match"
+    });
+
+    return {
+      threadId,
+      physicalThreadId: activePhysicalThread.id,
+      rebound: true
+    };
+  }
+
+  return null;
+}
+
 function resolveOwnerFromParams(params = {}) {
   const codexThreadId = params.threadId ?? params.thread?.id ?? params.conversationId ?? params.thread_id;
 
@@ -5152,6 +5247,63 @@ function resolveOwnerFromParams(params = {}) {
   }
 
   return threadOwners.get(threadId) ?? null;
+}
+
+function isContinuityRecoverySignal(method, params = {}) {
+  switch (method) {
+    case "thread/started":
+    case "thread/tokenUsage/updated":
+    case "turn/started":
+    case "turn/plan/updated":
+    case "turn/diff/updated":
+    case "item/agentMessage/delta":
+    case "turn/completed":
+      return true;
+    case "thread/status/changed":
+      return String(params.status?.type ?? "").trim() !== "error";
+    default:
+      return false;
+  }
+}
+
+function recoverDegradedThreadContinuity(threadId, method, params = {}, activeIssueId = null) {
+  const rootThread = threadStateById.get(threadId);
+
+  if (!rootThread || rootThread.deleted_at || rootThread.continuity_status !== "degraded") {
+    return false;
+  }
+
+  if (!isContinuityRecoverySignal(method, params)) {
+    return false;
+  }
+
+  const activePhysicalThread = getActivePhysicalThread(threadId);
+  const issueId = activeIssueId ?? activeIssueByThreadId.get(threadId) ?? null;
+  const activeIssue = issueId ? issueCardsById.get(issueId) ?? null : null;
+  const recoveredMessage =
+    String(activePhysicalThread?.last_message ?? "").trim() ||
+    (activeIssue?.last_event !== "watchdog.degraded"
+      ? String(activeIssue?.last_message ?? "").trim()
+      : "");
+
+  threadStateById.set(threadId, {
+    ...rootThread,
+    continuity_status: "healthy",
+    last_event: method.replaceAll("/", "."),
+    last_message: recoveredMessage,
+    updated_at: now()
+  });
+
+  if (activeIssue && !isIssueTerminalStatus(activeIssue.status) && activeIssue.last_event === "watchdog.degraded") {
+    updateIssueCard(issueId, {
+      last_event: "watchdog.recovered",
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+  }
+
+  updateProjectThreadSnapshot(threadId);
+  persistThreadById(threadId);
+  return true;
 }
 
 function buildRemoteNotificationPayload(method, params = {}, context = {}) {
@@ -5609,14 +5761,23 @@ class AppServerClient {
     cleanupExpiredEventDropTombstones();
 
     const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
-    const physicalThreadId =
+    let physicalThreadId =
       params.physical_thread_id ??
       resolvePhysicalThreadIdByCodexThreadId(codexThreadId) ??
       null;
-    const threadId =
+    let threadId =
       params.root_thread_id ??
       (physicalThreadId ? physicalThreadStateById.get(physicalThreadId)?.root_thread_id ?? null : null) ??
       resolveLocalThreadId(codexThreadId);
+    const reboundBinding =
+      !threadId && !physicalThreadId && codexThreadId
+        ? tryRebindOwnerlessCodexThread(codexThreadId)
+        : null;
+
+    if (reboundBinding) {
+      physicalThreadId = reboundBinding.physicalThreadId ?? physicalThreadId;
+      threadId = reboundBinding.threadId ?? threadId;
+    }
     let owner = threadId ? threadOwners.get(threadId) ?? null : resolveOwnerFromParams(params);
     let eventPatch = null;
     let issuePatch = null;
@@ -5665,7 +5826,8 @@ class AppServerClient {
         method === "item/agentMessage/delta"
       ) {
         markRunningIssueActivity(threadId, {
-          reconcileAttempts: 0
+          reconcileAttempts: 0,
+          ...(codexThreadId ? { lastSeenCodexThreadId: codexThreadId } : {})
         });
       }
 
@@ -5721,6 +5883,8 @@ class AppServerClient {
           appendAssistantDeltaToIssue(activeIssueId, params.delta, physicalThreadId);
         }
       }
+
+      recoverDegradedThreadContinuity(threadId, method, params, activeIssueId);
     }
 
     if (!owner && (threadId || codexThreadId)) {
@@ -6681,34 +6845,28 @@ async function reconcileRunningIssue(userId, threadId, remoteThreadsByCodexId, o
       return;
     }
 
-    const terminalStatus = inferReconciledTerminalStatus(issue);
-    if (terminalStatus === "failed") {
-      invalidateCodexThreadBinding(threadId);
-    }
+    const degradedMessage =
+      String(issue.last_message ?? "").trim() ||
+      "Codex thread가 thread/list에 보이지 않아 추적을 일시 보류했습니다. normalize 또는 unlock으로 복구해 주세요.";
+    const nextThread = {
+      ...thread,
+      continuity_status: "degraded",
+      last_event: "watchdog.degraded",
+      last_message: degradedMessage,
+      updated_at: now()
+    };
+
+    threadStateById.set(threadId, nextThread);
     updateIssueCard(activeIssueId, {
-      status: terminalStatus,
-      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
-      last_event: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
-      last_message:
-        terminalStatus === "failed" && !String(issue.last_message ?? "").trim()
-          ? "Codex thread를 찾지 못해 stale 실행을 종료했습니다."
-          : issue.last_message
+      last_event: "watchdog.degraded",
+      last_message: degradedMessage
     });
-    clearRunningIssueTracking(threadId);
-    settlePhysicalThreadExecutionState(threadId, {
-      issue,
-      status: terminalStatus === "failed" ? "failed" : "idle",
-      progress: terminalStatus === "completed" ? 100 : Math.max(issue.progress ?? 0, 0),
-      lastEvent: terminalStatus === "completed" ? "watchdog.completed" : "watchdog.failed",
-      lastMessage:
-        terminalStatus === "failed" && !String(issue.last_message ?? "").trim()
-          ? "Codex thread를 찾지 못해 stale 실행을 종료했습니다."
-          : issue.last_message
+    markRunningIssueActivity(threadId, {
+      lastActivityAt: now()
     });
     updateProjectThreadSnapshot(threadId);
     persistThreadById(threadId);
     await publishThreadState(userId, threadId);
-    void processIssueQueue(userId, threadId);
     return;
   }
 
@@ -6939,14 +7097,12 @@ async function reconcileRunningIssues(remoteThreads = null) {
     return;
   }
 
-  const reconciliableThreadIds = remoteThreads
-    ? [...candidateThreadIds]
-    : [...candidateThreadIds].filter((threadId) => {
-        const meta = runningIssueMetaByThreadId.get(threadId);
-        const lastActivityAt = Date.parse(meta?.lastActivityAt ?? 0);
+  const reconciliableThreadIds = [...candidateThreadIds].filter((threadId) => {
+    const meta = runningIssueMetaByThreadId.get(threadId);
+    const lastActivityAt = Date.parse(meta?.lastActivityAt ?? 0);
 
-        return Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= RUNNING_ISSUE_STALE_MS;
-      });
+    return Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= RUNNING_ISSUE_STALE_MS;
+  });
 
   if (reconciliableThreadIds.length === 0) {
     return;
