@@ -5978,7 +5978,12 @@ function buildCompactRemoteNotificationPayload(method, params = {}) {
       };
     case "thread/status/changed":
       return {
-        status: params.status?.type ? { type: params.status.type } : undefined
+        status: params.status?.type
+          ? {
+              type: params.status.type,
+              ...(params.status?.message ? { message: truncateNotificationText(params.status.message, 4000) } : {})
+            }
+          : undefined
       };
     case "thread/tokenUsage/updated":
       return {
@@ -5990,7 +5995,14 @@ function buildCompactRemoteNotificationPayload(method, params = {}) {
         turn: params.turn
           ? {
               id: params.turn.id ?? null,
-              status: params.turn.status ?? null
+              status: params.turn.status ?? null,
+              ...(params.turn?.error?.message
+                ? {
+                    error: {
+                      message: truncateNotificationText(params.turn.error.message, 4000)
+                    }
+                  }
+                : {})
             }
           : undefined
       };
@@ -6017,6 +6029,15 @@ function compactTokenUsage(tokenUsage) {
     totalTokens: numericOrNull(tokenUsage.totalTokens ?? tokenUsage.total_tokens),
     contextWindowTokens: numericOrNull(
       tokenUsage.contextWindowTokens ?? tokenUsage.context_window_tokens
+    ),
+    contextUsedTokens: numericOrNull(
+      tokenUsage.contextUsedTokens ??
+        tokenUsage.context_used_tokens ??
+        tokenUsage.contextTokens ??
+        tokenUsage.context_tokens
+    ),
+    contextUsagePercent: numericOrNull(
+      tokenUsage.contextUsagePercent ?? tokenUsage.context_usage_percent
     )
   };
 }

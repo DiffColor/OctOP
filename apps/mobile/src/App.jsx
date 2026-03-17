@@ -938,6 +938,41 @@ function getLiveEventContext(event) {
   };
 }
 
+function buildLiveThreadTokenUsagePatch(payload = {}, currentThread = null) {
+  const tokenUsage = payload.tokenUsage ?? payload.token_usage ?? null;
+
+  if (!tokenUsage || typeof tokenUsage !== "object") {
+    return null;
+  }
+
+  const currentTokenUsage = currentThread?.token_usage ?? currentThread?.tokenUsage ?? {};
+  const nextContextWindowTokens = normalizeNullableInteger(
+    tokenUsage.contextWindowTokens ?? tokenUsage.context_window_tokens ?? currentThread?.context_window_tokens
+  );
+  const nextContextUsedTokens = normalizeNullableInteger(
+    tokenUsage.contextUsedTokens ??
+      tokenUsage.context_used_tokens ??
+      tokenUsage.contextTokens ??
+      tokenUsage.context_tokens ??
+      currentThread?.context_used_tokens
+  );
+  const nextContextUsagePercent = clampProgress(
+    tokenUsage.contextUsagePercent ??
+      tokenUsage.context_usage_percent ??
+      currentThread?.context_usage_percent
+  );
+
+  return {
+    token_usage: {
+      ...currentTokenUsage,
+      ...(nextContextWindowTokens !== null ? { model_context_window: nextContextWindowTokens } : {})
+    },
+    context_window_tokens: nextContextWindowTokens,
+    context_used_tokens: nextContextUsedTokens,
+    context_usage_percent: nextContextUsagePercent
+  };
+}
+
 function buildLiveThreadPatch(event, currentThread = null) {
   const { payload, threadId, projectId } = getLiveEventContext(event);
 
@@ -964,8 +999,9 @@ function buildLiveThreadPatch(event, currentThread = null) {
     case "thread.status.changed":
       {
         const nextStatus = normalizeLiveThreadStatus(payload.status?.type ?? "", currentStatus);
+        const nextMessage = String(payload.status?.message ?? "").trim();
 
-        if (nextStatus === currentStatus) {
+        if (nextStatus === currentStatus && !nextMessage) {
           return null;
         }
 
@@ -974,11 +1010,25 @@ function buildLiveThreadPatch(event, currentThread = null) {
           project_id: projectId || currentThread?.project_id || null,
           status: nextStatus,
           last_event: "thread.status.changed",
+          ...(nextMessage ? { last_message: nextMessage } : {}),
           updated_at: new Date().toISOString()
         };
       }
     case "thread.tokenUsage.updated":
-      return null;
+      {
+        const tokenUsagePatch = buildLiveThreadTokenUsagePatch(payload, currentThread);
+
+        if (!tokenUsagePatch) {
+          return null;
+        }
+
+        return {
+          id: threadId,
+          project_id: projectId || currentThread?.project_id || null,
+          ...tokenUsagePatch,
+          updated_at: new Date().toISOString()
+        };
+      }
     case "turn.started":
       return {
         id: threadId,
@@ -1045,6 +1095,11 @@ function buildLiveThreadPatch(event, currentThread = null) {
           status: nextStatus,
           progress: nextProgress,
           last_event: "turn.completed",
+          ...(payload.turn?.error?.message
+            ? {
+                last_message: String(payload.turn.error.message).trim()
+              }
+            : {}),
           updated_at: new Date().toISOString()
         };
       }
