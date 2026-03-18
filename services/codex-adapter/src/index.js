@@ -2039,6 +2039,53 @@ function settlePhysicalThreadExecutionState(
   return nextPhysicalThread;
 }
 
+function resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, options = {}) {
+  const currentRootThread = threadStateById.get(rootThreadId) ?? null;
+  const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId) ?? null;
+
+  if (!currentRootThread || !currentPhysicalThread || currentPhysicalThread.deleted_at || currentPhysicalThread.closed_at) {
+    return null;
+  }
+
+  const nextUpdatedAt = options.updated_at ?? now();
+  const nextProgress = Number.isFinite(Number(options.progress))
+    ? Number(options.progress)
+    : 10;
+  const nextLastEvent = String(options.last_event ?? "turn.starting").trim() || "turn.starting";
+  const nextStatus = String(options.status ?? "active").trim() || "active";
+  const nextLastMessage = String(options.last_message ?? "");
+  const nextTurnId = options.turn_id ?? null;
+  const nextPhysicalThread = {
+    ...currentPhysicalThread,
+    status: nextStatus,
+    progress: nextProgress,
+    turn_id: nextTurnId,
+    last_event: nextLastEvent,
+    last_message: nextLastMessage,
+    updated_at: nextUpdatedAt
+  };
+
+  physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
+  threadStateById.set(rootThreadId, {
+    ...currentRootThread,
+    status: "running",
+    progress: nextProgress,
+    last_event: nextLastEvent,
+    last_message: nextLastMessage,
+    turn_id: nextTurnId,
+    continuity_status: "healthy",
+    active_physical_thread_id: physicalThreadId,
+    latest_physical_sequence: nextPhysicalThread.sequence,
+    codex_thread_id: nextPhysicalThread.codex_thread_id ?? currentRootThread.codex_thread_id ?? null,
+    context_window_tokens: nextPhysicalThread.context_window_tokens,
+    context_used_tokens: nextPhysicalThread.context_used_tokens,
+    context_usage_percent: nextPhysicalThread.context_usage_percent,
+    updated_at: nextUpdatedAt
+  });
+
+  return nextPhysicalThread;
+}
+
 function findRecoverableRunningIssue(threadId) {
   return getThreadIssueIds(threadId)
     .map((issueId) => issueCardsById.get(issueId))
@@ -4081,6 +4128,13 @@ async function startTurnOnPhysicalThread(
 
   const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
   const cwd = resolveProjectWorkspace(userId, rootThread.project_id);
+  resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, {
+    status: "active",
+    progress: 10,
+    turn_id: null,
+    last_event: "turn.starting",
+    last_message: ""
+  });
   activeIssueByThreadId.set(rootThreadId, issueId);
   activeIssueByPhysicalThreadId.set(physicalThreadId, issueId);
   markRunningIssueActivity(rootThreadId, {
@@ -4100,7 +4154,8 @@ async function startTurnOnPhysicalThread(
     executed_physical_thread_id: physicalThreadId,
     status: "running",
     progress: Math.max(issue.progress ?? 0, 10),
-    last_event: "turn.starting"
+    last_event: "turn.starting",
+    last_message: ""
   });
   updateProjectThreadSnapshot(rootThreadId);
   await publishEvent(userId, turnStartingEvent, {
@@ -4148,8 +4203,10 @@ async function startTurnOnPhysicalThread(
         physicalThreadStateById.set(physicalThreadId, {
           ...currentPhysicalThread,
           status: "active",
+          progress: 20,
           turn_id: turn?.id ?? currentPhysicalThread.turn_id ?? null,
           last_event: "turn.started",
+          last_message: "",
           updated_at: now()
         });
       }
@@ -5158,6 +5215,41 @@ function isIssueTerminalStatus(status) {
 
 function isIssueProgressEvent(method) {
   return ["turn/started", "turn/plan/updated", "turn/diff/updated", "item/agentMessage/delta"].includes(method);
+}
+
+function extractNotificationTurnId(params = {}) {
+  const candidate = String(
+    params.turn?.id ??
+      params.turnId ??
+      params.turn_id ??
+      ""
+  ).trim();
+  return candidate || null;
+}
+
+function getTrackedExecutionTurnId(rootThreadId, physicalThreadId = null) {
+  const currentPhysicalThread = physicalThreadId
+    ? physicalThreadStateById.get(physicalThreadId) ?? null
+    : getActivePhysicalThread(rootThreadId);
+  const currentRootThread = threadStateById.get(rootThreadId) ?? null;
+  const candidate = String(
+    currentPhysicalThread?.turn_id ??
+      currentRootThread?.turn_id ??
+      ""
+  ).trim();
+  return candidate || null;
+}
+
+function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physicalThreadId = null) {
+  const statusType = params.status?.type ?? "";
+
+  if (!isTerminalThreadStatusType(statusType)) {
+    return true;
+  }
+
+  const eventTurnId = extractNotificationTurnId(params);
+  const trackedTurnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
+  return Boolean(eventTurnId && trackedTurnId && eventTurnId === trackedTurnId);
 }
 
 function normalizeThreadRecord(thread, fallback = {}) {
@@ -6557,6 +6649,11 @@ class AppServerClient {
       : threadId
         ? activeIssueByThreadId.get(threadId) ?? null
         : null;
+    const ignoreTerminalThreadStatusChanged =
+      method === "thread/status/changed" &&
+      threadId &&
+      isTerminalThreadStatusType(params.status?.type) &&
+      !shouldApplyTerminalThreadStatusChanged(params, threadId, physicalThreadId);
 
     if (
       (physicalThreadId && closedPhysicalThreadTombstonesById.has(physicalThreadId)) ||
@@ -6589,7 +6686,7 @@ class AppServerClient {
     if (threadId) {
       if (
         method === "thread/started" ||
-        method === "thread/status/changed" ||
+        (method === "thread/status/changed" && !ignoreTerminalThreadStatusChanged) ||
         method === "thread/tokenUsage/updated" ||
         method === "turn/started" ||
         method === "turn/plan/updated" ||
@@ -6608,7 +6705,21 @@ class AppServerClient {
         });
       }
 
-      eventPatch = buildThreadPatch(method, params, threadId, physicalThreadId);
+      if (ignoreTerminalThreadStatusChanged) {
+        appendDiagnosticLog("info", "thread.status.changed.ignored", "ignored terminal thread/status/changed due to turn mismatch", {
+          thread_id: threadId,
+          physical_thread_id: physicalThreadId,
+          issue_id: activeIssueId,
+          codex_thread_id: codexThreadId,
+          status_type: params.status?.type ?? null,
+          event_turn_id: extractNotificationTurnId(params),
+          tracked_turn_id: getTrackedExecutionTurnId(threadId, physicalThreadId)
+        });
+      }
+
+      eventPatch = buildThreadPatch(method, params, threadId, physicalThreadId, {
+        allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+      });
 
       if (eventPatch) {
         const targetPhysicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) : null;
@@ -6639,7 +6750,9 @@ class AppServerClient {
       }
 
       if (activeIssueId) {
-        issuePatch = buildIssuePatch(method, params, activeIssueId);
+        issuePatch = buildIssuePatch(method, params, activeIssueId, {
+          allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+        });
 
         if (issuePatch) {
           updateIssueCard(activeIssueId, {
@@ -6689,18 +6802,20 @@ class AppServerClient {
     }
 
     const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
-    await publishEvent(
-      owner,
-      method.replaceAll("/", "."),
-      buildRemoteNotificationPayload(method, params, {
-        codexThreadId,
-        threadId,
-        rootThreadId: threadId,
-        physicalThreadId,
-        projectId,
-        issueId: activeIssueId
-      })
-    );
+    if (!ignoreTerminalThreadStatusChanged) {
+      await publishEvent(
+        owner,
+        method.replaceAll("/", "."),
+        buildRemoteNotificationPayload(method, params, {
+          codexThreadId,
+          threadId,
+          rootThreadId: threadId,
+          physicalThreadId,
+          projectId,
+          issueId: activeIssueId
+        })
+      );
+    }
 
     if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params)) {
       await publishEvent(owner, "bridge.projectThreads.updated", {
@@ -6724,7 +6839,8 @@ class AppServerClient {
     if (
       method === "turn/completed" ||
       (method === "thread/status/changed" &&
-        isTerminalThreadStatusType(params.status?.type))
+        isTerminalThreadStatusType(params.status?.type) &&
+        !ignoreTerminalThreadStatusChanged)
     ) {
       if (threadId) {
         if (physicalThreadId) {
@@ -7150,7 +7266,7 @@ function extractAppServerErrorMessage(params = {}) {
   return primaryMessage || detailMessage || "";
 }
 
-function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId = null) {
+function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId = null, options = {}) {
   const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? null;
   const resolvedPhysicalThreadId =
     physicalThreadId ??
@@ -7172,6 +7288,10 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
       };
     case "thread/status/changed":
       {
+        if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
+          return null;
+        }
+
         const nextStatus = normalizeThreadStatus(params.status, currentStatus);
         const nextTurnId = isTerminalThreadStatusType(params.status?.type)
           ? null
@@ -7254,7 +7374,7 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
   }
 }
 
-function buildIssuePatch(method, params, issueId) {
+function buildIssuePatch(method, params, issueId, options = {}) {
   const current = issueCardsById.get(issueId);
 
   if (!current) {
@@ -7292,6 +7412,10 @@ function buildIssuePatch(method, params, issueId) {
         last_message: `${current.last_message ?? ""}${params.delta ?? ""}`
       };
     case "thread/status/changed":
+      if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
+        return null;
+      }
+
       if ((params.status?.type ?? "") === "waitingForInput") {
         return {
           status: "awaiting_input",

@@ -1374,8 +1374,15 @@ test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실�
       })
     });
 
+    const currentContinuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+    const sourceTurnId = currentContinuity.active_physical_thread?.turn_id;
+    assert.ok(sourceTurnId, "현재 active physical thread의 turn_id를 찾지 못했습니다.");
+
     fakeAppServer.notify("thread/status/changed", {
       threadId: sourceCodexThreadId,
+      turn: {
+        id: sourceTurnId
+      },
       status: {
         type: "error"
       }
@@ -2134,6 +2141,113 @@ test("thread/list 종료 상태만으로 running issue를 terminal 처리하지 
       intervalMs: 300,
       label: "authoritative completion event recovers degraded observation"
     });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("재사용 physical thread의 turn 불일치 terminal 이벤트는 새 issue를 종료시키지 않고 실행 흔적을 초기화한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-reused-physical-thread-terminal-guard-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-reused-physical-thread-terminal-guard-token",
+    userId: "integration-user",
+    bridgeId: `reused-physical-thread-terminal-guard-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      stagedIssueId,
+      sourcePhysicalThreadId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Reused Physical Thread Terminal Guard"
+    });
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: sourceCodexThreadId,
+      delta: "이전 실행 출력",
+      turnId: "turn-first-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "first issue completes on reused physical thread"
+    });
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [stagedIssueId]
+      })
+    });
+
+    let secondIssueTurnId = null;
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(issuePayload.issue?.progress, 20);
+      assert.equal(issuePayload.issue?.last_message, "");
+      assert.equal(issuePayload.issue?.executed_physical_thread_id, sourcePhysicalThreadId);
+      assert.equal(continuityPayload.active_physical_thread?.id, sourcePhysicalThreadId);
+      assert.equal(continuityPayload.active_physical_thread?.last_message, "");
+      assert.equal(continuityPayload.active_physical_thread?.progress, 20);
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "turn.started");
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      secondIssueTurnId = continuityPayload.active_physical_thread.turn_id;
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "second issue resets reused physical thread execution trace"
+    });
+
+    fakeAppServer.notify("thread/status/changed", {
+      threadId: sourceCodexThreadId,
+      turn: {
+        id: "turn-mismatched-terminal"
+      },
+      status: {
+        type: "idle"
+      }
+    });
+
+    await sleep(750);
+
+    const secondIssuePayload = await bridge.request(`/api/issues/${stagedIssueId}`);
+    const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+    assert.equal(secondIssuePayload.issue?.status, "running");
+    assert.notEqual(secondIssuePayload.issue?.last_event, "thread.status.changed");
+    assert.equal(continuityPayload.active_physical_thread?.status, "active");
+    assert.equal(continuityPayload.active_physical_thread?.turn_id, secondIssueTurnId);
+    assert.equal(continuityPayload.active_physical_thread?.last_message, "");
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;
