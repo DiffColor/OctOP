@@ -4931,6 +4931,7 @@ export default function App() {
   const loadedProjectThreadsRef = useRef({});
   const pendingProjectThreadLoadsRef = useRef(new Map());
   const selectedBridgeIdRef = useRef("");
+  const selectedProjectIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const selectedProjectThreadIdRef = useRef("");
   const projectThreadsRef = useRef([]);
@@ -5252,6 +5253,10 @@ export default function App() {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
 
   useEffect(() => {
     selectedProjectThreadIdRef.current = selectedProjectThreadId;
@@ -5846,6 +5851,7 @@ export default function App() {
           const nextThreads = mergeProjectThreads([], payload.payload?.threads ?? []);
           const projectId = payload.payload?.project_id ?? nextThreads[0]?.project_id ?? eventProjectId ?? "";
           const scope = payload.payload?.scope ?? "project";
+          const activeProjectId = selectedProjectIdRef.current;
           if (scope === "all") {
             for (const thread of nextThreads) {
               if (thread.project_id) {
@@ -5864,7 +5870,7 @@ export default function App() {
           setSelectedProjectThreadId((current) => {
             const candidateThreads =
               scope === "all"
-                ? nextThreads.filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId)
+                ? nextThreads.filter((thread) => !activeProjectId || thread.project_id === activeProjectId)
                 : nextThreads;
 
             if (current && candidateThreads.some((thread) => thread.id === current)) {
@@ -5956,7 +5962,7 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, eventStreamReconnectToken, markStreamActivity, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
+  }, [copy.alerts.sseReconnect, eventStreamReconnectToken, markStreamActivity, session, selectedBridgeId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
