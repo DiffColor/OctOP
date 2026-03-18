@@ -185,7 +185,6 @@ const THREAD_CONTENT_FILTERS = [
 ];
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
-const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
@@ -3984,11 +3983,9 @@ function ThreadDetail({
   const viewportHeight = useVisualViewportHeight();
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
-  const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const autoScrollingRef = useRef(false);
-  const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [refreshPending, setRefreshPending] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
   const [deletingIssueId, setDeletingIssueId] = useState("");
@@ -4218,8 +4215,6 @@ function ThreadDetail({
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
     autoScrollingRef.current = false;
-    previousScrollTopRef.current = 0;
-    setShowHeaderMenus(true);
     recomputePinnedState();
   }, [recomputePinnedState, thread?.id, viewMode]);
 
@@ -4245,24 +4240,7 @@ function ThreadDetail({
         const node = scrollRef.current;
 
         if (node && !autoScrollingRef.current) {
-          const nextScrollTop = Math.max(0, node.scrollTop);
-          const shouldPin = recomputePinnedState();
-
-          if (shouldPin) {
-            setShowHeaderMenus(true);
-          } else {
-            const delta = nextScrollTop - previousScrollTopRef.current;
-
-            if (nextScrollTop <= 8) {
-              setShowHeaderMenus(true);
-            } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
-              setShowHeaderMenus(false);
-            } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
-              setShowHeaderMenus(true);
-            }
-          }
-
-          previousScrollTopRef.current = nextScrollTop;
+          recomputePinnedState();
         }
       });
     };
@@ -4301,10 +4279,6 @@ function ThreadDetail({
       }
 
       window.requestAnimationFrame(() => {
-        if (containerNode) {
-          previousScrollTopRef.current = Math.max(0, containerNode.scrollTop);
-        }
-        setShowHeaderMenus(true);
         autoScrollingRef.current = false;
         recomputePinnedState();
       });
@@ -4501,11 +4475,7 @@ function ThreadDetail({
           </button>
         </div>
 
-        <div
-          className={`overflow-hidden transition-all duration-200 ease-out ${
-            showHeaderMenus ? "mt-3 max-h-32 opacity-100" : "max-h-0 opacity-0"
-          }`}
-        >
+        <div className="mt-3">
           <div className="flex gap-2 overflow-x-auto pb-1">
             {THREAD_CONTENT_FILTERS.map((filter) => (
               <button
