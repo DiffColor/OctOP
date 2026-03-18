@@ -27,6 +27,41 @@ const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 const ACTIVE_ISSUE_POLL_RESUME_GRACE_MS = 8_000;
 const DASHBOARD_RESUME_ENABLE_DELAY_MS = 5_000;
 const DASHBOARD_RESUME_COALESCE_MS = 400;
+const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
+const bridgeRequestFailureListeners = new Set();
+
+function subscribeBridgeRequestFailures(listener) {
+  if (typeof listener !== "function") {
+    return () => {};
+  }
+
+  bridgeRequestFailureListeners.add(listener);
+  return () => {
+    bridgeRequestFailureListeners.delete(listener);
+  };
+}
+
+function notifyBridgeRequestFailure(event) {
+  for (const listener of bridgeRequestFailureListeners) {
+    try {
+      listener(event);
+    } catch {
+      // ignore listener failures
+    }
+  }
+}
+
+function extractBridgeIdFromPath(path) {
+  const queryIndex = String(path ?? "").indexOf("?");
+
+  if (queryIndex < 0) {
+    return "";
+  }
+
+  const query = String(path).slice(queryIndex + 1);
+  const params = new URLSearchParams(query);
+  return String(params.get("bridge_id") ?? "").trim();
+}
 
 function formatBridgeSilentDuration(ms, language = "en") {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -1356,6 +1391,7 @@ function parseResponseBody(response, text) {
 async function apiRequest(path, options = {}) {
   const method = String(options.method ?? "GET").toUpperCase();
   const requestUrl = `${API_BASE_URL}${path}`;
+  const bridgeId = extractBridgeIdFromPath(path);
   let response;
 
   try {
@@ -1387,6 +1423,15 @@ async function apiRequest(path, options = {}) {
     }
 
     lines.push(`원본 오류: ${rawMessage}`);
+    if (bridgeId) {
+      notifyBridgeRequestFailure({
+        path,
+        method,
+        bridgeId,
+        status: null,
+        message: rawMessage
+      });
+    }
     throw new Error(lines.join("\n"));
   }
 
@@ -1399,6 +1444,15 @@ async function apiRequest(path, options = {}) {
       payload?.message ??
       payload?.title ??
       getCopy("en").alerts.requestFailed(response.status);
+    if (bridgeId && BRIDGE_TRANSPORT_ERROR_STATUS_CODES.has(response.status)) {
+      notifyBridgeRequestFailure({
+        path,
+        method,
+        bridgeId,
+        status: response.status,
+        message
+      });
+    }
     throw new Error(message);
   }
 
@@ -5813,6 +5867,24 @@ export default function App() {
     },
     [selectedBridgeId, session]
   );
+  useEffect(() => {
+    return subscribeBridgeRequestFailures((event) => {
+      if (!event?.bridgeId || event.bridgeId !== selectedBridgeIdRef.current) {
+        return;
+      }
+
+      setStatus((current) => ({
+        ...current,
+        app_server: {
+          ...(current?.app_server ?? {}),
+          connected: false,
+          initialized: false,
+          last_error: event.message ?? "bridge transport unavailable"
+        },
+        updated_at: new Date().toISOString()
+      }));
+    });
+  }, []);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -6060,6 +6132,15 @@ export default function App() {
     eventSource.addEventListener("error", () => {
       appendEvent("sse.error", copy.alerts.sseReconnect);
       setStreamActivityAt(null);
+      setStatus((current) => ({
+        ...current,
+        app_server: {
+          ...(current?.app_server ?? {}),
+          connected: false,
+          initialized: false
+        },
+        updated_at: new Date().toISOString()
+      }));
       void refreshBridgeStatus(session, selectedBridgeId);
     });
 
