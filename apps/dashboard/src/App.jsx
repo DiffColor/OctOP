@@ -24,6 +24,7 @@ const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 const ACTIVE_ISSUE_POLL_RESUME_GRACE_MS = 8_000;
 const DASHBOARD_RESUME_ENABLE_DELAY_MS = 5_000;
+const DASHBOARD_RESUME_COALESCE_MS = 400;
 
 function formatBridgeSilentDuration(ms, language = "en") {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -4944,6 +4945,8 @@ export default function App() {
   const activeIssuePollPausedUntilRef = useRef(0);
   const eventStreamConnectedAtRef = useRef(0);
   const foregroundResumeEnabledAtRef = useRef(0);
+  const scheduledResumeTimerRef = useRef(null);
+  const scheduledResumeReasonsRef = useRef(new Set());
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -5669,6 +5672,25 @@ export default function App() {
     syncActiveIssueDetail
   ]);
 
+  const scheduleDashboardForegroundResume = useCallback((reason = "foreground_resume") => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    scheduledResumeReasonsRef.current.add(reason);
+
+    if (scheduledResumeTimerRef.current) {
+      return;
+    }
+
+    scheduledResumeTimerRef.current = window.setTimeout(() => {
+      const reasonLabel = [...scheduledResumeReasonsRef.current].join(",");
+      scheduledResumeReasonsRef.current.clear();
+      scheduledResumeTimerRef.current = null;
+      void handleDashboardForegroundResume(reasonLabel || reason);
+    }, DASHBOARD_RESUME_COALESCE_MS);
+  }, [handleDashboardForegroundResume]);
+
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
       setWorkspaceRoots([]);
@@ -5971,20 +5993,20 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void handleDashboardForegroundResume("dashboard_resume:visibility");
+        scheduleDashboardForegroundResume("dashboard_resume:visibility");
       }
     };
 
     const handleWindowFocus = () => {
-      void handleDashboardForegroundResume("dashboard_resume:focus");
+      scheduleDashboardForegroundResume("dashboard_resume:focus");
     };
 
     const handlePageShow = () => {
-      void handleDashboardForegroundResume("dashboard_resume:pageshow");
+      scheduleDashboardForegroundResume("dashboard_resume:pageshow");
     };
 
     const handleOnline = () => {
-      void handleDashboardForegroundResume("dashboard_resume:online");
+      scheduleDashboardForegroundResume("dashboard_resume:online");
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -5993,12 +6015,17 @@ export default function App() {
     window.addEventListener("online", handleOnline);
 
     return () => {
+      if (scheduledResumeTimerRef.current) {
+        window.clearTimeout(scheduledResumeTimerRef.current);
+        scheduledResumeTimerRef.current = null;
+      }
+      scheduledResumeReasonsRef.current.clear();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleWindowFocus);
       window.removeEventListener("pageshow", handlePageShow);
       window.removeEventListener("online", handleOnline);
     };
-  }, [handleDashboardForegroundResume]);
+  }, [scheduleDashboardForegroundResume]);
 
   useEffect(() => {
     if (!session?.loginId) {
