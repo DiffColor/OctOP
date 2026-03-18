@@ -6164,7 +6164,15 @@ export default function App() {
         if (
           eventThreadId &&
           eventThreadId === activeThreadId &&
-          (payload.type === "turn.completed" || payload.type === "thread.status.changed")
+          (
+            payload.type === "turn.completed" ||
+            (
+              payload.type === "thread.status.changed" &&
+              ["waitingForInput", "idle", "error"].includes(
+                String(payload.payload?.status?.type ?? "").trim()
+              )
+            )
+          )
         ) {
           if (scheduleReload) {
             scheduleReload(eventThreadId, {
