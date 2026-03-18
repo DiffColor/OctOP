@@ -9773,7 +9773,15 @@ async function respond(message, payload) {
 
 async function subscribeRequests() {
   const patterns = [
-    { subject: "octop.user.*.bridge.*.status.get", handler: (userId) => bridgeStatus(userId) },
+    {
+      subject: "octop.user.*.bridge.*.status.get",
+      handler: (userId, body) =>
+        bridgeStatus(userId, {
+          ensureReady:
+            body?.ensure_ready === true ||
+            body?.ensureReady === true
+        })
+    },
     {
       subject: "octop.user.*.bridge.*.projects.get",
       handler: (userId) => ({ projects: listProjectState(userId) })
