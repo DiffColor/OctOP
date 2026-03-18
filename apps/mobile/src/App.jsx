@@ -1578,7 +1578,7 @@ function buildRunTimeline(thread) {
   return entries.filter((entry) => entry.timestamp);
 }
 
-function BottomSheet({ open, title, description, onClose, children, variant = "bottom" }) {
+function BottomSheet({ open, title, description, onClose, children, variant = "bottom", headerActions = null }) {
   if (!open) {
     return null;
   }
@@ -1607,15 +1607,18 @@ function BottomSheet({ open, title, description, onClose, children, variant = "b
               <h2 className="text-lg font-semibold text-white">{title}</h2>
               {description ? <p className="mt-1 text-sm leading-6 text-slate-400">{description}</p> : null}
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {headerActions}
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
         <div className="telegram-scroll max-h-[80dvh] overflow-y-auto">{children}</div>
@@ -3142,8 +3145,36 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDele
   }
 
   return (
-    <BottomSheet open={open} title="메시지 작업" onClose={busy ? () => {} : onClose}>
-      <div className="space-y-3 px-5 py-5">
+    <BottomSheet
+      open={open}
+      title="메시지 작업"
+      onClose={busy ? () => {} : onClose}
+      headerActions={
+        <>
+          {onCopy ? (
+            <button
+              type="button"
+              onClick={onCopy}
+              disabled={busy}
+              className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              텍스트 복사
+            </button>
+          ) : null}
+          {onDelete ? (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={busy}
+              className="shrink-0 rounded-full bg-rose-500/90 px-3 py-2 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              이슈 제거
+            </button>
+          ) : null}
+        </>
+      }
+    >
+      <div className="px-5 py-5">
         <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3">
           <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400">
             <span>{message.title ?? "메시지"}</span>
@@ -3153,26 +3184,6 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDele
             {message.content || "내용이 없습니다."}
           </p>
         </div>
-        {onCopy ? (
-          <button
-            type="button"
-            onClick={onCopy}
-            disabled={busy}
-            className="w-full rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            텍스트 복사
-          </button>
-        ) : null}
-        {onDelete ? (
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={busy}
-            className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            이슈 제거
-          </button>
-        ) : null}
       </div>
     </BottomSheet>
   );
