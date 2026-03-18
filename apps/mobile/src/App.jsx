@@ -2810,6 +2810,51 @@ function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
   );
 }
 
+function DeleteConfirmDialog({
+  open,
+  busy,
+  title,
+  description,
+  confirmLabel = "삭제",
+  cancelLabel = "취소",
+  onClose,
+  onConfirm
+}) {
+  return (
+    <BottomSheet
+      open={open}
+      title={title}
+      description={description}
+      onClose={busy ? () => {} : onClose}
+      variant="center"
+    >
+      <div className="space-y-5 px-5 py-5">
+        <div className="rounded-3xl border border-rose-400/15 bg-rose-500/10 px-4 py-4 text-sm leading-7 text-slate-200">
+          삭제한 항목은 목록에서 즉시 사라집니다.
+        </div>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="flex-1 rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {busy ? "삭제 중..." : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </BottomSheet>
+  );
+}
+
 function TodoChatRenameDialog({ open, busy, chat, onClose, onSubmit }) {
   const [title, setTitle] = useState("");
 
@@ -4863,6 +4908,11 @@ function MainPage({
       setThreadSelectionMode(false);
     }
   }, [filteredThreads.length, threadSelectionMode]);
+  useEffect(() => {
+    if (threadSelectionMode && selectedThreadIds.length === 0) {
+      setThreadSelectionMode(false);
+    }
+  }, [selectedThreadIds.length, threadSelectionMode]);
   const requestProjectDeletion = useCallback(
     (project) => {
       if (!project?.id || !onDeleteProject) {
@@ -4966,12 +5016,23 @@ function MainPage({
       return;
     }
 
-    const accepted = await onDeleteThreads(selectedThreadIds);
+    const result = await onDeleteThreads(selectedThreadIds);
+    const deletedThreadIds = Array.isArray(result?.deletedThreadIds)
+      ? result.deletedThreadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean)
+      : [];
 
-    if (accepted !== false) {
+    if (deletedThreadIds.length > 0) {
+      setSelectedThreadIds((current) =>
+        current.filter((threadId) => !deletedThreadIds.includes(String(threadId ?? "").trim()))
+      );
+    }
+
+    if (result?.accepted !== false && result !== false) {
       setThreadSelectionMode(false);
       setSelectedThreadIds([]);
+      return;
     }
+
   }, [onDeleteThreads, selectedThreadIds]);
 
   if (activeView === "todo" && selectedTodoChatId) {
@@ -5283,6 +5344,15 @@ function MainPage({
         onClose={() => setThreadBeingEdited(null)}
         onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
       />
+      <DeleteConfirmDialog
+        open={threadDeleteDialog.open}
+        busy={threadBusy}
+        title={threadDeleteDialog.title}
+        description={threadDeleteDialog.description}
+        confirmLabel={threadDeleteDialog.confirmLabel}
+        onClose={() => closeThreadDeleteDialog(false)}
+        onConfirm={() => closeThreadDeleteDialog(true)}
+      />
       <TodoChatRenameDialog
         open={Boolean(todoChatBeingEdited)}
         busy={todoRenameBusy}
@@ -5407,6 +5477,12 @@ export default function App() {
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
   const [threadBusy, setThreadBusy] = useState(false);
+  const [threadDeleteDialog, setThreadDeleteDialog] = useState({
+    open: false,
+    title: "채팅창 삭제",
+    description: "",
+    confirmLabel: "삭제"
+  });
   const [todoBusy, setTodoBusy] = useState(false);
   const [todoRenameBusy, setTodoRenameBusy] = useState(false);
   const [todoTransferBusy, setTodoTransferBusy] = useState(false);
@@ -5431,6 +5507,7 @@ export default function App() {
   const lastForegroundResumeAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
+  const threadDeleteDialogResolverRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5526,6 +5603,27 @@ export default function App() {
   useEffect(() => {
     updateThreadCacheRef.current = updateThreadCache;
   }, [updateThreadCache]);
+  const requestThreadDeleteConfirmation = useCallback(
+    ({ title = "채팅창 삭제", description = "", confirmLabel = "삭제" }) =>
+      new Promise((resolve) => {
+        threadDeleteDialogResolverRef.current = resolve;
+        setThreadDeleteDialog({
+          open: true,
+          title,
+          description,
+          confirmLabel
+        });
+      }),
+    []
+  );
+  const closeThreadDeleteDialog = useCallback((accepted = false) => {
+    const resolver = threadDeleteDialogResolverRef.current;
+    threadDeleteDialogResolverRef.current = null;
+    setThreadDeleteDialog((current) => ({ ...current, open: false }));
+    if (typeof resolver === "function") {
+      resolver(accepted);
+    }
+  }, []);
   const selectProjectScope = useCallback((projectId) => {
     setSelectedScope({ kind: "project", id: projectId });
   }, []);
@@ -7866,17 +7964,37 @@ export default function App() {
 
   const deleteThreads = useCallback(async (threadIds, confirmMessage = "") => {
     if (!session?.loginId || !selectedBridgeId) {
-      return false;
+      return {
+        accepted: false,
+        deletedThreadIds: [],
+        failedThreadIds: []
+      };
     }
 
     const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
 
     if (normalizedThreadIds.length === 0) {
-      return false;
+      return {
+        accepted: false,
+        deletedThreadIds: [],
+        failedThreadIds: []
+      };
     }
 
-    if (confirmMessage && typeof window !== "undefined" && !window.confirm(confirmMessage)) {
-      return false;
+    if (confirmMessage) {
+      const accepted = await requestThreadDeleteConfirmation({
+        title: normalizedThreadIds.length > 1 ? "채팅창 여러 개 삭제" : "채팅창 삭제",
+        description: confirmMessage,
+        confirmLabel: normalizedThreadIds.length > 1 ? `${normalizedThreadIds.length}개 삭제` : "삭제"
+      });
+
+      if (!accepted) {
+        return {
+          accepted: false,
+          deletedThreadIds: [],
+          failedThreadIds: []
+        };
+      }
     }
 
     setThreadBusy(true);
@@ -7916,17 +8034,28 @@ export default function App() {
           window.alert(partialDeleteMessage);
         }
 
-        return false;
+        return {
+          accepted: false,
+          deletedThreadIds,
+          failedThreadIds
+        };
       }
 
-      return true;
+      return {
+        accepted: true,
+        deletedThreadIds,
+        failedThreadIds: []
+      };
     } finally {
       setThreadBusy(false);
     }
-  }, [removeDeletedThreadsFromState, selectedBridgeId, session?.loginId]);
+  }, [removeDeletedThreadsFromState, requestThreadDeleteConfirmation, selectedBridgeId, session?.loginId]);
 
   const handleDeleteThread = useCallback(
-    async (threadId) => deleteThreads([threadId], "이 채팅창을 삭제하시겠습니까?"),
+    async (threadId) => {
+      const result = await deleteThreads([threadId], "이 채팅창을 삭제하시겠습니까?");
+      return result?.accepted !== false;
+    },
     [deleteThreads]
   );
 
