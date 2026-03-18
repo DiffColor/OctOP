@@ -4755,6 +4755,7 @@ function MainPage({
   todoTransferBusy,
   projectInstructionBusy,
   renameBusy,
+  threadDeleteDialog,
   utilityOpen,
   projectComposerOpen,
   installPromptVisible,
@@ -4792,6 +4793,8 @@ function MainPage({
   onRenameTodoChat,
   onDeleteThread,
   onDeleteThreads,
+  onCloseThreadDeleteDialog,
+  onConfirmThreadDeleteDialog,
   onDeleteTodoChat,
   onDeleteProject,
   onEditTodoMessage,
@@ -5350,8 +5353,8 @@ function MainPage({
         title={threadDeleteDialog.title}
         description={threadDeleteDialog.description}
         confirmLabel={threadDeleteDialog.confirmLabel}
-        onClose={() => closeThreadDeleteDialog(false)}
-        onConfirm={() => closeThreadDeleteDialog(true)}
+        onClose={onCloseThreadDeleteDialog}
+        onConfirm={onConfirmThreadDeleteDialog}
       />
       <TodoChatRenameDialog
         open={Boolean(todoChatBeingEdited)}
@@ -8403,6 +8406,7 @@ export default function App() {
         projectBusy={projectBusy}
         projectInstructionBusy={projectInstructionBusy}
         threadBusy={threadBusy}
+        threadDeleteDialog={threadDeleteDialog}
         todoBusy={todoBusy}
         todoRenameBusy={todoRenameBusy}
         todoTransferBusy={todoTransferBusy}
@@ -8444,6 +8448,8 @@ export default function App() {
         onRenameTodoChat={handleRenameTodoChat}
         onDeleteThread={handleDeleteThread}
         onDeleteThreads={handleDeleteThreads}
+        onCloseThreadDeleteDialog={() => closeThreadDeleteDialog(false)}
+        onConfirmThreadDeleteDialog={() => closeThreadDeleteDialog(true)}
         onDeleteTodoChat={handleDeleteTodoChat}
         onDeleteProject={handleDeleteProject}
         onEditTodoMessage={handleEditTodoMessage}
