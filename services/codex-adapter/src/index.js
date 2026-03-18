@@ -141,6 +141,9 @@ const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
 const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
 );
+const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
+  process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
+);
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
 const INTERRUPTED_THREAD_STATUS_TYPES = new Set(["interrupted", "cancelled", "canceled"]);
@@ -7849,6 +7852,15 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     remoteStatus === "running" && !hasObservableRunningProgress
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
       : 0;
+  const degradedAgeMs = Math.max(
+    0,
+    Date.now() - Date.parse(
+      threadStateById.get(threadId)?.updated_at ??
+      thread.updated_at ??
+      meta?.lastActivityAt ??
+      0
+    )
+  );
 
   if (physicalThreadId && tokenUsageChanged) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
@@ -8123,7 +8135,11 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   if (
     remoteStatus === "running" &&
     !hasObservableRunningProgress &&
-    nextNoProgressBackfillCount >= RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT
+    nextNoProgressBackfillCount >= (
+      (threadStateById.get(threadId)?.continuity_status === "degraded" && degradedAgeMs >= RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS)
+        ? 1
+        : RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT
+    )
   ) {
     const activeSocket = appServer.socket;
 
