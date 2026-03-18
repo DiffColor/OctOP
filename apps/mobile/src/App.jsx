@@ -5162,69 +5162,69 @@ function MainPage({
   return (
     <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
-        <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onOpenUtility}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
+        <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
+          <header className="border-b border-white/10 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={onOpenUtility}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              </button>
 
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
-            <div className="mt-0.5">
-              <BridgeDropdown
-                bridges={bridges}
-                selectedBridgeId={selectedBridgeId}
-                bridgeSignal={bridgeSignal}
-                onSelectBridge={onSelectBridge}
-              />
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
+                <div className="mt-0.5">
+                  <BridgeDropdown
+                    bridges={bridges}
+                    selectedBridgeId={selectedBridgeId}
+                    bridgeSignal={bridgeSignal}
+                    onSelectBridge={onSelectBridge}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSearchOpen((current) => !current)}
+                className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+                  searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
+                }`}
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              </button>
             </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={() => setSearchOpen((current) => !current)}
-            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
-              searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
-            }`}
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
-        </div>
+            {searchOpen ? (
+              <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
+                <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) => onSearchChange(event.target.value)}
+                  placeholder="채팅창 검색"
+                  className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+                />
+              </div>
+            ) : null}
+          </header>
 
-          {searchOpen ? (
-            <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
-              <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => onSearchChange(event.target.value)}
-                placeholder="채팅창 검색"
-                className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
-              />
-            </div>
-          ) : null}
-        </header>
+          <InstallPromptBanner
+            visible={installPromptVisible}
+            installing={installBusy}
+            onInstall={onInstallPwa}
+            onDismiss={onDismissInstallPrompt}
+          />
 
-        <InstallPromptBanner
-          visible={installPromptVisible}
-          installing={installBusy}
-          onInstall={onInstallPwa}
-          onDismiss={onDismissInstallPrompt}
-        />
-
-        <main className="flex-1 px-4 pb-28 pt-2">
-          <div className="border-b border-white/10 pb-3">
-            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+          <div className="border-b border-white/10 px-4 pb-3 pt-2">
+            <div className="flex gap-2 overflow-x-auto pb-1">
               <button
                 type="button"
                 onClick={() => onSelectTodoScope()}
@@ -5255,7 +5255,9 @@ function MainPage({
               ))}
             </div>
           </div>
+        </div>
 
+        <main className="flex-1 px-4 pb-28 pt-3">
           <section className="mt-1">
             {isTodoScope ? (
               filteredTodoChats.length === 0 ? (
