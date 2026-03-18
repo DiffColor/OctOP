@@ -22,6 +22,8 @@ const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
+const ACTIVE_ISSUE_POLL_RESUME_GRACE_MS = 8_000;
+const DASHBOARD_RESUME_ENABLE_DELAY_MS = 5_000;
 
 function formatBridgeSilentDuration(ms, language = "en") {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -4938,6 +4940,9 @@ export default function App() {
   const threadLiveProgressAtByIdRef = useRef(new Map());
   const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "" });
   const lastForegroundResumeAtRef = useRef(0);
+  const activeIssuePollPausedUntilRef = useRef(0);
+  const eventStreamConnectedAtRef = useRef(0);
+  const foregroundResumeEnabledAtRef = useRef(0);
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -5603,8 +5608,25 @@ export default function App() {
       return;
     }
 
+    if (reason.startsWith("dashboard_resume:") && now < foregroundResumeEnabledAtRef.current) {
+      return;
+    }
+
     lastForegroundResumeAtRef.current = now;
-    setEventStreamReconnectToken((current) => current + 1);
+    activeIssuePollPausedUntilRef.current = now + ACTIVE_ISSUE_POLL_RESUME_GRACE_MS;
+
+    const streamConnectedRecently =
+      eventStreamConnectedAtRef.current > 0 &&
+      now - eventStreamConnectedAtRef.current < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS;
+    const streamActiveRecently =
+      Number.isFinite(streamActivityAt) &&
+      streamActivityAt > 0 &&
+      now - streamActivityAt < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS;
+    const shouldReconnectStream = !streamConnectedRecently && !streamActiveRecently;
+
+    if (shouldReconnectStream) {
+      setEventStreamReconnectToken((current) => current + 1);
+    }
 
     if (!selectedProjectId) {
       return;
@@ -5638,6 +5660,7 @@ export default function App() {
     selectedBridgeId,
     selectedProjectId,
     session,
+    streamActivityAt,
     syncActiveIssueDetail
   ]);
 
@@ -5694,6 +5717,8 @@ export default function App() {
 
   useEffect(() => {
     setStreamActivityAt(null);
+    eventStreamConnectedAtRef.current = 0;
+    foregroundResumeEnabledAtRef.current = Date.now() + DASHBOARD_RESUME_ENABLE_DELAY_MS;
   }, [selectedBridgeId]);
 
   useEffect(() => {
@@ -5704,6 +5729,7 @@ export default function App() {
     const eventSource = new EventSource(
       `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
+    eventStreamConnectedAtRef.current = Date.now();
 
     const appendEvent = (type, summary) => {
       setRecentEvents((current) => [
@@ -6076,6 +6102,10 @@ export default function App() {
     }
 
     const pollActiveIssue = () => {
+      if (Date.now() < activeIssuePollPausedUntilRef.current) {
+        return;
+      }
+
       const lastLiveProgressAt = Number(threadLiveProgressAtByIdRef.current.get(selectedProjectThreadId) ?? 0);
 
       if (lastLiveProgressAt > 0 && Date.now() - lastLiveProgressAt < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS) {
