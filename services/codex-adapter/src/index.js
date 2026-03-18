@@ -119,6 +119,7 @@ const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
 const issueQueueProcessingStateByThreadId = new Map();
 let runningIssueBackfillPromise = null;
+let runningIssueThreadReadSamplePromise = null;
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -137,6 +138,9 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
 );
 const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS ?? 5000
+);
+const RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
+  process.env.OCTOP_RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS ?? 15000
 );
 const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
@@ -7682,6 +7686,27 @@ async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecif
   return response.result?.thread ?? response.thread ?? null;
 }
 
+function buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, options = {}) {
+  const assistantText = String(remoteAssistantText ?? "");
+  return {
+    lastThreadReadAt: now(),
+    lastThreadReadReason: reason,
+    lastThreadReadRemoteStatus: normalizeRemoteTurnRuntimeStatus(
+      remoteThread,
+      remoteTurn,
+      options.fallbackStatus ?? "running"
+    ),
+    lastThreadReadTurnId: remoteTurn?.id ?? null,
+    lastThreadReadAssistantLength: assistantText.length,
+    lastThreadReadAssistantExcerpt: assistantText
+      ? assistantText.slice(Math.max(0, assistantText.length - 240))
+      : "",
+    lastThreadReadAppendedDeltaLength: Number(options.appendedDeltaLength ?? 0),
+    lastThreadReadHadProgress:
+      typeof options.hadProgress === "boolean" ? options.hadProgress : null
+  };
+}
+
 function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
   const turns = Array.isArray(remoteThread?.turns) ? remoteThread.turns : [];
 
@@ -7883,10 +7908,11 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     recoveredMessage !== String(issue.last_message ?? physicalThread?.last_message ?? "");
   const hasObservableRunningProgress =
     syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
-  const backfillReadAt = now();
-  const remoteAssistantExcerpt = remoteAssistantText
-    ? remoteAssistantText.slice(Math.max(0, remoteAssistantText.length - 240))
-    : "";
+  const threadReadDebugPatch = buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, {
+    fallbackStatus: issue.status ?? thread.status ?? "running",
+    appendedDeltaLength: syncedAssistant.appendedDelta.length,
+    hadProgress: hasObservableRunningProgress
+  });
   const nextNoProgressBackfillCount =
     remoteStatus === "running" && !hasObservableRunningProgress
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
@@ -8166,14 +8192,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       backfillLastError: null,
       backfillLastPolledAt: now(),
       noProgressBackfillCount: nextNoProgressBackfillCount,
-      lastThreadReadAt: backfillReadAt,
-      lastThreadReadReason: reason,
-      lastThreadReadRemoteStatus: remoteStatus,
-      lastThreadReadTurnId: remoteTurn?.id ?? null,
-      lastThreadReadAssistantLength: remoteAssistantText.length,
-      lastThreadReadAssistantExcerpt: remoteAssistantExcerpt,
-      lastThreadReadAppendedDeltaLength: syncedAssistant.appendedDelta.length,
-      lastThreadReadHadProgress: hasObservableRunningProgress
+      ...threadReadDebugPatch
     });
   } else {
     clearRunningIssueBackfill(threadId);
@@ -8181,14 +8200,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     if (refreshedMeta) {
       markRunningIssueActivity(threadId, {
         lastActivityAt: refreshedMeta.lastActivityAt,
-        lastThreadReadAt: backfillReadAt,
-        lastThreadReadReason: reason,
-        lastThreadReadRemoteStatus: remoteStatus,
-        lastThreadReadTurnId: remoteTurn?.id ?? null,
-        lastThreadReadAssistantLength: remoteAssistantText.length,
-        lastThreadReadAssistantExcerpt: remoteAssistantExcerpt,
-        lastThreadReadAppendedDeltaLength: syncedAssistant.appendedDelta.length,
-        lastThreadReadHadProgress: hasObservableRunningProgress
+        ...threadReadDebugPatch
       });
     }
   }
@@ -8286,6 +8298,86 @@ async function backfillRequestedRunningIssues(trigger = "interval") {
   });
 
   return runningIssueBackfillPromise;
+}
+
+async function sampleRunningIssueThreadReads(trigger = "interval_sample") {
+  const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
+    const meta = runningIssueMetaByThreadId.get(threadId);
+    const issueId = activeIssueByThreadId.get(threadId) ?? null;
+    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
+    const lastThreadReadAtMs = Date.parse(meta?.lastThreadReadAt ?? 0);
+
+    if (!meta || !issue || issue.deleted_at || !["running", "awaiting_input"].includes(issue.status ?? "")) {
+      return false;
+    }
+
+    if (meta.backfillRequestedAt) {
+      return false;
+    }
+
+    if (!Number.isFinite(lastThreadReadAtMs)) {
+      return true;
+    }
+
+    return Date.now() - lastThreadReadAtMs >= RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS;
+  });
+
+  if (candidateThreadIds.length === 0) {
+    return;
+  }
+
+  if (runningIssueThreadReadSamplePromise) {
+    return runningIssueThreadReadSamplePromise;
+  }
+
+  runningIssueThreadReadSamplePromise = (async () => {
+    for (const threadId of candidateThreadIds) {
+      const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
+      const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
+      const thread = threadStateById.get(threadId) ?? null;
+      const issue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+      const physicalThreadId =
+        issue?.executed_physical_thread_id ??
+        issue?.created_physical_thread_id ??
+        thread?.active_physical_thread_id ??
+        null;
+      const physicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) ?? null : null;
+      const codexThreadId = String(
+        physicalThread?.codex_thread_id ??
+        thread?.codex_thread_id ??
+        meta?.lastSeenCodexThreadId ??
+        ""
+      ).trim();
+
+      if (!activeIssueId || !meta || !thread || !issue || !codexThreadId) {
+        continue;
+      }
+
+      try {
+        const remoteThread = await readThreadSnapshotFromAppServer(codexThreadId, trigger);
+        const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
+        const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+        const threadReadDebugPatch = buildThreadReadDebugPatch(trigger, remoteThread, remoteTurn, remoteAssistantText, {
+          fallbackStatus: issue.status ?? thread.status ?? "running"
+        });
+
+        markRunningIssueActivity(threadId, {
+          lastActivityAt: meta.lastActivityAt,
+          backfillLastError: null,
+          ...threadReadDebugPatch
+        });
+      } catch (error) {
+        markRunningIssueActivity(threadId, {
+          lastActivityAt: meta.lastActivityAt,
+          backfillLastError: error.message
+        });
+      }
+    }
+  })().finally(() => {
+    runningIssueThreadReadSamplePromise = null;
+  });
+
+  return runningIssueThreadReadSamplePromise;
 }
 
 function inferReconciledTerminalStatus(issue) {
@@ -9850,6 +9942,12 @@ if (RUNNING_ISSUE_BACKFILL_INTERVAL_MS > 0) {
   setInterval(() => {
     void backfillRequestedRunningIssues();
   }, RUNNING_ISSUE_BACKFILL_INTERVAL_MS).unref();
+}
+
+if (RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS > 0) {
+  setInterval(() => {
+    void sampleRunningIssueThreadReads();
+  }, RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS).unref();
 }
 
 await publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
