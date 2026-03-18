@@ -7954,15 +7954,30 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   const remoteMessageChanged =
     Boolean(recoveredMessage) &&
     recoveredMessage !== String(issue.last_message ?? physicalThread?.last_message ?? "");
+  const hasResponsiveRunningSnapshot =
+    remoteStatus === "running" &&
+    Boolean(remoteThread?.id) &&
+    Boolean(remoteTurn?.id) &&
+    Boolean(
+      String(remoteAssistantText ?? "").trim() ||
+      remoteThread?.tokenUsage ||
+      remoteThread?.token_usage
+    );
   const hasObservableRunningProgress =
     syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
+  const hasRecoverableRunningSnapshot =
+    hasObservableRunningProgress || hasResponsiveRunningSnapshot;
+  const recoveredRunningLastEvent =
+    syncedAssistant.changed || String(remoteAssistantText ?? "").trim()
+      ? "item.agentMessage.delta"
+      : preservedRunningLastEvent;
   const threadReadDebugPatch = buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, {
     fallbackStatus: issue.status ?? thread.status ?? "running",
     appendedDeltaLength: syncedAssistant.appendedDelta.length,
-    hadProgress: hasObservableRunningProgress
+    hadProgress: hasRecoverableRunningSnapshot
   });
   const nextNoProgressBackfillCount =
-    remoteStatus === "running" && !hasObservableRunningProgress
+    remoteStatus === "running" && !hasRecoverableRunningSnapshot
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
       : 0;
   const degradedAgeMs = Math.max(
@@ -8000,12 +8015,12 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   }
 
   if (remoteStatus === "running") {
-    if (hasObservableRunningProgress) {
+    if (hasRecoverableRunningSnapshot) {
       updateBackfilledPhysicalThread(threadId, physicalThreadId, {
         ...tokenUsageState,
         status: "running",
         progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-        last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
+        last_event: recoveredRunningLastEvent,
         last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
         turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
       });
@@ -8013,7 +8028,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
         executed_physical_thread_id: physicalThreadId,
         status: "running",
         progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
-        last_event: syncedAssistant.changed ? "item.agentMessage.delta" : preservedRunningLastEvent,
+        last_event: recoveredRunningLastEvent,
         ...(recoveredMessage ? { last_message: recoveredMessage } : {})
       });
     } else {
@@ -8118,7 +8133,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 
   const currentThread = threadStateById.get(threadId) ?? thread;
   const shouldRestoreHealthyContinuity =
-    remoteStatus !== "running" || hasObservableRunningProgress;
+    remoteStatus !== "running" || hasRecoverableRunningSnapshot;
   const nextThread = shouldRestoreHealthyContinuity
     ? {
         ...currentThread,
@@ -8232,9 +8247,9 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     });
   }
 
-  if (shouldContinuePolling) {
+  if (shouldContinuePolling && !shouldRestoreHealthyContinuity) {
     markRunningIssueActivity(threadId, {
-      lastActivityAt: hasObservableRunningProgress ? now() : meta.lastActivityAt,
+      lastActivityAt: hasRecoverableRunningSnapshot ? now() : meta.lastActivityAt,
       backfillRequestedAt: meta.backfillRequestedAt ?? now(),
       backfillTrigger: reason,
       backfillLastError: null,
@@ -8247,7 +8262,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     const refreshedMeta = runningIssueMetaByThreadId.get(threadId);
     if (refreshedMeta) {
       markRunningIssueActivity(threadId, {
-        lastActivityAt: refreshedMeta.lastActivityAt,
+        lastActivityAt: shouldRestoreHealthyContinuity ? now() : refreshedMeta.lastActivityAt,
         ...threadReadDebugPatch
       });
     }
@@ -8255,7 +8270,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 
   if (
     remoteStatus === "running" &&
-    !hasObservableRunningProgress &&
+    !hasRecoverableRunningSnapshot &&
     nextNoProgressBackfillCount >= (
       (threadStateById.get(threadId)?.continuity_status === "degraded" && degradedAgeMs >= RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS)
         ? 1
