@@ -3458,6 +3458,7 @@ function MainPage({
   session,
   bridges,
   status,
+  bridgeAvailable,
   bridgeSignal,
   signalNow,
   projects,
@@ -3575,6 +3576,10 @@ function MainPage({
     projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const selectedProjectHasBaseInstructions = Boolean(selectedProject?.base_instructions?.trim());
   const selectedProjectHasDeveloperInstructions = Boolean(selectedProject?.developer_instructions?.trim());
+  const bridgeUnavailableMessage =
+    language === "ko"
+      ? "브릿지가 연결되지 않아 프로젝트와 쓰레드를 표시할 수 없습니다."
+      : "Projects and threads are unavailable while the bridge is offline.";
   const scopedProjectThreads = projectThreads.filter(
     (thread) => !selectedProjectId || thread.project_id === selectedProjectId
   );
@@ -4192,164 +4197,172 @@ function MainPage({
                 </select>
               </div>
 
-              <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
-                <div className="flex items-center gap-2">
-                  <span>{copy.board.sidebarEyebrow}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={onOpenProjectComposer}
-                    disabled={!selectedBridge}
-                    className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {copy.board.addProject}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onCreateThread}
-                    disabled={!selectedProject}
-                    className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {copy.board.addThread}
-                  </button>
-                </div>
-              </div>
+              {bridgeAvailable ? (
+                <>
+                  <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                    <div className="flex items-center gap-2">
+                      <span>{copy.board.sidebarEyebrow}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={onOpenProjectComposer}
+                        disabled={!selectedBridge}
+                        className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {copy.board.addProject}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onCreateThread}
+                        disabled={!selectedProject}
+                        className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {copy.board.addThread}
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-scroll px-1">
-                {projects.length === 0 ? (
-                  <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
-                ) : (
-                  projects.map((project) => {
-                    const active = project.id === selectedProjectId;
-                    const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
-                    const expanded = expandedProjectIds[project.id] ?? active;
+                  <div className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-scroll px-1">
+                    {projects.length === 0 ? (
+                      <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
+                    ) : (
+                      projects.map((project) => {
+                        const active = project.id === selectedProjectId;
+                        const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
+                        const expanded = expandedProjectIds[project.id] ?? active;
 
-                    return (
-                      <div key={project.id} className="rounded-md px-0.5 py-0.5">
-                        <div
-                          className={`w-full rounded-md px-1.5 py-1.5 transition ${
-                            active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  handleToggleProjectExpanded(project.id);
-                                }}
-                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
-                                aria-label={expanded ? "collapse project tree" : "expand project tree"}
-                              >
-                                {expanded ? (
-                                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path
-                                      d="M3 9.5A2.5 2.5 0 015.5 7H9l1.4-1.6a2 2 0 011.5-.7h2.8A2.3 2.3 0 0116.5 6H18a3 3 0 013 3v1.5a2.5 2.5 0 01-2.5 2.5H10"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="1.8"
-                                    />
-                                    <path
-                                      d="M3.5 11.5h8.7a2.2 2.2 0 011.7.8l1.2 1.5h3.4a2 2 0 012 2v1.2A2.5 2.5 0 0118 19.5H6A2.5 2.5 0 013.5 17z"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="1.8"
-                                    />
-                                  </svg>
-                                ) : (
-                                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path
-                                      d="M3.5 8.5A2.5 2.5 0 016 6h3.3l1.4-1.6a2 2 0 011.5-.7h5.3A2.5 2.5 0 0120 6.2V8"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="1.8"
-                                    />
-                                    <path
-                                      d="M3.5 8.5h17v7A2.5 2.5 0 0118 18H6a2.5 2.5 0 01-2.5-2.5z"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="1.8"
-                                    />
-                                  </svg>
-                                )}
-                              </button>
-                              {editingProjectId === project.id ? (
-                                <input
-                                  type="text"
-                                  autoFocus
-                                  value={editingProjectName}
-                                  onChange={(event) => setEditingProjectName(event.target.value)}
-                                  onBlur={() => void submitProjectRename(project)}
-                                  onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                      event.preventDefault();
-                                      void submitProjectRename(project);
-                                    }
+                        return (
+                          <div key={project.id} className="rounded-md px-0.5 py-0.5">
+                            <div
+                              className={`w-full rounded-md px-1.5 py-1.5 transition ${
+                                active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleToggleProjectExpanded(project.id);
+                                    }}
+                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
+                                    aria-label={expanded ? "collapse project tree" : "expand project tree"}
+                                  >
+                                    {expanded ? (
+                                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path
+                                          d="M3 9.5A2.5 2.5 0 015.5 7H9l1.4-1.6a2 2 0 011.5-.7h2.8A2.3 2.3 0 0116.5 6H18a3 3 0 013 3v1.5a2.5 2.5 0 01-2.5 2.5H10"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="1.8"
+                                        />
+                                        <path
+                                          d="M3.5 11.5h8.7a2.2 2.2 0 011.7.8l1.2 1.5h3.4a2 2 0 012 2v1.2A2.5 2.5 0 0118 19.5H6A2.5 2.5 0 013.5 17z"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="1.8"
+                                        />
+                                      </svg>
+                                    ) : (
+                                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path
+                                          d="M3.5 8.5A2.5 2.5 0 016 6h3.3l1.4-1.6a2 2 0 011.5-.7h5.3A2.5 2.5 0 0120 6.2V8"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="1.8"
+                                        />
+                                        <path
+                                          d="M3.5 8.5h17v7A2.5 2.5 0 0118 18H6a2.5 2.5 0 01-2.5-2.5z"
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="1.8"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
+                                  {editingProjectId === project.id ? (
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      value={editingProjectName}
+                                      onChange={(event) => setEditingProjectName(event.target.value)}
+                                      onBlur={() => void submitProjectRename(project)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          void submitProjectRename(project);
+                                        }
 
-                                    if (event.key === "Escape") {
-                                      event.preventDefault();
-                                      cancelProjectRename();
-                                    }
-                                  }}
-                                  className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
-                                />
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => handleSelectProject(project.id)}
-                                  onDoubleClick={() => beginProjectRename(project)}
-                                  className="min-w-0 flex-1 text-left"
-                                >
-                                  <OverflowRevealText value={project.name} className="text-sm font-medium" />
-                                </button>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onDeleteProject(project.id);
-                                }}
-                                className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
-                              >
-                                {copy.board.delete}
-                              </button>
-                            </div>
+                                        if (event.key === "Escape") {
+                                          event.preventDefault();
+                                          cancelProjectRename();
+                                        }
+                                      }}
+                                      className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
+                                    />
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelectProject(project.id)}
+                                      onDoubleClick={() => beginProjectRename(project)}
+                                      className="min-w-0 flex-1 text-left"
+                                    >
+                                      <OverflowRevealText value={project.name} className="text-sm font-medium" />
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      onDeleteProject(project.id);
+                                    }}
+                                    className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
+                                  >
+                                    {copy.board.delete}
+                                  </button>
+                                </div>
+                              </div>
+                            {expanded ? (
+                              <div className="mt-1.5 space-y-1">
+                                {sidebarThreads.map((thread) => (
+                                  <SidebarThreadItem
+                                    key={thread.id}
+                                    language={language}
+                                    thread={thread}
+                                    active={thread.id === selectedProjectThreadId}
+                                    editing={editingThreadId === thread.id}
+                                    editingName={editingThreadName}
+                                    onSelect={handleSelectSidebarThread}
+                                    onBeginRename={beginThreadRename}
+                                    onChangeRename={setEditingThreadName}
+                                    onSubmitRename={submitThreadRename}
+                                    onCancelRename={cancelThreadRename}
+                                    onContextMenu={onOpenThreadMenu}
+                                    issueDropActive={issueMoveTargetThreadId === thread.id}
+                                    canAcceptIssueDrop={draggingMovableIssueIds.length > 0 && thread.id !== selectedProjectThreadId}
+                                    onIssueDragOver={onIssueMoveTargetOver}
+                                    onIssueDragLeave={onIssueMoveTargetLeave}
+                                    onIssueDrop={onMoveIssuesToThread}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
-                        {expanded ? (
-                          <div className="mt-1.5 space-y-1">
-                            {sidebarThreads.map((thread) => (
-                              <SidebarThreadItem
-                                key={thread.id}
-                                language={language}
-                                thread={thread}
-                                active={thread.id === selectedProjectThreadId}
-                                editing={editingThreadId === thread.id}
-                                editingName={editingThreadName}
-                                onSelect={handleSelectSidebarThread}
-                                onBeginRename={beginThreadRename}
-                                onChangeRename={setEditingThreadName}
-                                onSubmitRename={submitThreadRename}
-                                onCancelRename={cancelThreadRename}
-                                onContextMenu={onOpenThreadMenu}
-                                issueDropActive={issueMoveTargetThreadId === thread.id}
-                                canAcceptIssueDrop={draggingMovableIssueIds.length > 0 && thread.id !== selectedProjectThreadId}
-                                onIssueDragOver={onIssueMoveTargetOver}
-                                onIssueDragLeave={onIssueMoveTargetLeave}
-                                onIssueDrop={onMoveIssuesToThread}
-                              />
-                            ))}
                           </div>
-                        ) : null}
-                      </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-4 text-sm text-slate-400">
+                  {bridgeUnavailableMessage}
+                </div>
+              )}
             </div>
           </aside>
           <div
@@ -4362,14 +4375,14 @@ function MainPage({
             <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-800 bg-[#0f172a]/80 px-4 backdrop-blur-md md:px-8">
               <div className="min-w-0 flex-1 pr-4">
                 <div className="flex min-w-0 items-center gap-2 text-sm">
-                  {selectedProject ? (
+                  {bridgeAvailable && selectedProject ? (
                     <>
                       <div className="max-w-[14rem] shrink-0 md:max-w-[18rem] lg:max-w-[22rem]">
                         <OverflowRevealText value={selectedProject.name} className="font-medium text-white" />
                       </div>
                     </>
                   ) : null}
-                  {selectedProject && selectedProjectThread ? (
+                  {bridgeAvailable && selectedProject && selectedProjectThread ? (
                     <>
                       <span className="text-slate-700">/</span>
                       <div className="min-w-0 flex-1">
@@ -4407,7 +4420,7 @@ function MainPage({
                 <button
                   type="button"
                   onClick={onStartSelectedIssues}
-                  disabled={prepSelectedCount === 0 || startBusy}
+                  disabled={!bridgeAvailable || prepSelectedCount === 0 || startBusy}
                   className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300 transition hover:border-emerald-400/40 hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {startBusy ? copy.board.moving : copy.board.moveSelectedToTodo(prepSelectedCount)}
@@ -4416,7 +4429,7 @@ function MainPage({
                 <button
                   type="button"
                   onClick={onOpenComposer}
-                  disabled={!selectedProjectThread}
+                  disabled={!bridgeAvailable || !selectedProjectThread}
                   className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {copy.board.newIssue}
@@ -4444,53 +4457,67 @@ function MainPage({
                     )}
                   </select>
                 </label>
-                <label className="block">
-                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</span>
-                  <select
-                    value={selectedProjectId}
-                    onChange={(event) => onSelectProject(event.target.value)}
-                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
-                  >
-                    {projects.length === 0 ? (
-                      <option value="">{copy.board.noProjectOption}</option>
-                    ) : (
-                      projects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.thread}</span>
-                  <select
-                    value={selectedProjectThreadId}
-                    onChange={(event) => onSelectProjectThread(event.target.value)}
-                    className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
-                  >
-                    {scopedProjectThreads.length === 0 ? (
-                      <option value="">{copy.board.noProjectOption}</option>
-                    ) : (
-                      scopedProjectThreads.map((thread) => (
-                        <option key={thread.id} value={thread.id}>
-                          {thread.name}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
+                {bridgeAvailable ? (
+                  <>
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.project}</span>
+                      <select
+                        value={selectedProjectId}
+                        onChange={(event) => onSelectProject(event.target.value)}
+                        className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                      >
+                        {projects.length === 0 ? (
+                          <option value="">{copy.board.noProjectOption}</option>
+                        ) : (
+                          projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-2 block text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.board.thread}</span>
+                      <select
+                        value={selectedProjectThreadId}
+                        onChange={(event) => onSelectProjectThread(event.target.value)}
+                        className="w-full rounded-lg border-transparent bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                      >
+                        {scopedProjectThreads.length === 0 ? (
+                          <option value="">{copy.board.noProjectOption}</option>
+                        ) : (
+                          scopedProjectThreads.map((thread) => (
+                            <option key={thread.id} value={thread.id}>
+                              {thread.name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </label>
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-800 bg-slate-900/40 px-3 py-3 text-sm text-slate-400">
+                    {bridgeUnavailableMessage}
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-xs text-slate-500 md:px-8">
               <div className="flex items-center gap-3">
-                <span>{selectedProjectThread ? copy.board.issueCount(filteredIssues.length) : copy.board.selectProject}</span>
-                <span className="text-slate-700">•</span>
-                <span>{copy.board.prepHint}</span>
+                {bridgeAvailable ? (
+                  <>
+                    <span>{selectedProjectThread ? copy.board.issueCount(filteredIssues.length) : copy.board.selectProject}</span>
+                    <span className="text-slate-700">•</span>
+                    <span>{copy.board.prepHint}</span>
+                  </>
+                ) : (
+                  <span>{bridgeUnavailableMessage}</span>
+                )}
               </div>
               <div className="hidden items-center gap-2 md:flex">
-                {selectedProjectThread && selectedThreadContextUsage?.percent != null ? (
+                {bridgeAvailable && selectedProjectThread && selectedThreadContextUsage?.percent != null ? (
                   <span className="text-slate-500" title={selectedThreadUsageTitle}>
                     {selectedThreadUsageLabel}
                   </span>
@@ -4500,16 +4527,18 @@ function MainPage({
             </div>
 
             <div className="octop-board-page flex flex-1 min-h-0 flex-col">
-              <div
-                ref={boardScrollRef}
-                id="octop-board-scroll-region"
-                className="octop-board-scroll h-full min-h-0 flex-1"
-              >
-                <section
-                  className="octop-board-frame flex h-full min-h-0"
-                  style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
-                >
-                  <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
+              {bridgeAvailable ? (
+                <>
+                  <div
+                    ref={boardScrollRef}
+                    id="octop-board-scroll-region"
+                    className="octop-board-scroll h-full min-h-0 flex-1"
+                  >
+                    <section
+                      className="octop-board-frame flex h-full min-h-0"
+                      style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
+                    >
+                      <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
                     key={column.id}
@@ -4714,40 +4743,48 @@ function MainPage({
                     </div>
                   </section>
                 ))}
+                      </div>
+                    </section>
                   </div>
-                </section>
-              </div>
-              {boardScrollbarVisible ? (
-                <div className="octop-board-scrollbar custom-scrollbar">
-                  <div
-                    ref={boardScrollbarTrackRef}
-                    onPointerDown={handleBoardScrollbarPointerDown}
-                    onPointerMove={handleBoardScrollbarPointerMove}
-                    onPointerUp={handleBoardScrollbarPointerUp}
-                    onPointerCancel={handleBoardScrollbarPointerCancel}
-                    className={`octop-board-scrollbar-track ${
-                      boardScrollbarDragging ? "octop-board-scrollbar-track--dragging" : ""
-                    }`}
-                    role="scrollbar"
-                    aria-controls="octop-board-scroll-region"
-                    aria-label="가로 스크롤 이동"
-                    aria-valuemin={0}
-                    aria-valuemax={Math.max(boardScrollState.scrollWidth - boardScrollState.clientWidth, 0)}
-                    aria-valuenow={Math.round(boardScrollState.scrollLeft)}
-                    tabIndex={0}
-                  >
-                    <span
-                      className={`octop-board-scrollbar-thumb ${
-                        boardScrollbarDragging ? "octop-board-scrollbar-thumb--dragging" : ""
-                      }`}
-                      style={{
-                        width: `${scrollbarThumbWidth}px`,
-                        transform: `translateX(${scrollbarThumbOffset}px)`
-                      }}
-                    />
+                  {boardScrollbarVisible ? (
+                    <div className="octop-board-scrollbar custom-scrollbar">
+                      <div
+                        ref={boardScrollbarTrackRef}
+                        onPointerDown={handleBoardScrollbarPointerDown}
+                        onPointerMove={handleBoardScrollbarPointerMove}
+                        onPointerUp={handleBoardScrollbarPointerUp}
+                        onPointerCancel={handleBoardScrollbarPointerCancel}
+                        className={`octop-board-scrollbar-track ${
+                          boardScrollbarDragging ? "octop-board-scrollbar-track--dragging" : ""
+                        }`}
+                        role="scrollbar"
+                        aria-controls="octop-board-scroll-region"
+                        aria-label="가로 스크롤 이동"
+                        aria-valuemin={0}
+                        aria-valuemax={Math.max(boardScrollState.scrollWidth - boardScrollState.clientWidth, 0)}
+                        aria-valuenow={Math.round(boardScrollState.scrollLeft)}
+                        tabIndex={0}
+                      >
+                        <span
+                          className={`octop-board-scrollbar-thumb ${
+                            boardScrollbarDragging ? "octop-board-scrollbar-thumb--dragging" : ""
+                          }`}
+                          style={{
+                            width: `${scrollbarThumbWidth}px`,
+                            transform: `translateX(${scrollbarThumbOffset}px)`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="flex flex-1 items-center justify-center px-6 py-10">
+                  <div className="max-w-md rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-8 text-center text-sm text-slate-400">
+                    {bridgeUnavailableMessage}
                   </div>
                 </div>
-              ) : null}
+              )}
             </div>
             
           </main>
@@ -4776,40 +4813,44 @@ function MainPage({
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
                 {bridgeSignal.label}
               </span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
-                {copy.board.projectsChip(status.counts?.projects ?? projects.length)}
-              </span>
-              <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
-                {copy.board.threadsChip(status.counts?.threads ?? projectThreads.length)}
-              </span>
-              <button
-                type="button"
-                onClick={() => onOpenProjectInstructionDialog("base")}
-                disabled={!selectedProject}
-                title={selectedProject ? copy.footer.generalInstruction : copy.footer.instructionMissingProject}
-                className={`rounded-full border px-2.5 py-1 transition ${
-                  selectedProjectHasBaseInstructions
-                    ? "border-sky-400/30 bg-sky-500/10 text-sky-200 hover:border-sky-300/40"
-                    : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
-                } disabled:cursor-not-allowed disabled:opacity-50`}
-              >
-                {copy.footer.generalInstruction} ·{" "}
-                {selectedProjectHasBaseInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
-              </button>
-              <button
-                type="button"
-                onClick={() => onOpenProjectInstructionDialog("developer")}
-                disabled={!selectedProject}
-                title={selectedProject ? copy.footer.developerInstruction : copy.footer.instructionMissingProject}
-                className={`rounded-full border px-2.5 py-1 transition ${
-                  selectedProjectHasDeveloperInstructions
-                    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:border-emerald-300/40"
-                    : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
-                } disabled:cursor-not-allowed disabled:opacity-50`}
-              >
-                {copy.footer.developerInstruction} ·{" "}
-                {selectedProjectHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
-              </button>
+              {bridgeAvailable ? (
+                <>
+                  <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
+                    {copy.board.projectsChip(status.counts?.projects ?? projects.length)}
+                  </span>
+                  <span className="rounded-full bg-slate-900/80 px-2.5 py-1">
+                    {copy.board.threadsChip(status.counts?.threads ?? projectThreads.length)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onOpenProjectInstructionDialog("base")}
+                    disabled={!selectedProject}
+                    title={selectedProject ? copy.footer.generalInstruction : copy.footer.instructionMissingProject}
+                    className={`rounded-full border px-2.5 py-1 transition ${
+                      selectedProjectHasBaseInstructions
+                        ? "border-sky-400/30 bg-sky-500/10 text-sky-200 hover:border-sky-300/40"
+                        : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {copy.footer.generalInstruction} ·{" "}
+                    {selectedProjectHasBaseInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenProjectInstructionDialog("developer")}
+                    disabled={!selectedProject}
+                    title={selectedProject ? copy.footer.developerInstruction : copy.footer.instructionMissingProject}
+                    className={`rounded-full border px-2.5 py-1 transition ${
+                      selectedProjectHasDeveloperInstructions
+                        ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:border-emerald-300/40"
+                        : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {copy.footer.developerInstruction} ·{" "}
+                    {selectedProjectHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
+                  </button>
+                </>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -5042,10 +5083,13 @@ export default function App() {
     messages: []
   });
   const copy = getCopy(language);
+  const bridgeConnected = Boolean(status.app_server?.connected) &&
+    !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]);
+  const bridgeAvailable = Boolean(selectedBridgeId) && bridgeConnected;
   const bridgeSignal = useMemo(
     () =>
       buildBridgeSignal({
-        connected: Boolean(status.app_server?.connected) && !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]),
+        connected: bridgeConnected,
         lastSocketActivityAt: Date.parse(status.app_server?.last_socket_activity_at ?? ""),
         statusUpdatedAt: Date.parse(status.updated_at ?? ""),
         now: streamNow,
@@ -5055,10 +5099,10 @@ export default function App() {
       }),
     [
       bridgeDisconnectOverrideById,
+      bridgeConnected,
       copy.board.bridgeDown,
       copy.board.bridgeOk,
       language,
-      status.app_server?.connected,
       status.app_server?.last_socket_activity_at,
       status.updated_at,
       streamNow
@@ -7726,6 +7770,7 @@ export default function App() {
       session={session}
       bridges={bridges}
       status={status}
+      bridgeAvailable={bridgeAvailable}
       bridgeSignal={bridgeSignal}
       signalNow={streamNow}
       projects={projects}
