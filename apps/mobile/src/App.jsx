@@ -7092,7 +7092,12 @@ export default function App() {
 
       if (stayOnThread && threadId) {
         setActiveView("thread");
-        void loadThreadMessages(threadId, { force: true });
+        scheduleThreadMessagesReload(threadId, {
+          force: true,
+          delay: 1200,
+          suppressLoadingIndicator: true,
+          reason: "thread_create_start_confirm"
+        });
       } else {
         setActiveView("inbox");
       }
@@ -7225,7 +7230,12 @@ export default function App() {
           );
         }
       }
-      void loadThreadMessages(threadId, { force: true });
+      scheduleThreadMessagesReload(threadId, {
+        force: true,
+        delay: 1200,
+        suppressLoadingIndicator: true,
+        reason: "thread_append_start_confirm"
+      });
       return true;
     } catch (error) {
       if (typeof window !== "undefined") {
