@@ -1894,6 +1894,8 @@ function markRunningIssueActivity(threadId, patch = {}) {
     lastThreadReadTurnId: null,
     lastThreadReadAssistantLength: 0,
     lastThreadReadAssistantExcerpt: "",
+    lastThreadReadThreadRawJson: "",
+    lastThreadReadTurnRawJson: "",
     lastThreadReadAppendedDeltaLength: 0,
     lastThreadReadHadProgress: null
   };
@@ -1927,6 +1929,8 @@ function buildRunningIssueBackfillDebug(threadId) {
     last_thread_read_turn_id: meta.lastThreadReadTurnId ?? null,
     last_thread_read_assistant_length: Number(meta.lastThreadReadAssistantLength ?? 0),
     last_thread_read_assistant_excerpt: String(meta.lastThreadReadAssistantExcerpt ?? ""),
+    last_thread_read_thread_raw_json: String(meta.lastThreadReadThreadRawJson ?? ""),
+    last_thread_read_turn_raw_json: String(meta.lastThreadReadTurnRawJson ?? ""),
     last_thread_read_appended_delta_length: Number(meta.lastThreadReadAppendedDeltaLength ?? 0),
     last_thread_read_had_progress:
       typeof meta.lastThreadReadHadProgress === "boolean" ? meta.lastThreadReadHadProgress : null
@@ -7701,6 +7705,8 @@ function buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssis
     lastThreadReadAssistantExcerpt: assistantText
       ? assistantText.slice(Math.max(0, assistantText.length - 240))
       : "",
+    lastThreadReadThreadRawJson: truncateDiagnosticText(JSON.stringify(remoteThread ?? null), 12000),
+    lastThreadReadTurnRawJson: truncateDiagnosticText(JSON.stringify(remoteTurn ?? null), 12000),
     lastThreadReadAppendedDeltaLength: Number(options.appendedDeltaLength ?? 0),
     lastThreadReadHadProgress:
       typeof options.hadProgress === "boolean" ? options.hadProgress : null
