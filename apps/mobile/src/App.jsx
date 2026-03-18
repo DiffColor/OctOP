@@ -5978,8 +5978,36 @@ export default function App() {
         const activeTodoChatId = selectedTodoChatIdRef.current;
         const scheduleReload = scheduleThreadMessagesReloadRef.current;
         const applyThreadCacheUpdate = updateThreadCacheRef.current;
+        const clearPendingStartConfirmReload = (threadId) => {
+          if (!threadId) {
+            return;
+          }
+
+          const reloadMeta = threadReloadMetaByIdRef.current.get(threadId) ?? null;
+          const lastReason = String(reloadMeta?.lastReason ?? "");
+
+          if (!["thread_create_start_confirm", "thread_append_start_confirm"].includes(lastReason)) {
+            return;
+          }
+
+          const currentTimer = threadReloadTimersByIdRef.current.get(threadId);
+
+          if (currentTimer) {
+            window.clearTimeout(currentTimer);
+            threadReloadTimersByIdRef.current.delete(threadId);
+          }
+
+          threadReloadMetaByIdRef.current.set(threadId, {
+            ...reloadMeta,
+            lastReason: `${lastReason}:cancelled_by_live_progress`
+          });
+        };
 
         if (eventThreadId) {
+          if (eventThreadId === activeThreadId && isLiveThreadProgressEvent(payload.type)) {
+            clearPendingStartConfirmReload(eventThreadId);
+          }
+
           setThreads((current) => upsertLiveThread(current, payload));
           setThreadDetails((current) => {
             const currentEntry = current[eventThreadId] ?? null;
