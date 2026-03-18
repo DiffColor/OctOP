@@ -842,6 +842,61 @@ function normalizeIssue(issue, fallbackThreadId = null) {
   };
 }
 
+function getIssuePhysicalThreadId(issue) {
+  if (!issue) {
+    return null;
+  }
+
+  return issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null;
+}
+
+function findActiveIssueForThread(issues = [], activePhysicalThreadId = null) {
+  const normalizedIssues = issues.filter(Boolean);
+
+  if (normalizedIssues.length === 0) {
+    return null;
+  }
+
+  const prioritizedIssues = [...normalizedIssues].sort((left, right) => {
+    const leftCreatedAt = Date.parse(left.created_at ?? "");
+    const rightCreatedAt = Date.parse(right.created_at ?? "");
+
+    return rightCreatedAt - leftCreatedAt;
+  });
+
+  if (activePhysicalThreadId) {
+    const matchedIssue = prioritizedIssues.find((issue) => getIssuePhysicalThreadId(issue) === activePhysicalThreadId);
+
+    if (matchedIssue) {
+      return matchedIssue;
+    }
+  }
+
+  return prioritizedIssues.find((issue) => ["running", "awaiting_input"].includes(issue.status)) ?? prioritizedIssues[0] ?? null;
+}
+
+function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = null, fallbackTimestamp = null) {
+  const issueId = issue?.id ?? null;
+
+  if (!issueId) {
+    return currentMessages;
+  }
+
+  const preservedMessages = currentMessages.filter((message) => String(message?.issue_id ?? "") !== issueId);
+  const normalizedMessages = (detailMessages ?? []).map((message, index) => ({
+    ...message,
+    id: message.id ?? `${issueId}-${index}`,
+    issue_id: issueId,
+    issue_title: issue?.title ?? "",
+    issue_status: issue?.status ?? "staged",
+    timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString()
+  }));
+
+  return [...preservedMessages, ...normalizedMessages].sort(
+    (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
+  );
+}
+
 function buildIssueReloadFingerprint(issues = [], fallbackThreadId = null) {
   return issues
     .map((issue) => normalizeIssue(issue, fallbackThreadId))
@@ -5242,7 +5297,7 @@ export default function App() {
   }, []);
 
   const loadThreadMessages = useCallback(
-    async (threadId, { force = false, version = null, suppressLoadingIndicator = false } = {}) => {
+    async (threadId, { force = false, version = null, suppressLoadingIndicator = false, mode = "full" } = {}) => {
       if (!session?.loginId || !selectedBridgeId || !threadId) {
         return;
       }
@@ -5304,34 +5359,69 @@ export default function App() {
       });
 
       try {
-        const issueList = await apiRequest(
-          `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
-        );
-        const issues = [...(issueList?.issues ?? [])]
+        const cachedEntry = threadDetailsRef.current?.[threadId] ?? null;
+        const cachedThread = cachedEntry?.thread ?? threads.find((thread) => thread.id === threadId) ?? null;
+        const cachedIssues = (cachedEntry?.issues ?? [])
           .map((issue) => normalizeIssue(issue, threadId))
           .filter(Boolean)
           .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
-        const details = await Promise.all(
-          issues.map((issue) =>
-            apiRequest(
-              `/api/issues/${issue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        const activeIssue = findActiveIssueForThread(cachedIssues, cachedThread?.active_physical_thread_id ?? null);
+        const shouldLoadActiveIssueOnly = mode === "active" && Boolean(activeIssue);
+        let issues = cachedIssues;
+        let messages = cachedEntry?.messages ?? [];
+        let normalizedThread = normalizeThread(cachedThread);
+
+        if (shouldLoadActiveIssueOnly) {
+          const detail = await apiRequest(
+            `/api/issues/${activeIssue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+          );
+          const nextIssue = normalizeIssue(detail?.issue, threadId) ?? activeIssue;
+          const nextIssueIndex = issues.findIndex((issue) => issue.id === nextIssue.id);
+
+          if (nextIssueIndex >= 0) {
+            issues = [...issues];
+            issues[nextIssueIndex] = nextIssue;
+          } else {
+            issues = [...issues, nextIssue].sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+          }
+
+          messages = mergeIssueMessages(
+            cachedEntry?.messages ?? [],
+            detail?.messages ?? [],
+            nextIssue,
+            nextIssue.updated_at ?? nextIssue.created_at ?? new Date().toISOString()
+          );
+          normalizedThread = normalizeThread(detail?.thread) ?? normalizedThread;
+        } else {
+          const issueList = await apiRequest(
+            `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+          );
+          issues = [...(issueList?.issues ?? [])]
+            .map((issue) => normalizeIssue(issue, threadId))
+            .filter(Boolean)
+            .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+          const details = await Promise.all(
+            issues.map((issue) =>
+              apiRequest(
+                `/api/issues/${issue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+              )
             )
-          )
-        );
-        const messages = details.flatMap((detail, issueIndex) =>
-          (detail?.messages ?? []).map((message, messageIndex) => ({
-            ...message,
-            id: message.id ?? `${detail?.issue?.id ?? issues[issueIndex]?.id}-${messageIndex}`,
-            issue_id: detail?.issue?.id ?? issues[issueIndex]?.id ?? null,
-            issue_title: detail?.issue?.title ?? issues[issueIndex]?.title ?? "",
-            issue_status: detail?.issue?.status ?? issues[issueIndex]?.status ?? "staged"
-          }))
-        );
-        const latestThread =
-          details.at(-1)?.thread ??
-          threads.find((thread) => thread.id === threadId) ??
-          null;
-        const normalizedThread = normalizeThread(latestThread);
+          );
+          messages = details.flatMap((detail, issueIndex) =>
+            (detail?.messages ?? []).map((message, messageIndex) => ({
+              ...message,
+              id: message.id ?? `${detail?.issue?.id ?? issues[issueIndex]?.id}-${messageIndex}`,
+              issue_id: detail?.issue?.id ?? issues[issueIndex]?.id ?? null,
+              issue_title: detail?.issue?.title ?? issues[issueIndex]?.title ?? "",
+              issue_status: detail?.issue?.status ?? issues[issueIndex]?.status ?? "staged"
+            }))
+          );
+          const latestThread =
+            details.at(-1)?.thread ??
+            threads.find((thread) => thread.id === threadId) ??
+            null;
+          normalizedThread = normalizeThread(latestThread);
+        }
 
         if (threadLoadRequestIdByIdRef.current.get(threadId) !== nextRequestId) {
           releaseThreadLoadingState();
@@ -6181,6 +6271,7 @@ export default function App() {
             if (scheduleReload && shouldReload) {
               scheduleReload(threadId, {
                 force: true,
+                mode: "active",
                 suppressLoadingIndicator: true,
                 reason: "thread_issues_updated"
               });
@@ -6205,6 +6296,7 @@ export default function App() {
           if (scheduleReload) {
             scheduleReload(eventThreadId, {
               force: true,
+              mode: "active",
               delay: 0,
               suppressLoadingIndicator: true,
               bypassThrottle: true,
@@ -7122,6 +7214,7 @@ export default function App() {
         setActiveView("thread");
         scheduleThreadMessagesReload(threadId, {
           force: true,
+          mode: "active",
           delay: 1200,
           suppressLoadingIndicator: true,
           reason: "thread_create_start_confirm"
@@ -7260,6 +7353,7 @@ export default function App() {
       }
       scheduleThreadMessagesReload(threadId, {
         force: true,
+        mode: "active",
         delay: 1200,
         suppressLoadingIndicator: true,
         reason: "thread_append_start_confirm"
