@@ -3467,7 +3467,7 @@ function TodoChatDetail({
               className="text-left"
             >
               <MessageBubble align="right" tone="brand" title="메모" meta={formatRelativeTime(message.updated_at)}>
-                <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+                <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6">{message.content}</p>
               </MessageBubble>
             </button>
           ))}
@@ -3973,9 +3973,9 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
   }, []);
 
   return (
-    <div className={`message-enter flex ${wrapperClassName}`} data-testid={`message-bubble-${tone}`}>
+    <div className={`message-enter flex min-w-0 ${wrapperClassName}`} data-testid={`message-bubble-${tone}`}>
       <article
-        className={`max-w-[86%] rounded-[1.35rem] px-4 py-3 ${bubbleClassName} ${onLongPress ? "select-none" : ""}`}
+        className={`min-w-0 max-w-[86%] overflow-hidden rounded-[1.35rem] px-4 py-3 ${bubbleClassName} ${onLongPress ? "select-none" : ""}`}
         title={longPressTitle || undefined}
         onPointerDown={beginLongPress}
         onPointerUp={cancelLongPress}
@@ -4013,7 +4013,7 @@ function ConversationTimeline({ entries }) {
               <span>{formatDateTime(entry.promptAt)}</span>
               <span>{entry.responses.length ? `${entry.responses.length}개의 응답` : "응답 없음"}</span>
             </div>
-            <p className="mt-3 text-base font-semibold text-white">
+            <p className="mt-3 break-words [overflow-wrap:anywhere] text-base font-semibold text-white">
               {entry.prompt?.trim() ? entry.prompt : "프롬프트가 비어 있습니다."}
             </p>
 
@@ -4024,7 +4024,9 @@ function ConversationTimeline({ entries }) {
                     key={response.id}
                     className="rounded-[1rem] border border-white/5 bg-slate-950/70 px-3 py-2 text-sm leading-6 text-slate-200"
                   >
-                    <p className="whitespace-pre-wrap">{response.content || "응답이 비어 있습니다."}</p>
+                    <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {response.content || "응답이 비어 있습니다."}
+                    </p>
                     <p className="mt-1 text-right text-[11px] text-slate-500">{formatRelativeTime(response.timestamp)}</p>
                   </div>
                 ))}
@@ -4685,10 +4687,12 @@ function ThreadDetail({
                   {message.replyTo ? (
                     <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
                       <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
-                      <p className="mt-1 text-sm leading-5">{summarizeMessageContent(message.replyTo.content)}</p>
+                      <p className="mt-1 break-words [overflow-wrap:anywhere] text-sm leading-5">
+                        {summarizeMessageContent(message.replyTo.content)}
+                      </p>
                     </div>
                   ) : null}
-                  <p className="whitespace-pre-wrap text-sm leading-6">
+                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6">
                     {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
                   </p>
                 </MessageBubble>
@@ -4704,7 +4708,9 @@ function ThreadDetail({
                     <span>응답</span>
                     <span>{formatRelativeTime(response.timestamp)}</span>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-200">{response.content || "응답이 비어 있습니다."}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-slate-200">
+                    {response.content || "응답이 비어 있습니다."}
+                  </p>
                 </li>
               ))}
             </ul>
