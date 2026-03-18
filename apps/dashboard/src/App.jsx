@@ -57,7 +57,7 @@ function formatBridgeSilentDuration(ms, language = "en") {
   return `${minutes}m ${seconds}s`;
 }
 
-function buildBridgeSignal({ connected, lastActivityAt, lastSocketActivityAt, now, language, connectedLabel, disconnectedLabel }) {
+function buildBridgeSignal({ connected, lastSocketActivityAt, statusUpdatedAt, now, language, connectedLabel, disconnectedLabel }) {
   if (!connected) {
     return {
       label: disconnectedLabel,
@@ -72,8 +72,10 @@ function buildBridgeSignal({ connected, lastActivityAt, lastSocketActivityAt, no
   }
 
   const socketActivityAt = Number.isFinite(lastSocketActivityAt) ? lastSocketActivityAt : 0;
-  const bridgeSilentMs = socketActivityAt > 0 ? Math.max(0, now - socketActivityAt) : 0;
-  if (socketActivityAt > 0 && bridgeSilentMs >= BRIDGE_STALE_DISCONNECT_MS) {
+  const statusActivityAt = Number.isFinite(statusUpdatedAt) ? statusUpdatedAt : 0;
+  const effectiveActivityAt = Math.max(socketActivityAt, statusActivityAt);
+  const bridgeSilentMs = effectiveActivityAt > 0 ? Math.max(0, now - effectiveActivityAt) : 0;
+  if (effectiveActivityAt > 0 && bridgeSilentMs >= BRIDGE_STALE_DISCONNECT_MS) {
     return {
       label: disconnectedLabel,
       title:
@@ -89,8 +91,6 @@ function buildBridgeSignal({ connected, lastActivityAt, lastSocketActivityAt, no
     };
   }
 
-  const activityAt = Number.isFinite(lastActivityAt) ? lastActivityAt : 0;
-  const effectiveActivityAt = Math.max(activityAt, socketActivityAt);
   const silentMs = effectiveActivityAt > 0 ? Math.max(0, now - effectiveActivityAt) : 0;
   const ratio =
     silentMs <= STREAM_SILENCE_START_MS
@@ -4992,7 +4992,7 @@ export default function App() {
       buildBridgeSignal({
         connected: Boolean(status.app_server?.connected),
         lastSocketActivityAt: Date.parse(status.app_server?.last_socket_activity_at ?? ""),
-        lastActivityAt: streamActivityAt,
+        statusUpdatedAt: Date.parse(status.updated_at ?? ""),
         now: streamNow,
         language,
         connectedLabel: copy.board.bridgeOk,
@@ -5004,7 +5004,7 @@ export default function App() {
       language,
       status.app_server?.connected,
       status.app_server?.last_socket_activity_at,
-      streamActivityAt,
+      status.updated_at,
       streamNow
     ]
   );
@@ -5776,6 +5776,44 @@ export default function App() {
     }
   }
 
+  const refreshBridgeStatus = useCallback(
+    async (sessionArg = session, bridgeId = selectedBridgeId) => {
+      if (!sessionArg?.loginId || !bridgeId) {
+        return false;
+      }
+
+      try {
+        const nextStatus = await apiRequest(
+          `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+        );
+
+        if (selectedBridgeIdRef.current !== bridgeId) {
+          return false;
+        }
+
+        setStatus(nextStatus);
+        return true;
+      } catch (error) {
+        if (selectedBridgeIdRef.current !== bridgeId) {
+          return false;
+        }
+
+        setStatus((current) => ({
+          ...current,
+          app_server: {
+            ...(current?.app_server ?? {}),
+            connected: false,
+            initialized: false,
+            last_error: error.message
+          },
+          updated_at: new Date().toISOString()
+        }));
+        return false;
+      }
+    },
+    [selectedBridgeId, session]
+  );
+
   useEffect(() => {
     if (!session?.loginId) {
       return;
@@ -6021,12 +6059,14 @@ export default function App() {
 
     eventSource.addEventListener("error", () => {
       appendEvent("sse.error", copy.alerts.sseReconnect);
+      setStreamActivityAt(null);
+      void refreshBridgeStatus(session, selectedBridgeId);
     });
 
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, eventStreamReconnectToken, markStreamActivity, session, selectedBridgeId]);
+  }, [copy.alerts.sseReconnect, eventStreamReconnectToken, markStreamActivity, refreshBridgeStatus, session, selectedBridgeId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -6146,45 +6186,20 @@ export default function App() {
     }
 
     let cancelled = false;
-
-    const pollBridgeStatus = async () => {
-      try {
-        const nextStatus = await apiRequest(
-          `/api/bridge/status?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
-        );
-
-        if (cancelled || selectedBridgeIdRef.current !== selectedBridgeId) {
-          return;
-        }
-
-        setStatus(nextStatus);
-      } catch (error) {
-        if (cancelled || selectedBridgeIdRef.current !== selectedBridgeId) {
-          return;
-        }
-
-        setStatus((current) => ({
-          ...current,
-          app_server: {
-            ...(current?.app_server ?? {}),
-            connected: false,
-            initialized: false,
-            last_error: error.message
-          },
-          updated_at: new Date().toISOString()
-        }));
-      }
-    };
+    void refreshBridgeStatus(session, selectedBridgeId);
 
     const timer = window.setInterval(() => {
-      void pollBridgeStatus();
+      if (cancelled) {
+        return;
+      }
+      void refreshBridgeStatus(session, selectedBridgeId);
     }, BRIDGE_STATUS_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedBridgeId, session]);
+  }, [refreshBridgeStatus, selectedBridgeId, session]);
 
   useEffect(() => {
     const scopedThreads = projectThreads.filter(
