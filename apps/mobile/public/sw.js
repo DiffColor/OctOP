@@ -18,6 +18,8 @@ const isAssetRequest = (request, requestUrl) => {
   return requestUrl.pathname.startsWith("/assets/");
 };
 
+const isApiRequest = (requestUrl) => requestUrl?.pathname?.startsWith("/api/");
+
 const cacheResponse = async (request, response) => {
   const cache = await caches.open(CACHE_NAME);
   await cache.put(request, response.clone());
@@ -88,6 +90,11 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (!isSameOrigin) {
+    return;
+  }
+
+  if (isApiRequest(requestUrl)) {
+    event.respondWith(fetch(event.request, { cache: "no-store" }));
     return;
   }
 
