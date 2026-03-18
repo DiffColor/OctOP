@@ -136,13 +136,16 @@ test.use({
 
 async function mockMobileApi(page, options = {}) {
   let currentThread = options.thread ?? rootThread;
+  let currentThreads = options.threads ?? [currentThread];
   let currentIssuesPayload = options.issuesPayload ?? {
     ...issuesPayload,
     thread: currentThread
   };
   let currentIssueDetails = options.issueDetails ?? issueDetails;
   const normalizeRequests = options.normalizeRequests ?? [];
+  const unlockRequests = options.unlockRequests ?? [];
   const normalizedThread = options.normalizedThread ?? null;
+  const deleteRequests = options.deleteRequests ?? [];
 
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
@@ -183,7 +186,7 @@ async function mockMobileApi(page, options = {}) {
             bridge_id: bridgeId,
             counts: {
               projects: 1,
-              threads: 1
+              threads: currentThreads.length
             }
           }
         })
@@ -213,7 +216,27 @@ async function mockMobileApi(page, options = {}) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          threads: [currentThread]
+          threads: currentThreads
+        })
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/threads/') && route.request().method() === 'DELETE') {
+      const threadId = pathname.split('/').at(-1);
+      deleteRequests.push(threadId);
+      currentThreads = currentThreads.filter((thread) => thread.id !== threadId);
+
+      if (currentThread?.id === threadId) {
+        currentThread = currentThreads[0] ?? null;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          deleted_thread_id: threadId
         })
       });
       return;
@@ -253,6 +276,37 @@ async function mockMobileApi(page, options = {}) {
           accepted: true,
           action: normalizedThread ? 'rollover' : 'reconciled',
           recovered: Boolean(normalizedThread),
+          thread: currentThread,
+          continuity: currentIssuesPayload.continuity ?? null
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${rootThreadId}/unlock` && route.request().method() === 'POST') {
+      unlockRequests.push(route.request().postDataJSON() ?? {});
+
+      if (normalizedThread) {
+        currentThread = normalizedThread;
+        currentThreads = currentThreads.map((thread) => (thread.id === normalizedThread.id ? normalizedThread : thread));
+        currentIssuesPayload = {
+          ...currentIssuesPayload,
+          thread: normalizedThread,
+          continuity: {
+            ...(currentIssuesPayload.continuity ?? {}),
+            root_thread: {
+              ...(currentIssuesPayload.continuity?.root_thread ?? {}),
+              continuity_status: normalizedThread.continuity_status ?? 'healthy'
+            }
+          }
+        };
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
           thread: currentThread,
           continuity: currentIssuesPayload.continuity ?? null
         })
@@ -318,7 +372,7 @@ test.describe('모바일 handoff timeline UI', () => {
   });
 
   test('채팅 상단 리프레시 버튼이 normalize를 호출하고 정상화된 thread 상태를 다시 그린다', async ({ page }) => {
-    const normalizeRequests = [];
+    const unlockRequests = [];
     const stalledThread = {
       ...rootThread,
       last_event: 'item.agentMessage.delta',
@@ -341,7 +395,7 @@ test.describe('모바일 handoff timeline UI', () => {
         thread: stalledThread
       },
       normalizedThread: recoveredThread,
-      normalizeRequests
+      unlockRequests
     });
     await page.addInitScript(({ key, value }) => {
       window.localStorage.setItem(key, JSON.stringify(value));
@@ -352,9 +406,47 @@ test.describe('모바일 handoff timeline UI', () => {
     await page.getByText('Root Thread Mobile').click();
     await expect(page.getByText('사용률 92%')).toBeVisible();
 
-    await page.getByRole('button', { name: '쓰레드 정상화 및 새로고침' }).click();
+    await page.getByRole('button', { name: '마지막 이슈 락 해제 및 새로고침' }).click();
 
-    await expect.poll(() => normalizeRequests.length).toBe(1);
+    await expect.poll(() => unlockRequests.length).toBe(1);
     await expect(page.getByText('사용률 12%', { exact: true })).toBeVisible();
+  });
+
+  test('모바일 쓰레드 목록에서 여러 채팅창을 선택해 한 번에 삭제할 수 있다', async ({ page }) => {
+    const secondaryThread = {
+      ...rootThread,
+      id: 'thread-root-2',
+      title: 'Root Thread Mobile 2',
+      name: 'Root Thread Mobile 2',
+      updated_at: '2026-03-15T10:11:00.000Z',
+      last_message: '두 번째 쓰레드'
+    };
+    const deleteRequests = [];
+
+    await mockMobileApi(page, {
+      threads: [rootThread, secondaryThread],
+      deleteRequests
+    });
+    await page.addInitScript(({ key, value }) => {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    }, { key: SESSION_KEY, value: session });
+
+    await page.goto(baseUrl);
+
+    await expect(page.locator('.thread-title')).toHaveCount(2);
+
+    await page.getByRole('button', { name: '채팅창 선택 모드' }).click();
+    await page.getByTestId(`thread-list-item-${rootThreadId}`).click();
+    await page.getByTestId('thread-list-item-thread-root-2').click();
+
+    await expect(page.getByText('2개 선택됨')).toBeVisible();
+
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: '선택한 채팅창 삭제' }).click();
+
+    await expect.poll(() => deleteRequests).toEqual([rootThreadId, 'thread-root-2']);
+    await expect(page.getByTestId(`thread-list-item-${rootThreadId}`)).toHaveCount(0);
+    await expect(page.getByTestId('thread-list-item-thread-root-2')).toHaveCount(0);
+    await expect(page.getByText('조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요.')).toBeVisible();
   });
 });
