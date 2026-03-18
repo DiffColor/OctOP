@@ -5188,6 +5188,7 @@ export default function App() {
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
   const [streamActivityAt, setStreamActivityAt] = useState(null);
   const [streamNow, setStreamNow] = useState(() => Date.now());
+  const [eventStreamReconnectToken, setEventStreamReconnectToken] = useState(0);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
@@ -5200,6 +5201,7 @@ export default function App() {
   const threadReloadTimersByIdRef = useRef(new Map());
   const threadReloadMetaByIdRef = useRef(new Map());
   const threadLiveProgressAtByIdRef = useRef(new Map());
+  const lastForegroundResumeAtRef = useRef(0);
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5300,6 +5302,59 @@ export default function App() {
   useEffect(() => {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
+
+  const handleAppForegroundResume = useCallback((reason = "foreground_resume") => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+
+    if (!session?.loginId || !selectedBridgeId || !selectedBridgeKnown) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (now - lastForegroundResumeAtRef.current < 1500) {
+      return;
+    }
+
+    lastForegroundResumeAtRef.current = now;
+    setEventStreamReconnectToken((current) => current + 1);
+
+    if (selectedThreadId) {
+      threadLiveProgressAtByIdRef.current.delete(selectedThreadId);
+    }
+
+    if (activeView === "thread" && selectedThreadId) {
+      const mode =
+        selectedActiveIssue && ["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
+          ? "active"
+          : "full";
+
+      scheduleThreadMessagesReloadRef.current?.(selectedThreadId, {
+        force: true,
+        mode,
+        delay: 0,
+        suppressLoadingIndicator: true,
+        bypassThrottle: true,
+        reason
+      });
+      return;
+    }
+
+    if (selectedScope.kind === "project" && selectedProjectId) {
+      void loadProjectThreads(session, selectedBridgeId, selectedProjectId, { applyToInbox: true });
+    }
+  }, [
+    activeView,
+    selectedActiveIssue,
+    selectedBridgeId,
+    selectedBridgeKnown,
+    selectedProjectId,
+    selectedScope.kind,
+    selectedThreadId,
+    session
+  ]);
 
   useEffect(() => {
     return () => {
@@ -6362,7 +6417,43 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [markStreamActivity, selectedBridgeId, selectedBridgeKnown, session?.loginId]);
+  }, [eventStreamReconnectToken, markStreamActivity, selectedBridgeId, selectedBridgeKnown, session?.loginId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        handleAppForegroundResume("app_resume:visibility");
+      }
+    };
+
+    const handleWindowFocus = () => {
+      handleAppForegroundResume("app_resume:focus");
+    };
+
+    const handlePageShow = () => {
+      handleAppForegroundResume("app_resume:pageshow");
+    };
+
+    const handleOnline = () => {
+      handleAppForegroundResume("app_resume:online");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [handleAppForegroundResume]);
 
   useLayoutEffect(() => {
     threadLoadRequestIdByIdRef.current = new Map();
