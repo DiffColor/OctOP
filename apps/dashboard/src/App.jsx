@@ -184,6 +184,12 @@ const STATUS_META = {
     chipClassName: "bg-sky-500/10 text-sky-300",
     dotClassName: "bg-sky-400"
   },
+  interrupted: {
+    column: "review",
+    labelKey: "interrupted",
+    chipClassName: "bg-amber-500/10 text-amber-300",
+    dotClassName: "bg-amber-400"
+  },
   failed: {
     column: "review",
     labelKey: "failed",
@@ -214,6 +220,7 @@ const COPY = {
       idle: "Idle",
       awaiting_input: "Need Input",
       running: "Running",
+      interrupted: "Interrupted",
       failed: "Failed",
       completed: "Done"
     },
@@ -378,6 +385,7 @@ const COPY = {
       idle: "대기",
       awaiting_input: "입력 필요",
       running: "진행 중",
+      interrupted: "중단됨",
       failed: "실패",
       completed: "완료"
     },
@@ -1257,6 +1265,10 @@ function getRealtimeProgressText(entity, language) {
     return isKorean ? "실패 확인 필요" : "Needs attention";
   }
 
+  if (status === "interrupted") {
+    return isKorean ? "중단됨" : "Interrupted";
+  }
+
   if (status === "completed") {
     return isKorean ? "완료됨" : "Completed";
   }
@@ -1642,7 +1654,7 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
 }
 
 function isTerminalIssueStatus(status) {
-  return ["completed", "failed"].includes(status);
+  return ["completed", "failed", "interrupted"].includes(status);
 }
 
 function isLiveIssueProgressEvent(eventType) {

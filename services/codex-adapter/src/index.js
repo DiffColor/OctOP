@@ -3591,7 +3591,10 @@ async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DEL
 async function interruptThreadExecutionBestEffort(rootThread, options = {}) {
   const activePhysicalThread = rootThread?.id ? getActivePhysicalThread(rootThread.id) : null;
   const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
-  const turnId = String(rootThread?.turn_id ?? "").trim();
+  const turnId =
+    rootThread?.id
+      ? getTrackedExecutionTurnId(rootThread.id, activePhysicalThread?.id ?? null)
+      : String(activePhysicalThread?.turn_id ?? rootThread?.turn_id ?? "").trim() || null;
   const timeoutMs = Number(options.timeoutMs ?? THREAD_DELETE_STOP_TIMEOUT_MS);
   const errors = [];
 
@@ -3692,7 +3695,10 @@ async function readThreadSnapshotBestEffort(codexThreadId, reason = "unspecified
 async function verifyThreadStopState(rootThread, options = {}) {
   const activePhysicalThread = rootThread?.id ? getActivePhysicalThread(rootThread.id) : null;
   const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
-  const expectedTurnId = String(rootThread?.turn_id ?? "").trim() || null;
+  const expectedTurnId =
+    rootThread?.id
+      ? getTrackedExecutionTurnId(rootThread.id, activePhysicalThread?.id ?? null)
+      : String(activePhysicalThread?.turn_id ?? rootThread?.turn_id ?? "").trim() || null;
   const timeoutMs = Number(options.timeoutMs ?? THREAD_DELETE_STOP_TIMEOUT_MS);
   const reason = String(options.reason ?? "manual_stop").trim() || "manual_stop";
 
@@ -4938,11 +4944,12 @@ async function interruptThreadIssue(userId, payload = {}) {
     recoverySteps.push("removed_from_queue");
   }
 
+  const nextIssueStatus = interruptReason === "drag_to_prep" ? "staged" : "interrupted";
   updateIssueCard(issueId, {
-    status: "staged",
+    status: nextIssueStatus,
     progress: 0,
     queue_position: null,
-    prep_position: getNextPrepPosition(issue.thread_id),
+    prep_position: nextIssueStatus === "staged" ? getNextPrepPosition(issue.thread_id) : null,
     last_event: "issue.interrupted",
     last_message:
       String(issue.last_message ?? "").trim() ||
@@ -4970,7 +4977,7 @@ async function interruptThreadIssue(userId, payload = {}) {
 
   return {
     accepted: true,
-    action: wasActive || wasQueued ? "interrupted" : "restaged",
+    action: wasActive || wasQueued ? "interrupted" : nextIssueStatus === "staged" ? "restaged" : "interrupted",
     thread: threadStateById.get(issue.thread_id) ?? thread,
     issues: listThreadIssues(issue.thread_id),
     issue_id: issueId,
@@ -5140,14 +5147,14 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
   recoverySteps.push("cleared_active_lock");
 
   updateIssueCard(trackedIssue.id, {
-    status: "staged",
+    status: "interrupted",
     progress: 0,
     queue_position: null,
-    prep_position: getNextPrepPosition(rootThreadId),
+    prep_position: null,
     last_event: "thread.stop.completed",
     last_message: stopMessage
   });
-  recoverySteps.push("restaged_active_issue");
+  recoverySteps.push("interrupted_active_issue");
 
   refreshIssueQueuePositions(rootThreadId);
   updateProjectThreadSnapshot(rootThreadId);

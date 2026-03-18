@@ -163,6 +163,12 @@ const STATUS_META = {
     dotClassName: "bg-telegram-300",
     bubbleClassName: "bg-telegram-500 text-white"
   },
+  interrupted: {
+    label: "Interrupted",
+    chipClassName: "bg-amber-400/20 text-amber-100",
+    dotClassName: "bg-amber-300",
+    bubbleClassName: "bg-amber-100 text-slate-900"
+  },
   failed: {
     label: "Failed",
     chipClassName: "bg-rose-400/20 text-rose-100",
@@ -619,6 +625,10 @@ function getRealtimeProgressText(entity) {
     return "실패 확인 필요";
   }
 
+  if (status === "interrupted") {
+    return "중단됨";
+  }
+
   if (status === "completed") {
     return "완료됨";
   }
@@ -1027,7 +1037,7 @@ function shouldReloadThreadFromIssueSnapshot(currentIssues = [], nextIssues = []
     return false;
   }
 
-  return normalizedNext.some((issue) => ["awaiting_input", "completed", "failed"].includes(issue.status));
+  return normalizedNext.some((issue) => ["awaiting_input", "completed", "failed", "interrupted"].includes(issue.status));
 }
 
 function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
