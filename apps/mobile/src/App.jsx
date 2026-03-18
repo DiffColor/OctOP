@@ -5475,7 +5475,11 @@ function MainPage({
               )
             ) : (
               <>
-                {filteredThreads.length === 0 ? (
+                {!bridgeAvailable ? (
+                  <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+                    브릿지가 연결되지 않아 채팅창 목록을 표시할 수 없습니다.
+                  </div>
+                ) : filteredThreads.length === 0 ? (
                   <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
                     {loadingState === "loading"
                       ? "데이터를 동기화하고 있습니다."
@@ -5528,7 +5532,7 @@ function MainPage({
             <button
               type="button"
               onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
-              disabled={isTodoScope ? false : !selectedProject}
+              disabled={isTodoScope ? false : !selectedProject || !bridgeAvailable}
               className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
             >
               {isTodoScope ? "새 ToDo 채팅" : "새 채팅창"}
@@ -5721,17 +5725,19 @@ export default function App() {
     [threads, selectedThreadId]
   );
   const selectedProjectId = selectedScope.kind === "project" ? selectedScope.id : "";
+  const bridgeConnected = Boolean(status?.app_server?.connected) && !bridgeDisconnectOverridden;
+  const bridgeAvailable = Boolean(selectedBridgeId) && selectedBridgeKnown && bridgeConnected;
   const bridgeSignal = useMemo(
     () =>
       buildBridgeSignal({
-        connected: Boolean(status?.app_server?.connected) && !bridgeDisconnectOverridden,
+        connected: bridgeConnected,
         lastSocketActivityAt: Date.parse(status?.app_server?.last_socket_activity_at ?? ""),
         statusUpdatedAt: Date.parse(status?.updated_at ?? ""),
         now: streamNow
       }),
     [
+      bridgeConnected,
       bridgeDisconnectOverridden,
-      status?.app_server?.connected,
       status?.app_server?.last_socket_activity_at,
       status?.updated_at,
       streamNow
