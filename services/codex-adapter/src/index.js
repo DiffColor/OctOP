@@ -1883,7 +1883,15 @@ function markRunningIssueActivity(threadId, patch = {}) {
     backfillRequestedAt: null,
     backfillTrigger: null,
     backfillLastPolledAt: null,
-    backfillLastError: null
+    backfillLastError: null,
+    lastThreadReadAt: null,
+    lastThreadReadReason: null,
+    lastThreadReadRemoteStatus: null,
+    lastThreadReadTurnId: null,
+    lastThreadReadAssistantLength: 0,
+    lastThreadReadAssistantExcerpt: "",
+    lastThreadReadAppendedDeltaLength: 0,
+    lastThreadReadHadProgress: null
   };
   const next = {
     ...current,
@@ -1893,6 +1901,32 @@ function markRunningIssueActivity(threadId, patch = {}) {
 
   runningIssueMetaByThreadId.set(threadId, next);
   return next;
+}
+
+function buildRunningIssueBackfillDebug(threadId) {
+  const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
+
+  if (!meta) {
+    return null;
+  }
+
+  return {
+    active_issue_id: activeIssueByThreadId.get(threadId) ?? null,
+    backfill_requested_at: meta.backfillRequestedAt ?? null,
+    backfill_trigger: meta.backfillTrigger ?? null,
+    backfill_last_polled_at: meta.backfillLastPolledAt ?? null,
+    backfill_last_error: meta.backfillLastError ?? null,
+    no_progress_backfill_count: Number(meta.noProgressBackfillCount ?? 0),
+    last_thread_read_at: meta.lastThreadReadAt ?? null,
+    last_thread_read_reason: meta.lastThreadReadReason ?? null,
+    last_thread_read_remote_status: meta.lastThreadReadRemoteStatus ?? null,
+    last_thread_read_turn_id: meta.lastThreadReadTurnId ?? null,
+    last_thread_read_assistant_length: Number(meta.lastThreadReadAssistantLength ?? 0),
+    last_thread_read_assistant_excerpt: String(meta.lastThreadReadAssistantExcerpt ?? ""),
+    last_thread_read_appended_delta_length: Number(meta.lastThreadReadAppendedDeltaLength ?? 0),
+    last_thread_read_had_progress:
+      typeof meta.lastThreadReadHadProgress === "boolean" ? meta.lastThreadReadHadProgress : null
+  };
 }
 
 function areThreadTokenUsageStatesEqual(left = {}, right = {}) {
@@ -2608,6 +2642,7 @@ function getThreadContinuity(userId, rootThreadId) {
     root_thread: rootThread,
     physical_threads: listPhysicalThreads(rootThreadId).filter((physicalThread) => !physicalThread.deleted_at),
     active_physical_thread: getActivePhysicalThread(rootThreadId),
+    backfill_debug: buildRunningIssueBackfillDebug(rootThreadId),
     handoff_summaries: listHandoffSummariesForThread(rootThreadId),
     recently_closed_physical_threads: recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? []
   };
@@ -7848,6 +7883,10 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     recoveredMessage !== String(issue.last_message ?? physicalThread?.last_message ?? "");
   const hasObservableRunningProgress =
     syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
+  const backfillReadAt = now();
+  const remoteAssistantExcerpt = remoteAssistantText
+    ? remoteAssistantText.slice(Math.max(0, remoteAssistantText.length - 240))
+    : "";
   const nextNoProgressBackfillCount =
     remoteStatus === "running" && !hasObservableRunningProgress
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
@@ -8126,10 +8165,32 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       backfillTrigger: reason,
       backfillLastError: null,
       backfillLastPolledAt: now(),
-      noProgressBackfillCount: nextNoProgressBackfillCount
+      noProgressBackfillCount: nextNoProgressBackfillCount,
+      lastThreadReadAt: backfillReadAt,
+      lastThreadReadReason: reason,
+      lastThreadReadRemoteStatus: remoteStatus,
+      lastThreadReadTurnId: remoteTurn?.id ?? null,
+      lastThreadReadAssistantLength: remoteAssistantText.length,
+      lastThreadReadAssistantExcerpt: remoteAssistantExcerpt,
+      lastThreadReadAppendedDeltaLength: syncedAssistant.appendedDelta.length,
+      lastThreadReadHadProgress: hasObservableRunningProgress
     });
   } else {
     clearRunningIssueBackfill(threadId);
+    const refreshedMeta = runningIssueMetaByThreadId.get(threadId);
+    if (refreshedMeta) {
+      markRunningIssueActivity(threadId, {
+        lastActivityAt: refreshedMeta.lastActivityAt,
+        lastThreadReadAt: backfillReadAt,
+        lastThreadReadReason: reason,
+        lastThreadReadRemoteStatus: remoteStatus,
+        lastThreadReadTurnId: remoteTurn?.id ?? null,
+        lastThreadReadAssistantLength: remoteAssistantText.length,
+        lastThreadReadAssistantExcerpt: remoteAssistantExcerpt,
+        lastThreadReadAppendedDeltaLength: syncedAssistant.appendedDelta.length,
+        lastThreadReadHadProgress: hasObservableRunningProgress
+      });
+    }
   }
 
   if (
