@@ -100,6 +100,16 @@ svg {
   -webkit-box-orient: vertical;
 }
 
+.thread-list-item-touch-target {
+  -webkit-touch-callout: none;
+}
+
+.thread-list-item-touch-target,
+.thread-list-item-touch-target * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .message-enter {
   animation: rise-in 220ms ease-out;
 }

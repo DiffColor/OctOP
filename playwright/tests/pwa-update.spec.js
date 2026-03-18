@@ -13,7 +13,7 @@ const OLD_BUILD_DIR = path.join(TEMP_ROOT, 'old');
 const NEW_BUILD_DIR = path.join(TEMP_ROOT, 'new');
 const SERVER_PORT = 4178;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
-const NPM_COMMAND = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const NPM_COMMAND = 'npm';
 const PWA_UPDATE_ACTIVATOR_KEY = '__octopMobilePwaUpdateActivator';
 const PWA_UPDATE_READY_EVENT = 'octop.mobile.pwa.update-ready';
 
@@ -175,6 +175,7 @@ async function runMobileBuild(buildId) {
         ...process.env,
         OCTOP_MOBILE_BUILD_ID: buildId
       },
+      shell: process.platform === 'win32',
       stdio: 'inherit'
     });
 

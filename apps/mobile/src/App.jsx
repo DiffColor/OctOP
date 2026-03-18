@@ -3656,7 +3656,7 @@ function ThreadListItem({
             event.preventDefault();
           }
         }}
-        className={`relative w-full px-3 py-3 text-left ${
+        className={`thread-list-item-touch-target relative w-full px-3 py-3 text-left ${
           dragging ? "" : "transition-transform duration-180 ease-out"
         } ${highlighted ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
         aria-pressed={selectionMode ? selected : undefined}

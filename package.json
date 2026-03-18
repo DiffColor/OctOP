@@ -23,5 +23,8 @@
     "build:api": "dotnet build apps/api/OctOP.Gateway.csproj",
     "build:projector": "dotnet build services/projection-worker/OctOP.ProjectionWorker.csproj",
     "test:integration:bridge-rollover": "node --test tests/integration/root-thread-rollover.bridge.integration.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
   }
 }

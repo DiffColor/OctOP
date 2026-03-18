@@ -4,7 +4,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const NPM_COMMAND = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const NPM_COMMAND = 'npm';
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -165,6 +165,7 @@ async function buildWorkspace(workspaceName, extraEnv = {}) {
         ...process.env,
         ...extraEnv
       },
+      shell: process.platform === 'win32',
       stdio: 'inherit'
     });
 
