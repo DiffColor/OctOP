@@ -449,12 +449,10 @@ function useVisualViewportHeight() {
     }
 
     viewport.addEventListener("resize", syncViewportHeight);
-    viewport.addEventListener("scroll", syncViewportHeight);
     window.addEventListener("resize", syncViewportHeight);
 
     return () => {
       viewport.removeEventListener("resize", syncViewportHeight);
-      viewport.removeEventListener("scroll", syncViewportHeight);
       window.removeEventListener("resize", syncViewportHeight);
     };
   }, []);
