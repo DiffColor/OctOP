@@ -4923,6 +4923,7 @@ function MainPage({
   bridges,
   status,
   bridgeSignal,
+  bridgeAvailable,
   signalNow,
   projects,
   threads,
@@ -8816,6 +8817,7 @@ export default function App() {
         bridges={bridges}
         status={status}
         bridgeSignal={bridgeSignal}
+        bridgeAvailable={bridgeAvailable}
         signalNow={streamNow}
         projects={projects}
         threads={threads}
