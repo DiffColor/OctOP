@@ -8420,15 +8420,54 @@ async function sampleRunningIssueThreadReads(trigger = "interval_sample") {
         const remoteThread = await readThreadSnapshotFromAppServer(codexThreadId, trigger);
         const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
         const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+        const remoteStatus = normalizeRemoteTurnRuntimeStatus(
+          remoteThread,
+          remoteTurn,
+          issue.status ?? thread.status ?? "running"
+        );
+        const tokenUsageState = normalizeThreadTokenUsage(
+          remoteThread?.tokenUsage ?? remoteThread?.token_usage ?? null,
+          physicalThread ?? thread ?? {}
+        );
+        const tokenUsageChanged = !areThreadTokenUsageStatesEqual(physicalThread ?? thread ?? {}, tokenUsageState);
+        const previousAssistantLength = Number(meta.lastThreadReadAssistantLength ?? 0);
+        const currentAssistantLength = String(remoteAssistantText ?? "").length;
+        const hasSampleProgress =
+          currentAssistantLength > previousAssistantLength ||
+          String(remoteTurn?.id ?? "").trim() !== String(meta.lastThreadReadTurnId ?? "").trim() ||
+          String(remoteStatus ?? "").trim() !== String(meta.lastThreadReadRemoteStatus ?? "").trim() ||
+          tokenUsageChanged;
         const threadReadDebugPatch = buildThreadReadDebugPatch(trigger, remoteThread, remoteTurn, remoteAssistantText, {
-          fallbackStatus: issue.status ?? thread.status ?? "running"
+          fallbackStatus: issue.status ?? thread.status ?? "running",
+          hadProgress: hasSampleProgress
         });
+        const shouldPromoteSampleToBackfill =
+          Boolean(String(remoteAssistantText ?? "").trim() || remoteStatus !== "running" || tokenUsageChanged) &&
+          (
+            hasSampleProgress ||
+            thread.continuity_status === "degraded" ||
+            issue.last_event === "watchdog.degraded" ||
+            physicalThread?.last_event === "watchdog.degraded"
+          );
 
         markRunningIssueActivity(threadId, {
-          lastActivityAt: meta.lastActivityAt,
+          lastActivityAt: hasSampleProgress ? now() : meta.lastActivityAt,
           backfillLastError: null,
           ...threadReadDebugPatch
         });
+
+        if (shouldPromoteSampleToBackfill) {
+          markRunningIssueActivity(threadId, {
+            lastActivityAt: hasSampleProgress ? now() : meta.lastActivityAt,
+            backfillRequestedAt: meta.backfillRequestedAt ?? now(),
+            backfillTrigger: trigger,
+            backfillLastError: null,
+            ...threadReadDebugPatch
+          });
+
+          const owner = threadOwners.get(threadId) ?? BRIDGE_OWNER_LOGIN_ID;
+          await backfillRunningIssueFromSnapshot(owner, threadId, trigger);
+        }
       } catch (error) {
         markRunningIssueActivity(threadId, {
           lastActivityAt: meta.lastActivityAt,

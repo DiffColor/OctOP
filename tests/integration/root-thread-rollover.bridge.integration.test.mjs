@@ -1916,6 +1916,79 @@ test("running backfill은 새 delta가 없어도 기존 item.agentMessage.delta 
   }
 });
 
+test("thread/read sample은 degraded 이전의 새 RPC 진행을 즉시 backfill로 승격한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-read-sample-promote-int-"));
+  const fakeAppServer = new FakeAppServer();
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+
+    setTimeout(() => {
+      server.recordNotification("item/agentMessage/delta", {
+        threadId,
+        delta: " sample RPC 문장"
+      });
+    }, 800);
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-read-sample-promote-token",
+    userId: "integration-user",
+    bridgeId: `thread-read-sample-promote-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "5000",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "0",
+      OCTOP_RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS: "200"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Thread Read Sample Promote"
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const assistantMessages = issuePayload.messages.filter((message) => message.role === "assistant");
+
+      assert.equal(fakeAppServer.getRequests("thread/read").length >= 2, true);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(assistantMessages.at(-1)?.content, "첫 문장 sample RPC 문장");
+      assert.equal(continuityPayload.root_thread?.continuity_status, "healthy");
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "item.agentMessage.delta");
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "thread/read sample promotes progress into full backfill"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("연속 무진전 running backfill은 websocket 강제 재연결로 승격된다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-running-backfill-force-reconnect-int-"));
   const fakeAppServer = new FakeAppServer();
