@@ -7968,7 +7968,7 @@ function collectBridgeStatus(userId) {
       projects: state.projects.length,
       threads: threads.length
     },
-    updated_at: state.updated_at
+    updated_at: now()
   };
 }
 

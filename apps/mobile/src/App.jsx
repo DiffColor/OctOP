@@ -36,6 +36,8 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
+const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
@@ -60,7 +62,7 @@ function formatSilentDuration(ms) {
   return `${minutes}분 ${seconds}초`;
 }
 
-function buildBridgeSignal({ connected, lastActivityAt, now }) {
+function buildBridgeSignal({ connected, lastActivityAt, lastSocketActivityAt, now }) {
   if (!connected) {
     return {
       label: "미연결",
@@ -74,8 +76,25 @@ function buildBridgeSignal({ connected, lastActivityAt, now }) {
     };
   }
 
+  const socketActivityAt = Number.isFinite(lastSocketActivityAt) ? lastSocketActivityAt : 0;
+  const bridgeSilentMs = socketActivityAt > 0 ? Math.max(0, now - socketActivityAt) : 0;
+
+  if (socketActivityAt > 0 && bridgeSilentMs >= BRIDGE_STALE_DISCONNECT_MS) {
+    return {
+      label: "미연결",
+      title: `브릿지 소켓 응답이 ${formatSilentDuration(bridgeSilentMs)} 동안 없습니다.`,
+      dotColor: "#fb7185",
+      chipStyle: {
+        backgroundColor: "rgba(244, 63, 94, 0.14)",
+        borderColor: "rgba(244, 63, 94, 0.3)",
+        color: "#fecdd3"
+      }
+    };
+  }
+
   const activityAt = Number.isFinite(lastActivityAt) ? lastActivityAt : 0;
-  const silentMs = activityAt > 0 ? Math.max(0, now - activityAt) : 0;
+  const effectiveActivityAt = Math.max(activityAt, socketActivityAt);
+  const silentMs = effectiveActivityAt > 0 ? Math.max(0, now - effectiveActivityAt) : 0;
   const ratio =
     silentMs <= STREAM_SILENCE_START_MS
       ? 0
@@ -5646,10 +5665,11 @@ export default function App() {
     () =>
       buildBridgeSignal({
         connected: Boolean(status?.app_server?.connected),
+        lastSocketActivityAt: Date.parse(status?.app_server?.last_socket_activity_at ?? ""),
         lastActivityAt: streamActivityAt,
         now: streamNow
       }),
-    [status?.app_server?.connected, streamActivityAt, streamNow]
+    [status?.app_server?.connected, status?.app_server?.last_socket_activity_at, streamActivityAt, streamNow]
   );
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
@@ -7010,6 +7030,52 @@ export default function App() {
     }
 
     void loadBridgeWorkspace(session, selectedBridgeId);
+  }, [selectedBridgeId, selectedBridgeKnown, session]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId || !selectedBridgeKnown) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const pollBridgeStatus = async () => {
+      try {
+        const nextStatus = await apiRequest(
+          `/api/bridge/status?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        );
+
+        if (cancelled || selectedBridgeIdRef.current !== selectedBridgeId) {
+          return;
+        }
+
+        setStatus(nextStatus);
+      } catch (error) {
+        if (cancelled || selectedBridgeIdRef.current !== selectedBridgeId) {
+          return;
+        }
+
+        setStatus((current) => ({
+          ...current,
+          app_server: {
+            ...(current?.app_server ?? {}),
+            connected: false,
+            initialized: false,
+            last_error: error.message
+          },
+          updated_at: new Date().toISOString()
+        }));
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void pollBridgeStatus();
+    }, BRIDGE_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [selectedBridgeId, selectedBridgeKnown, session]);
 
   useEffect(() => {
