@@ -40,9 +40,6 @@ const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 const APP_RESUME_COALESCE_MS = 400;
-const THREAD_FILTER_HIDE_DELTA_PX = 18;
-const THREAD_FILTER_SHOW_DELTA_PX = 10;
-const THREAD_FILTER_EDGE_GUARD_PX = 24;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
@@ -3293,7 +3290,7 @@ function TodoChatDetail({
 
   return (
     <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
-      <header className="z-30 shrink-0 border-b border-white/10 bg-slate-950 px-4 py-3">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -3985,9 +3982,7 @@ function ThreadDetail({
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const pinnedToLatestRef = useRef(true);
-  const previousScrollTopRef = useRef(0);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
-  const [showThreadFilterHeader, setShowThreadFilterHeader] = useState(true);
   const autoScrollingRef = useRef(false);
   const [refreshPending, setRefreshPending] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
@@ -4217,9 +4212,7 @@ function ThreadDetail({
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
-    setShowThreadFilterHeader(true);
     autoScrollingRef.current = false;
-    previousScrollTopRef.current = 0;
     recomputePinnedState();
   }, [recomputePinnedState, thread?.id, viewMode]);
 
@@ -4246,42 +4239,11 @@ function ThreadDetail({
 
         if (node && !autoScrollingRef.current) {
           recomputePinnedState();
-
-          const currentScrollTop = node.scrollTop;
-          const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
-          const distanceFromBottom = maxScrollTop - currentScrollTop;
-          const nearTop = currentScrollTop <= THREAD_FILTER_EDGE_GUARD_PX;
-          const nearBottom = distanceFromBottom <= THREAD_FILTER_EDGE_GUARD_PX;
-          const previousScrollTop = previousScrollTopRef.current;
-          const delta = currentScrollTop - previousScrollTop;
-
-          if (nearTop || nearBottom) {
-            if (!showThreadFilterHeader) {
-              setShowThreadFilterHeader(true);
-            }
-            previousScrollTopRef.current = currentScrollTop;
-            return;
-          }
-
-          if (delta >= THREAD_FILTER_HIDE_DELTA_PX && showThreadFilterHeader) {
-            setShowThreadFilterHeader(false);
-            previousScrollTopRef.current = currentScrollTop;
-            return;
-          }
-
-          if (delta <= -THREAD_FILTER_SHOW_DELTA_PX && !showThreadFilterHeader) {
-            setShowThreadFilterHeader(true);
-            previousScrollTopRef.current = currentScrollTop;
-            return;
-          }
-
-          previousScrollTopRef.current = currentScrollTop;
         }
       });
     };
 
     recomputePinnedState();
-    previousScrollTopRef.current = scrollNode.scrollTop;
     scrollNode.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
@@ -4291,7 +4253,7 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [recomputePinnedState, showThreadFilterHeader, viewMode]);
+  }, [recomputePinnedState, viewMode]);
 
   useLayoutEffect(() => {
     if (viewMode !== "chat" || !isPinnedToLatest) {
@@ -4316,8 +4278,6 @@ function ThreadDetail({
 
       window.requestAnimationFrame(() => {
         autoScrollingRef.current = false;
-        previousScrollTopRef.current = containerNode?.scrollTop ?? previousScrollTopRef.current;
-        setShowThreadFilterHeader(true);
         recomputePinnedState();
       });
     });
@@ -4512,19 +4472,8 @@ function ThreadDetail({
             )}
           </button>
         </div>
-      </header>
 
-      <div
-        ref={scrollRef}
-        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
-      >
-        <div
-          className={`sticky top-0 z-20 -mx-4 overflow-hidden bg-slate-950/95 px-4 backdrop-blur transition-all duration-150 ease-out ${
-            showThreadFilterHeader
-              ? "mb-4 max-h-20 border-b border-white/10 pb-3 pt-3 opacity-100"
-              : "mb-0 max-h-0 border-b border-transparent pb-0 pt-0 opacity-0"
-          }`}
-        >
+        <div className="mt-3">
           <div className="flex gap-2 overflow-x-auto pb-1">
             {THREAD_CONTENT_FILTERS.map((filter) => (
               <button
@@ -4541,8 +4490,14 @@ function ThreadDetail({
               </button>
             ))}
           </div>
-        </div>
 
+        </div>
+      </header>
+
+      <div
+        ref={scrollRef}
+        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
+      >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
