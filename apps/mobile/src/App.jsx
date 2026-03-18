@@ -3466,7 +3466,8 @@ function ThreadListItem({
   onOpen,
   onRename,
   onDelete,
-  onToggleSelect
+  onToggleSelect,
+  onEnterSelectionMode
 }) {
   const status = getStatusMeta(thread.status);
   const responseSignal = buildThreadResponseSignal(thread, signalNow);
@@ -3477,11 +3478,21 @@ function ThreadListItem({
   const swipeAxisRef = useRef(null);
   const offsetRef = useRef(0);
   const movedRef = useRef(false);
+  const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
   const ACTION_WIDTH = 92;
   const SNAP_THRESHOLD = 42;
+  const LONG_PRESS_TRIGGER_MS = 420;
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const highlighted = selectionMode ? selected : active;
+
+  const clearPendingLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
 
   const setRevealOffset = useCallback((nextOffset) => {
     const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
@@ -3499,9 +3510,21 @@ function ThreadListItem({
     pointerIdRef.current = event.pointerId;
     swipeAxisRef.current = null;
     movedRef.current = false;
+    longPressTriggeredRef.current = false;
     setDragging(false);
     event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, []);
+
+    clearPendingLongPress();
+
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTimerRef.current = null;
+        longPressTriggeredRef.current = true;
+        setRevealOffset(0);
+        onEnterSelectionMode?.(thread.id);
+      }, LONG_PRESS_TRIGGER_MS);
+    }
+  }, [clearPendingLongPress, onEnterSelectionMode, setRevealOffset, thread.id]);
 
   const handlePointerMove = useCallback(
     (event) => {
@@ -3522,6 +3545,7 @@ function ThreadListItem({
           return;
         }
 
+        clearPendingLongPress();
         swipeAxisRef.current = absX > absY ? "x" : "y";
       }
 
@@ -3540,13 +3564,15 @@ function ThreadListItem({
       setDragging(true);
       setRevealOffset(baseOffsetRef.current + deltaX);
     },
-    [setRevealOffset]
+    [clearPendingLongPress, setRevealOffset]
   );
 
   const handlePointerUp = useCallback((event) => {
     if (startPointRef.current === null) {
       return;
     }
+
+    clearPendingLongPress();
 
     if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
       setRevealOffset(-ACTION_WIDTH);
@@ -3562,7 +3588,7 @@ function ThreadListItem({
     swipeAxisRef.current = null;
     setDragging(false);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }, [setRevealOffset]);
+  }, [clearPendingLongPress, setRevealOffset]);
 
   const showDeleteAction = offset > 0;
   const showRenameAction = offset < 0;
@@ -3603,6 +3629,11 @@ function ThreadListItem({
         onPointerUp={selectionMode ? undefined : handlePointerUp}
         onPointerCancel={selectionMode ? undefined : handlePointerUp}
         onClick={() => {
+          if (longPressTriggeredRef.current) {
+            longPressTriggeredRef.current = false;
+            return;
+          }
+
           if (movedRef.current) {
             movedRef.current = false;
             return;
@@ -3619,6 +3650,11 @@ function ThreadListItem({
           }
 
           onOpen(thread.id);
+        }}
+        onContextMenu={(event) => {
+          if (!selectionMode) {
+            event.preventDefault();
+          }
         }}
         className={`relative w-full px-3 py-3 text-left ${
           dragging ? "" : "transition-transform duration-180 ease-out"
@@ -4791,12 +4827,6 @@ function MainPage({
       ),
     [selectedProjectId, threads]
   );
-  const visibleThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
-  const visibleSelectedThreadCount = useMemo(
-    () => visibleThreadIds.filter((threadId) => selectedThreadIds.includes(threadId)).length,
-    [selectedThreadIds, visibleThreadIds]
-  );
-  const allVisibleThreadsSelected = visibleThreadIds.length > 0 && visibleSelectedThreadCount === visibleThreadIds.length;
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
@@ -4893,13 +4923,25 @@ function MainPage({
     },
     [onSelectProject]
   );
-  const handleEnterThreadSelectionMode = useCallback(() => {
+  const handleEnterThreadSelectionMode = useCallback((threadId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
     if (filteredThreads.length === 0) {
       return;
     }
 
     setThreadSelectionMode(true);
-    setSelectedThreadIds([]);
+    setSelectedThreadIds((current) => {
+      if (!normalizedThreadId) {
+        return current;
+      }
+
+      if (current.includes(normalizedThreadId)) {
+        return current;
+      }
+
+      return [...current, normalizedThreadId];
+    });
   }, [filteredThreads.length]);
   const handleCancelThreadSelection = useCallback(() => {
     setThreadSelectionMode(false);
@@ -4919,22 +4961,6 @@ function MainPage({
         : [...current, normalizedThreadId]
     );
   }, []);
-  const handleToggleVisibleThreadSelection = useCallback(() => {
-    if (visibleThreadIds.length === 0) {
-      return;
-    }
-
-    const visibleThreadIdSet = new Set(visibleThreadIds);
-    setSelectedThreadIds((current) => {
-      if (allVisibleThreadsSelected) {
-        return current.filter((threadId) => !visibleThreadIdSet.has(threadId));
-      }
-
-      const nextSelectedThreadIds = new Set(current);
-      visibleThreadIds.forEach((threadId) => nextSelectedThreadIds.add(threadId));
-      return [...nextSelectedThreadIds];
-    });
-  }, [allVisibleThreadsSelected, visibleThreadIds]);
   const handleDeleteSelectedThreads = useCallback(async () => {
     if (selectedThreadIds.length === 0) {
       return;
@@ -5188,53 +5214,6 @@ function MainPage({
               )
             ) : (
               <>
-                <div className="mb-2 flex items-center justify-between gap-3 px-1 pt-2">
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-medium tracking-[0.18em] text-slate-500">THREADS</p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      {threadSelectionMode
-                        ? `${selectedThreadIds.length}개 선택됨`
-                        : filteredThreads.length > 0
-                          ? `${filteredThreads.length}개 채팅창`
-                          : loadingState === "loading"
-                            ? "데이터를 동기화하고 있습니다."
-                            : "조건에 맞는 채팅창이 없습니다."}
-                    </p>
-                  </div>
-                  {filteredThreads.length > 0 ? (
-                    threadSelectionMode ? (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleToggleVisibleThreadSelection}
-                          disabled={threadBusy}
-                          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          {allVisibleThreadsSelected ? "해제" : "전체"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleCancelThreadSelection}
-                          disabled={threadBusy}
-                          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          취소
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={handleEnterThreadSelectionMode}
-                        disabled={threadBusy}
-                        aria-label="채팅창 선택 모드"
-                        className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        선택
-                      </button>
-                    )
-                  ) : null}
-                </div>
-
                 {filteredThreads.length === 0 ? (
                   <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
                     {loadingState === "loading"
@@ -5254,6 +5233,7 @@ function MainPage({
                       onRename={(targetThread) => setThreadBeingEdited(targetThread)}
                       onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
                       onToggleSelect={handleToggleThreadSelection}
+                      onEnterSelectionMode={handleEnterThreadSelectionMode}
                     />
                   ))
                 )}
