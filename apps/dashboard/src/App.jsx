@@ -20,6 +20,8 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
+const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 
 function formatBridgeSilentDuration(ms, language = "en") {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -1480,8 +1482,37 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     prompt: issue.prompt ?? "",
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
     prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    created_physical_thread_id: issue.created_physical_thread_id ?? null,
+    executed_physical_thread_id: issue.executed_physical_thread_id ?? null,
     continuity: issue.continuity ?? null
   };
+}
+
+function getIssuePhysicalThreadId(issue) {
+  return issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
+}
+
+function findActiveIssueForThread(issues, activePhysicalThreadId) {
+  const normalizedIssues = Array.isArray(issues)
+    ? issues
+        .map((issue) => normalizeIssue(issue))
+        .filter(Boolean)
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+    : [];
+
+  if (normalizedIssues.length === 0) {
+    return null;
+  }
+
+  if (activePhysicalThreadId) {
+    const physicalMatch = normalizedIssues.find((issue) => getIssuePhysicalThreadId(issue) === activePhysicalThreadId);
+
+    if (physicalMatch) {
+      return physicalMatch;
+    }
+  }
+
+  return normalizedIssues.find((issue) => ["running", "awaiting_input"].includes(issue.status)) ?? normalizedIssues[0] ?? null;
 }
 
 function mergeIssues(currentIssues, nextIssues) {
@@ -4881,6 +4912,7 @@ export default function App() {
   const [loadingState, setLoadingState] = useState("idle");
   const [streamActivityAt, setStreamActivityAt] = useState(null);
   const [streamNow, setStreamNow] = useState(() => Date.now());
+  const [eventStreamReconnectToken, setEventStreamReconnectToken] = useState(0);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
@@ -4899,9 +4931,13 @@ export default function App() {
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const selectedProjectThreadIdRef = useRef("");
+  const projectThreadsRef = useRef([]);
   const archivedIssuesStateRef = useRef({});
   const archivedIssueSnapshotsRef = useRef({});
   const visibleIssueSnapshotsRef = useRef({});
+  const threadLiveProgressAtByIdRef = useRef(new Map());
+  const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "" });
+  const lastForegroundResumeAtRef = useRef(0);
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -4924,6 +4960,14 @@ export default function App() {
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
+  const selectedProjectThread = useMemo(
+    () => projectThreads.find((thread) => thread.id === selectedProjectThreadId) ?? null,
+    [projectThreads, selectedProjectThreadId]
+  );
+  const selectedActiveIssue = useMemo(
+    () => findActiveIssueForThread(issues, selectedProjectThread?.active_physical_thread_id ?? null),
+    [issues, selectedProjectThread?.active_physical_thread_id]
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -5130,6 +5174,10 @@ export default function App() {
   useEffect(() => {
     issuesRef.current = issues;
   }, [issues]);
+
+  useEffect(() => {
+    projectThreadsRef.current = projectThreads;
+  }, [projectThreads]);
 
   useEffect(() => {
     archivedIssuesStateRef.current = archivedIssuesState;
@@ -5489,6 +5537,110 @@ export default function App() {
     );
   }, []);
 
+  const syncActiveIssueDetail = useCallback(async (sessionArg, bridgeId, threadId, issueId, options = {}) => {
+    if (!sessionArg?.loginId || !bridgeId || !threadId || !issueId) {
+      return null;
+    }
+
+    const { force = false } = options;
+    const syncState = activeIssueSyncStateRef.current;
+
+    if (syncState.inFlight && !force && syncState.issueId === issueId) {
+      return null;
+    }
+
+    activeIssueSyncStateRef.current = {
+      inFlight: true,
+      issueId
+    };
+
+    try {
+      const payload = await loadIssueDetail(sessionArg, bridgeId, issueId);
+      const nextIssue = normalizeIssue(payload?.issue, threadId);
+
+      if (nextIssue) {
+        const currentScopedIssues = mergeIssues(
+          visibleIssueSnapshotsRef.current[bridgeId]?.[threadId] ?? [],
+          archivedIssueSnapshotsRef.current[bridgeId]?.[threadId] ?? []
+        );
+        applyIssueStateForScope(bridgeId, threadId, mergeIssues(currentScopedIssues, [nextIssue]));
+      }
+
+      if (payload?.thread) {
+        setProjectThreads((current) => upsertProjectThread(current, payload.thread));
+      }
+
+      if (detailStateRef.current.open && detailStateRef.current.thread?.id === issueId) {
+        setDetailState((current) => ({
+          ...current,
+          loading: false,
+          thread: payload?.issue ?? current.thread,
+          messages: payload?.messages ?? current.messages
+        }));
+      }
+
+      return payload;
+    } finally {
+      activeIssueSyncStateRef.current = {
+        inFlight: false,
+        issueId: ""
+      };
+    }
+  }, [applyIssueStateForScope, loadIssueDetail]);
+
+  const handleDashboardForegroundResume = useCallback(async (reason = "foreground_resume") => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (now - lastForegroundResumeAtRef.current < 1500) {
+      return;
+    }
+
+    lastForegroundResumeAtRef.current = now;
+    setEventStreamReconnectToken((current) => current + 1);
+
+    if (!selectedProjectId) {
+      return;
+    }
+
+    const nextThreads = await loadProjectThreads(session, selectedBridgeId, selectedProjectId);
+    const activeThreadId = selectedProjectThreadIdRef.current;
+
+    if (!activeThreadId) {
+      return;
+    }
+
+    threadLiveProgressAtByIdRef.current.delete(activeThreadId);
+    const nextIssues = await loadThreadIssues(session, selectedBridgeId, activeThreadId);
+    const resumedThread =
+      nextThreads.find((thread) => thread.id === activeThreadId) ??
+      projectThreadsRef.current.find((thread) => thread.id === activeThreadId) ??
+      null;
+    const resumedActiveIssue = findActiveIssueForThread(nextIssues, resumedThread?.active_physical_thread_id ?? null);
+
+    if (resumedActiveIssue?.id) {
+      await syncActiveIssueDetail(session, selectedBridgeId, activeThreadId, resumedActiveIssue.id, { force: true });
+    }
+
+    if (detailStateRef.current.open && detailStateRef.current.thread?.id && detailStateRef.current.thread.id !== resumedActiveIssue?.id) {
+      await syncActiveIssueDetail(session, selectedBridgeId, activeThreadId, detailStateRef.current.thread.id, { force: true });
+    }
+  }, [
+    loadProjectThreads,
+    loadThreadIssues,
+    selectedBridgeId,
+    selectedProjectId,
+    session,
+    syncActiveIssueDetail
+  ]);
+
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
       setWorkspaceRoots([]);
@@ -5602,6 +5754,24 @@ export default function App() {
           return;
         }
 
+        if (eventThreadId && eventThreadId === activeThreadId && isLiveIssueProgressEvent(payload.type)) {
+          threadLiveProgressAtByIdRef.current.set(eventThreadId, Date.now());
+        }
+
+        if (
+          eventThreadId &&
+          eventThreadId === activeThreadId &&
+          (
+            payload.type === "turn.completed" ||
+            (
+              payload.type === "thread.status.changed" &&
+              ["waitingForInput", "idle", "error"].includes(String(payload.payload?.status?.type ?? "").trim())
+            )
+          )
+        ) {
+          threadLiveProgressAtByIdRef.current.delete(eventThreadId);
+        }
+
         if (eventThreadId) {
           setProjectThreads((current) => upsertLiveThreadPatch(current, payload));
         }
@@ -5689,6 +5859,10 @@ export default function App() {
 
           const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
           applyIssueStateForScope(activeBridgeId, targetThreadId || activeThreadId, nextIssues);
+
+          if (!findActiveIssueForThread(nextIssues, projectThreadsRef.current.find((thread) => thread.id === (targetThreadId || activeThreadId))?.active_physical_thread_id ?? null)) {
+            threadLiveProgressAtByIdRef.current.delete(targetThreadId || activeThreadId);
+          }
           return;
         }
 
@@ -5756,7 +5930,43 @@ export default function App() {
     return () => {
       eventSource.close();
     };
-  }, [copy.alerts.sseReconnect, markStreamActivity, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
+  }, [copy.alerts.sseReconnect, eventStreamReconnectToken, markStreamActivity, session, selectedBridgeId, selectedProjectId, selectedProjectThreadId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void handleDashboardForegroundResume("dashboard_resume:visibility");
+      }
+    };
+
+    const handleWindowFocus = () => {
+      void handleDashboardForegroundResume("dashboard_resume:focus");
+    };
+
+    const handlePageShow = () => {
+      void handleDashboardForegroundResume("dashboard_resume:pageshow");
+    };
+
+    const handleOnline = () => {
+      void handleDashboardForegroundResume("dashboard_resume:online");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [handleDashboardForegroundResume]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -5853,6 +6063,34 @@ export default function App() {
 
     void loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
   }, [archivesHydrated, loadThreadIssues, session, selectedBridgeId, selectedProjectThreadId]);
+
+  useEffect(() => {
+    if (
+      !session?.loginId ||
+      !selectedBridgeId ||
+      !selectedProjectThreadId ||
+      !selectedActiveIssue ||
+      !["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
+    ) {
+      return undefined;
+    }
+
+    const pollActiveIssue = () => {
+      const lastLiveProgressAt = Number(threadLiveProgressAtByIdRef.current.get(selectedProjectThreadId) ?? 0);
+
+      if (lastLiveProgressAt > 0 && Date.now() - lastLiveProgressAt < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS) {
+        return;
+      }
+
+      void syncActiveIssueDetail(session, selectedBridgeId, selectedProjectThreadId, selectedActiveIssue.id);
+    };
+
+    const intervalId = window.setInterval(pollActiveIssue, ACTIVE_ISSUE_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedActiveIssue, selectedBridgeId, selectedProjectThreadId, session, syncActiveIssueDetail]);
 
   useEffect(() => {
     const todoIds = issues
