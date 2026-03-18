@@ -1893,9 +1893,6 @@ function markRunningIssueActivity(threadId, patch = {}) {
     lastThreadReadRemoteStatus: null,
     lastThreadReadTurnId: null,
     lastThreadReadAssistantLength: 0,
-    lastThreadReadAssistantExcerpt: "",
-    lastThreadReadThreadRawJson: "",
-    lastThreadReadTurnRawJson: "",
     lastThreadReadAppendedDeltaLength: 0,
     lastThreadReadHadProgress: null
   };
@@ -1907,34 +1904,6 @@ function markRunningIssueActivity(threadId, patch = {}) {
 
   runningIssueMetaByThreadId.set(threadId, next);
   return next;
-}
-
-function buildRunningIssueBackfillDebug(threadId) {
-  const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
-
-  if (!meta) {
-    return null;
-  }
-
-  return {
-    active_issue_id: activeIssueByThreadId.get(threadId) ?? null,
-    backfill_requested_at: meta.backfillRequestedAt ?? null,
-    backfill_trigger: meta.backfillTrigger ?? null,
-    backfill_last_polled_at: meta.backfillLastPolledAt ?? null,
-    backfill_last_error: meta.backfillLastError ?? null,
-    no_progress_backfill_count: Number(meta.noProgressBackfillCount ?? 0),
-    last_thread_read_at: meta.lastThreadReadAt ?? null,
-    last_thread_read_reason: meta.lastThreadReadReason ?? null,
-    last_thread_read_remote_status: meta.lastThreadReadRemoteStatus ?? null,
-    last_thread_read_turn_id: meta.lastThreadReadTurnId ?? null,
-    last_thread_read_assistant_length: Number(meta.lastThreadReadAssistantLength ?? 0),
-    last_thread_read_assistant_excerpt: String(meta.lastThreadReadAssistantExcerpt ?? ""),
-    last_thread_read_thread_raw_json: String(meta.lastThreadReadThreadRawJson ?? ""),
-    last_thread_read_turn_raw_json: String(meta.lastThreadReadTurnRawJson ?? ""),
-    last_thread_read_appended_delta_length: Number(meta.lastThreadReadAppendedDeltaLength ?? 0),
-    last_thread_read_had_progress:
-      typeof meta.lastThreadReadHadProgress === "boolean" ? meta.lastThreadReadHadProgress : null
-  };
 }
 
 function areThreadTokenUsageStatesEqual(left = {}, right = {}) {
@@ -2650,7 +2619,6 @@ function getThreadContinuity(userId, rootThreadId) {
     root_thread: rootThread,
     physical_threads: listPhysicalThreads(rootThreadId).filter((physicalThread) => !physicalThread.deleted_at),
     active_physical_thread: getActivePhysicalThread(rootThreadId),
-    backfill_debug: buildRunningIssueBackfillDebug(rootThreadId),
     handoff_summaries: listHandoffSummariesForThread(rootThreadId),
     recently_closed_physical_threads: recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? []
   };
@@ -7702,11 +7670,6 @@ function buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssis
     ),
     lastThreadReadTurnId: remoteTurn?.id ?? null,
     lastThreadReadAssistantLength: assistantText.length,
-    lastThreadReadAssistantExcerpt: assistantText
-      ? assistantText.slice(Math.max(0, assistantText.length - 240))
-      : "",
-    lastThreadReadThreadRawJson: truncateDiagnosticText(JSON.stringify(remoteThread ?? null), 12000),
-    lastThreadReadTurnRawJson: truncateDiagnosticText(JSON.stringify(remoteTurn ?? null), 12000),
     lastThreadReadAppendedDeltaLength: Number(options.appendedDeltaLength ?? 0),
     lastThreadReadHadProgress:
       typeof options.hadProgress === "boolean" ? options.hadProgress : null
