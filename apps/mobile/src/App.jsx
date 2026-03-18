@@ -186,10 +186,38 @@ const THREAD_CONTENT_FILTERS = [
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
+const SCROLL_BOUNDARY_EPSILON_PX = 1;
+const BOTTOM_BOUNDARY_HEADER_GUARD_PX = 24;
+const BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS = 180;
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 240; // 최대 입력창 높이(px)를 제한해 채팅 영역이 사라지는 것을 방지
+
+function getMaxScrollTop(node) {
+  if (!node) {
+    return 0;
+  }
+
+  return Math.max(0, node.scrollHeight - node.clientHeight);
+}
+
+function getDistanceFromBottom(node) {
+  if (!node) {
+    return 0;
+  }
+
+  return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop);
+}
+
+function isBottomBoundaryMomentumLocked(node) {
+  if (!node) {
+    return false;
+  }
+
+  const until = Number(node.dataset.bottomMomentumLockUntil ?? 0);
+  return Number.isFinite(until) && until > Date.now();
+}
 
 function readStoredSession() {
   for (const key of [
@@ -472,7 +500,38 @@ function useTouchScrollBoundaryLock(scrollRef) {
     }
 
     let touchY = 0;
-    const boundaryEpsilon = 1;
+    let lastDeltaY = 0;
+    let restoreOverflowTimerId = 0;
+    const clearBottomMomentumLock = () => {
+      delete scrollNode.dataset.bottomMomentumLockUntil;
+    };
+    const lockBottomMomentum = () => {
+      scrollNode.dataset.bottomMomentumLockUntil = String(Date.now() + BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS);
+    };
+    const stopBottomMomentum = () => {
+      const maxScrollTop = getMaxScrollTop(scrollNode);
+
+      if (maxScrollTop <= 0) {
+        return;
+      }
+
+      lockBottomMomentum();
+      scrollNode.scrollTop = maxScrollTop;
+
+      if (restoreOverflowTimerId) {
+        window.clearTimeout(restoreOverflowTimerId);
+      }
+
+      scrollNode.style.overflowY = "hidden";
+      void scrollNode.offsetHeight;
+      scrollNode.style.overflowY = "";
+      scrollNode.scrollTop = maxScrollTop;
+
+      restoreOverflowTimerId = window.setTimeout(() => {
+        clearBottomMomentumLock();
+        restoreOverflowTimerId = 0;
+      }, BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS);
+    };
 
     const handleTouchStart = (event) => {
       if (event.touches.length !== 1) {
@@ -480,17 +539,17 @@ function useTouchScrollBoundaryLock(scrollRef) {
       }
 
       touchY = event.touches[0].clientY;
-
-      const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+      lastDeltaY = 0;
+      const maxScrollTop = getMaxScrollTop(scrollNode);
 
       if (maxScrollTop <= 0) {
         return;
       }
 
       if (scrollNode.scrollTop <= 0) {
-        scrollNode.scrollTop = boundaryEpsilon;
+        scrollNode.scrollTop = SCROLL_BOUNDARY_EPSILON_PX;
       } else if (scrollNode.scrollTop >= maxScrollTop) {
-        scrollNode.scrollTop = Math.max(boundaryEpsilon, maxScrollTop - boundaryEpsilon);
+        scrollNode.scrollTop = Math.max(SCROLL_BOUNDARY_EPSILON_PX, maxScrollTop - SCROLL_BOUNDARY_EPSILON_PX);
       }
     };
 
@@ -502,28 +561,48 @@ function useTouchScrollBoundaryLock(scrollRef) {
       const currentY = event.touches[0].clientY;
       const deltaY = currentY - touchY;
       touchY = currentY;
+      lastDeltaY = deltaY;
 
-      const maxScrollTop = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+      const maxScrollTop = getMaxScrollTop(scrollNode);
 
       if (maxScrollTop <= 0) {
         event.preventDefault();
         return;
       }
 
-      const isPullingPastTop = deltaY > 0 && scrollNode.scrollTop <= boundaryEpsilon;
-      const isPushingPastBottom = deltaY < 0 && scrollNode.scrollTop >= maxScrollTop - boundaryEpsilon;
+      const isPullingPastTop = deltaY > 0 && scrollNode.scrollTop <= SCROLL_BOUNDARY_EPSILON_PX;
+      const isPushingPastBottom = deltaY < 0 && scrollNode.scrollTop >= maxScrollTop - SCROLL_BOUNDARY_EPSILON_PX;
 
       if (isPullingPastTop || isPushingPastBottom) {
+        if (isPushingPastBottom) {
+          lockBottomMomentum();
+        }
         event.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (lastDeltaY < 0 && getDistanceFromBottom(scrollNode) <= BOTTOM_BOUNDARY_HEADER_GUARD_PX) {
+        stopBottomMomentum();
       }
     };
 
     scrollNode.addEventListener("touchstart", handleTouchStart, { passive: true });
     scrollNode.addEventListener("touchmove", handleTouchMove, { passive: false });
+    scrollNode.addEventListener("touchend", handleTouchEnd, { passive: true });
+    scrollNode.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
     return () => {
+      if (restoreOverflowTimerId) {
+        window.clearTimeout(restoreOverflowTimerId);
+      }
+
+      clearBottomMomentumLock();
+      scrollNode.style.overflowY = "";
       scrollNode.removeEventListener("touchstart", handleTouchStart);
       scrollNode.removeEventListener("touchmove", handleTouchMove);
+      scrollNode.removeEventListener("touchend", handleTouchEnd);
+      scrollNode.removeEventListener("touchcancel", handleTouchEnd);
     };
   }, [scrollRef]);
 }
@@ -4203,7 +4282,7 @@ function ThreadDetail({
       return;
     }
 
-    const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
+    const distanceFromBottom = getDistanceFromBottom(scrollNode);
     const shouldPin = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
 
     if (shouldPin !== pinnedToLatestRef.current) {
@@ -4245,9 +4324,16 @@ function ThreadDetail({
         if (node && !autoScrollingRef.current) {
           const nextScrollTop = Math.max(0, node.scrollTop);
           const delta = nextScrollTop - previousScrollTopRef.current;
+          const distanceFromBottom = getDistanceFromBottom(node);
+          const shouldGuardHeaderAtBottom =
+            distanceFromBottom <= BOTTOM_BOUNDARY_HEADER_GUARD_PX || isBottomBoundaryMomentumLocked(node);
 
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
+          } else if (shouldGuardHeaderAtBottom) {
+            previousScrollTopRef.current = nextScrollTop;
+            recomputePinnedState();
+            return;
           } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(false);
           } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
