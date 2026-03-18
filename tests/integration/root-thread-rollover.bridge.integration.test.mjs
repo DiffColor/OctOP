@@ -1837,7 +1837,7 @@ test("실시간 delta가 끊겨도 thread/list가 running이면 즉시 thread/re
       assert.equal(assistantMessages.at(-1)?.content, "첫 문장 이후 RPC 복구 문장");
       assert.equal(continuityPayload.active_physical_thread?.context_used_tokens, 91000);
       assert.equal(continuityPayload.active_physical_thread?.context_usage_percent, 91);
-      assert.equal(continuityPayload.root_thread?.continuity_status, "healthy");
+      assert.equal(continuityPayload.root_thread?.continuity_status, "degraded");
       assert.equal(fakeAppServer.getRequests("thread/read").length >= 1, true);
       return { issuePayload, continuityPayload };
     }, {

@@ -7731,10 +7731,52 @@ function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
   return turns.at(-1) ?? null;
 }
 
+function collectTextFromRemoteMessageContent(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+
+      if (typeof entry.text === "string" && entry.text.trim()) {
+        return entry.text;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join("");
+}
+
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
   return items
-    .map((item) => String(item?.agentMessage?.text ?? ""))
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      if (String(item.type ?? "").trim() === "agentMessage") {
+        return (
+          String(item.text ?? "").trim() ||
+          collectTextFromRemoteMessageContent(item.content) ||
+          String(item?.agentMessage?.text ?? "").trim()
+        );
+      }
+
+      if (item.agentMessage && typeof item.agentMessage === "object") {
+        return (
+          String(item.agentMessage.text ?? "").trim() ||
+          collectTextFromRemoteMessageContent(item.agentMessage.content)
+        );
+      }
+
+      return "";
+    })
     .filter(Boolean)
     .join("");
 }
