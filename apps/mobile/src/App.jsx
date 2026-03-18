@@ -37,6 +37,8 @@ const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
+const ACTIVE_ISSUE_POLL_INTERVAL_MS = 5_000;
+const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 12_000;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
@@ -5197,6 +5199,7 @@ export default function App() {
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
   const threadReloadMetaByIdRef = useRef(new Map());
+  const threadLiveProgressAtByIdRef = useRef(new Map());
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5259,6 +5262,17 @@ export default function App() {
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
   const selectedThreadStatus = selectedThread?.status ?? "queued";
+  const selectedThreadIssues = useMemo(
+    () =>
+      (currentThreadDetail?.issues ?? [])
+        .map((issue) => normalizeIssue(issue, selectedThreadId))
+        .filter(Boolean),
+    [currentThreadDetail?.issues, selectedThreadId]
+  );
+  const selectedActiveIssue = useMemo(
+    () => findActiveIssueForThread(selectedThreadIssues, selectedThread?.active_physical_thread_id ?? null),
+    [selectedThread?.active_physical_thread_id, selectedThreadIssues]
+  );
   const selectedProjectIdRef = useRef(selectedProjectId);
   const selectedTodoChatIdRef = useRef(selectedTodoChatId);
 
@@ -6095,7 +6109,20 @@ export default function App() {
 
         if (eventThreadId) {
           if (eventThreadId === activeThreadId && isLiveThreadProgressEvent(payload.type)) {
+            threadLiveProgressAtByIdRef.current.set(eventThreadId, Date.now());
             clearPendingStartConfirmReload(eventThreadId);
+          }
+
+          if (
+            payload.type === "turn.completed" ||
+            (
+              payload.type === "thread.status.changed" &&
+              ["waitingForInput", "idle", "error"].includes(
+                String(payload.payload?.status?.type ?? "").trim()
+              )
+            )
+          ) {
+            threadLiveProgressAtByIdRef.current.delete(eventThreadId);
           }
 
           setThreads((current) => upsertLiveThread(current, payload));
@@ -6431,6 +6458,47 @@ export default function App() {
     selectedThreadId,
     selectedThreadStatus,
     selectedThreadUpdatedAt,
+    session?.loginId
+  ]);
+
+  useEffect(() => {
+    if (
+      !session?.loginId ||
+      !selectedBridgeId ||
+      activeView !== "thread" ||
+      !selectedThreadId ||
+      !selectedActiveIssue ||
+      !["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
+    ) {
+      return undefined;
+    }
+
+    const pollActiveIssue = () => {
+      const lastLiveProgressAt = Number(threadLiveProgressAtByIdRef.current.get(selectedThreadId) ?? 0);
+
+      if (lastLiveProgressAt > 0 && Date.now() - lastLiveProgressAt < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS) {
+        return;
+      }
+
+      scheduleThreadMessagesReload(selectedThreadId, {
+        force: true,
+        mode: "active",
+        suppressLoadingIndicator: true,
+        reason: "active_issue_poll"
+      });
+    };
+
+    const intervalId = window.setInterval(pollActiveIssue, ACTIVE_ISSUE_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    activeView,
+    scheduleThreadMessagesReload,
+    selectedActiveIssue,
+    selectedBridgeId,
+    selectedThreadId,
     session?.loginId
   ]);
 
