@@ -3646,6 +3646,95 @@ async function interruptThreadExecutionBestEffort(rootThread, options = {}) {
   };
 }
 
+async function readThreadSnapshotBestEffort(codexThreadId, reason = "unspecified", timeoutMs = THREAD_DELETE_STOP_TIMEOUT_MS) {
+  if (!String(codexThreadId ?? "").trim()) {
+    return {
+      ok: false,
+      thread: null,
+      error: new Error("codex thread not bound")
+    };
+  }
+
+  const readResult = await requestAppServerBestEffort(
+    "thread/read",
+    {
+      threadId: codexThreadId,
+      includeTurns: true
+    },
+    timeoutMs
+  );
+
+  if (!readResult.ok) {
+    return {
+      ok: false,
+      thread: null,
+      error: readResult.error
+    };
+  }
+
+  const remoteThread = readResult.response?.result?.thread ?? readResult.response?.thread ?? null;
+
+  if (!remoteThread) {
+    return {
+      ok: false,
+      thread: null,
+      error: new Error(`thread/read.${reason} 응답에 thread가 없습니다.`)
+    };
+  }
+
+  return {
+    ok: true,
+    thread: remoteThread,
+    error: null
+  };
+}
+
+async function verifyThreadStopState(rootThread, options = {}) {
+  const activePhysicalThread = rootThread?.id ? getActivePhysicalThread(rootThread.id) : null;
+  const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
+  const expectedTurnId = String(rootThread?.turn_id ?? "").trim() || null;
+  const timeoutMs = Number(options.timeoutMs ?? THREAD_DELETE_STOP_TIMEOUT_MS);
+  const reason = String(options.reason ?? "manual_stop").trim() || "manual_stop";
+
+  if (!codexThreadId) {
+    return {
+      ok: false,
+      verifiedStopped: false,
+      remoteStatus: null,
+      remoteTurnId: null,
+      error: "codex thread not bound"
+    };
+  }
+
+  const readResult = await readThreadSnapshotBestEffort(codexThreadId, reason, timeoutMs);
+
+  if (!readResult.ok) {
+    return {
+      ok: false,
+      verifiedStopped: false,
+      remoteStatus: null,
+      remoteTurnId: null,
+      error: readResult.error?.message ?? "thread/read failed"
+    };
+  }
+
+  const remoteThread = readResult.thread;
+  const remoteTurn = selectRemoteTurnForBackfill(remoteThread, expectedTurnId);
+  const remoteStatus = normalizeRemoteTurnRuntimeStatus(
+    remoteThread,
+    remoteTurn,
+    rootThread?.status ?? "running"
+  );
+
+  return {
+    ok: true,
+    verifiedStopped: !["running", "awaiting_input"].includes(remoteStatus),
+    remoteStatus,
+    remoteTurnId: remoteTurn?.id ?? null,
+    error: null
+  };
+}
+
 async function stopProjectThreadExecutionForDelete(thread) {
   const stopResult = await interruptThreadExecutionBestEffort(thread);
 
@@ -4893,6 +4982,197 @@ async function interruptThreadIssue(userId, payload = {}) {
           errors: interruptResult.errors
         }
       : null
+  };
+}
+
+async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId);
+  const stopReason = String(options.reason ?? "manual_stop").trim() || "manual_stop";
+
+  if (!rootThread || rootThread.deleted_at || threadOwners.get(rootThreadId) !== normalizedUserId) {
+    throw new Error("thread를 찾을 수 없습니다.");
+  }
+
+  const recoverySteps = [];
+  const clearedInvalidTracking = clearInvalidRunningIssueTracking(rootThreadId);
+
+  if (clearedInvalidTracking) {
+    recoverySteps.push("cleared_invalid_tracking");
+  }
+
+  const trackedIssueId = activeIssueByThreadId.get(rootThreadId) ?? ensureRunningIssueTrackingForThread(rootThreadId);
+  const trackedIssue = trackedIssueId ? issueCardsById.get(trackedIssueId) ?? null : null;
+
+  if (!trackedIssue || !["running", "awaiting_input"].includes(String(trackedIssue.status ?? "").trim())) {
+    if (clearedInvalidTracking) {
+      updateProjectThreadSnapshot(rootThreadId);
+      persistThreadById(rootThreadId);
+      await publishThreadState(normalizedUserId, rootThreadId);
+    }
+
+    return {
+      accepted: true,
+      action: clearedInvalidTracking ? "recovered_tracking" : "noop",
+      thread: threadStateById.get(rootThreadId) ?? rootThread,
+      issues: listThreadIssues(rootThreadId),
+      stopped_issue_id: null,
+      recovery_steps: recoverySteps,
+      verification: null,
+      interrupt_result: null
+    };
+  }
+
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+  const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
+
+  if (!codexThreadId) {
+    return {
+      accepted: false,
+      action: "stop_unverified",
+      error: "활성 thread binding이 없어 안전하게 정지할 수 없습니다.",
+      thread: threadStateById.get(rootThreadId) ?? rootThread,
+      issues: listThreadIssues(rootThreadId),
+      stopped_issue_id: trackedIssue.id,
+      recovery_steps: recoverySteps,
+      verification: {
+        ok: false,
+        verified_stopped: false,
+        remote_status: null,
+        remote_turn_id: null,
+        error: "codex thread not bound"
+      },
+      interrupt_result: null
+    };
+  }
+
+  const interruptResult = await interruptThreadExecutionBestEffort(rootThread, options);
+  const verification = await verifyThreadStopState(rootThread, {
+    reason: `threadStop:${stopReason}`,
+    timeoutMs: options.timeoutMs
+  });
+
+  if (!verification.ok) {
+    console.warn("[OctOP bridge] thread safe stop could not be verified", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: rootThread.active_physical_thread_id ?? null,
+        codex_thread_id: codexThreadId,
+        issue_id: trackedIssue.id,
+        event_type: "thread.stop.verify.failed"
+      }),
+      interrupt_errors: interruptResult.errors,
+      verification_error: verification.error
+    });
+
+    return {
+      accepted: false,
+      action: "stop_unverified",
+      error: "원격 실행 중단 여부를 확인하지 못했습니다.",
+      thread: threadStateById.get(rootThreadId) ?? rootThread,
+      issues: listThreadIssues(rootThreadId),
+      stopped_issue_id: trackedIssue.id,
+      recovery_steps: recoverySteps,
+      verification: {
+        ok: verification.ok,
+        verified_stopped: verification.verifiedStopped,
+        remote_status: verification.remoteStatus,
+        remote_turn_id: verification.remoteTurnId,
+        error: verification.error
+      },
+      interrupt_result: {
+        interrupted: interruptResult.interrupted,
+        stopped_realtime: interruptResult.stoppedRealtime,
+        errors: interruptResult.errors
+      }
+    };
+  }
+
+  if (!verification.verifiedStopped) {
+    console.warn("[OctOP bridge] thread safe stop rejected because remote execution is still active", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        physical_thread_id: rootThread.active_physical_thread_id ?? null,
+        codex_thread_id: codexThreadId,
+        issue_id: trackedIssue.id,
+        event_type: "thread.stop.verify.stillRunning"
+      }),
+      interrupt_errors: interruptResult.errors,
+      remote_status: verification.remoteStatus,
+      remote_turn_id: verification.remoteTurnId
+    });
+
+    return {
+      accepted: false,
+      action: "still_running",
+      error: "원격 실행이 아직 중단되지 않았습니다.",
+      thread: threadStateById.get(rootThreadId) ?? rootThread,
+      issues: listThreadIssues(rootThreadId),
+      stopped_issue_id: trackedIssue.id,
+      recovery_steps: recoverySteps,
+      verification: {
+        ok: verification.ok,
+        verified_stopped: verification.verifiedStopped,
+        remote_status: verification.remoteStatus,
+        remote_turn_id: verification.remoteTurnId,
+        error: verification.error
+      },
+      interrupt_result: {
+        interrupted: interruptResult.interrupted,
+        stopped_realtime: interruptResult.stoppedRealtime,
+        errors: interruptResult.errors
+      }
+    };
+  }
+
+  const stopMessage =
+    String(trackedIssue.last_message ?? "").trim() ||
+    "수동으로 실행을 중단했습니다.";
+
+  clearRunningIssueTracking(rootThreadId);
+  settlePhysicalThreadExecutionState(rootThreadId, {
+    issue: trackedIssue,
+    status: "idle",
+    progress: Math.max(0, Math.min(Number(trackedIssue.progress ?? 0), 99)),
+    lastEvent: "thread.stop.completed",
+    lastMessage: stopMessage
+  });
+  recoverySteps.push("cleared_active_lock");
+
+  updateIssueCard(trackedIssue.id, {
+    status: "staged",
+    progress: 0,
+    queue_position: null,
+    prep_position: getNextPrepPosition(rootThreadId),
+    last_event: "thread.stop.completed",
+    last_message: stopMessage
+  });
+  recoverySteps.push("restaged_active_issue");
+
+  refreshIssueQueuePositions(rootThreadId);
+  updateProjectThreadSnapshot(rootThreadId);
+  persistThreadById(rootThreadId);
+  await publishThreadState(normalizedUserId, rootThreadId);
+
+  return {
+    accepted: true,
+    action: "stopped",
+    thread: threadStateById.get(rootThreadId) ?? rootThread,
+    issues: listThreadIssues(rootThreadId),
+    stopped_issue_id: trackedIssue.id,
+    recovery_steps: recoverySteps,
+    verification: {
+      ok: verification.ok,
+      verified_stopped: verification.verifiedStopped,
+      remote_status: verification.remoteStatus,
+      remote_turn_id: verification.remoteTurnId,
+      error: verification.error
+    },
+    interrupt_result: {
+      interrupted: interruptResult.interrupted,
+      stopped_realtime: interruptResult.stoppedRealtime,
+      errors: interruptResult.errors
+    }
   };
 }
 
@@ -9908,6 +10188,33 @@ async function subscribeRequests() {
     }
   })();
 
+  const projectThreadStopSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.stop");
+
+  (async () => {
+    for await (const message of projectThreadStopSubscription) {
+      try {
+        const body = parseJson(message.data);
+        const userId = sanitizeUserId(body.user_id ?? body.login_id ?? message.subject.split(".")[2]);
+        const bridgeId = sanitizeBridgeId(body.bridge_id ?? message.subject.split(".")[4]);
+
+        if (bridgeId !== BRIDGE_ID) {
+          continue;
+        }
+
+        const result = await stopThreadExecutionSafely(
+          userId,
+          String(body.thread_id ?? body.threadId ?? "").trim(),
+          {
+            reason: String(body.reason ?? "manual_stop").trim() || "manual_stop"
+          }
+        );
+        await respond(message, result);
+      } catch (error) {
+        await respond(message, { accepted: false, error: error.message });
+      }
+    }
+  })();
+
   const projectThreadUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.update");
 
   (async () => {
@@ -10451,6 +10758,19 @@ createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const payload = await unlockCurrentThreadExecution(userId, threadId, {
         reason: String(body.reason ?? "manual_unlock").trim() || "manual_unlock"
+      });
+      return sendJson(response, payload.accepted ? 202 : 400, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
+  if (request.method === "POST" && /^\/api\/threads\/[^/]+\/stop$/.test(url.pathname)) {
+    try {
+      const threadId = url.pathname.split("/")[3];
+      const body = await readJsonBody(request);
+      const payload = await stopThreadExecutionSafely(userId, threadId, {
+        reason: String(body.reason ?? "manual_stop").trim() || "manual_stop"
       });
       return sendJson(response, payload.accepted ? 202 : 400, payload);
     } catch (error) {

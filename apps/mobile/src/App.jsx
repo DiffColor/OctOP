@@ -2022,7 +2022,10 @@ function InlineIssueComposer({
   selectedProject,
   onSubmit,
   label,
-  disabled = false
+  disabled = false,
+  onStop = null,
+  stopBusy = false,
+  stopLabel = "중단"
 }) {
   const LONG_PRESS_THRESHOLD_MS = 650;
   const [prompt, setPrompt] = useState("");
@@ -2420,44 +2423,60 @@ function InlineIssueComposer({
               className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
             />
           </div>
-          <button
-            type="button"
-          onPointerDown={handleSendPointerDown}
-          onPointerUp={handleSendPointerUp}
-          onPointerLeave={handleSendPointerLeave}
-          onPointerCancel={handleSendPointerLeave}
-          onClick={handleSendClick}
-          onContextMenu={(event) => event.preventDefault()}
-          disabled={busy || !selectedProject || disabled}
-          aria-pressed={isRecording}
-          className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
-            isRecording
-              ? "border-rose-500 bg-rose-500/20 text-rose-50"
-              : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
-          } disabled:cursor-not-allowed disabled:opacity-45`}
-        >
-          {isRecording ? (
-            <>
-              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                />
-                <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </>
-          ) : busy ? (
-            <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          {onStop ? (
+            <button
+              type="button"
+              onClick={() => void onStop()}
+              disabled={stopBusy}
+              className="flex h-16 min-w-[5.25rem] shrink-0 items-center justify-center rounded-full bg-rose-500 px-4 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {stopBusy ? (
+                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              ) : (
+                stopLabel
+              )}
+            </button>
           ) : (
-            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
+            <button
+              type="button"
+              onPointerDown={handleSendPointerDown}
+              onPointerUp={handleSendPointerUp}
+              onPointerLeave={handleSendPointerLeave}
+              onPointerCancel={handleSendPointerLeave}
+              onClick={handleSendClick}
+              onContextMenu={(event) => event.preventDefault()}
+              disabled={busy || !selectedProject || disabled}
+              aria-pressed={isRecording}
+              className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
+                isRecording
+                  ? "border-rose-500 bg-rose-500/20 text-rose-50"
+                  : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+              } disabled:cursor-not-allowed disabled:opacity-45`}
+            >
+              {isRecording ? (
+                <>
+                  <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                    />
+                    <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                </>
+              ) : busy ? (
+                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              ) : (
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+              )}
+            </button>
           )}
-        </button>
+          
       </div>
     </form>
     </>
@@ -3107,7 +3126,7 @@ function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTr
   );
 }
 
-function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onInterrupt, onDelete }) {
+function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDelete }) {
   if (!open || !message) {
     return null;
   }
@@ -3132,16 +3151,6 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onInte
             className="w-full rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
           >
             텍스트 복사
-          </button>
-        ) : null}
-        {onInterrupt ? (
-          <button
-            type="button"
-            onClick={onInterrupt}
-            disabled={busy}
-            className="w-full rounded-full bg-amber-500/90 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            이슈 중단
           </button>
         ) : null}
         {onDelete ? (
@@ -4049,6 +4058,7 @@ function ThreadDetail({
   messagesLoading,
   messagesError,
   onRefreshMessages,
+  onStopThreadExecution,
   onInterruptIssue,
   onDeleteIssue,
   onSubmitPrompt,
@@ -4092,6 +4102,15 @@ function ThreadDetail({
     return next;
   }, [safeIssues, thread?.id]);
   const activePhysicalThreadId = thread?.active_physical_thread_id ?? null;
+  const interruptibleIssue = useMemo(() => {
+    const activeIssue = findActiveIssueForThread(safeIssues, activePhysicalThreadId);
+
+    if (!activeIssue || !["running", "awaiting_input"].includes(activeIssue.status ?? "")) {
+      return null;
+    }
+
+    return activeIssue;
+  }, [activePhysicalThreadId, safeIssues]);
   const hasRunningIssue = safeIssues.some((issue) => issue?.status === "running");
   const isInputDisabled = thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
   const chatTimeline = useMemo(() => {
@@ -4418,7 +4437,7 @@ function ThreadDetail({
     }
   };
 
-  const handleInterruptIssue = async (issueId) => {
+  const handleInterruptIssue = async (issueId, options = {}) => {
     if (!issueId || !onInterruptIssue || interruptingIssueId) {
       return false;
     }
@@ -4426,12 +4445,27 @@ function ThreadDetail({
     setInterruptingIssueId(issueId);
 
     try {
-      const accepted = await onInterruptIssue(issueId);
+      const accepted = await onInterruptIssue(issueId, options);
       return accepted !== false;
     } finally {
       setInterruptingIssueId((current) => (current === issueId ? "" : current));
     }
   };
+
+  const handleStopCurrentExecution = useCallback(async () => {
+    if (!interruptibleIssue?.id || !onStopThreadExecution || interruptingIssueId) {
+      return false;
+    }
+
+    setInterruptingIssueId(interruptibleIssue.id);
+
+    try {
+      const accepted = await onStopThreadExecution({ reason: "mobile_stop_button" });
+      return accepted !== false;
+    } finally {
+      setInterruptingIssueId((current) => (current === interruptibleIssue.id ? "" : current));
+    }
+  }, [interruptibleIssue?.id, interruptingIssueId, onStopThreadExecution]);
 
   const canDeleteIssueFromBubble = useCallback(
     (issueId) => {
@@ -4442,25 +4476,6 @@ function ThreadDetail({
       const issue = issueById.get(issueId);
 
       if (!issue || ["running", "awaiting_input"].includes(issue.status)) {
-        return false;
-      }
-
-      const issuePhysicalThreadId = issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null;
-
-      return issuePhysicalThreadId === activePhysicalThreadId;
-    },
-    [activePhysicalThreadId, issueById]
-  );
-
-  const canInterruptIssueFromBubble = useCallback(
-    (issueId) => {
-      if (!issueId || !activePhysicalThreadId) {
-        return false;
-      }
-
-      const issue = issueById.get(issueId);
-
-      if (!issue || !["running", "awaiting_input"].includes(issue.status)) {
         return false;
       }
 
@@ -4631,9 +4646,8 @@ function ThreadDetail({
           ) : viewMode === "chat" ? (
             visibleChatTimeline.map((message) => {
               const canCopy = Boolean(String(message.content ?? "").trim());
-              const canInterrupt = canInterruptIssueFromBubble(message.issueId);
               const canDelete = canDeleteIssueFromBubble(message.issueId);
-              const canOpenActionSheet = canCopy || canInterrupt || canDelete;
+              const canOpenActionSheet = canCopy || canDelete;
 
               return (
                 <MessageBubble
@@ -4652,7 +4666,6 @@ function ThreadDetail({
                             meta: formatRelativeTime(message.timestamp),
                             issueId: message.issueId,
                             canCopy,
-                            canInterrupt,
                             canDelete
                           })
                       : null
@@ -4772,17 +4785,6 @@ function ThreadDetail({
               }
             : null
         }
-        onInterrupt={
-          activeMessageAction?.canInterrupt
-            ? async () => {
-                const interrupted = await handleInterruptIssue(activeMessageAction.issueId);
-
-                if (interrupted !== false) {
-                  setActiveMessageAction(null);
-                }
-              }
-            : null
-        }
         onDelete={
           activeMessageAction?.canDelete
             ? async () => {
@@ -4804,6 +4806,9 @@ function ThreadDetail({
             onSubmit={onSubmitPrompt}
             label={isDraft ? "첫 프롬프트" : "프롬프트"}
             disabled={isInputDisabled}
+            onStop={interruptibleIssue ? handleStopCurrentExecution : null}
+            stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
+            stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
           />
         </div>
       </div>
@@ -4889,6 +4894,7 @@ function MainPage({
   onEnsureProjectThreads,
   onRefreshTodoChat,
   onRefreshThreadDetail,
+  onStopThreadExecution,
   onInterruptThreadIssue,
   onDeleteThreadIssue,
   onRefresh,
@@ -5226,6 +5232,7 @@ function MainPage({
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
+          onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
           onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
           onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
           onSubmitPrompt={(payload) => {
@@ -7649,7 +7656,7 @@ export default function App() {
     }
   }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
 
-  const handleInterruptThreadIssue = useCallback(async (issueId) => {
+  const handleInterruptThreadIssue = useCallback(async (issueId, options = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
       return false;
     }
@@ -7685,7 +7692,7 @@ export default function App() {
         {
           method: "POST",
           body: JSON.stringify({
-            reason: "mobile_long_press"
+            reason: String(options.reason ?? "mobile_long_press").trim() || "mobile_long_press"
           })
         }
       );
@@ -7709,6 +7716,75 @@ export default function App() {
       return false;
     }
   }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
+
+  const handleStopThreadExecution = useCallback(async (options = {}) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedThreadId) {
+      return false;
+    }
+
+    try {
+      const stopPath =
+        `/api/threads/${encodeURIComponent(selectedThreadId)}/stop?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const stopOptions = {
+        method: "POST",
+        body: JSON.stringify({
+          reason: String(options.reason ?? "mobile_stop_button").trim() || "mobile_stop_button"
+        })
+      };
+      let response;
+
+      try {
+        response = await apiRequest(stopPath, stopOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            stopPath,
+            stopOptions,
+            error,
+            `thread 안전 정지 요청 실패\n- thread_id: ${selectedThreadId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
+
+      const normalizedThread = normalizeThread(response?.thread);
+
+      if (normalizedThread) {
+        setThreads((current) => upsertThread(current, normalizedThread));
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            thread: normalizedThread
+          }
+        }));
+
+        if (normalizedThread.project_id) {
+          setThreadListsByProjectId((current) => ({
+            ...current,
+            [normalizedThread.project_id]: upsertThread(current[normalizedThread.project_id] ?? [], normalizedThread)
+          }));
+        }
+      }
+
+      if (Array.isArray(response?.issues)) {
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            issues: response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+          }
+        }));
+      }
+
+      await loadThreadMessages(selectedThreadId, { force: true });
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session?.loginId]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -8546,6 +8622,7 @@ export default function App() {
         onEnsureProjectThreads={ensureProjectThreadsLoaded}
         onRefreshTodoChat={handleRefreshTodoChat}
         onRefreshThreadDetail={handleRefreshThreadDetail}
+        onStopThreadExecution={handleStopThreadExecution}
         onInterruptThreadIssue={handleInterruptThreadIssue}
         onDeleteThreadIssue={handleDeleteThreadIssue}
         onRefresh={() => void handleRefresh()}
