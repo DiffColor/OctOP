@@ -39,6 +39,7 @@ const STREAM_SILENCE_MAX_MS = 180_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
+const APP_RESUME_COALESCE_MS = 400;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
@@ -1292,6 +1293,46 @@ function upsertThread(currentThreads, thread) {
   }
 
   return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+}
+
+function removeThreadsByIds(currentThreads, threadIds) {
+  const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+  if (normalizedThreadIds.length === 0) {
+    return currentThreads;
+  }
+
+  const threadIdSet = new Set(normalizedThreadIds);
+  return currentThreads.filter((thread) => !threadIdSet.has(String(thread?.id ?? "").trim()));
+}
+
+function removeThreadIdsFromProjectCache(currentCache, threadIds) {
+  const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+  if (normalizedThreadIds.length === 0) {
+    return currentCache;
+  }
+
+  const threadIdSet = new Set(normalizedThreadIds);
+  let changed = false;
+  const nextCache = {};
+
+  for (const [projectId, threadList] of Object.entries(currentCache)) {
+    if (!Array.isArray(threadList)) {
+      nextCache[projectId] = threadList;
+      continue;
+    }
+
+    const nextThreadList = threadList.filter((thread) => !threadIdSet.has(String(thread?.id ?? "").trim()));
+
+    if (nextThreadList.length !== threadList.length) {
+      changed = true;
+    }
+
+    nextCache[projectId] = nextThreadList;
+  }
+
+  return changed ? nextCache : currentCache;
 }
 
 function normalizeTodoChat(chat) {
@@ -3416,7 +3457,17 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
   );
 }
 
-function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete }) {
+function ThreadListItem({
+  thread,
+  active,
+  selected = false,
+  selectionMode = false,
+  signalNow,
+  onOpen,
+  onRename,
+  onDelete,
+  onToggleSelect
+}) {
   const status = getStatusMeta(thread.status);
   const responseSignal = buildThreadResponseSignal(thread, signalNow);
   const contextUsageLabel = formatThreadContextUsage(thread);
@@ -3430,6 +3481,7 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
   const SNAP_THRESHOLD = 42;
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const highlighted = selectionMode ? selected : active;
 
   const setRevealOffset = useCallback((nextOffset) => {
     const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
@@ -3524,7 +3576,7 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
           onDelete(thread);
         }}
         className={`absolute inset-y-0 left-0 flex w-[92px] items-center justify-center bg-rose-500 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
+          !selectionMode && showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         삭제
@@ -3537,7 +3589,7 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
           onRename(thread);
         }}
         className={`absolute inset-y-0 right-0 flex w-[92px] items-center justify-center bg-slate-800 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
+          !selectionMode && showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         편집
@@ -3545,10 +3597,11 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
 
       <button
         type="button"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
+        data-testid={`thread-list-item-${thread.id}`}
+        onPointerDown={selectionMode ? undefined : handlePointerDown}
+        onPointerMove={selectionMode ? undefined : handlePointerMove}
+        onPointerUp={selectionMode ? undefined : handlePointerUp}
+        onPointerCancel={selectionMode ? undefined : handlePointerUp}
         onClick={() => {
           if (movedRef.current) {
             movedRef.current = false;
@@ -3560,50 +3613,76 @@ function ThreadListItem({ thread, active, signalNow, onOpen, onRename, onDelete 
             return;
           }
 
+          if (selectionMode) {
+            onToggleSelect?.(thread.id);
+            return;
+          }
+
           onOpen(thread.id);
         }}
         className={`relative w-full px-3 py-3 text-left ${
           dragging ? "" : "transition-transform duration-180 ease-out"
-        } ${active ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
+        } ${highlighted ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
+        aria-pressed={selectionMode ? selected : undefined}
+        aria-label={selectionMode ? `${thread.title} 선택` : undefined}
         style={{
           transform: `translate3d(${offset}px, 0, 0)`,
-          touchAction: "pan-y",
+          touchAction: selectionMode ? "auto" : "pan-y",
           willChange: "transform"
         }}
       >
         <div
           className={`min-w-0 rounded-2xl border px-3 py-3 ${
-            active
+            highlighted
               ? "border-white/12 bg-white/[0.03]"
               : "border-transparent bg-transparent"
           }`}
         >
-          <div className="flex items-center justify-between gap-3">
-            <p className="thread-title min-w-0 flex-1 truncate text-sm font-semibold text-white">{thread.title}</p>
-            <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
-          </div>
-
-          <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
-
-          <div className="mt-2 flex items-center gap-2">
-            <span
-              className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[10px] ${
-                responseSignal ? "" : `${status.chipClassName} border-transparent`
-              }`}
-              style={responseSignal?.chipStyle}
-              title={responseSignal?.title}
-            >
+          <div className="flex items-start gap-3">
+            {selectionMode ? (
               <span
-                className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
-                style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
-              />
-              {status.label}
-            </span>
-            {contextUsageLabel ? (
-              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
-                {contextUsageLabel}
+                className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                  selected
+                    ? "border-telegram-400 bg-telegram-500 text-white"
+                    : "border-white/20 bg-white/[0.03] text-transparent"
+                }`}
+                aria-hidden="true"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+                </svg>
               </span>
             ) : null}
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="thread-title min-w-0 flex-1 truncate text-sm font-semibold text-white">{thread.title}</p>
+                <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
+              </div>
+
+              <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
+
+              <div className="mt-2 flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[10px] ${
+                    responseSignal ? "" : `${status.chipClassName} border-transparent`
+                  }`}
+                  style={responseSignal?.chipStyle}
+                  title={responseSignal?.title}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
+                    style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
+                  />
+                  {status.label}
+                </span>
+                {contextUsageLabel ? (
+                  <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
+                    {contextUsageLabel}
+                  </span>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
       </button>
@@ -4631,6 +4710,7 @@ function MainPage({
   onRenameThread,
   onRenameTodoChat,
   onDeleteThread,
+  onDeleteThreads,
   onDeleteTodoChat,
   onDeleteProject,
   onEditTodoMessage,
@@ -4647,6 +4727,8 @@ function MainPage({
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [threadBeingEdited, setThreadBeingEdited] = useState(null);
+  const [threadSelectionMode, setThreadSelectionMode] = useState(false);
+  const [selectedThreadIds, setSelectedThreadIds] = useState([]);
   const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
   const [todoMessageEditorOpen, setTodoMessageEditorOpen] = useState(false);
@@ -4700,6 +4782,21 @@ function MainPage({
       return matchesProject && matchesSearch;
     });
   }, [searchKeyword, selectedProjectId, threads]);
+  const selectedProjectThreadIds = useMemo(
+    () =>
+      new Set(
+        threads
+          .filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId)
+          .map((thread) => thread.id)
+      ),
+    [selectedProjectId, threads]
+  );
+  const visibleThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
+  const visibleSelectedThreadCount = useMemo(
+    () => visibleThreadIds.filter((threadId) => selectedThreadIds.includes(threadId)).length,
+    [selectedThreadIds, visibleThreadIds]
+  );
+  const allVisibleThreadsSelected = visibleThreadIds.length > 0 && visibleSelectedThreadCount === visibleThreadIds.length;
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
@@ -4718,6 +4815,24 @@ function MainPage({
     },
     [clearPendingProjectLongPress]
   );
+  useEffect(() => {
+    setSelectedThreadIds((current) => current.filter((threadId) => selectedProjectThreadIds.has(threadId)));
+  }, [selectedProjectThreadIds]);
+  useEffect(() => {
+    if (activeView !== "inbox" || isTodoScope) {
+      setThreadSelectionMode(false);
+      setSelectedThreadIds([]);
+    }
+  }, [activeView, isTodoScope]);
+  useEffect(() => {
+    if (!threadSelectionMode) {
+      return;
+    }
+
+    if (filteredThreads.length === 0) {
+      setThreadSelectionMode(false);
+    }
+  }, [filteredThreads.length, threadSelectionMode]);
   const requestProjectDeletion = useCallback(
     (project) => {
       if (!project?.id || !onDeleteProject) {
@@ -4772,10 +4887,66 @@ function MainPage({
         return;
       }
 
+      setThreadSelectionMode(false);
+      setSelectedThreadIds([]);
       onSelectProject(projectId);
     },
     [onSelectProject]
   );
+  const handleEnterThreadSelectionMode = useCallback(() => {
+    if (filteredThreads.length === 0) {
+      return;
+    }
+
+    setThreadSelectionMode(true);
+    setSelectedThreadIds([]);
+  }, [filteredThreads.length]);
+  const handleCancelThreadSelection = useCallback(() => {
+    setThreadSelectionMode(false);
+    setSelectedThreadIds([]);
+  }, []);
+  const handleToggleThreadSelection = useCallback((threadId) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
+    if (!normalizedThreadId) {
+      return;
+    }
+
+    setThreadSelectionMode(true);
+    setSelectedThreadIds((current) =>
+      current.includes(normalizedThreadId)
+        ? current.filter((currentThreadId) => currentThreadId !== normalizedThreadId)
+        : [...current, normalizedThreadId]
+    );
+  }, []);
+  const handleToggleVisibleThreadSelection = useCallback(() => {
+    if (visibleThreadIds.length === 0) {
+      return;
+    }
+
+    const visibleThreadIdSet = new Set(visibleThreadIds);
+    setSelectedThreadIds((current) => {
+      if (allVisibleThreadsSelected) {
+        return current.filter((threadId) => !visibleThreadIdSet.has(threadId));
+      }
+
+      const nextSelectedThreadIds = new Set(current);
+      visibleThreadIds.forEach((threadId) => nextSelectedThreadIds.add(threadId));
+      return [...nextSelectedThreadIds];
+    });
+  }, [allVisibleThreadsSelected, visibleThreadIds]);
+  const handleDeleteSelectedThreads = useCallback(async () => {
+    if (selectedThreadIds.length === 0) {
+      return;
+    }
+
+    const accepted = await onDeleteThreads(selectedThreadIds);
+
+    if (accepted !== false) {
+      setThreadSelectionMode(false);
+      setSelectedThreadIds([]);
+    }
+  }, [onDeleteThreads, selectedThreadIds]);
 
   if (activeView === "todo" && selectedTodoChatId) {
     return (
@@ -5015,37 +5186,113 @@ function MainPage({
                   />
                 ))
               )
-            ) : filteredThreads.length === 0 ? (
-              <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
-                {loadingState === "loading"
-                  ? "데이터를 동기화하고 있습니다."
-                  : "조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요."}
-              </div>
             ) : (
-              filteredThreads.map((thread) => (
-                <ThreadListItem
-                  key={thread.id}
-                  thread={thread}
-                  active={thread.id === selectedThreadId}
-                  signalNow={signalNow}
-                  onOpen={onSelectThread}
-                  onRename={(targetThread) => setThreadBeingEdited(targetThread)}
-                  onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
-                />
-              ))
+              <>
+                <div className="mb-2 flex items-center justify-between gap-3 px-1 pt-2">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium tracking-[0.18em] text-slate-500">THREADS</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {threadSelectionMode
+                        ? `${selectedThreadIds.length}개 선택됨`
+                        : filteredThreads.length > 0
+                          ? `${filteredThreads.length}개 채팅창`
+                          : loadingState === "loading"
+                            ? "데이터를 동기화하고 있습니다."
+                            : "조건에 맞는 채팅창이 없습니다."}
+                    </p>
+                  </div>
+                  {filteredThreads.length > 0 ? (
+                    threadSelectionMode ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleToggleVisibleThreadSelection}
+                          disabled={threadBusy}
+                          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          {allVisibleThreadsSelected ? "해제" : "전체"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelThreadSelection}
+                          disabled={threadBusy}
+                          className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleEnterThreadSelectionMode}
+                        disabled={threadBusy}
+                        aria-label="채팅창 선택 모드"
+                        className="rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        선택
+                      </button>
+                    )
+                  ) : null}
+                </div>
+
+                {filteredThreads.length === 0 ? (
+                  <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+                    {loadingState === "loading"
+                      ? "데이터를 동기화하고 있습니다."
+                      : "조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요."}
+                  </div>
+                ) : (
+                  filteredThreads.map((thread) => (
+                    <ThreadListItem
+                      key={thread.id}
+                      thread={thread}
+                      active={thread.id === selectedThreadId}
+                      selected={selectedThreadIds.includes(thread.id)}
+                      selectionMode={threadSelectionMode}
+                      signalNow={signalNow}
+                      onOpen={onSelectThread}
+                      onRename={(targetThread) => setThreadBeingEdited(targetThread)}
+                      onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
+                      onToggleSelect={handleToggleThreadSelection}
+                    />
+                  ))
+                )}
+              </>
             )}
           </section>
         </main>
 
         <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
-          <button
-            type="button"
-            onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
-            disabled={isTodoScope ? false : !selectedProject}
-            className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            {isTodoScope ? "새 ToDo 채팅" : "새 채팅창"}
-          </button>
+          {threadSelectionMode && !isTodoScope ? (
+            <div className="flex w-full items-center gap-3">
+              <button
+                type="button"
+                onClick={handleCancelThreadSelection}
+                disabled={threadBusy}
+                className="rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteSelectedThreads()}
+                disabled={threadBusy || selectedThreadIds.length === 0}
+                aria-label="선택한 채팅창 삭제"
+                className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {threadBusy ? "삭제 중..." : `선택 ${selectedThreadIds.length}개 삭제`}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
+              disabled={isTodoScope ? false : !selectedProject}
+              className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {isTodoScope ? "새 ToDo 채팅" : "새 채팅창"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -5202,6 +5449,8 @@ export default function App() {
   const threadReloadMetaByIdRef = useRef(new Map());
   const threadLiveProgressAtByIdRef = useRef(new Map());
   const lastForegroundResumeAtRef = useRef(0);
+  const scheduledResumeTimerRef = useRef(null);
+  const scheduledResumeReasonsRef = useRef(new Set());
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -5223,6 +5472,51 @@ export default function App() {
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
   const threadDetailsRef = useRef(threadDetails);
+  const clearThreadTransientState = useCallback((threadIds) => {
+    const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+    for (const threadId of normalizedThreadIds) {
+      const timerId = threadReloadTimersByIdRef.current.get(threadId);
+
+      if (timerId) {
+        window.clearTimeout(timerId);
+      }
+
+      threadReloadTimersByIdRef.current.delete(threadId);
+      threadReloadMetaByIdRef.current.delete(threadId);
+      threadLoadRequestIdByIdRef.current.delete(threadId);
+      threadLiveProgressAtByIdRef.current.delete(threadId);
+    }
+  }, []);
+  const removeDeletedThreadsFromState = useCallback((threadIds) => {
+    const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+    if (normalizedThreadIds.length === 0) {
+      return;
+    }
+
+    clearThreadTransientState(normalizedThreadIds);
+    setThreads((current) => removeThreadsByIds(current, normalizedThreadIds));
+    setThreadListsByProjectId((current) => removeThreadIdsFromProjectCache(current, normalizedThreadIds));
+    setThreadDetails((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const threadId of normalizedThreadIds) {
+        if (Object.prototype.hasOwnProperty.call(next, threadId)) {
+          delete next[threadId];
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+
+    if (normalizedThreadIds.includes(selectedThreadIdRef.current)) {
+      setSelectedThreadId("");
+      setActiveView("inbox");
+    }
+  }, [clearThreadTransientState]);
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
@@ -5355,6 +5649,25 @@ export default function App() {
     selectedThreadId,
     session
   ]);
+
+  const scheduleAppForegroundResume = useCallback((reason = "foreground_resume") => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    scheduledResumeReasonsRef.current.add(reason);
+
+    if (scheduledResumeTimerRef.current) {
+      return;
+    }
+
+    scheduledResumeTimerRef.current = window.setTimeout(() => {
+      const reasonLabel = [...scheduledResumeReasonsRef.current].join(",");
+      scheduledResumeReasonsRef.current.clear();
+      scheduledResumeTimerRef.current = null;
+      handleAppForegroundResume(reasonLabel || reason);
+    }, APP_RESUME_COALESCE_MS);
+  }, [handleAppForegroundResume]);
 
   useEffect(() => {
     return () => {
@@ -6426,20 +6739,20 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        handleAppForegroundResume("app_resume:visibility");
+        scheduleAppForegroundResume("app_resume:visibility");
       }
     };
 
     const handleWindowFocus = () => {
-      handleAppForegroundResume("app_resume:focus");
+      scheduleAppForegroundResume("app_resume:focus");
     };
 
     const handlePageShow = () => {
-      handleAppForegroundResume("app_resume:pageshow");
+      scheduleAppForegroundResume("app_resume:pageshow");
     };
 
     const handleOnline = () => {
-      handleAppForegroundResume("app_resume:online");
+      scheduleAppForegroundResume("app_resume:online");
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -6448,12 +6761,17 @@ export default function App() {
     window.addEventListener("online", handleOnline);
 
     return () => {
+      if (scheduledResumeTimerRef.current) {
+        window.clearTimeout(scheduledResumeTimerRef.current);
+        scheduledResumeTimerRef.current = null;
+      }
+      scheduledResumeReasonsRef.current.clear();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleWindowFocus);
       window.removeEventListener("pageshow", handlePageShow);
       window.removeEventListener("online", handleOnline);
     };
-  }, [handleAppForegroundResume]);
+  }, [scheduleAppForegroundResume]);
 
   useLayoutEffect(() => {
     threadLoadRequestIdByIdRef.current = new Map();
@@ -7566,43 +7884,89 @@ export default function App() {
     }
   };
 
-  const handleDeleteThread = async (threadId) => {
-    if (!session?.loginId || !selectedBridgeId || !threadId) {
+  const deleteThreads = useCallback(async (threadIds, confirmMessage = "") => {
+    if (!session?.loginId || !selectedBridgeId) {
       return false;
     }
 
-    if (typeof window !== "undefined" && !window.confirm("이 채팅창을 삭제하시겠습니까?")) {
+    const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+    if (normalizedThreadIds.length === 0) {
       return false;
     }
+
+    if (confirmMessage && typeof window !== "undefined" && !window.confirm(confirmMessage)) {
+      return false;
+    }
+
+    setThreadBusy(true);
 
     try {
-      await apiRequest(
-        `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "DELETE"
+      const deletedThreadIds = [];
+      const failedThreadIds = [];
+
+      for (const threadId of normalizedThreadIds) {
+        try {
+          await apiRequest(
+            `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            {
+              method: "DELETE"
+            }
+          );
+          deletedThreadIds.push(threadId);
+        } catch (error) {
+          failedThreadIds.push({
+            threadId,
+            message: error.message ?? "삭제하지 못했습니다."
+          });
         }
-      );
+      }
 
-      setThreads((current) => current.filter((thread) => thread.id !== threadId));
-      setThreadDetails((current) => {
-        const next = { ...current };
-        delete next[threadId];
-        return next;
-      });
+      if (deletedThreadIds.length > 0) {
+        removeDeletedThreadsFromState(deletedThreadIds);
+      }
 
-      if (selectedThreadId === threadId) {
-        setSelectedThreadId("");
-        setActiveView("inbox");
+      if (failedThreadIds.length > 0) {
+        if (typeof window !== "undefined") {
+          const firstFailure = failedThreadIds[0];
+          const partialDeleteMessage =
+            deletedThreadIds.length > 0
+              ? `${deletedThreadIds.length}개를 삭제했고 ${failedThreadIds.length}개는 실패했습니다.\n첫 실패: ${firstFailure.message}`
+              : firstFailure.message;
+          window.alert(partialDeleteMessage);
+        }
+
+        return false;
       }
 
       return true;
-    } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
-      return false;
+    } finally {
+      setThreadBusy(false);
     }
-  };
+  }, [removeDeletedThreadsFromState, selectedBridgeId, session?.loginId]);
+
+  const handleDeleteThread = useCallback(
+    async (threadId) => deleteThreads([threadId], "이 채팅창을 삭제하시겠습니까?"),
+    [deleteThreads]
+  );
+
+  const handleDeleteThreads = useCallback(
+    async (threadIds) => {
+      const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+
+      if (normalizedThreadIds.length === 0) {
+        return false;
+      }
+
+      const confirmMessage =
+        normalizedThreadIds.length === 1
+          ? "선택한 채팅창을 삭제하시겠습니까?"
+          : `선택한 ${normalizedThreadIds.length}개의 채팅창을 삭제하시겠습니까?`;
+
+      return deleteThreads(normalizedThreadIds, confirmMessage);
+    },
+    [deleteThreads]
+  );
 
   const handleDeleteProject = async (projectId) => {
     if (!session?.loginId || !selectedBridgeId || !projectId) {
@@ -7970,6 +8334,7 @@ export default function App() {
         onRenameThread={handleRenameThread}
         onRenameTodoChat={handleRenameTodoChat}
         onDeleteThread={handleDeleteThread}
+        onDeleteThreads={handleDeleteThreads}
         onDeleteTodoChat={handleDeleteTodoChat}
         onDeleteProject={handleDeleteProject}
         onEditTodoMessage={handleEditTodoMessage}
