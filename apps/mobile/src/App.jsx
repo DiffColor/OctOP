@@ -4200,7 +4200,7 @@ function ThreadDetail({
     const scrollNode = scrollRef.current;
 
     if (!scrollNode) {
-      return true;
+      return;
     }
 
     const distanceFromBottom = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop;
@@ -4210,8 +4210,6 @@ function ThreadDetail({
       pinnedToLatestRef.current = shouldPin;
       setIsPinnedToLatest(shouldPin);
     }
-
-    return shouldPin;
   }, []);
 
   useEffect(() => {
@@ -4246,24 +4244,20 @@ function ThreadDetail({
 
         if (node && !autoScrollingRef.current) {
           const nextScrollTop = Math.max(0, node.scrollTop);
-          const shouldPin = recomputePinnedState();
+          const delta = nextScrollTop - previousScrollTopRef.current;
 
-          if (shouldPin) {
+          if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
-          } else {
-            const delta = nextScrollTop - previousScrollTopRef.current;
-
-            if (nextScrollTop <= 8) {
-              setShowHeaderMenus(true);
-            } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
-              setShowHeaderMenus(false);
-            } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
-              setShowHeaderMenus(true);
-            }
+          } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
+            setShowHeaderMenus(false);
+          } else if (delta <= -HEADER_MENU_SCROLL_DELTA_PX) {
+            setShowHeaderMenus(true);
           }
 
           previousScrollTopRef.current = nextScrollTop;
         }
+
+        recomputePinnedState();
       });
     };
 
@@ -4301,10 +4295,6 @@ function ThreadDetail({
       }
 
       window.requestAnimationFrame(() => {
-        if (containerNode) {
-          previousScrollTopRef.current = Math.max(0, containerNode.scrollTop);
-        }
-        setShowHeaderMenus(true);
         autoScrollingRef.current = false;
         recomputePinnedState();
       });
