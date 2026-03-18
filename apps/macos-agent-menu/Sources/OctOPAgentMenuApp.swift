@@ -2,6 +2,7 @@ import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import SwiftUI
+import Darwin
 
 enum AgentRuntimeState: String {
   case stopped = "중지됨"
@@ -68,7 +69,7 @@ final class AgentMenuModel: ObservableObject {
     let stderr = Pipe()
 
     nextProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    nextProcess.arguments = ["-lc", "npm run local-agent:start"]
+    nextProcess.arguments = ["-lc", "exec node ./scripts/run-local-agent.mjs"]
     nextProcess.currentDirectoryURL = repoRootURL
     nextProcess.standardOutput = stdout
     nextProcess.standardError = stderr
@@ -132,7 +133,7 @@ final class AgentMenuModel: ObservableObject {
       DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
         guard let self, let current = self.process, current.isRunning else { return }
         self.appendLog("SIGTERM 응답이 없어 강제 종료합니다.")
-        current.interrupt()
+        kill(current.processIdentifier, SIGKILL)
       }
     } else {
       handleTermination(process)
