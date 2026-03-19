@@ -98,22 +98,56 @@ static class BrowserSelection
     {
       var button = new Button
       {
-        Width = 132,
-        Height = 110,
+        Width = 136,
+        Height = 120,
         Margin = new Padding(0, 0, 12, 12),
-        Text = browser.DisplayName,
-        TextAlign = ContentAlignment.BottomCenter,
-        ImageAlign = ContentAlignment.TopCenter,
-        TextImageRelation = TextImageRelation.ImageAboveText,
         BackColor = Color.White,
-        FlatStyle = FlatStyle.Standard,
-        Padding = new Padding(10, 12, 10, 12)
+        FlatStyle = FlatStyle.Flat,
+        Padding = new Padding(8),
+        Text = string.Empty
+      };
+      button.FlatAppearance.BorderColor = Color.FromArgb(0xD1, 0xD5, 0xDB);
+      button.FlatAppearance.BorderSize = 1;
+
+      var card = new TableLayoutPanel
+      {
+        Dock = DockStyle.Fill,
+        ColumnCount = 1,
+        RowCount = 2,
+        Margin = new Padding(0),
+        Padding = new Padding(0),
+        BackColor = Color.Transparent
+      };
+      card.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
+      card.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
+
+      var iconBox = new PictureBox
+      {
+        Width = 44,
+        Height = 44,
+        SizeMode = PictureBoxSizeMode.Zoom,
+        Anchor = AnchorStyles.None,
+        BackColor = Color.Transparent
       };
 
       if (browser.Icon is not null)
       {
-        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(32, 32));
+        iconBox.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(44, 44));
       }
+
+      var label = new Label
+      {
+        Text = browser.DisplayName,
+        TextAlign = ContentAlignment.TopCenter,
+        Dock = DockStyle.Fill,
+        Font = new Font("Segoe UI", 9, FontStyle.Regular),
+        ForeColor = Color.FromArgb(0x17, 0x17, 0x17),
+        BackColor = Color.Transparent
+      };
+
+      card.Controls.Add(iconBox, 0, 0);
+      card.Controls.Add(label, 0, 1);
+      button.Controls.Add(card);
 
       button.Click += (_, _) =>
       {
@@ -121,6 +155,16 @@ static class BrowserSelection
         dialog.DialogResult = DialogResult.OK;
         dialog.Close();
       };
+
+      foreach (Control control in new Control[] { card, iconBox, label })
+      {
+        control.Click += (_, _) =>
+        {
+          selectedBrowser = browser;
+          dialog.DialogResult = DialogResult.OK;
+          dialog.Close();
+        };
+      }
 
       browserPanel.Controls.Add(button);
     }

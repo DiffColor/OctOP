@@ -191,28 +191,32 @@ private enum CodexBrowserSelection {
     let button = NSButton(title: "", target: nil, action: nil)
     button.identifier = NSUserInterfaceItemIdentifier(browser.id)
     button.setButtonType(.momentaryPushIn)
-    button.isBordered = true
-    button.bezelStyle = .regularSquare
+    button.isBordered = false
     button.translatesAutoresizingMaskIntoConstraints = false
-    button.widthAnchor.constraint(equalToConstant: 96).isActive = true
-    button.heightAnchor.constraint(equalToConstant: 104).isActive = true
+    button.wantsLayer = true
+    button.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    button.layer?.cornerRadius = 12
+    button.layer?.borderWidth = 1
+    button.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+    button.widthAnchor.constraint(equalToConstant: 104).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 112).isActive = true
 
     let iconView = NSImageView(image: browser.icon)
     iconView.imageScaling = .scaleProportionallyUpOrDown
     iconView.translatesAutoresizingMaskIntoConstraints = false
-    iconView.widthAnchor.constraint(equalToConstant: 32).isActive = true
-    iconView.heightAnchor.constraint(equalToConstant: 32).isActive = true
+    iconView.widthAnchor.constraint(equalToConstant: 42).isActive = true
+    iconView.heightAnchor.constraint(equalToConstant: 42).isActive = true
 
     let label = NSTextField(labelWithString: browser.displayName)
     label.alignment = .center
     label.lineBreakMode = .byWordWrapping
     label.maximumNumberOfLines = 2
-    label.font = .systemFont(ofSize: 12, weight: .medium)
+    label.font = .systemFont(ofSize: 12, weight: .regular)
 
     let stack = NSStackView(views: [iconView, label])
     stack.orientation = .vertical
     stack.alignment = .centerX
-    stack.spacing = 10
+    stack.spacing = 12
     stack.translatesAutoresizingMaskIntoConstraints = false
 
     button.addSubview(stack)
