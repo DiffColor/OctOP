@@ -145,9 +145,10 @@ self.addEventListener("push", (event) => {
   const title = payload.title || "OctOP";
   const sentAt = payload.sentAt || new Date().toISOString();
   const body = payload.body || "이슈 상태 알림이 도착했습니다.";
+  const launchUrl = payload.launchUrl || payload.url || "/";
   const notificationData = {
     ...payload,
-    url: payload.url || "/",
+    launchUrl,
     sentAt
   };
 
@@ -179,5 +180,5 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  event.waitUntil(self.clients.openWindow(event.notification.data?.url || "/"));
+  event.waitUntil(self.clients.openWindow(event.notification.data?.launchUrl || "/"));
 });

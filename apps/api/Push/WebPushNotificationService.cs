@@ -78,7 +78,7 @@ public sealed class WebPushNotificationService(
         title = request.Title,
         body = request.Body,
         tag = notificationTag,
-        url = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
+        launchUrl = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
         kind = request.Kind,
         bridgeId = request.BridgeId,
         projectId = request.ProjectId,
