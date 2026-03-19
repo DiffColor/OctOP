@@ -47,16 +47,17 @@ sealed class WindowsAutoUpdater
     var updateRoot = Path.Combine(Path.GetTempPath(), "OctOPAgentMenu", "updates", latestRelease.Tag);
     Directory.CreateDirectory(updateRoot);
     var downloadPath = Path.Combine(updateRoot, latestRelease.AssetName);
-    var scriptPath = Path.Combine(updateRoot, "apply-update.cmd");
+    var scriptPath = Path.Combine(updateRoot, "apply-update.ps1");
 
     log($"새 버전 {latestRelease.Tag}를 다운로드합니다.");
     await DownloadAsync(latestRelease.DownloadUrl, downloadPath, cancellationToken);
-    WriteUpdateScript(scriptPath, downloadPath, currentExecutablePath);
+    WriteUpdateScript(scriptPath, downloadPath, currentExecutablePath, Environment.ProcessId);
 
     Process.Start(new ProcessStartInfo
     {
-      FileName = "cmd.exe",
-      Arguments = $"/c start \"\" \"{scriptPath}\"",
+      FileName = "powershell.exe",
+      Arguments =
+        $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
       UseShellExecute = false,
       CreateNoWindow = true,
       WorkingDirectory = updateRoot
@@ -75,24 +76,56 @@ sealed class WindowsAutoUpdater
     await remoteStream.CopyToAsync(fileStream, cancellationToken);
   }
 
-  private static void WriteUpdateScript(string scriptPath, string downloadedExecutablePath, string currentExecutablePath)
+  private static void WriteUpdateScript(
+    string scriptPath,
+    string downloadedExecutablePath,
+    string currentExecutablePath,
+    int currentProcessId)
   {
     var script = $$"""
-    @echo off
-    setlocal
-    set "SOURCE={{downloadedExecutablePath}}"
-    set "TARGET={{currentExecutablePath}}"
-    :retry
-    copy /Y "%SOURCE%" "%TARGET%" >nul
-    if errorlevel 1 (
-      timeout /t 1 /nobreak >nul
-      goto retry
-    )
-    start "" "%TARGET%"
-    del /Q "%SOURCE%" >nul 2>nul
-    del /Q "%~f0" >nul 2>nul
+    $ErrorActionPreference = "Stop"
+    $source = "{{EscapePowerShellSingleQuotedString(downloadedExecutablePath)}}"
+    $target = "{{EscapePowerShellSingleQuotedString(currentExecutablePath)}}"
+    $currentProcessId = {{currentProcessId}}
+    $scriptPath = $MyInvocation.MyCommand.Path
+
+    while (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue) {
+      Start-Sleep -Milliseconds 500
+    }
+
+    for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
+      try {
+        Copy-Item -Path $source -Destination $target -Force
+        break
+      } catch {
+        if ($attempt -ge 29) {
+          throw
+        }
+
+        Start-Sleep -Seconds 1
+      }
+    }
+
+    Start-Process -FilePath $target | Out-Null
+
+    try {
+      Remove-Item -Path $source -Force -ErrorAction SilentlyContinue
+    } catch {
+    }
+
+    Start-Sleep -Seconds 1
+
+    try {
+      Remove-Item -Path $scriptPath -Force -ErrorAction SilentlyContinue
+    } catch {
+    }
     """;
 
     File.WriteAllText(scriptPath, script.Replace("\n", Environment.NewLine), new UTF8Encoding(false));
+  }
+
+  private static string EscapePowerShellSingleQuotedString(string value)
+  {
+    return value.Replace("'", "''");
   }
 }
