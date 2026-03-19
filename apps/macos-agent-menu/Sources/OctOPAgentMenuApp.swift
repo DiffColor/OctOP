@@ -580,6 +580,71 @@ private struct SelectableLogTextView: NSViewRepresentable {
 }
 
 @MainActor
+private final class AgentMenuAppInstanceGuard {
+  static let shared = AgentMenuAppInstanceGuard()
+
+  let isPrimaryInstance: Bool
+  private var lockFileDescriptor: CInt = -1
+
+  private init() {
+    isPrimaryInstance = Self.acquireLock(fileDescriptor: &lockFileDescriptor)
+  }
+
+  deinit {
+    if lockFileDescriptor >= 0 {
+      flock(lockFileDescriptor, LOCK_UN)
+      close(lockFileDescriptor)
+    }
+  }
+
+  func activateExistingInstanceIfPossible() {
+    guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+      return
+    }
+
+    let currentPID = ProcessInfo.processInfo.processIdentifier
+    let currentBundlePath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+    let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+
+    let existingApp =
+      runningApps.first(where: {
+        $0.processIdentifier != currentPID &&
+          $0.bundleURL?.resolvingSymlinksInPath().path == currentBundlePath
+      }) ??
+      runningApps.first(where: { $0.processIdentifier != currentPID })
+
+    existingApp?.activate(options: [])
+  }
+
+  private static func acquireLock(fileDescriptor: inout CInt) -> Bool {
+    let appSupportURL =
+      FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("OctOPAgentMenu", isDirectory: true) ??
+      URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/OctOPAgentMenu", isDirectory: true)
+
+    do {
+      try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+    } catch {
+      return true
+    }
+
+    let lockURL = appSupportURL.appendingPathComponent("app-instance.lock")
+    let descriptor = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0 else {
+      return true
+    }
+
+    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+      close(descriptor)
+      return false
+    }
+
+    fileDescriptor = descriptor
+    return true
+  }
+}
+
+@MainActor
 struct AgentMenuContent: View {
   @ObservedObject var model: AgentMenuModel
   @ObservedObject var bootstrap: AgentBootstrapStore
@@ -684,11 +749,40 @@ struct AgentMenuContent: View {
   }
 }
 
+@MainActor
 final class OctOPAgentMenuAppDelegate: NSObject, NSApplicationDelegate {
+  private let instanceGuard = AgentMenuAppInstanceGuard.shared
   var onWillTerminate: (() -> Void)?
 
+  var isPrimaryInstance: Bool {
+    instanceGuard.isPrimaryInstance
+  }
+
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    guard !isPrimaryInstance else {
+      return
+    }
+
+    instanceGuard.activateExistingInstanceIfPossible()
+    DispatchQueue.main.async {
+      NSApp.terminate(nil)
+    }
+  }
+
   func applicationWillTerminate(_ notification: Notification) {
+    guard isPrimaryInstance else {
+      return
+    }
+
     onWillTerminate?()
+  }
+
+  func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
+    false
+  }
+
+  func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
+    false
   }
 }
 
@@ -710,11 +804,18 @@ struct OctOPAgentMenuApp: App {
       Image(nsImage: model.menuBarImage)
         .renderingMode(.original)
         .task {
+          guard appDelegate.isPrimaryInstance else {
+            return
+          }
+
           appDelegate.onWillTerminate = {
             Task { @MainActor in
               model.handleApplicationWillTerminate()
             }
           }
+
+          bootstrap.restorePreservedAppDataIfNeeded(log: model.appendInstallerLog)
+          bootstrap.terminateProcessesHoldingManagedPorts(log: model.appendInstallerLog)
 
           if await bootstrap.ensureAppUpdatedIfNeeded(log: model.appendInstallerLog) {
             return

@@ -662,6 +662,139 @@ final class AgentBootstrapStore: ObservableObject {
     currentAppVersionTag
   }
 
+  private var appUpdateDataBackupURL: URL {
+    URL(fileURLWithPath: appSupportURL.path + ".update-backup", isDirectory: true)
+  }
+
+  private var appUpdateDataBackupStagingURL: URL {
+    URL(fileURLWithPath: appSupportURL.path + ".update-backup.staging", isDirectory: true)
+  }
+
+  private var appUpdatePreservedItems: [(name: String, sourceURL: URL)] {
+    [
+      ("config.json", configurationURL),
+      ("bridge-id", bridgeIdURL),
+      ("pending-login.json", pendingLoginURL),
+      ("codex-home", codexHomeURL),
+      ("state", stateHomeURL)
+    ]
+  }
+
+  func restorePreservedAppDataIfNeeded(log: @escaping @MainActor (String) -> Void) {
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: appUpdateDataBackupURL.path) else {
+      return
+    }
+
+    var restoredItems: [String] = []
+
+    for item in appUpdatePreservedItems {
+      let backupURL = appUpdateDataBackupURL.appendingPathComponent(item.name, isDirectory: false)
+      guard fileManager.fileExists(atPath: backupURL.path) else {
+        continue
+      }
+
+      guard !fileManager.fileExists(atPath: item.sourceURL.path) else {
+        continue
+      }
+
+      do {
+        try ensureDirectory(item.sourceURL.deletingLastPathComponent())
+        try fileManager.copyItem(at: backupURL, to: item.sourceURL)
+        restoredItems.append(item.name)
+      } catch {
+        log("업데이트 백업 복구 실패: \(item.name) - \(error.localizedDescription)")
+      }
+    }
+
+    if !restoredItems.isEmpty {
+      log("업데이트 백업에서 로그인 정보와 상태 데이터를 복구했습니다. items=\(restoredItems.joined(separator: ","))")
+    }
+  }
+
+  func preserveAppDataForUpdate(log: @escaping @MainActor (String) -> Void) throws {
+    let fileManager = FileManager.default
+    let existingItems = appUpdatePreservedItems.filter { item in
+      fileManager.fileExists(atPath: item.sourceURL.path)
+    }
+
+    guard !existingItems.isEmpty else {
+      return
+    }
+
+    if fileManager.fileExists(atPath: appUpdateDataBackupStagingURL.path) {
+      try fileManager.removeItem(at: appUpdateDataBackupStagingURL)
+    }
+
+    try ensureDirectory(appUpdateDataBackupStagingURL.deletingLastPathComponent())
+    try ensureDirectory(appUpdateDataBackupStagingURL)
+
+    do {
+      for item in existingItems {
+        let backupURL = appUpdateDataBackupStagingURL.appendingPathComponent(item.name, isDirectory: false)
+        try fileManager.copyItem(at: item.sourceURL, to: backupURL)
+      }
+
+      if fileManager.fileExists(atPath: appUpdateDataBackupURL.path) {
+        try fileManager.removeItem(at: appUpdateDataBackupURL)
+      }
+
+      try fileManager.moveItem(at: appUpdateDataBackupStagingURL, to: appUpdateDataBackupURL)
+      log("앱 업데이트에 대비해 로그인 정보와 상태 데이터를 백업했습니다.")
+    } catch {
+      if fileManager.fileExists(atPath: appUpdateDataBackupStagingURL.path) {
+        try? fileManager.removeItem(at: appUpdateDataBackupStagingURL)
+      }
+
+      throw error
+    }
+  }
+
+  func terminateProcessesHoldingManagedPorts(log: @escaping @MainActor (String) -> Void) {
+    let ports = resolveManagedPorts()
+    guard !ports.isEmpty else {
+      return
+    }
+
+    let currentProcessId = ProcessInfo.processInfo.processIdentifier
+    var matchedProcessIds = Set<Int32>()
+
+    for port in ports {
+      for processId in listeningProcessIds(on: port) where processId > 0 && processId != currentProcessId {
+        matchedProcessIds.insert(processId)
+      }
+    }
+
+    guard !matchedProcessIds.isEmpty else {
+      return
+    }
+
+    let portText = ports.map(String.init).joined(separator: ",")
+    let processText = matchedProcessIds.sorted().map(String.init).joined(separator: ",")
+    log("앱 실행 전에 점유 중인 포트를 강제 종료합니다. ports=\(portText) pids=\(processText)")
+
+    for processId in matchedProcessIds {
+      kill(processId, SIGKILL)
+    }
+
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline {
+      if !matchedProcessIds.contains(where: isProcessAlive(_:)) {
+        break
+      }
+
+      usleep(100_000)
+    }
+
+    let aliveProcessIds = matchedProcessIds.filter(isProcessAlive(_:)).sorted()
+    if aliveProcessIds.isEmpty {
+      log("점유 포트 정리가 완료되었습니다. ports=\(portText)")
+      return
+    }
+
+    log("일부 점유 포트 프로세스가 종료되지 않았습니다. pids=\(aliveProcessIds.map(String.init).joined(separator: ","))")
+  }
+
   private var preferredCodexHomeURL: URL {
     if let value = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
        !value.isEmpty {
@@ -773,7 +906,12 @@ final class AgentBootstrapStore: ObservableObject {
 
     return await applyAppUpdateIfNeeded(
       log: log,
-      beforeTermination: startServiceAfterUpdate ? { try self.markPendingServiceStartAfterUpdate() } : nil)
+      beforeTermination: {
+        try self.preserveAppDataForUpdate(log: log)
+        if startServiceAfterUpdate {
+          try self.markPendingServiceStartAfterUpdate()
+        }
+      })
   }
 
   func selectWorkspaceRoot() {
@@ -1466,6 +1604,81 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func appServerCommand() -> String {
     "\(shellEscape(runtimeCodexURL.path)) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
+  }
+
+  private func resolveManagedPorts() -> [Int] {
+    var ports: [Int] = []
+
+    if let bridgePort = resolveNumericPort(configuration.bridgePort) {
+      ports.append(bridgePort)
+    }
+
+    if let appServerPort = resolvePortFromWebSocketURL(configuration.appServerWsUrl), !ports.contains(appServerPort) {
+      ports.append(appServerPort)
+    }
+
+    return ports
+  }
+
+  private func resolveNumericPort(_ rawValue: String) -> Int? {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let port = Int(trimmed), (1...65535).contains(port) else {
+      return nil
+    }
+
+    return port
+  }
+
+  private func resolvePortFromWebSocketURL(_ rawValue: String) -> Int? {
+    guard let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+      return nil
+    }
+
+    if let port = url.port {
+      return (1...65535).contains(port) ? port : nil
+    }
+
+    switch url.scheme?.lowercased() {
+    case "ws":
+      return 80
+    case "wss":
+      return 443
+    default:
+      return nil
+    }
+  }
+
+  private func listeningProcessIds(on port: Int) -> [Int32] {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    process.arguments = ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"]
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return []
+    }
+
+    guard process.terminationStatus == 0 else {
+      return []
+    }
+
+    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    return text
+      .split(whereSeparator: \.isNewline)
+      .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+  }
+
+  private func isProcessAlive(_ pid: Int32) -> Bool {
+    if kill(pid, 0) == 0 {
+      return true
+    }
+
+    return errno == EPERM
   }
 
   private func withCodexAppServerSession<T: Sendable>(

@@ -144,13 +144,25 @@ extension AgentBootstrapStore {
     APP_PID="\(ProcessInfo.processInfo.processIdentifier)"
     CURRENT_APP="\(currentAppURL.path)"
     UPDATED_APP="\(updatedAppURL.path)"
+    UPDATE_ROOT="\(scriptURL.deletingLastPathComponent().path)"
+    BACKUP_APP="${CURRENT_APP}.previous-update"
     while kill -0 "$APP_PID" 2>/dev/null; do
       sleep 1
     done
-    rm -rf "$CURRENT_APP"
-    ditto "$UPDATED_APP" "$CURRENT_APP"
-    open "$CURRENT_APP"
-    rm -rf "\(scriptURL.deletingLastPathComponent().path)"
+    rm -rf "$BACKUP_APP"
+    if [ -d "$CURRENT_APP" ]; then
+      mv "$CURRENT_APP" "$BACKUP_APP"
+    fi
+    if ! ditto "$UPDATED_APP" "$CURRENT_APP"; then
+      rm -rf "$CURRENT_APP"
+      if [ -d "$BACKUP_APP" ]; then
+        mv "$BACKUP_APP" "$CURRENT_APP"
+      fi
+      exit 1
+    fi
+    rm -rf "$BACKUP_APP"
+    open "$CURRENT_APP" || true
+    rm -rf "$UPDATE_ROOT"
     """
 
     try script.write(to: scriptURL, atomically: true, encoding: .utf8)

@@ -152,6 +152,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task InitializeAsync()
   {
+    RestorePreservedAppDataIfNeeded();
+    TerminateProcessesHoldingConfiguredPorts();
+
     if (await TryApplyAppUpdateAsync())
     {
       return;
@@ -519,7 +522,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var updateApplied = await _autoUpdater.TryApplyUpdateAsync(
       AppendLog,
       CancellationToken.None,
-      beforeReplacement: startServiceAfterUpdate ? MarkPendingServiceStartRequest : null);
+      beforeReplacement: () =>
+      {
+        var preserved = PreserveAppDataForUpdate();
+        if (preserved && startServiceAfterUpdate)
+        {
+          MarkPendingServiceStartRequest();
+        }
+
+        return preserved;
+      });
     if (!updateApplied)
     {
       return false;
@@ -534,6 +546,138 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     Directory.CreateDirectory(_paths.InstallRoot);
     File.WriteAllText(_paths.PendingServiceStartPath, "1", new UTF8Encoding(false));
+  }
+
+  private IEnumerable<(string Name, string SourcePath)> EnumerateUpdatePreservedItems()
+  {
+    yield return ("config.json", _paths.ConfigurationPath);
+    yield return ("bridge-id.txt", _paths.BridgeIdPath);
+    yield return ("pending-login.json", _paths.PendingLoginPath);
+    yield return ("codex-home", _paths.CodexHome);
+    yield return ("state", _paths.StateHome);
+  }
+
+  private string GetAppUpdateBackupRoot()
+  {
+    return _paths.InstallRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".update-backup";
+  }
+
+  private string GetAppUpdateBackupStagingRoot()
+  {
+    return GetAppUpdateBackupRoot() + ".staging";
+  }
+
+  private void RestorePreservedAppDataIfNeeded()
+  {
+    var backupRoot = GetAppUpdateBackupRoot();
+    if (!Directory.Exists(backupRoot))
+    {
+      return;
+    }
+
+    var restoredItems = new List<string>();
+
+    foreach (var (name, sourcePath) in EnumerateUpdatePreservedItems())
+    {
+      var backupPath = Path.Combine(backupRoot, name);
+      if (!File.Exists(backupPath) && !Directory.Exists(backupPath))
+      {
+        continue;
+      }
+
+      if (File.Exists(sourcePath) || Directory.Exists(sourcePath))
+      {
+        continue;
+      }
+
+      try
+      {
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        if (Directory.Exists(backupPath))
+        {
+          CopyDirectoryRecursively(backupPath, sourcePath);
+        }
+        else
+        {
+          File.Copy(backupPath, sourcePath, overwrite: false);
+        }
+
+        restoredItems.Add(name);
+      }
+      catch (Exception error)
+      {
+        AppendLog($"업데이트 백업 복구 실패: {name} - {error.Message}");
+      }
+    }
+
+    if (restoredItems.Count > 0)
+    {
+      AppendLog($"업데이트 백업에서 로그인 정보와 상태 데이터를 복구했습니다. items={string.Join(",", restoredItems)}");
+    }
+  }
+
+  private bool PreserveAppDataForUpdate()
+  {
+    var existingItems = EnumerateUpdatePreservedItems()
+      .Where(static item => File.Exists(item.SourcePath) || Directory.Exists(item.SourcePath))
+      .ToList();
+
+    if (existingItems.Count == 0)
+    {
+      return true;
+    }
+
+    var backupRoot = GetAppUpdateBackupRoot();
+    var stagingRoot = GetAppUpdateBackupStagingRoot();
+
+    try
+    {
+      if (Directory.Exists(stagingRoot))
+      {
+        Directory.Delete(stagingRoot, recursive: true);
+      }
+
+      Directory.CreateDirectory(stagingRoot);
+
+      foreach (var (name, sourcePath) in existingItems)
+      {
+        var backupPath = Path.Combine(stagingRoot, name);
+        if (Directory.Exists(sourcePath))
+        {
+          CopyDirectoryRecursively(sourcePath, backupPath);
+        }
+        else
+        {
+          Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+          File.Copy(sourcePath, backupPath, overwrite: true);
+        }
+      }
+
+      if (Directory.Exists(backupRoot))
+      {
+        Directory.Delete(backupRoot, recursive: true);
+      }
+
+      Directory.Move(stagingRoot, backupRoot);
+      AppendLog("앱 업데이트에 대비해 로그인 정보와 상태 데이터를 백업했습니다.");
+      return true;
+    }
+    catch (Exception error)
+    {
+      AppendLog($"앱 업데이트 백업 실패: {error.Message}");
+      try
+      {
+        if (Directory.Exists(stagingRoot))
+        {
+          Directory.Delete(stagingRoot, recursive: true);
+        }
+      }
+      catch
+      {
+      }
+
+      return false;
+    }
   }
 
   private bool ConsumePendingServiceStartRequest()
@@ -680,6 +824,21 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private static void EnableModelessKeyboardInterop(System.Windows.Window window)
   {
     ElementHost.EnableModelessKeyboardInterop(window);
+  }
+
+  private static void CopyDirectoryRecursively(string sourceDirectory, string targetDirectory)
+  {
+    Directory.CreateDirectory(targetDirectory);
+
+    foreach (var filePath in Directory.GetFiles(sourceDirectory))
+    {
+      File.Copy(filePath, Path.Combine(targetDirectory, Path.GetFileName(filePath)), overwrite: true);
+    }
+
+    foreach (var directoryPath in Directory.GetDirectories(sourceDirectory))
+    {
+      CopyDirectoryRecursively(directoryPath, Path.Combine(targetDirectory, Path.GetFileName(directoryPath)));
+    }
   }
 
   private static string GetRuntimeStateLabel(AgentRuntimeState state) => state switch
@@ -878,6 +1037,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void KillRuntimeProcesses(IEnumerable<int> processIds)
   {
+    ForceKillProcesses(processIds);
+    DeleteAgentPidFile();
+  }
+
+  private void ForceKillProcesses(IEnumerable<int> processIds)
+  {
     foreach (var processId in processIds.Where(static pid => pid > 0).Distinct())
     {
       try
@@ -895,8 +1060,139 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       {
       }
     }
+  }
 
-    DeleteAgentPidFile();
+  private void TerminateProcessesHoldingConfiguredPorts()
+  {
+    var ports = ResolveManagedPorts(_configuration).ToList();
+    if (ports.Count == 0)
+    {
+      return;
+    }
+
+    var processIds = FindListeningProcessIds(ports)
+      .Where(static processId => processId > 0 && processId != Environment.ProcessId)
+      .Distinct()
+      .ToList();
+
+    if (processIds.Count == 0)
+    {
+      return;
+    }
+
+    AppendLog($"앱 실행 전에 점유 중인 포트를 강제 종료합니다. ports={string.Join(",", ports)} pids={string.Join(",", processIds)}");
+    ForceKillProcesses(processIds);
+    AppendLog($"점유 포트 정리가 완료되었습니다. ports={string.Join(",", ports)}");
+  }
+
+  private List<int> FindListeningProcessIds(IReadOnlyCollection<int> ports)
+  {
+    if (ports.Count == 0)
+    {
+      return [];
+    }
+
+    var portList = string.Join(",", ports.OrderBy(static port => port));
+    var command = string.Join(
+      " ",
+      [
+        "$ports = @(" + portList + ");",
+        "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |",
+        "Where-Object { $ports -contains $_.LocalPort } |",
+        "Select-Object -ExpandProperty OwningProcess -Unique"
+      ]);
+
+    using var process = new Process
+    {
+      StartInfo = new ProcessStartInfo
+      {
+        FileName = "powershell.exe",
+        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8
+      }
+    };
+
+    try
+    {
+      if (!process.Start())
+      {
+        return [];
+      }
+
+      var output = process.StandardOutput.ReadToEnd();
+      process.WaitForExit(3000);
+      if (process.ExitCode != 0)
+      {
+        return [];
+      }
+
+      var processIds = new HashSet<int>();
+
+      foreach (var rawLine in output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+      {
+        if (!int.TryParse(rawLine, out var processId) || processId <= 0)
+        {
+          continue;
+        }
+
+        processIds.Add(processId);
+      }
+
+      return processIds.ToList();
+    }
+    catch
+    {
+      return [];
+    }
+  }
+
+  private static IEnumerable<int> ResolveManagedPorts(RuntimeConfiguration configuration)
+  {
+    var ports = new List<int>();
+
+    if (TryParsePort(configuration.BridgePort) is int bridgePort)
+    {
+      ports.Add(bridgePort);
+    }
+
+    if (TryParsePortFromUrl(configuration.AppServerWsUrl) is int appServerPort && !ports.Contains(appServerPort))
+    {
+      ports.Add(appServerPort);
+    }
+
+    return ports;
+  }
+
+  private static int? TryParsePort(string? rawValue)
+  {
+    return int.TryParse(rawValue?.Trim(), out var port) && port is >= 1 and <= 65535
+      ? port
+      : null;
+  }
+
+  private static int? TryParsePortFromUrl(string? rawValue)
+  {
+    if (!Uri.TryCreate(rawValue?.Trim(), UriKind.Absolute, out var uri))
+    {
+      return null;
+    }
+
+    if (!uri.IsDefaultPort)
+    {
+      return uri.Port is >= 1 and <= 65535 ? uri.Port : null;
+    }
+
+    return uri.Scheme.ToLowerInvariant() switch
+    {
+      "ws" => 80,
+      "wss" => 443,
+      _ => null
+    };
   }
 
   private bool TryReadPersistedAgentProcessId(out int processId)

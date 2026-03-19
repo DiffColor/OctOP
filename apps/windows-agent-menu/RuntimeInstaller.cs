@@ -342,8 +342,8 @@ sealed class RuntimeInstaller
 
     WindowsStartupManager.SetEnabled(configuration.AutoStartAtLogin, executablePath);
     progress.Report(configuration.AutoStartAtLogin
-      ? "로그인 시 자동 실행을 등록했습니다."
-      : "로그인 시 자동 실행을 해제했습니다.");
+      ? $"로그인 시 자동 실행을 등록했습니다. exe={executablePath}"
+      : $"로그인 시 자동 실행을 해제했습니다. exe={executablePath}");
   }
 
   public Dictionary<string, string> BuildToolEnvironment(OctopPaths paths, IReadOnlyDictionary<string, string>? extra = null)

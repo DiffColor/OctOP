@@ -7,7 +7,7 @@ sealed class WindowsAutoUpdater
 {
   private readonly GitHubTagUpdateClient _releaseClient = new();
 
-  public async Task<bool> TryApplyUpdateAsync(Action<string> log, CancellationToken cancellationToken, Action? beforeReplacement = null)
+  public async Task<bool> TryApplyUpdateAsync(Action<string> log, CancellationToken cancellationToken, Func<bool>? beforeReplacement = null)
   {
     var currentTag = AppMetadata.CurrentVersionTag;
     if (!SemVersion.TryParse(currentTag, out var currentVersion))
@@ -52,7 +52,11 @@ sealed class WindowsAutoUpdater
     log($"새 버전 {latestRelease.Tag}를 다운로드합니다.");
     await DownloadAsync(latestRelease.DownloadUrl, downloadPath, cancellationToken);
     WriteUpdateScript(scriptPath, downloadPath, currentExecutablePath, Environment.ProcessId);
-    beforeReplacement?.Invoke();
+    if (beforeReplacement is not null && !beforeReplacement())
+    {
+      log("로그인 정보와 상태 데이터 백업에 실패해 앱 업데이트를 중단합니다.");
+      return false;
+    }
 
     Process.Start(new ProcessStartInfo
     {
@@ -89,6 +93,9 @@ sealed class WindowsAutoUpdater
     $target = "{{EscapePowerShellSingleQuotedString(currentExecutablePath)}}"
     $currentProcessId = {{currentProcessId}}
     $scriptPath = $MyInvocation.MyCommand.Path
+    $updateRoot = Split-Path -Parent $scriptPath
+    $backup = "$target.previous-update"
+    $replaced = $false
 
     while (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue) {
       Start-Sleep -Milliseconds 500
@@ -96,9 +103,29 @@ sealed class WindowsAutoUpdater
 
     for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
       try {
+        if (Test-Path $backup) {
+          Remove-Item -Path $backup -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        if (Test-Path $target) {
+          Move-Item -Path $target -Destination $backup -Force
+        }
+
         Copy-Item -Path $source -Destination $target -Force
+        $replaced = $true
         break
       } catch {
+        try {
+          if (Test-Path $target) {
+            Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
+          }
+
+          if (Test-Path $backup) {
+            Move-Item -Path $backup -Destination $target -Force
+          }
+        } catch {
+        }
+
         if ($attempt -ge 29) {
           throw
         }
@@ -107,17 +134,22 @@ sealed class WindowsAutoUpdater
       }
     }
 
+    if (-not $replaced) {
+      throw "앱 교체에 실패했습니다."
+    }
+
     Start-Process -FilePath $target | Out-Null
 
     try {
-      Remove-Item -Path $source -Force -ErrorAction SilentlyContinue
+      if (Test-Path $backup) {
+        Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue
+      }
     } catch {
     }
 
-    Start-Sleep -Seconds 1
-
     try {
-      Remove-Item -Path $scriptPath -Force -ErrorAction SilentlyContinue
+      $cleanupCommand = 'ping 127.0.0.1 -n 3 > nul & rmdir /s /q "' + $updateRoot + '"'
+      Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cleanupCommand) -WindowStyle Hidden | Out-Null
     } catch {
     }
     """;
