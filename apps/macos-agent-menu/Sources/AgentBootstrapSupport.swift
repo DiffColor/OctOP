@@ -1091,10 +1091,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     do {
       try await loginWithBrowserSelection(log: log, logoutFirst: true)
-      let status = await currentCodexLoginStatus()
-      codexLoggedIn = status.loggedIn
-      codexLoginStatus = status.summary
-      bootstrapSummary = status.loggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
+      bootstrapSummary = codexLoggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 계정 전환 실패: \(error.localizedDescription)"
       log("Codex 계정 전환 실패: \(error.localizedDescription)")
@@ -1112,10 +1109,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     do {
       try await loginWithBrowserSelection(log: log, logoutFirst: false)
-      let status = await currentCodexLoginStatus()
-      codexLoggedIn = status.loggedIn
-      codexLoginStatus = status.summary
-      bootstrapSummary = status.loggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
+      bootstrapSummary = codexLoggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 로그인 실패: \(error.localizedDescription)"
       log("Codex 로그인 실패: \(error.localizedDescription)")
