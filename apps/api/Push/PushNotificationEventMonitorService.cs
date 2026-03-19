@@ -94,9 +94,27 @@ public sealed class PushNotificationEventMonitorService(
       return;
     }
 
+    var createdAt = DateTimeOffset.UtcNow.ToString("O");
+    var reservedReceipt = new PushNotificationReceiptEntity
+    {
+      Id = receiptId,
+      LoginId = userId,
+      UserId = userId,
+      BridgeId = bridgeId,
+      IssueId = issueId,
+      ThreadId = threadId,
+      ProjectId = projectId,
+      IssueStatus = issueStatus,
+      EventType = envelope.Type ?? "turn.completed",
+      SuccessCount = 0,
+      FailureCount = 0,
+      CreatedAt = createdAt
+    };
+    var receiptCommitted = false;
+
     try
     {
-      if (await pushSubscriptionService.GetReceiptAsync(receiptId, cancellationToken) is not null)
+      if (!await pushSubscriptionService.TryReserveReceiptAsync(reservedReceipt, cancellationToken))
       {
         return;
       }
@@ -105,6 +123,7 @@ public sealed class PushNotificationEventMonitorService(
 
       if (subscriptions.Count == 0)
       {
+        await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
         return;
       }
 
@@ -120,6 +139,7 @@ public sealed class PushNotificationEventMonitorService(
 
       if (targetSubscriptions.Count == 0)
       {
+        await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
         return;
       }
 
@@ -141,6 +161,7 @@ public sealed class PushNotificationEventMonitorService(
 
       if (response.SuccessCount <= 0)
       {
+        await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
         logger.LogInformation(
           "Push notification skipped receipt commit because no delivery succeeded. user={UserId}, bridge={BridgeId}, issue={IssueId}, status={IssueStatus}",
           userId,
@@ -164,15 +185,37 @@ public sealed class PushNotificationEventMonitorService(
           EventType = envelope.Type ?? "turn.completed",
           SuccessCount = response.SuccessCount,
           FailureCount = response.FailureCount,
-          CreatedAt = DateTimeOffset.UtcNow.ToString("O")
+          CreatedAt = createdAt
         },
         cancellationToken);
+      receiptCommitted = true;
     }
     catch (OperationCanceledException)
     {
+      if (!receiptCommitted)
+      {
+        try
+        {
+          await pushSubscriptionService.DeleteReceiptAsync(receiptId, CancellationToken.None);
+        }
+        catch
+        {
+        }
+      }
     }
     catch (Exception exception)
     {
+      if (!receiptCommitted)
+      {
+        try
+        {
+          await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
+        }
+        catch
+        {
+        }
+      }
+
       logger.LogError(
         exception,
         "Push notification worker failed. type={Type}",

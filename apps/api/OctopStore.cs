@@ -500,6 +500,28 @@ public sealed class OctopStore : IAsyncDisposable
       .RunResultAsync<PushNotificationReceiptEntity?>(connection);
   }
 
+  public async Task<bool> TryCreatePushNotificationReceiptAsync(
+    PushNotificationReceiptEntity receipt,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+
+    try
+    {
+      await _r.Db(_db)
+        .Table(PushNotificationReceiptTable)
+        .Insert(JObject.FromObject(receipt))
+        .OptArg("conflict", "error")
+        .RunResultAsync<object>(connection);
+      return true;
+    }
+    catch (Exception exception) when (IsReceiptConflictException(exception))
+    {
+      return false;
+    }
+  }
+
   public async Task UpsertPushNotificationReceiptAsync(
     PushNotificationReceiptEntity receipt,
     CancellationToken cancellationToken)
@@ -510,6 +532,19 @@ public sealed class OctopStore : IAsyncDisposable
       .Table(PushNotificationReceiptTable)
       .Insert(JObject.FromObject(receipt))
       .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task DeletePushNotificationReceiptAsync(
+    string receiptId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    await _r.Db(_db)
+      .Table(PushNotificationReceiptTable)
+      .Get(receiptId)
+      .Delete()
       .RunResultAsync<object>(connection);
   }
 
@@ -541,5 +576,20 @@ public sealed class OctopStore : IAsyncDisposable
     return projects.FirstOrDefault(project =>
       string.Equals(project.Value<string>("id"), projectId, StringComparison.Ordinal) &&
       string.Equals(project.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
+  }
+
+  private static bool IsReceiptConflictException(Exception exception)
+  {
+    var typeName = exception.GetType().Name;
+    var message = exception.Message ?? string.Empty;
+
+    if (typeName is not ("ReqlRuntimeError" or "ReqlOpFailedError" or "ReqlQueryLogicError"))
+    {
+      return false;
+    }
+
+    return message.Contains("primary key", StringComparison.OrdinalIgnoreCase) ||
+      message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+      message.Contains("conflict", StringComparison.OrdinalIgnoreCase);
   }
 }

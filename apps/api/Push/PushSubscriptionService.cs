@@ -144,9 +144,19 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     return octopStore.GetPushNotificationReceiptAsync(receiptId, cancellationToken);
   }
 
+  public Task<bool> TryReserveReceiptAsync(PushNotificationReceiptEntity receipt, CancellationToken cancellationToken)
+  {
+    return octopStore.TryCreatePushNotificationReceiptAsync(receipt, cancellationToken);
+  }
+
   public Task UpsertReceiptAsync(PushNotificationReceiptEntity receipt, CancellationToken cancellationToken)
   {
     return octopStore.UpsertPushNotificationReceiptAsync(receipt, cancellationToken);
+  }
+
+  public Task DeleteReceiptAsync(string receiptId, CancellationToken cancellationToken)
+  {
+    return octopStore.DeletePushNotificationReceiptAsync(receiptId, cancellationToken);
   }
 
   public Task<JObject?> GetIssueSnapshotAsync(
