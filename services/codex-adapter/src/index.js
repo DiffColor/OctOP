@@ -23,7 +23,7 @@ import {
   bridgeSubjects,
   sanitizeBridgeId,
   sanitizeUserId
-} from "../../../packages/domain/src/index.js";
+} from "./domain.js";
 
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
