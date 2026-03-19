@@ -42,8 +42,8 @@ sealed class RuntimeConfiguration
   public string AppServerWsUrl { get; set; } = "ws://127.0.0.1:4600";
   public string CodexModel { get; set; } = "gpt-5.4";
   public string CodexReasoningEffort { get; set; } = "high";
-  public string CodexApprovalPolicy { get; set; } = "never";
-  public string CodexSandbox { get; set; } = "workspace-write";
+  public string CodexApprovalPolicy { get; set; } = "on-request";
+  public string CodexSandbox { get; set; } = "danger-full-access";
   public string WatchdogIntervalMs { get; set; } = "15000";
   public string StaleMs { get; set; } = "120000";
   public string ExtraEnvironmentText { get; set; } = string.Empty;

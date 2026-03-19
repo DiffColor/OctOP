@@ -80,6 +80,8 @@ export function loadOctopEnv(workspaceRoot) {
   );
   env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.4");
   env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
+  env.OCTOP_CODEX_APPROVAL_POLICY = withDefault(env.OCTOP_CODEX_APPROVAL_POLICY, "on-request");
+  env.OCTOP_CODEX_SANDBOX = withDefault(env.OCTOP_CODEX_SANDBOX, "danger-full-access");
 
   return env;
 }

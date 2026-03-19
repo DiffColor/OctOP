@@ -11,11 +11,12 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, StringCodec } from "nats";
 import WebSocket from "ws";
@@ -59,8 +60,8 @@ const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
-const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
-const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
+const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
+const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
 const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
 const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
@@ -90,6 +91,7 @@ const BRIDGE_STORAGE_DIR = resolve(process.env.OCTOP_STATE_HOME ?? resolve(os.ho
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
+const ISSUE_ATTACHMENT_STAGE_ROOT = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-issue-attachments`);
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 const CURRENT_FILE_PATH = fileURLToPath(import.meta.url);
@@ -118,6 +120,7 @@ const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
 const issueQueueProcessingStateByThreadId = new Map();
+const issueAttachmentCleanupLocksByIssueId = new Map();
 let runningIssueBackfillPromise = null;
 let runningIssueThreadReadSamplePromise = null;
 const codexThreadToThreadId = new Map();
@@ -162,6 +165,8 @@ if (
     reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
   });
 }
+
+cleanupIssueAttachmentStageRootOnStartup();
 
 function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
   if (rawValue === undefined || rawValue === null) {
@@ -341,6 +346,18 @@ function observeBridgeDurationMetric(name, durationMs) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cleanupIssueAttachmentStageRootOnStartup() {
+  try {
+    rmSync(ISSUE_ATTACHMENT_STAGE_ROOT, { recursive: true, force: true });
+    mkdirSync(ISSUE_ATTACHMENT_STAGE_ROOT, { recursive: true });
+  } catch (error) {
+    console.warn("[OctOP bridge] failed to reset issue attachment staging directory", {
+      root: ISSUE_ATTACHMENT_STAGE_ROOT,
+      error: error.message
+    });
+  }
 }
 
 function createThreadEntityId() {
@@ -1317,6 +1334,26 @@ function normalizeIssueCard(issue = {}) {
   };
 }
 
+function normalizeIssueAttachmentUrl(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return /^https?:\/\//i.test(normalized) ? normalized.slice(0, 4000) : null;
+}
+
+function normalizeIssueAttachmentLocalPath(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized || !isAbsolute(normalized)) {
+    return null;
+  }
+
+  return normalized.slice(0, 2000);
+}
+
 function normalizeIssueAttachment(attachment = {}) {
   const name = String(attachment.name ?? "").trim().slice(0, 160);
 
@@ -1331,6 +1368,11 @@ function normalizeIssueAttachment(attachment = {}) {
   const textContent = String(attachment.text_content ?? attachment.textContent ?? "")
     .replace(/\r\n/g, "\n")
     .slice(0, 20_000);
+  const downloadUrl = normalizeIssueAttachmentUrl(attachment.download_url ?? attachment.downloadUrl);
+  const cleanupUrl = normalizeIssueAttachmentUrl(attachment.cleanup_url ?? attachment.cleanupUrl);
+  const localPath = normalizeIssueAttachmentLocalPath(attachment.local_path ?? attachment.localPath);
+  const uploadId = sanitizeBridgeId(attachment.upload_id ?? attachment.uploadId ?? `iatt-${randomUUID()}`);
+  const uploadedAt = String(attachment.uploaded_at ?? attachment.uploadedAt ?? "").trim();
   const kind =
     attachment.kind === "image" ||
     mimeType.toLowerCase().startsWith("image/") ||
@@ -1339,7 +1381,7 @@ function normalizeIssueAttachment(attachment = {}) {
       : "file";
 
   return {
-    id: sanitizeBridgeId(attachment.id ?? createMessageId()),
+    id: sanitizeBridgeId(attachment.id ?? `iatt-${randomUUID()}`),
     name,
     kind,
     mime_type: mimeType || null,
@@ -1348,7 +1390,12 @@ function normalizeIssueAttachment(attachment = {}) {
       : 0,
     preview_url: previewUrl || null,
     text_content: textContent || null,
-    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated)
+    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated),
+    upload_id: uploadId || null,
+    download_url: downloadUrl,
+    cleanup_url: cleanupUrl,
+    local_path: localPath,
+    uploaded_at: uploadedAt || null
   };
 }
 
@@ -1361,6 +1408,214 @@ function normalizeIssueAttachments(attachments = []) {
     .map((attachment) => normalizeIssueAttachment(attachment))
     .filter(Boolean)
     .slice(0, 8);
+}
+
+function sanitizeIssueAttachmentFileName(fileName = "") {
+  const baseName = basename(String(fileName ?? "").trim() || "attachment");
+  const extension = extname(baseName).replace(/[^a-zA-Z0-9.]/g, "").slice(0, 16);
+  const stem = baseName
+    .slice(0, baseName.length - extension.length)
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+  return `${stem || "attachment"}${extension}`;
+}
+
+function resolveIssueAttachmentStageDirectory(issueId) {
+  return resolve(ISSUE_ATTACHMENT_STAGE_ROOT, sanitizeBridgeId(issueId));
+}
+
+function clearIssueAttachmentStageDirectory(issueId) {
+  try {
+    rmSync(resolveIssueAttachmentStageDirectory(issueId), { recursive: true, force: true });
+  } catch (error) {
+    console.warn("[OctOP bridge] issue attachment stage cleanup failed", {
+      issue_id: issueId,
+      error: error.message
+    });
+  }
+}
+
+async function deleteRemoteIssueAttachmentUpload(attachment) {
+  const normalized = normalizeIssueAttachment(attachment);
+
+  if (!normalized?.cleanup_url) {
+    return;
+  }
+
+  const response = await fetch(normalized.cleanup_url, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`attachment cleanup failed (${response.status})`);
+  }
+}
+
+function stripIssueAttachmentRuntimeFields(attachment, options = {}) {
+  const normalized = normalizeIssueAttachment(attachment);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalizeIssueAttachment({
+    ...normalized,
+    local_path: null,
+    ...(options.removeRemote ? { download_url: null, cleanup_url: null } : {})
+  });
+}
+
+async function cleanupRemovedIssueAttachments(previousAttachments = [], nextAttachments = []) {
+  const nextIds = new Set(normalizeIssueAttachments(nextAttachments).map((attachment) => attachment.id));
+  const removedAttachments = normalizeIssueAttachments(previousAttachments).filter(
+    (attachment) => !nextIds.has(attachment.id)
+  );
+
+  for (const attachment of removedAttachments) {
+    try {
+      await deleteRemoteIssueAttachmentUpload(attachment);
+    } catch (error) {
+      console.warn("[OctOP bridge] removed issue attachment cleanup failed", {
+        issue_attachment_id: attachment.id,
+        error: error.message
+      });
+    }
+  }
+}
+
+async function cleanupIssueAttachmentResources(issueId, options = {}) {
+  const normalizedIssueId = sanitizeBridgeId(issueId);
+  const issue = issueCardsById.get(normalizedIssueId);
+  const attachments = normalizeIssueAttachments(options.attachments ?? issue?.attachments ?? []);
+  const removeRemote = options.removeRemote !== false;
+
+  for (const attachment of attachments) {
+    if (!removeRemote) {
+      continue;
+    }
+
+    try {
+      await deleteRemoteIssueAttachmentUpload(attachment);
+    } catch (error) {
+      console.warn("[OctOP bridge] issue attachment cleanup failed", {
+        issue_id: normalizedIssueId,
+        issue_attachment_id: attachment.id,
+        error: error.message
+      });
+    }
+  }
+
+  clearIssueAttachmentStageDirectory(normalizedIssueId);
+
+  const currentIssue = issueCardsById.get(normalizedIssueId);
+
+  if (!currentIssue || options.forgetIssue) {
+    return;
+  }
+
+  const nextAttachments = normalizeIssueAttachments(currentIssue.attachments)
+    .map((attachment) => stripIssueAttachmentRuntimeFields(attachment, { removeRemote }))
+    .filter(Boolean);
+
+  issueCardsById.set(normalizedIssueId, {
+    ...currentIssue,
+    attachments: nextAttachments,
+    updated_at: now()
+  });
+  persistThreadById(currentIssue.thread_id);
+}
+
+function queueIssueAttachmentCleanup(issueId, options = {}) {
+  const normalizedIssueId = sanitizeBridgeId(issueId);
+  const currentLock = issueAttachmentCleanupLocksByIssueId.get(normalizedIssueId);
+
+  if (currentLock) {
+    return currentLock;
+  }
+
+  const cleanupPromise = cleanupIssueAttachmentResources(normalizedIssueId, options)
+    .catch((error) => {
+      console.warn("[OctOP bridge] queued issue attachment cleanup failed", {
+        issue_id: normalizedIssueId,
+        error: error.message
+      });
+    })
+    .finally(() => {
+      if (issueAttachmentCleanupLocksByIssueId.get(normalizedIssueId) === cleanupPromise) {
+        issueAttachmentCleanupLocksByIssueId.delete(normalizedIssueId);
+      }
+    });
+
+  issueAttachmentCleanupLocksByIssueId.set(normalizedIssueId, cleanupPromise);
+  return cleanupPromise;
+}
+
+async function stageIssueAttachmentsForExecution(issueId) {
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue) {
+    throw new Error("첨부를 준비할 이슈를 찾을 수 없습니다.");
+  }
+
+  const attachments = normalizeIssueAttachments(issue.attachments);
+
+  if (attachments.length === 0) {
+    return issue;
+  }
+
+  const issueStageDirectory = resolveIssueAttachmentStageDirectory(issueId);
+  mkdirSync(issueStageDirectory, { recursive: true });
+  const nextAttachments = [];
+
+  try {
+    for (const [index, attachment] of attachments.entries()) {
+      if (!attachment.download_url) {
+        nextAttachments.push(attachment);
+        continue;
+      }
+
+      const stagedFilePath =
+        attachment.local_path && existsSync(attachment.local_path)
+          ? attachment.local_path
+          : resolve(
+              issueStageDirectory,
+              `${String(index + 1).padStart(2, "0")}-${sanitizeIssueAttachmentFileName(attachment.name)}`
+            );
+
+      if (!existsSync(stagedFilePath)) {
+        const response = await fetch(attachment.download_url, {
+          headers: {
+            Accept: "*/*"
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`첨부 다운로드에 실패했습니다. (${response.status})`);
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        writeFileSync(stagedFilePath, buffer);
+      }
+
+      nextAttachments.push(
+        normalizeIssueAttachment({
+          ...attachment,
+          local_path: stagedFilePath
+        })
+      );
+    }
+  } catch (error) {
+    clearIssueAttachmentStageDirectory(issueId);
+    throw error;
+  }
+
+  updateIssueCard(issueId, { attachments: nextAttachments });
+  return issueCardsById.get(issueId) ?? { ...issue, attachments: nextAttachments };
 }
 
 function normalizeTodoChat(loginId, chat = {}) {
@@ -3933,6 +4188,15 @@ async function deleteRootThreadCascade(userId, rootThreadId, currentRootThread =
     markRootThreadDeletedForEventDrop(rootThreadId);
     softDeleteRootThreadState(rootThreadId);
     await stopActivePhysicalThreadBestEffort(rootThreadId);
+    await Promise.all(
+      issueIds.map((issueId) =>
+        cleanupIssueAttachmentResources(issueId, {
+          attachments: issueCardsById.get(issueId)?.attachments ?? [],
+          removeRemote: true,
+          forgetIssue: true
+        })
+      )
+    );
 
     for (const physicalThread of physicalThreads) {
       const deletedPhysicalThread = {
@@ -4202,6 +4466,14 @@ function updateIssueCard(issueId, patch = {}) {
   };
 
   issueCardsById.set(issueId, next);
+
+  if (
+    current.status !== next.status &&
+    ["completed", "failed", "interrupted"].includes(String(next.status ?? "").trim())
+  ) {
+    void queueIssueAttachmentCleanup(issueId, { removeRemote: true });
+  }
+
   updateProjectThreadSnapshot(next.thread_id);
   persistThreadById(next.thread_id);
   return next;
@@ -4261,7 +4533,7 @@ async function startTurnOnPhysicalThread(
   rootThreadId,
   physicalThreadId,
   issueId,
-  inputPrompt,
+  buildPrompt,
   turnStartingEvent = "turn.starting"
 ) {
   const rootThread = threadStateById.get(rootThreadId);
@@ -4272,7 +4544,24 @@ async function startTurnOnPhysicalThread(
     throw new Error("실행할 작업을 찾을 수 없습니다.");
   }
 
-  const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+  let preparedIssue = issue;
+  let inputPrompt = "";
+  let turnInput = [];
+  let codexThreadId = null;
+
+  try {
+    preparedIssue = await stageIssueAttachmentsForExecution(issueId);
+    inputPrompt =
+      typeof buildPrompt === "function"
+        ? buildPrompt(preparedIssue)
+        : String(buildPrompt ?? "").trim();
+    turnInput = buildIssueTurnInput(preparedIssue, inputPrompt);
+    codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+  } catch (error) {
+    clearIssueAttachmentStageDirectory(issueId);
+    throw error;
+  }
+
   const cwd = resolveProjectWorkspace(userId, rootThread.project_id);
   resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, {
     status: "active",
@@ -4325,21 +4614,17 @@ async function startTurnOnPhysicalThread(
   });
 
   let attempt = 0;
+  let activeCodexThreadId = codexThreadId;
 
   while (attempt < 2) {
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
-      const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
+      activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
       const turnResponse = await appServer.request("turn/start", {
         threadId: activeCodexThreadId,
         cwd,
         approvalPolicy: CODEX_APPROVAL_POLICY,
-        input: [
-          {
-            type: "text",
-            text: inputPrompt
-          }
-        ]
+        input: turnInput
       }, "turn/start.startTurnOnPhysicalThread");
 
       const turn = turnResponse.result?.turn ?? null;
@@ -4483,7 +4768,7 @@ async function startIssueTurn(userId, threadId, issueId) {
     threadId,
     activePhysicalThread.id,
     issueId,
-    buildExecutionInputPrompt(issue)
+    (preparedIssue) => buildExecutionInputPrompt(preparedIssue ?? issue)
   );
 }
 
@@ -4850,6 +5135,12 @@ async function deleteThreadIssue(userId, payload = {}) {
     });
     recoverySteps.push("released_active_issue_lock");
   }
+
+  await cleanupIssueAttachmentResources(issueId, {
+    attachments: issue.attachments,
+    removeRemote: true,
+    forgetIssue: true
+  });
 
   issueCardsById.delete(issueId);
   issueMessagesById.delete(issueId);
@@ -5444,6 +5735,8 @@ async function updateThreadIssue(userId, payload = {}) {
     throw new Error("준비 중인 이슈만 수정할 수 있습니다.");
   }
 
+  await cleanupRemovedIssueAttachments(issue.attachments, attachments);
+
   const next = updateIssueCard(issueId, {
     title: title || issue.title,
     prompt,
@@ -5865,33 +6158,44 @@ function buildIssueAttachmentPromptSection(attachments = []) {
     return "";
   }
 
-  const lines = [
-    "[첨부 자료]",
-    "아래 첨부 메타데이터와 포함된 텍스트 내용을 참고해 작업하십시오.",
-    "이미지 첨부는 현재 메타데이터와 썸네일 기반 정보만 전달됩니다."
-  ];
+  const fileAttachments = normalizedAttachments.filter(
+    (attachment) => attachment.kind !== "image" && attachment.local_path
+  );
+  const imageAttachments = normalizedAttachments.filter(
+    (attachment) => attachment.kind === "image" && attachment.local_path
+  );
+  const lines = ["[첨부 자료]"];
 
-  for (const [index, attachment] of normalizedAttachments.entries()) {
-    lines.push("");
-    lines.push(`${index + 1}. ${attachment.name}`);
-    lines.push(`- kind: ${attachment.kind}`);
-    lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
-    lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+  if (fileAttachments.length > 0) {
+    lines.push("아래 로컬 경로 파일을 직접 열어 내용을 확인한 뒤 작업하십시오.");
 
-    if (attachment.text_content) {
-      lines.push("- inline_text:");
-      lines.push("[첨부 내용 시작]");
-      lines.push(attachment.text_content);
-      lines.push("[첨부 내용 끝]");
-
-      if (attachment.text_truncated) {
-        lines.push("- note: 첨부 텍스트가 길어서 앞부분만 포함되었습니다.");
-      }
-    } else if (attachment.kind === "image") {
-      lines.push("- note: 이미지 원본 대신 대시보드 썸네일과 메타데이터만 저장되었습니다.");
-    } else {
-      lines.push("- note: 바이너리 또는 미리보기 불가 파일이라 메타데이터만 전달됩니다.");
+    for (const [index, attachment] of fileAttachments.entries()) {
+      lines.push("");
+      lines.push(`${index + 1}. ${attachment.name}`);
+      lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+      lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+      lines.push(`- local_path: ${attachment.local_path}`);
     }
+  }
+
+  if (imageAttachments.length > 0) {
+    if (fileAttachments.length > 0) {
+      lines.push("");
+    }
+
+    lines.push("아래 이미지는 localImage 입력으로 함께 전달됩니다.");
+
+    for (const [index, attachment] of imageAttachments.entries()) {
+      lines.push("");
+      lines.push(`${index + 1}. ${attachment.name}`);
+      lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+      lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+      lines.push(`- local_path: ${attachment.local_path}`);
+    }
+  }
+
+  if (fileAttachments.length === 0 && imageAttachments.length === 0) {
+    lines.push("첨부 메타데이터는 저장되어 있지만 현재 읽을 수 있는 로컬 경로가 준비되지 않았습니다.");
   }
 
   return lines.join("\n");
@@ -5927,6 +6231,29 @@ function buildHandoffPrompt(summary, issue = null) {
   }
 
   return buildExecutionPrompt(sections.join("\n"));
+}
+
+function buildIssueTurnInput(issue = null, inputPrompt = "") {
+  const normalizedAttachments = normalizeIssueAttachments(issue?.attachments);
+  const input = [
+    {
+      type: "text",
+      text: inputPrompt
+    }
+  ];
+
+  for (const attachment of normalizedAttachments) {
+    if (attachment.kind !== "image" || !attachment.local_path) {
+      continue;
+    }
+
+    input.push({
+      type: "localImage",
+      path: attachment.local_path
+    });
+  }
+
+  return input;
 }
 
 function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, issueId = null) {
@@ -6159,7 +6486,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       rootThreadId,
       updatedTargetPhysicalThread.id,
       activeIssueId,
-      buildHandoffPrompt(nextSummary, activeIssue ?? null),
+      (preparedIssue) => buildHandoffPrompt(nextSummary, preparedIssue ?? activeIssue ?? null),
       isPreflight ? "rootThread.rollover.preflight.starting" : "rootThread.rollover.continuation.starting"
     );
 

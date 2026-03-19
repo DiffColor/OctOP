@@ -310,8 +310,8 @@ struct AgentBootstrapConfiguration: Codable {
       appServerWsUrl: "ws://127.0.0.1:4600",
       codexModel: "gpt-5.4",
       reasoningEffort: "high",
-      approvalPolicy: "never",
-      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+      sandboxMode: "danger-full-access",
       watchdogIntervalMs: "15000",
       staleMs: "120000",
       autoStartAtLogin: true,
@@ -445,8 +445,8 @@ final class AgentBootstrapStore: ObservableObject {
   let appServerModeOptions = ["ws-local"]
   let modelOptions = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-mini"]
   let reasoningOptions = ["none", "low", "medium", "high", "xhigh"]
-  let approvalOptions = ["never", "on-request", "untrusted"]
-  let sandboxOptions = ["workspace-write", "danger-full-access", "read-only"]
+  let approvalOptions = ["on-request", "never", "untrusted"]
+  let sandboxOptions = ["danger-full-access", "workspace-write", "read-only"]
   let authModeOptions = [AgentBootstrapConfiguration.authModeDeviceAuth]
 
   var appSupportURL: URL {

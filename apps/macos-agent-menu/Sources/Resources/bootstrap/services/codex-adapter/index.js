@@ -59,8 +59,8 @@ const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
-const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "never";
-const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "workspace-write";
+const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
+const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
 const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
 const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
