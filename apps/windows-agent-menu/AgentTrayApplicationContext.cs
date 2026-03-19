@@ -197,15 +197,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     if (runtimeProcessIds.Count > 0)
     {
       _processId = runtimeProcessIds[0];
-      _runtimeState = AgentRuntimeState.Stopping;
+      _runtimeState = AgentRuntimeState.Running;
       _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"기존 local-agent 런타임 프로세스를 무시하고 새 실행을 위해 정리합니다. pids={string.Join(",", runtimeProcessIds)}");
+      AppendLog($"기존 local-agent 런타임 프로세스를 재사용합니다. pids={string.Join(",", runtimeProcessIds)}");
       RefreshUi();
-      KillRuntimeProcesses(runtimeProcessIds);
-      _processId = null;
-      _runtimeState = AgentRuntimeState.Stopped;
-      _lastUpdatedAt = DateTimeOffset.Now;
-      RefreshUi();
+      return;
     }
 
     await RefreshRuntimeStatusAsync();
@@ -660,8 +656,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
     }
 
-    var existingProcessId = FindExistingAgentProcessId();
-    if (existingProcessId is null)
+    var runtimeProcessIds = FindRuntimeProcessIds();
+    var existingProcessId = FindExistingAgentProcessId() ?? runtimeProcessIds.FirstOrDefault();
+    if (existingProcessId <= 0)
     {
       _processId = null;
       if (_runtimeState != AgentRuntimeState.Failed)
@@ -680,7 +677,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     if (shouldLog)
     {
-      AppendLog($"기존 local-agent 프로세스를 감지했습니다. pid={existingProcessId}");
+      AppendLog(FindExistingAgentProcessId() is not null
+        ? $"기존 local-agent 프로세스를 감지했습니다. pid={existingProcessId}"
+        : $"기존 local-agent 런타임 프로세스를 감지했습니다. pid={existingProcessId}");
     }
   }
 

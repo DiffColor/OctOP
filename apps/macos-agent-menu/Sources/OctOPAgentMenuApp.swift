@@ -56,8 +56,11 @@ final class AgentMenuModel: ObservableObject {
     let runtimeProcesses = findRuntimeProcesses()
 
     if !runtimeProcesses.isEmpty {
-      appendLog("기존 local-agent 런타임 프로세스를 무시하고 새 실행을 위해 정리합니다.")
-      terminateRuntimeProcesses(runtimeProcesses)
+      processId = runtimeProcesses.first?.pid
+      runtimeState = .running
+      lastUpdatedAt = Date()
+      appendLog("기존 local-agent 런타임 프로세스를 재사용합니다.")
+      return
     }
 
     guard process == nil else {
@@ -209,7 +212,9 @@ final class AgentMenuModel: ObservableObject {
       return
     }
 
-    guard let existingProcessId = findExistingAgentProcessId() else {
+    let runtimeProcesses = findRuntimeProcesses()
+
+    guard let existingProcessId = findExistingAgentProcessId() ?? runtimeProcesses.first?.pid else {
       processId = nil
       if runtimeState != .failed {
         runtimeState = .stopped
@@ -224,7 +229,11 @@ final class AgentMenuModel: ObservableObject {
     lastUpdatedAt = Date()
 
     if shouldLog {
-      appendLog("기존 local-agent 프로세스를 감지했습니다. pid=\(existingProcessId)")
+      if runtimeProcesses.contains(where: { $0.pid == existingProcessId && !$0.command.contains("run-local-agent.mjs") }) {
+        appendLog("기존 local-agent 런타임 프로세스를 감지했습니다. pid=\(existingProcessId)")
+      } else {
+        appendLog("기존 local-agent 프로세스를 감지했습니다. pid=\(existingProcessId)")
+      }
     }
   }
 
