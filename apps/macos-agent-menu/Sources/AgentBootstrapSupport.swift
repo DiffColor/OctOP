@@ -1468,7 +1468,7 @@ final class AgentBootstrapStore: ObservableObject {
     "\(shellEscape(runtimeCodexURL.path)) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
   }
 
-  private func withCodexAppServerSession<T>(
+  private func withCodexAppServerSession<T: Sendable>(
     log: (@MainActor (String) -> Void)? = nil,
     operation: @escaping (CodexAppServerSession) async throws -> T
   ) async throws -> T {
