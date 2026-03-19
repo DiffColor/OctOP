@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Lib.Net.Http.WebPush;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
 using OctOP.Gateway;
 using OctOP.ServerShared;
@@ -1777,7 +1778,7 @@ app.MapPost("/api/push/subscriptions", async (
 });
 
 app.MapDelete("/api/push/subscriptions", async (
-  PushSubscriptionDeleteRequest request,
+  [FromBody] PushSubscriptionDeleteRequest request,
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
   VapidKeyService vapidKeyService,
