@@ -342,6 +342,22 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return;
     }
 
+    await RefreshRuntimeStatusAsync();
+    if (_runtimeStatus?.ReadyToRun != true)
+    {
+      AppendLog("재시작 전에 설치/설정을 마무리합니다.");
+      ShowSetup();
+      var completedStatus = await _setupWindow.EnsureInstalledAsync(automatic: true, showMessageBoxOnFailure: true);
+      _runtimeStatus = completedStatus ?? _runtimeStatus;
+      await RefreshRuntimeStatusAsync();
+      if (_runtimeStatus?.ReadyToRun != true)
+      {
+        AppendLog("설치/설정이 완료되지 않아 서비스를 시작하지 않습니다.");
+        RefreshUi();
+        return;
+      }
+    }
+
     await StartAsync();
   }
 

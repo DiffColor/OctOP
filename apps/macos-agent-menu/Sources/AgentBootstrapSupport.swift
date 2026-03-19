@@ -245,6 +245,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var lastBootstrapAt: Date? = nil
   private var automaticBootstrapAttempted = false
   private var automaticUpdateAttempted = false
+  private var bootstrapTask: Task<Bool, Never>? = nil
 
   init() {
     configuration = Self.loadConfiguration() ?? .default()
@@ -362,19 +363,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     automaticBootstrapAttempted = true
 
-    if requiresBootstrap {
-      runBootstrap(log: log)
-      return
-    }
-
-    if await isManagedCodexLoggedIn() {
-      bootstrapSummary = "실행 준비됨"
-      return
-    }
-
-    bootstrapSummary = "Codex 로그인 필요"
-    log("Codex 로그인이 필요해 환경 자동 설치를 다시 진행합니다.")
-    runBootstrap(log: log)
+    _ = await ensureReadyForLaunch(log: log)
   }
 
   func ensureAppUpdatedIfNeeded(log: @escaping @MainActor (String) -> Void, force: Bool = false) async -> Bool {
@@ -512,27 +501,52 @@ final class AgentBootstrapStore: ObservableObject {
     )
   }
 
-  func runBootstrap(log: @escaping @MainActor (String) -> Void) {
-    guard !bootstrapInProgress else {
-      log("bootstrap이 이미 실행 중입니다.")
-      return
+  func ensureReadyForLaunch(log: @escaping @MainActor (String) -> Void) async -> Bool {
+    if let bootstrapTask {
+      return await bootstrapTask.value
     }
 
-    bootstrapInProgress = true
-    bootstrapSummary = "환경 자동 설치 실행 중"
-
-    Task {
-      do {
-        try await performBootstrap(log: log)
-        bootstrapSummary = "환경 자동 설치 완료"
-        lastBootstrapAt = Date()
-      } catch {
-        bootstrapSummary = "환경 자동 설치 실패: \(error.localizedDescription)"
-        log("bootstrap 실패: \(error.localizedDescription)")
+    if !requiresBootstrap {
+      if await isManagedCodexLoggedIn() {
+        bootstrapSummary = "실행 준비됨"
+        refreshDiagnostics()
+        return true
       }
 
-      bootstrapInProgress = false
-      refreshDiagnostics()
+      bootstrapSummary = "Codex 로그인 필요"
+      log("Codex 로그인이 필요해 환경 자동 설치를 다시 진행합니다.")
+    }
+
+    bootstrapSummary = "환경 자동 설치 실행 중"
+    bootstrapInProgress = true
+
+    let task = Task<Bool, Never> { @MainActor [weak self] in
+      guard let self else { return false }
+      defer {
+        self.bootstrapInProgress = false
+        self.bootstrapTask = nil
+        self.refreshDiagnostics()
+      }
+
+      do {
+        try await self.performBootstrap(log: log)
+        self.bootstrapSummary = "환경 자동 설치 완료"
+        self.lastBootstrapAt = Date()
+        return true
+      } catch {
+        self.bootstrapSummary = "환경 자동 설치 실패: \(error.localizedDescription)"
+        log("bootstrap 실패: \(error.localizedDescription)")
+        return false
+      }
+    }
+
+    bootstrapTask = task
+    return await task.value
+  }
+
+  func runBootstrap(log: @escaping @MainActor (String) -> Void) {
+    Task {
+      _ = await ensureReadyForLaunch(log: log)
     }
   }
 

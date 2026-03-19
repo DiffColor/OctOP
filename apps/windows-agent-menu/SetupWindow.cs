@@ -45,6 +45,7 @@ sealed class SetupWindow : Window
   private Task? _activeInstallTask;
   private string _currentInstallRoot;
   private string _latestActivityMessage = "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다.";
+  private RuntimeStatus? _lastKnownStatus;
 
   public bool AllowClose { get; set; }
   public bool InstallationInProgress => _activeInstallTask is { IsCompleted: false };
@@ -105,6 +106,7 @@ sealed class SetupWindow : Window
 
   public void UpdateStatus(RuntimeStatus status)
   {
+    _lastKnownStatus = status;
     UpdateDiagnostic("runtimeBundle", status.RuntimeBundlePresent ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeBundlePresent ? "정상" : "누락");
     UpdateDiagnostic("configuration", status.ConfigurationSaved ? DiagnosticState.Ok : DiagnosticState.Missing, status.ConfigurationSaved ? "정상" : "누락");
     UpdateDiagnostic("runtimeVersion", status.RuntimeVersionMatches ? DiagnosticState.Ok : DiagnosticState.Warning, status.RuntimeVersionMatches ? status.RuntimeVersion : "업데이트 필요");
@@ -137,6 +139,22 @@ sealed class SetupWindow : Window
     Dispatcher.BeginInvoke(
       new Action(() => _ = RunInstallAsync(clearProgress: false, showMessageBoxOnFailure: false, automatic: true)),
       DispatcherPriority.Background);
+  }
+
+  public async Task<RuntimeStatus?> EnsureInstalledAsync(bool automatic, bool showMessageBoxOnFailure)
+  {
+    if (InstallationInProgress)
+    {
+      if (_activeInstallTask is not null)
+      {
+        await _activeInstallTask;
+      }
+
+      return _lastKnownStatus;
+    }
+
+    await RunInstallAsync(clearProgress: false, showMessageBoxOnFailure: showMessageBoxOnFailure, automatic: automatic);
+    return _lastKnownStatus;
   }
 
   public void BringToFront()

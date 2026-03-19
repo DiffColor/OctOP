@@ -630,8 +630,17 @@ struct AgentMenuContent: View {
           }
 
           model.refreshRuntimeStateFromSystem()
-          if !model.isRunning {
+          if model.isRunning {
+            return
+          }
+
+          model.appendInstallerLog("재시작 전에 설치/설정을 마무리합니다.")
+          let ready = await bootstrap.ensureReadyForLaunch(log: model.appendInstallerLog)
+          model.refreshRuntimeStateFromSystem()
+          if ready && !model.isRunning {
             model.start(using: bootstrap)
+          } else if !ready {
+            model.appendInstallerLog("설치/설정이 완료되지 않아 서비스를 시작하지 않습니다.")
           }
         }
       }
