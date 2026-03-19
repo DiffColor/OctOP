@@ -14,7 +14,6 @@ sealed class BrowserOption
 
 static class BrowserSelection
 {
-  private static readonly Icon FallbackIcon = SystemIcons.Application;
   private static readonly (string DisplayName, string ExecutableName, string[] CandidatePaths)[] BrowserCandidates =
   [
     ("Google Chrome", "chrome.exe", [
@@ -128,11 +127,6 @@ static class BrowserSelection
     root.Controls.Add(browserPanel);
     dialog.Controls.Add(root);
     return dialog.ShowDialog() == DialogResult.OK ? selectedBrowser : null;
-  }
-
-  public static Icon? GetRepresentativeIcon()
-  {
-    return DiscoverBrowsers().FirstOrDefault()?.Icon ?? FallbackIcon;
   }
 
   public static void Open(BrowserOption browser, string url)

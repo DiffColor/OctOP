@@ -2,7 +2,6 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Button = System.Windows.Controls.Button;
@@ -335,8 +334,7 @@ sealed class SetupWindow : Window
       Orientation = Orientation.Horizontal
     };
 
-    _codexLoginButton = CreateSecondaryButton("브라우저 로그인");
-    _codexLoginButton.Padding = new Thickness(12, 8, 12, 8);
+    _codexLoginButton = CreateSecondaryButton("로그인");
     _codexLoginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: _codexLoggedIn);
     UpdateCodexLoginButton();
 
@@ -595,46 +593,10 @@ sealed class SetupWindow : Window
       return;
     }
 
-    var label = _codexLoggedIn ? "계정 전환" : "브라우저 로그인";
-    _codexLoginButton.Content = CreateBrowserButtonContent(label);
+    _codexLoginButton.Content = _codexLoggedIn ? "계정 전환" : "로그인";
     _codexLoginButton.ToolTip = _codexLoggedIn
       ? "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다."
       : "브라우저를 선택해 Codex 계정을 로그인합니다.";
-  }
-
-  private static UIElement CreateBrowserButtonContent(string label)
-  {
-    var content = new StackPanel
-    {
-      Orientation = Orientation.Horizontal,
-      Margin = new Thickness(0),
-      VerticalAlignment = VerticalAlignment.Center
-    };
-
-    if (BrowserSelection.GetRepresentativeIcon() is { } icon)
-    {
-      var iconSource = Imaging.CreateBitmapSourceFromHIcon(
-        icon.Handle,
-        Int32Rect.Empty,
-        System.Windows.Media.Imaging.BitmapSizeOptions.FromWidthAndHeight(18, 18));
-      iconSource.Freeze();
-
-      content.Children.Add(new System.Windows.Controls.Image
-      {
-        Width = 18,
-        Height = 18,
-        Margin = new Thickness(0, 0, 8, 0),
-        Source = iconSource
-      });
-    }
-
-    content.Children.Add(new TextBlock
-    {
-      Text = label,
-      VerticalAlignment = VerticalAlignment.Center
-    });
-
-    return content;
   }
 
   private void SetBusy(bool busy, bool installing)

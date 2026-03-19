@@ -179,20 +179,6 @@ private enum CodexBrowserSelection {
   }
 
   @MainActor
-  static func representativeImage() -> NSImage? {
-    if let authURL = URL(string: "https://auth.openai.com"),
-       let defaultBrowserURL = NSWorkspace.shared.urlForApplication(toOpen: authURL) {
-      let icon = NSWorkspace.shared.icon(forFile: defaultBrowserURL.path)
-      icon.size = NSSize(width: 18, height: 18)
-      return icon
-    }
-
-    let icon = discoverBrowsers().first?.icon
-    icon?.size = NSSize(width: 18, height: 18)
-    return icon
-  }
-
-  @MainActor
   private static func discoverBrowsers() -> [CodexBrowserOption] {
     browserCandidates.compactMap { candidate in
       guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate.bundleID) else {
@@ -1742,14 +1728,7 @@ struct AgentSetupWindow: View {
         Button {
           onCodexLogin()
         } label: {
-          HStack(spacing: 8) {
-            if let image = CodexBrowserSelection.representativeImage() {
-              Image(nsImage: image)
-                .resizable()
-                .frame(width: 18, height: 18)
-            }
-            Text(bootstrap.codexLoggedIn ? "계정 전환" : "브라우저 로그인")
-          }
+          Text(bootstrap.codexLoggedIn ? "계정 전환" : "로그인")
         }
         .disabled(bootstrap.bootstrapInProgress)
       }
