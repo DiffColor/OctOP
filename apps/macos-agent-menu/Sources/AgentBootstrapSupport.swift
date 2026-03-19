@@ -54,6 +54,9 @@ private final class CodexBrowserPickerController: NSObject {
 }
 
 private enum CodexBrowserSelection {
+  @MainActor
+  private static var activeControllers: [ObjectIdentifier: CodexBrowserPickerController] = [:]
+
   private static let browserCandidates: [(bundleID: String, displayName: String)] = [
     ("com.apple.Safari", "Safari"),
     ("com.google.Chrome", "Google Chrome"),
@@ -126,14 +129,17 @@ private enum CodexBrowserSelection {
       ])
 
       let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow
+      let panelIdentifier = ObjectIdentifier(panel)
       let controller = CodexBrowserPickerController(
         panel: panel,
         optionsById: optionMap,
         presentingWindow: presentingWindow,
         completion: { selection in
+          activeControllers.removeValue(forKey: panelIdentifier)
           continuation.resume(returning: selection?.id)
         }
       )
+      activeControllers[panelIdentifier] = controller
 
       for button in optionButtons {
         button.target = controller
