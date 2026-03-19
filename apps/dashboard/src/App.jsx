@@ -351,17 +351,13 @@ const COPY = {
       helper: "After sign-in, your connected bridge, projects, and thread board sync automatically."
     },
     issueComposer: {
-      eyebrow: "New Issue",
       title: "Create issue",
-      subtitle: "Title is optional. If empty, the prompt opening line becomes the issue title.",
       issueTitle: "Issue title",
       optional: "optional",
       titlePlaceholder: "Auto-filled from the prompt if left blank",
       project: "Project",
       attachments: "Attachments",
       attachmentsAction: "Add files",
-      attachmentsHint: "Images show thumbnails, and files stay as removable header chips.",
-      attachmentsLimitHint: "Up to 8 files, 5MB each. Text files keep a trimmed inline copy for execution.",
       attachmentsRejected: (count) => `${count} file${count === 1 ? "" : "s"} could not be attached.`,
       attachmentsMaxReached: "Attachment limit reached.",
       prompt: "Prompt",
@@ -522,17 +518,13 @@ const COPY = {
       helper: "로그인 후 연결된 브릿지, 프로젝트, 스레드 보드가 자동으로 동기화됩니다."
     },
     issueComposer: {
-      eyebrow: "새 이슈",
       title: "이슈 등록",
-      subtitle: "제목은 선택 입력입니다. 비워두면 프롬프트 앞부분이 이슈 제목이 됩니다.",
       issueTitle: "이슈 제목",
       optional: "선택",
       titlePlaceholder: "비워두면 프롬프트 앞부분으로 자동 생성됩니다",
       project: "프로젝트",
       attachments: "첨부",
       attachmentsAction: "파일 추가",
-      attachmentsHint: "이미지는 썸네일로, 일반 파일은 삭제 가능한 헤더 칩으로 표시됩니다.",
-      attachmentsLimitHint: "최대 8개, 파일당 5MB입니다. 텍스트 파일은 일부 내용을 함께 저장합니다.",
       attachmentsRejected: (count) => `${count}개 파일은 첨부하지 못했습니다.`,
       attachmentsMaxReached: "첨부는 최대 8개까지 가능합니다.",
       prompt: "프롬프트",
@@ -1929,8 +1921,6 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.issueComposer.attachments}</p>
-          <p className="mt-2 text-xs leading-5 text-slate-400">{copy.issueComposer.attachmentsHint}</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">{copy.issueComposer.attachmentsLimitHint}</p>
         </div>
         <input
           ref={fileInputRef}
@@ -2671,9 +2661,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
       <div className="w-full max-w-xl rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">{copy.issueComposer.eyebrow}</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">{copy.issueComposer.title}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">{copy.issueComposer.subtitle}</p>
+            <h2 className="text-2xl font-semibold text-white">{copy.issueComposer.title}</h2>
           </div>
           <button
             type="button"
