@@ -1773,23 +1773,66 @@ struct AgentSetupWindow: View {
         .font(.caption)
         .foregroundStyle(.secondary)
 
-      Text(bootstrap.codexLoginStatus)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(Color(nsColor: .textBackgroundColor))
-        )
+      Text("현재 연결 상태를 확인하고, 필요할 때만 브라우저를 선택해 로그인 또는 계정 전환을 진행합니다.")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
 
-      HStack(spacing: 10) {
-        Button {
-          onCodexLogin()
-        } label: {
-          Text(bootstrap.codexLoggedIn ? "계정 전환" : "로그인")
+      HStack(alignment: .center, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("계정 연결")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color(red: 0.01, green: 0.41, blue: 0.63))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+              Capsule(style: .continuous)
+                .fill(Color(red: 0.01, green: 0.41, blue: 0.63).opacity(0.12))
+            )
+
+          Text(bootstrap.codexLoginStatus)
+            .font(.body.weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+          Text("로그인 중 문제가 생기면 앱을 다시 시작한 뒤 바로 다시 로그인할 수 있습니다.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Spacer(minLength: 0)
+
+        Group {
+          if bootstrap.codexLoggedIn {
+            Button {
+              onCodexLogin()
+            } label: {
+              Text("계정 전환")
+                .frame(minWidth: 112)
+            }
+            .buttonStyle(.bordered)
+          } else {
+            Button {
+              onCodexLogin()
+            } label: {
+              Text("로그인")
+                .frame(minWidth: 112)
+            }
+            .buttonStyle(.borderedProminent)
+          }
         }
         .disabled(bootstrap.codexLoginInProgress)
       }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 14)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(Color(nsColor: .textBackgroundColor))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+      )
     }
   }
 
