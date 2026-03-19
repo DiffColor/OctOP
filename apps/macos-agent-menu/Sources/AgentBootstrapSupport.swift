@@ -708,6 +708,10 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   func refreshCodexLoginStatus() async {
+    if codexLoginInProgress {
+      return
+    }
+
     let status = await currentCodexLoginStatus()
     codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
@@ -1508,6 +1512,8 @@ final class AgentBootstrapStore: ObservableObject {
         let status = try await session.readAccount(refreshToken: false)
         return (status.loggedIn, status.summary)
       }
+    } catch is CancellationError {
+      return (codexLoggedIn, codexLoginStatus)
     } catch {
       let summary = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
       return (false, summary)
