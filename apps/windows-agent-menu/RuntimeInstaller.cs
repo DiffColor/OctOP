@@ -11,7 +11,6 @@ using System.Text.RegularExpressions;
 sealed class RuntimeInstaller
 {
   private const string NodeIndexUrl = "https://nodejs.org/dist/index.json";
-  private const string DefaultDeviceAuthUrl = "https://auth.openai.com/codex/device";
   private const string RuntimePackageJson = """
   {
     "name": "octop-local-agent-runtime",
@@ -27,7 +26,6 @@ sealed class RuntimeInstaller
   private static readonly HttpClient HttpClient = new();
   private static readonly Regex AnsiEscapePattern = new(@"\x1B\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
   private static readonly Regex DeviceAuthUrlPattern = new(@"https://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-  private static readonly Regex DeviceAuthCodePattern = new(@"\b[A-Z0-9]{4}-[A-Z0-9]{4,}\b", RegexOptions.Compiled);
 
   private static readonly IReadOnlyDictionary<string, string> RuntimeResources = new Dictionary<string, string>
   {
@@ -202,7 +200,6 @@ sealed class RuntimeInstaller
     progress.Report($"브라우저 선택: {browser.DisplayName}");
 
     string? loginUrl = null;
-    string? deviceCode = null;
     var browserOpened = false;
 
     void HandleDeviceAuthLine(string line)
@@ -220,21 +217,9 @@ sealed class RuntimeInstaller
         loginUrl = DeviceAuthUrlPattern.Match(sanitized) is { Success: true } match ? match.Value : null;
       }
 
-      if (deviceCode is null)
-      {
-        deviceCode = DeviceAuthCodePattern.Match(sanitized) is { Success: true } match ? match.Value : null;
-      }
-
       if (!browserOpened && !string.IsNullOrWhiteSpace(loginUrl))
       {
         BrowserSelection.Open(browser, loginUrl);
-        browserOpened = true;
-        progress.Report($"{browser.DisplayName} 에 로그인 페이지를 열었습니다.");
-      }
-
-      if (!browserOpened && !string.IsNullOrWhiteSpace(deviceCode))
-      {
-        BrowserSelection.Open(browser, DefaultDeviceAuthUrl);
         browserOpened = true;
         progress.Report($"{browser.DisplayName} 에 로그인 페이지를 열었습니다.");
       }
@@ -243,7 +228,7 @@ sealed class RuntimeInstaller
     var loginResult = await RunCommandAsync(
       CreateCmdWrapperStartInfo(
         codexCommandPath,
-        ["login", "--device-auth"],
+        ["login"],
         paths.InstallRoot,
         BuildToolEnvironment(paths)
       ),
@@ -334,7 +319,7 @@ sealed class RuntimeInstaller
     }
 
     environment["PATH"] = string.Join(Path.PathSeparator, pathEntries.Where(static value => !string.IsNullOrWhiteSpace(value)));
-    environment["CODEX_HOME"] = paths.CodexHome;
+    environment["CODEX_HOME"] = ResolvePreferredCodexHome(paths);
 
     if (extra is not null)
     {
@@ -345,6 +330,26 @@ sealed class RuntimeInstaller
     }
 
     return environment;
+  }
+
+  private static string ResolvePreferredCodexHome(OctopPaths paths)
+  {
+    var currentProcessValue = Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim();
+    if (!string.IsNullOrWhiteSpace(currentProcessValue))
+    {
+      return currentProcessValue;
+    }
+
+    var sharedCodexHome = Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+      ".codex");
+
+    if (Directory.Exists(sharedCodexHome))
+    {
+      return sharedCodexHome;
+    }
+
+    return paths.CodexHome;
   }
 
   private async Task WriteRuntimeBundleAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)

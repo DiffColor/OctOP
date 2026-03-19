@@ -3,8 +3,6 @@ import Darwin
 import Foundation
 import SwiftUI
 
-private let codexDeviceAuthDefaultURL = URL(string: "https://auth.openai.com/codex/device")!
-
 private struct CodexBrowserOption: Identifiable {
   let id: String
   let displayName: String
@@ -12,42 +10,34 @@ private struct CodexBrowserOption: Identifiable {
   let icon: NSImage
 }
 
-private final class CodexDeviceAuthState: @unchecked Sendable {
+private final class CodexLoginBrowserOpenState: @unchecked Sendable {
   private let lock = NSLock()
-  private var loginURL: URL?
-  private var deviceCode: String?
-  private var browserOpened = false
+  private var opened = false
 
-  func register(line: String) -> URL? {
+  func openOnce(url: URL) -> URL? {
     lock.lock()
     defer { lock.unlock() }
 
-    if loginURL == nil,
-       let range = line.range(of: #"https://\S+"#, options: .regularExpression) {
-      loginURL = URL(string: String(line[range]))
-    }
-
-    if deviceCode == nil,
-       let range = line.range(of: #"\b[A-Z0-9]{4}-[A-Z0-9]{4,}\b"#, options: .regularExpression) {
-      deviceCode = String(line[range])
-    }
-
-    guard !browserOpened else {
+    guard !opened else {
       return nil
     }
 
-    if let loginURL {
-      browserOpened = true
-      return loginURL
-    }
+    opened = true
+    return url
+  }
+}
 
-    if deviceCode != nil {
-      browserOpened = true
-      return codexDeviceAuthDefaultURL
-    }
-
+private func extractCodexLoginURL(from line: String) -> URL? {
+  let stripped = line.replacingOccurrences(
+    of: #"\u{001B}\[[0-9;]*[A-Za-z]"#,
+    with: "",
+    options: .regularExpression)
+  guard let range = stripped.range(of: #"https://\S+"#, options: .regularExpression) else {
     return nil
   }
+
+  let candidate = String(stripped[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+  return URL(string: candidate)
 }
 
 @MainActor
@@ -190,7 +180,8 @@ private enum CodexBrowserSelection {
 
   @MainActor
   static func representativeImage() -> NSImage? {
-    if let defaultBrowserURL = NSWorkspace.shared.urlForApplication(toOpen: codexDeviceAuthDefaultURL) {
+    if let authURL = URL(string: "https://auth.openai.com"),
+       let defaultBrowserURL = NSWorkspace.shared.urlForApplication(toOpen: authURL) {
       let icon = NSWorkspace.shared.icon(forFile: defaultBrowserURL.path)
       icon.size = NSSize(width: 18, height: 18)
       return icon
@@ -562,6 +553,20 @@ final class AgentBootstrapStore: ObservableObject {
 
   var currentAppVersionDisplay: String {
     currentAppVersionTag
+  }
+
+  private var preferredCodexHomeURL: URL {
+    if let value = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !value.isEmpty {
+      return URL(fileURLWithPath: value, isDirectory: true)
+    }
+
+    let shared = URL(fileURLWithPath: NSString(string: "~/.codex").expandingTildeInPath, isDirectory: true)
+    if FileManager.default.fileExists(atPath: shared.path) {
+      return shared
+    }
+
+    return codexHomeURL
   }
 
   var runtimeVersionDisplay: String {
@@ -998,7 +1003,7 @@ final class AgentBootstrapStore: ObservableObject {
       "OCTOP_CODEX_REASONING_EFFORT=\(configuration.reasoningEffort)",
       "OCTOP_CODEX_APPROVAL_POLICY=\(configuration.approvalPolicy)",
       "OCTOP_CODEX_SANDBOX=\(configuration.sandboxMode)",
-      "CODEX_HOME=\(codexHomeURL.path)",
+      "CODEX_HOME=\(preferredCodexHomeURL.path)",
       "OCTOP_STATE_HOME=\(stateHomeURL.path)",
       "OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS=\(configuration.watchdogIntervalMs)",
       "OCTOP_RUNNING_ISSUE_STALE_MS=\(configuration.staleMs)"
@@ -1296,7 +1301,7 @@ final class AgentBootstrapStore: ObservableObject {
       "OCTOP_CODEX_REASONING_EFFORT": configuration.reasoningEffort,
       "OCTOP_CODEX_APPROVAL_POLICY": configuration.approvalPolicy,
       "OCTOP_CODEX_SANDBOX": configuration.sandboxMode,
-      "CODEX_HOME": codexHomeURL.path,
+      "CODEX_HOME": preferredCodexHomeURL.path,
       "OCTOP_STATE_HOME": stateHomeURL.path,
       "OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS": configuration.watchdogIntervalMs,
       "OCTOP_RUNNING_ISSUE_STALE_MS": configuration.staleMs
@@ -1363,11 +1368,11 @@ final class AgentBootstrapStore: ObservableObject {
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
 
-    let deviceAuthState = CodexDeviceAuthState()
+    let openState = CodexLoginBrowserOpenState()
 
     try await runProcess(
       executableURL: runtimeCodexURL,
-      arguments: ["login", "--device-auth"],
+      arguments: ["login"],
       environment: buildLaunchEnvironment(),
       currentDirectoryURL: runtimeWorkspaceURL,
       log: log,
@@ -1375,9 +1380,13 @@ final class AgentBootstrapStore: ObservableObject {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if let urlToOpen = deviceAuthState.register(line: trimmed) {
+        guard let urlToOpen = extractCodexLoginURL(from: trimmed) else {
+          return
+        }
+
+        if let launchURL = openState.openOnce(url: urlToOpen) {
           Task { @MainActor in
-            CodexBrowserSelection.open(urlToOpen, usingBrowserID: browserID)
+            CodexBrowserSelection.open(launchURL, usingBrowserID: browserID)
           }
         }
       }

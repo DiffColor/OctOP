@@ -613,15 +613,18 @@ sealed class SetupWindow : Window
 
     if (BrowserSelection.GetRepresentativeIcon() is { } icon)
     {
+      var iconSource = Imaging.CreateBitmapSourceFromHIcon(
+        icon.Handle,
+        Int32Rect.Empty,
+        System.Windows.Media.Imaging.BitmapSizeOptions.FromWidthAndHeight(18, 18));
+      iconSource.Freeze();
+
       content.Children.Add(new System.Windows.Controls.Image
       {
         Width = 18,
         Height = 18,
         Margin = new Thickness(0, 0, 8, 0),
-        Source = Imaging.CreateBitmapSourceFromHIcon(
-          icon.Handle,
-          Int32Rect.Empty,
-          System.Windows.Media.Imaging.BitmapSizeOptions.FromWidthAndHeight(18, 18))
+        Source = iconSource
       });
     }
 

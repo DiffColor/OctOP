@@ -59,6 +59,7 @@ sealed class RuntimeConfiguration
 
   public Dictionary<string, string> GetEnvironmentVariables(OctopPaths paths)
   {
+    var codexHome = ResolvePreferredCodexHome(paths);
     var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
       ["OCTOP_NATS_URL"] = NatsUrl.Trim(),
@@ -78,7 +79,7 @@ sealed class RuntimeConfiguration
       ["OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS"] = WatchdogIntervalMs.Trim(),
       ["OCTOP_RUNNING_ISSUE_STALE_MS"] = StaleMs.Trim(),
       ["OCTOP_STATE_HOME"] = paths.StateHome,
-      ["CODEX_HOME"] = paths.CodexHome
+      ["CODEX_HOME"] = codexHome
     };
 
     var workspaceRoots = string.Join(",", GetWorkspaceRoots().Select(Path.GetFullPath));
@@ -143,6 +144,26 @@ sealed class RuntimeConfiguration
     }
 
     AuthMode = CodexAuthMode.ChatGptDeviceAuth;
+  }
+
+  private static string ResolvePreferredCodexHome(OctopPaths paths)
+  {
+    var currentProcessValue = Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim();
+    if (!string.IsNullOrWhiteSpace(currentProcessValue))
+    {
+      return currentProcessValue;
+    }
+
+    var sharedCodexHome = Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+      ".codex");
+
+    if (Directory.Exists(sharedCodexHome))
+    {
+      return sharedCodexHome;
+    }
+
+    return paths.CodexHome;
   }
 }
 
