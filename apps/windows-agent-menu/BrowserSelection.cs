@@ -89,7 +89,8 @@ static class BrowserSelection
       AutoSizeMode = AutoSizeMode.GrowAndShrink,
       WrapContents = true,
       FlowDirection = FlowDirection.LeftToRight,
-      Margin = new Padding(0)
+      Margin = new Padding(0),
+      Padding = new Padding(0, 4, 0, 0)
     };
 
     BrowserOption? selectedBrowser = null;
@@ -98,9 +99,9 @@ static class BrowserSelection
     {
       var tile = new FlowLayoutPanel
       {
-        Width = 88,
-        Height = 104,
-        Margin = new Padding(0, 0, 16, 12),
+        Width = 144,
+        Height = 176,
+        Margin = new Padding(0, 0, 20, 16),
         FlowDirection = FlowDirection.TopDown,
         WrapContents = false,
         BackColor = Color.Transparent
@@ -108,9 +109,9 @@ static class BrowserSelection
 
       var button = new Button
       {
-        Width = 52,
-        Height = 52,
-        Margin = new Padding(18, 0, 18, 8),
+        Width = 104,
+        Height = 104,
+        Margin = new Padding(20, 0, 20, 10),
         BackColor = Color.Transparent,
         FlatStyle = FlatStyle.Flat,
         Padding = new Padding(0),
@@ -122,17 +123,17 @@ static class BrowserSelection
 
       if (browser.Icon is not null)
       {
-        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(48, 48));
+        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(96, 96));
         button.ImageAlign = ContentAlignment.MiddleCenter;
       }
 
       var label = new Label
       {
         Text = browser.DisplayName,
-        Width = 88,
-        Height = 40,
+        Width = 144,
+        Height = 52,
         TextAlign = ContentAlignment.TopCenter,
-        Font = new Font("Segoe UI", 9, FontStyle.Regular),
+        Font = new Font("Segoe UI", 10, FontStyle.Regular),
         ForeColor = Color.FromArgb(0x17, 0x17, 0x17),
         BackColor = Color.Transparent
       };

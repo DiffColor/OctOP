@@ -86,7 +86,7 @@ private enum CodexBrowserSelection {
     }
 
     let panel = NSPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+      contentRect: NSRect(x: 0, y: 0, width: 760, height: 320),
       styleMask: [.titled, .closable],
       backing: .buffered,
       defer: false
@@ -106,7 +106,7 @@ private enum CodexBrowserSelection {
 
     let buttonStack = NSStackView()
     buttonStack.orientation = .horizontal
-    buttonStack.spacing = 20
+    buttonStack.spacing = 28
     buttonStack.alignment = .top
     buttonStack.distribution = .gravityAreas
 
@@ -178,7 +178,7 @@ private enum CodexBrowserSelection {
       }
 
       let icon = NSWorkspace.shared.icon(forFile: appURL.path)
-      icon.size = NSSize(width: 32, height: 32)
+      icon.size = NSSize(width: 64, height: 64)
       return CodexBrowserOption(
         id: candidate.bundleID,
         displayName: candidate.displayName,
@@ -198,22 +198,22 @@ private enum CodexBrowserSelection {
     button.image = browser.icon
     button.imageScaling = .scaleProportionallyUpOrDown
     button.imagePosition = .imageOnly
-    button.widthAnchor.constraint(equalToConstant: 52).isActive = true
-    button.heightAnchor.constraint(equalToConstant: 52).isActive = true
+    button.widthAnchor.constraint(equalToConstant: 104).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 104).isActive = true
 
     let label = NSTextField(labelWithString: browser.displayName)
     label.alignment = .center
     label.lineBreakMode = .byWordWrapping
     label.maximumNumberOfLines = 2
-    label.font = .systemFont(ofSize: 12, weight: .regular)
+    label.font = .systemFont(ofSize: 13, weight: .regular)
     label.textColor = .labelColor
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.widthAnchor.constraint(equalToConstant: 88).isActive = true
+    label.widthAnchor.constraint(equalToConstant: 132).isActive = true
 
     let stack = NSStackView(views: [button, label])
     stack.orientation = .vertical
     stack.alignment = .centerX
-    stack.spacing = 8
+    stack.spacing = 10
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.setHuggingPriority(.required, for: .horizontal)
     return (stack, button)
