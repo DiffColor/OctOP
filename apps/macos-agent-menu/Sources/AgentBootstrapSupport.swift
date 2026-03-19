@@ -328,6 +328,20 @@ final class AgentBootstrapStore: ObservableObject {
     return "v0.0.0-dev"
   }
 
+  var currentAppVersionDisplay: String {
+    currentAppVersionTag
+  }
+
+  var runtimeVersionDisplay: String {
+    guard FileManager.default.fileExists(atPath: runtimeVersionURL.path),
+          let value = try? String(contentsOf: runtimeVersionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty else {
+      return "미설치"
+    }
+
+    return Self.normalizeVersionTag(value)
+  }
+
   func saveConfiguration() {
     do {
       try persistConfiguration()

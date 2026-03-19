@@ -17,6 +17,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private readonly NotifyIcon _notifyIcon;
   private readonly ContextMenuStrip _menu;
   private readonly ToolStripMenuItem _titleItem;
+  private readonly ToolStripMenuItem _appVersionItem;
+  private readonly ToolStripMenuItem _runtimeVersionItem;
   private readonly ToolStripMenuItem _statusItem;
   private readonly ToolStripMenuItem _environmentItem;
   private readonly ToolStripMenuItem _pidItem;
@@ -71,6 +73,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _menu.Opening += (_, _) => RefreshMenuState();
 
     _titleItem = new ToolStripMenuItem(AppTitle) { Enabled = false };
+    _appVersionItem = new ToolStripMenuItem() { Enabled = false };
+    _runtimeVersionItem = new ToolStripMenuItem() { Enabled = false };
     _statusItem = new ToolStripMenuItem() { Enabled = false };
     _environmentItem = new ToolStripMenuItem("환경 확인 중") { Enabled = false };
     _pidItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
@@ -86,6 +90,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _menu.Items.AddRange(
     [
       _titleItem,
+      _appVersionItem,
+      _runtimeVersionItem,
       _statusItem,
       _environmentItem,
       _pidItem,
@@ -546,6 +552,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void RefreshMenuState()
   {
+    _appVersionItem.Text = $"앱 버전 {AppMetadata.CurrentVersionTag}";
+    _runtimeVersionItem.Text = $"런타임 버전 {ResolveRuntimeVersionDisplay()}";
     _statusItem.Text = GetRuntimeStateLabel(_runtimeState);
     _statusItem.ForeColor = GetRuntimeColor(_runtimeState);
 
@@ -561,6 +569,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _toggleItem.Text = running ? "서비스 정지" : "서비스 시작";
     _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
     _restartItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
+  }
+
+  private string ResolveRuntimeVersionDisplay()
+  {
+    if (_runtimeStatus is { RuntimeVersion.Length: > 0 } status)
+    {
+      return status.RuntimeVersion;
+    }
+
+    return "미설치";
   }
 
   private void AppendLog(string message)

@@ -590,6 +590,14 @@ struct AgentMenuContent: View {
       Label("OctOP Local Agent", systemImage: "terminal")
         .font(.headline)
 
+      Text("앱 버전 \(bootstrap.currentAppVersionDisplay)")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+      Text("런타임 버전 \(bootstrap.runtimeVersionDisplay)")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
       Text(model.runtimeState.rawValue)
         .font(.subheadline)
         .foregroundStyle(statusColor)
