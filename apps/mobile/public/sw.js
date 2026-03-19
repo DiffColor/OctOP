@@ -3,6 +3,37 @@ const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-icon-192.png", "/octop-home-icon-512.png", "/octop-home-icon-180.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 
+const buildLaunchUrl = (payload) => {
+  const bridgeId = String(payload?.bridgeId ?? "").trim();
+  const projectId = String(payload?.projectId ?? "").trim();
+  const threadId = String(payload?.threadId ?? "").trim();
+  const issueId = String(payload?.issueId ?? "").trim();
+
+  if (!bridgeId && !projectId && !threadId && !issueId) {
+    return payload?.launchUrl || payload?.url || "/";
+  }
+
+  const url = new URL("/", self.location.origin);
+
+  if (bridgeId) {
+    url.searchParams.set("bridge_id", bridgeId);
+  }
+
+  if (projectId) {
+    url.searchParams.set("project_id", projectId);
+  }
+
+  if (threadId) {
+    url.searchParams.set("thread_id", threadId);
+  }
+
+  if (issueId) {
+    url.searchParams.set("issue_id", issueId);
+  }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+};
+
 const getContentType = (response) => response?.headers?.get("content-type")?.toLowerCase() ?? "";
 
 const isHtmlResponse = (response) => getContentType(response).includes("text/html");
@@ -145,7 +176,7 @@ self.addEventListener("push", (event) => {
   const title = payload.title || "OctOP";
   const sentAt = payload.sentAt || new Date().toISOString();
   const body = payload.body || "이슈 상태 알림이 도착했습니다.";
-  const launchUrl = payload.launchUrl || payload.url || "/";
+  const launchUrl = buildLaunchUrl(payload);
   const notificationData = {
     ...payload,
     launchUrl,

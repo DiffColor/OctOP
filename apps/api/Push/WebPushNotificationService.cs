@@ -73,22 +73,7 @@ public sealed class WebPushNotificationService(
       var notificationTag = string.IsNullOrWhiteSpace(request.Tag)
         ? $"octop-push-{sentAt.ToUnixTimeMilliseconds()}"
         : request.Tag.Trim();
-      var payload = JsonSerializer.Serialize(new
-      {
-        title = request.Title,
-        body = request.Body,
-        tag = notificationTag,
-        launchUrl = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
-        kind = request.Kind,
-        bridgeId = request.BridgeId,
-        projectId = request.ProjectId,
-        threadId = request.ThreadId,
-        issueId = request.IssueId,
-        issueStatus = request.IssueStatus,
-        sourceAppId = request.SourceAppId,
-        targetAppId = request.TargetAppId,
-        sentAt = sentAt.ToString("O")
-      });
+      var payload = JsonSerializer.Serialize(BuildPayload(subscription, request, notificationTag, sentAt));
       var target = new PushSubscription
       {
         Endpoint = subscription.Endpoint
@@ -192,5 +177,37 @@ public sealed class WebPushNotificationService(
       message.Contains("used to create the subscriptions") ||
       message.Contains("authorization header")
     );
+  }
+
+  private static Dictionary<string, object?> BuildPayload(
+    PushSubscriptionEntity subscription,
+    PushNotificationRequest request,
+    string notificationTag,
+    DateTimeOffset sentAt)
+  {
+    var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+    {
+      ["title"] = request.Title,
+      ["body"] = request.Body,
+      ["tag"] = notificationTag,
+      ["kind"] = request.Kind,
+      ["bridgeId"] = request.BridgeId,
+      ["projectId"] = request.ProjectId,
+      ["threadId"] = request.ThreadId,
+      ["issueId"] = request.IssueId,
+      ["issueStatus"] = request.IssueStatus,
+      ["sourceAppId"] = request.SourceAppId,
+      ["targetAppId"] = request.TargetAppId,
+      ["sentAt"] = sentAt.ToString("O")
+    };
+
+    // iOS/standalone PWA notifications may surface URL-like payload fields as noisy system text.
+    // Mobile web can reconstruct its deep link from the issue metadata, so omit the raw URL there.
+    if (!string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
+    {
+      payload["launchUrl"] = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url;
+    }
+
+    return payload;
   }
 }
