@@ -103,7 +103,7 @@ export async function resolveBridgeRuntimeEnv(env) {
 
 function applyBridgeIdentityDefaults(env) {
   const hostname = os.hostname();
-  const bridgeId = env.OCTOP_BRIDGE_ID?.trim() || loadOrCreateBridgeId(env);
+  const bridgeId = env.OCTOP_BRIDGE_ID?.trim() || loadOrCreateBridgeId();
 
   return {
     ...env,
@@ -159,8 +159,8 @@ function parseCliArgs(argv = []) {
   return parsed;
 }
 
-function loadOrCreateBridgeId(env = process.env) {
-  const configDir = resolveOctopStateDir(env);
+function loadOrCreateBridgeId() {
+  const configDir = resolve(os.homedir(), ".octop");
   const bridgeIdPath = resolve(configDir, "bridge-id");
 
   if (existsSync(bridgeIdPath)) {
@@ -175,11 +175,6 @@ function loadOrCreateBridgeId(env = process.env) {
   const generated = `bridge-${randomUUID()}`;
   writeFileSync(bridgeIdPath, `${generated}\n`, "utf8");
   return generated;
-}
-
-function resolveOctopStateDir(env = process.env) {
-  const configured = String(env.OCTOP_STATE_HOME ?? "").trim();
-  return configured ? resolve(configured) : resolve(os.homedir(), ".octop");
 }
 
 function buildExecutablePath(env) {

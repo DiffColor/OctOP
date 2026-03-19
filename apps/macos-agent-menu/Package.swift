@@ -14,7 +14,8 @@ let package = Package(
       name: "OctOPAgentMenu",
       path: "Sources",
       resources: [
-        .process("Resources")
+        .process("Resources/icon.png"),
+        .copy("Resources/bootstrap")
       ]
     )
   ]

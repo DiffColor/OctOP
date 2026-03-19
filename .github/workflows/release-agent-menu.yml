@@ -1,0 +1,85 @@
+name: Release Agent Menu
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build Windows release artifact
+        run: node ./scripts/release-agent-menu.mjs --platform windows --version "${{ env.RELEASE_VERSION }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-agent-menu-${{ env.RELEASE_TAG }}
+          path: dist/releases/${{ env.RELEASE_TAG }}/*.exe
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build macOS release artifact
+        run: node ./scripts/release-agent-menu.mjs --platform macos --version "${{ env.RELEASE_VERSION }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-agent-menu-${{ env.RELEASE_TAG }}
+          path: dist/releases/${{ env.RELEASE_TAG }}/*.zip
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-agent-menu-${{ github.ref_name }}
+          path: release-assets/windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-agent-menu-${{ github.ref_name }}
+          path: release-assets/macos
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release-assets/windows/*
+            release-assets/macos/*
+          fail_on_unmatched_files: true

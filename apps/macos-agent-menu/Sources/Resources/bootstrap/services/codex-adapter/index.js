@@ -86,7 +86,7 @@ const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
   process.env.OCTOP_BRIDGE_OWNER_LOGIN_ID ?? process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user"
 );
-const BRIDGE_STORAGE_DIR = resolve(process.env.OCTOP_STATE_HOME ?? resolve(os.homedir(), ".octop"));
+const BRIDGE_STORAGE_DIR = resolve(os.homedir(), ".octop");
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);

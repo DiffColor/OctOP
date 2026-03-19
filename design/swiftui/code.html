@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Atheneum UI Kit - SwiftUI Control Gallery</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "inverse-surface": "#2f3034",
+              "tertiary-fixed": "#ffdbcc",
+              "surface-dim": "#dad9df",
+              "on-secondary-fixed": "#0c006a",
+              "surface-tint": "#005bc1",
+              "on-primary-fixed-variant": "#004493",
+              "on-error": "#ffffff",
+              "tertiary-fixed-dim": "#ffb595",
+              "on-secondary-fixed-variant": "#3631b4",
+              "inverse-on-surface": "#f1f0f5",
+              "on-primary-fixed": "#001a41",
+              "on-tertiary-container": "#fffbff",
+              "on-error-container": "#93000a",
+              "on-surface": "#1a1b1f",
+              "on-tertiary-fixed": "#351000",
+              "surface-bright": "#faf9fe",
+              "on-primary-container": "#fefcff",
+              "on-primary": "#ffffff",
+              "surface-container": "#eeedf3",
+              "secondary-fixed": "#e2dfff",
+              "outline": "#717786",
+              "secondary-fixed-dim": "#c2c1ff",
+              "on-tertiary-fixed-variant": "#7c2e00",
+              "surface-container-high": "#e9e7ed",
+              "surface-container-lowest": "#ffffff",
+              "error-container": "#ffdad6",
+              "background": "#faf9fe",
+              "primary-fixed": "#d8e2ff",
+              "on-tertiary": "#ffffff",
+              "surface-container-low": "#f4f3f8",
+              "primary": "#0058bc",
+              "inverse-primary": "#adc6ff",
+              "secondary-container": "#6664e4",
+              "on-secondary": "#ffffff",
+              "primary-container": "#0070eb",
+              "on-surface-variant": "#414755",
+              "on-secondary-container": "#fffbff",
+              "secondary": "#4c4aca",
+              "primary-fixed-dim": "#adc6ff",
+              "on-background": "#1a1b1f",
+              "surface": "#faf9fe",
+              "tertiary-container": "#c64f00",
+              "surface-container-highest": "#e3e2e7",
+              "error": "#ba1a1a",
+              "surface-variant": "#e3e2e7",
+              "outline-variant": "#c1c6d7",
+              "tertiary": "#9e3d00"
+            },
+            fontFamily: {
+              "headline": ["Inter"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.5rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body { font-family: 'Inter', sans-serif; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface antialiased font-['Inter']">
+<div class="flex min-h-screen">
+<!-- SideNavBar -->
+<aside class="h-screen w-64 left-0 sticky bg-[#f4f3f8] flex flex-col p-6 gap-y-2 font-['Inter'] text-[0.875rem] leading-6">
+<div class="mb-8 px-2">
+<h2 class="text-lg font-black text-slate-900 tracking-tighter">Control Gallery</h2>
+<p class="text-xs text-slate-500 font-medium">SwiftUI Desktop v1.0</p>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 bg-[#007AFF]/10 text-[#007AFF] border-l-4 border-[#007AFF] rounded-r-lg transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="smart_button">smart_button</span>
+<span class="font-semibold">Buttons</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="input">input</span>
+<span>Inputs</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="check_box">check_box</span>
+<span>Selection</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="linear_scale">linear_scale</span>
+<span>Sliders</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="list_alt">list_alt</span>
+<span>Pickers</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200 hover:translate-x-1" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="info">info</span>
+<span>Feedback</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-slate-200/50">
+<button class="w-full bg-primary text-white py-2.5 rounded-lg font-medium text-sm shadow-sm hover:opacity-90 active:scale-95 transition-all mb-4">
+                    Export Library
+                </button>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-white/50 transition-all duration-200" href="#">
+<span class="material-symbols-outlined text-[20px]" data-icon="palette">palette</span>
+<span>Theme Settings</span>
+</a>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex-1 bg-surface overflow-y-auto">
+<!-- TopNavBar -->
+<header class="w-full top-0 sticky z-50 bg-[#faf9fe] flex items-center justify-between px-16 py-4 shadow-[0_8px_32px_rgba(26,27,31,0.04)] font-['Inter'] antialiased tracking-tight">
+<div class="flex items-center gap-12">
+<span class="text-xl font-bold tracking-tighter text-slate-900">Atheneum UI Kit</span>
+<nav class="hidden md:flex items-center gap-8">
+<a class="text-slate-500 hover:text-slate-900 transition-all duration-200" href="#">Components</a>
+<a class="text-[#007AFF] border-b-2 border-[#007AFF] pb-1 font-semibold" href="#">Styles</a>
+<a class="text-slate-500 hover:text-slate-900 transition-all duration-200" href="#">Templates</a>
+<a class="text-slate-500 hover:text-slate-900 transition-all duration-200" href="#">Documentation</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative">
+<input class="bg-surface-container-low border-none rounded-full py-2 pl-10 pr-4 text-sm w-64 focus:ring-2 focus:ring-primary/20 transition-all" placeholder="Search components..." type="text"/>
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" data-icon="search">search</span>
+</div>
+<button class="p-2 text-slate-500 hover:bg-slate-100/50 rounded-full transition-all active:scale-95">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<button class="p-2 text-slate-500 hover:bg-slate-100/50 rounded-full transition-all active:scale-95">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+</button>
+<img alt="User profile" class="w-8 h-8 rounded-full ml-2 border border-slate-200" data-alt="User profile circular avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAz6sN7YTl2rjpcDZa10q1ypgOKd9uubjrDKj7XJLeD0ZRbQSDTGF0kRyXQNVQPMtLQJk6ZsSQBjIwhRrmp_faHO6Dlyx7Yiv-hnKRtYvYXmMEKxk_yYEBg_61Qw8XLpT3t87qLtp65HOEpZrCJq1EdUglPY_QJ2ULN3PO7xBwuGJIJvLs-RUI9ryFXfXXjh3CFBW2lu5A_RZO1B8L2GiDcD54ko4Q4gpvAzox_ePnEyoKEPiJpwL0m6MtM9bot52Vj-uAatG715Jfn"/>
+</div>
+</header>
+<div class="max-w-6xl mx-auto px-16 py-12">
+<!-- Hero Header -->
+<div class="mb-16">
+<span class="text-[0.6875rem] font-bold tracking-[0.05em] uppercase text-primary bg-primary/10 px-3 py-1 rounded-full inline-block mb-4">Design System Library</span>
+<h1 class="text-[3.5rem] font-extrabold text-on-surface leading-tight tracking-[-0.03em] mb-4">The Digital Atheneum</h1>
+<p class="text-on-surface-variant text-lg max-w-2xl leading-relaxed">A professional SwiftUI-inspired gallery for desktop application design, focusing on architectural clarity, editorial hierarchy, and tactile interactions.</p>
+</div>
+<!-- Bento Grid for Controls -->
+<div class="grid grid-cols-12 gap-8">
+<!-- Section: Buttons (Col 1-8) -->
+<section class="col-span-8 bg-surface-container-low rounded-xl p-8 transition-all hover:shadow-sm">
+<div class="flex items-center justify-between mb-8">
+<h3 class="text-xl font-bold tracking-tight">Interactive States</h3>
+<span class="text-[0.6875rem] font-bold tracking-[0.05em] uppercase text-outline-variant">Buttons &amp; Actions</span>
+</div>
+<div class="grid grid-cols-2 gap-x-12 gap-y-8">
+<div class="space-y-4">
+<p class="text-[0.6875rem] font-bold text-outline-variant uppercase tracking-widest">Core Styles</p>
+<div class="flex flex-col gap-4">
+<button class="bg-gradient-to-br from-primary to-primary-container text-white py-2.5 px-6 rounded-lg font-medium shadow-sm hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                                        Primary Action
+                                    </button>
+<button class="bg-surface-container-highest text-on-surface py-2.5 px-6 rounded-lg font-medium hover:bg-surface-dim active:scale-[0.98] transition-all">
+                                        Secondary Gray
+                                    </button>
+<button class="text-error bg-error-container/10 border border-error/20 py-2.5 px-6 rounded-lg font-medium hover:bg-error-container/20 active:scale-[0.98] transition-all">
+                                        Destructive Red
+                                    </button>
+</div>
+</div>
+<div class="space-y-4">
+<p class="text-[0.6875rem] font-bold text-outline-variant uppercase tracking-widest">Contextual Styles</p>
+<div class="flex flex-col gap-4">
+<button class="text-primary hover:bg-primary/5 py-2.5 px-6 rounded-lg font-medium transition-all text-left flex items-center gap-2">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+                                        Borderless Button
+                                    </button>
+<button class="bg-surface-container-lowest text-on-surface-variant border border-outline-variant/20 py-2.5 px-6 rounded-lg font-medium hover:bg-surface-container-highest transition-all shadow-sm">
+                                        Outlined Neutral
+                                    </button>
+<button class="opacity-40 cursor-not-allowed bg-surface-container-highest text-on-surface-variant py-2.5 px-6 rounded-lg font-medium" disabled="">
+                                        Disabled State
+                                    </button>
+</div>
+</div>
+</div>
+</section>
+<!-- Section: Toggles & Selection (Col 9-12) -->
+<section class="col-span-4 bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-8 shadow-[0_8px_24px_rgba(0,0,0,0.02)]">
+<h3 class="text-lg font-bold tracking-tight mb-8">Selection Controls</h3>
+<div class="space-y-8">
+<!-- Switches -->
+<div class="space-y-4">
+<div class="flex items-center justify-between">
+<span class="text-sm font-medium">Auto-Update</span>
+<div class="w-10 h-6 bg-primary rounded-full relative cursor-pointer shadow-inner">
+<div class="absolute right-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm"></div>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-sm font-medium">Analytics</span>
+<div class="w-10 h-6 bg-surface-container-highest rounded-full relative cursor-pointer">
+<div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow-sm border border-outline-variant/10"></div>
+</div>
+</div>
+</div>
+<!-- Checkboxes & Radios -->
+<div class="pt-4 border-t border-outline-variant/10 space-y-4">
+<label class="flex items-center gap-3 cursor-pointer group">
+<div class="w-5 h-5 rounded bg-primary flex items-center justify-center text-white">
+<span class="material-symbols-outlined text-[14px]" data-icon="check" data-weight="fill" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<span class="text-sm">Keep login session</span>
+</label>
+<label class="flex items-center gap-3 cursor-pointer group">
+<div class="w-5 h-5 rounded-full border-2 border-primary flex items-center justify-center">
+<div class="w-2 h-2 rounded-full bg-primary"></div>
+</div>
+<span class="text-sm">Standard Delivery</span>
+</label>
+<label class="flex items-center gap-3 cursor-pointer group opacity-60">
+<div class="w-5 h-5 rounded-full border-2 border-outline-variant"></div>
+<span class="text-sm">Express Shipping</span>
+</label>
+</div>
+</div>
+</section>
+<!-- Section: Sliders & Segmented (Col 1-5) -->
+<section class="col-span-5 bg-surface-container-low rounded-xl p-8">
+<h3 class="text-lg font-bold tracking-tight mb-8">Range &amp; Mode</h3>
+<div class="space-y-10">
+<!-- Segmented Controls -->
+<div class="space-y-3">
+<p class="text-[0.6875rem] font-bold text-outline-variant uppercase tracking-widest">View Mode</p>
+<div class="bg-surface-container-highest p-1 rounded-lg flex">
+<button class="flex-1 py-1.5 text-xs font-semibold bg-white rounded-md shadow-sm text-primary">Grid</button>
+<button class="flex-1 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900">List</button>
+<button class="flex-1 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900">Gallery</button>
+</div>
+</div>
+<!-- Sliders -->
+<div class="space-y-6">
+<div class="space-y-3">
+<div class="flex justify-between text-xs font-medium">
+<span>Master Volume</span>
+<span class="text-primary">75%</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden relative">
+<div class="absolute h-full w-[75%] bg-primary"></div>
+<div class="absolute left-[75%] top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white border-2 border-primary rounded-full shadow-md cursor-pointer"></div>
+</div>
+</div>
+<div class="flex gap-8 h-32 justify-center">
+<div class="flex flex-col items-center gap-2">
+<div class="h-24 w-1.5 bg-surface-container-highest rounded-full relative">
+<div class="absolute bottom-0 w-full h-[60%] bg-primary rounded-full"></div>
+<div class="absolute bottom-[60%] left-1/2 -translate-x-1/2 translate-y-1/2 w-4 h-4 bg-white border-2 border-primary rounded-full shadow-md cursor-pointer"></div>
+</div>
+<span class="text-[10px] font-bold text-outline-variant">Gain</span>
+</div>
+<div class="flex flex-col items-center gap-2">
+<div class="h-24 w-1.5 bg-surface-container-highest rounded-full relative">
+<div class="absolute bottom-0 w-full h-[35%] bg-primary rounded-full"></div>
+<div class="absolute bottom-[35%] left-1/2 -translate-x-1/2 translate-y-1/2 w-4 h-4 bg-white border-2 border-primary rounded-full shadow-md cursor-pointer"></div>
+</div>
+<span class="text-[10px] font-bold text-outline-variant">Comp</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Section: Text Fields & Pickers (Col 6-12) -->
+<section class="col-span-7 bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-8 shadow-[0_8px_24px_rgba(0,0,0,0.02)]">
+<h3 class="text-lg font-bold tracking-tight mb-8">Data Entry</h3>
+<div class="grid grid-cols-2 gap-8">
+<div class="space-y-6">
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Full Name</label>
+<input class="w-full bg-surface-container-highest border-none rounded-lg px-4 py-2.5 text-sm focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all outline-none" placeholder="e.g. John Doe" type="text"/>
+</div>
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Email Address</label>
+<input class="w-full bg-surface-container-highest border-none rounded-lg px-4 py-2.5 text-sm focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all outline-none" type="email" value="alex@atheneum.design"/>
+</div>
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Description</label>
+<textarea class="w-full bg-surface-container-highest border-none rounded-lg px-4 py-2.5 text-sm focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all outline-none resize-none" placeholder="Enter bio..." rows="3"></textarea>
+</div>
+</div>
+<div class="space-y-6">
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Date Picker</label>
+<div class="flex items-center gap-2 bg-surface-container-highest rounded-lg px-3 py-2 cursor-pointer hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-sm text-primary" data-icon="calendar_today">calendar_today</span>
+<span class="text-sm">Oct 24, 2023</span>
+</div>
+</div>
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Color Picker</label>
+<div class="flex items-center gap-3 p-1.5 bg-surface-container-highest rounded-lg">
+<div class="w-8 h-8 rounded bg-primary shadow-sm"></div>
+<div class="w-8 h-8 rounded bg-error shadow-sm opacity-50"></div>
+<div class="w-8 h-8 rounded bg-secondary-container shadow-sm opacity-50"></div>
+<div class="w-8 h-8 rounded bg-tertiary-container shadow-sm opacity-50"></div>
+<button class="w-8 h-8 rounded border-2 border-dashed border-outline-variant flex items-center justify-center text-outline-variant">
+<span class="material-symbols-outlined text-xs" data-icon="add">add</span>
+</button>
+</div>
+</div>
+<div class="space-y-1.5">
+<label class="text-xs font-semibold text-on-surface-variant">Country Select</label>
+<div class="relative">
+<select class="w-full bg-surface-container-highest border-none rounded-lg px-4 py-2.5 text-sm appearance-none outline-none focus:ring-2 focus:ring-primary/20">
+<option>United States</option>
+<option>United Kingdom</option>
+<option>Germany</option>
+<option>Japan</option>
+</select>
+<span class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" data-icon="unfold_more">unfold_more</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- Footer Metadata -->
+<div class="mt-16 pt-12 border-t border-outline-variant/10 flex items-center justify-between">
+<div class="flex items-center gap-6">
+<div class="flex flex-col">
+<span class="text-[0.6875rem] font-bold text-outline-variant uppercase tracking-widest">Version</span>
+<span class="text-sm font-medium">Build 2023.10.24</span>
+</div>
+<div class="w-px h-8 bg-outline-variant/20"></div>
+<div class="flex flex-col">
+<span class="text-[0.6875rem] font-bold text-outline-variant uppercase tracking-widest">Status</span>
+<span class="text-sm font-medium flex items-center gap-1.5">
+<span class="w-2 h-2 bg-emerald-500 rounded-full"></span> Ready for Production
+                            </span>
+</div>
+</div>
+<div class="flex gap-4">
+<button class="p-2 bg-surface-container-high rounded-full hover:bg-surface-dim transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="share">share</span>
+</button>
+<button class="p-2 bg-surface-container-high rounded-full hover:bg-surface-dim transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="download">download</span>
+</button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>
