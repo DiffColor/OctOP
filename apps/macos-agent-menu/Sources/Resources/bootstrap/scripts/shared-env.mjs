@@ -51,8 +51,8 @@ export function loadOctopEnv(workspaceRoot) {
   }
 
   const env = {
-    ...process.env,
-    ...fileEnv
+    ...fileEnv,
+    ...process.env
   };
 
   env.PATH = buildExecutablePath(env);
