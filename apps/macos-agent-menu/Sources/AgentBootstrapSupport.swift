@@ -10,36 +10,6 @@ private struct CodexBrowserOption: Identifiable {
   let icon: NSImage
 }
 
-private final class CodexLoginBrowserOpenState: @unchecked Sendable {
-  private let lock = NSLock()
-  private var opened = false
-
-  func openOnce(url: URL) -> URL? {
-    lock.lock()
-    defer { lock.unlock() }
-
-    guard !opened else {
-      return nil
-    }
-
-    opened = true
-    return url
-  }
-}
-
-private func extractCodexLoginURL(from line: String) -> URL? {
-  let stripped = line.replacingOccurrences(
-    of: #"\u{001B}\[[0-9;]*[A-Za-z]"#,
-    with: "",
-    options: .regularExpression)
-  guard let range = stripped.range(of: #"https://\S+"#, options: .regularExpression) else {
-    return nil
-  }
-
-  let candidate = String(stripped[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-  return URL(string: candidate)
-}
-
 @MainActor
 private final class CodexBrowserPickerController: NSObject {
   let panel: NSPanel
@@ -1286,7 +1256,7 @@ final class AgentBootstrapStore: ObservableObject {
     return environment
   }
 
-  private func buildLaunchEnvironment() -> [String: String] {
+  private func buildLaunchEnvironment(extra: [String: String] = [:]) -> [String: String] {
     var environment = buildProcessEnvironment()
     environment["PATH"] = [
       runtimeNodePrefixURL.appendingPathComponent("bin").path,
@@ -1320,7 +1290,28 @@ final class AgentBootstrapStore: ObservableObject {
       environment[key] = value
     }
 
+    for (key, value) in extra where !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      environment[key] = value
+    }
+
     return environment
+  }
+
+  private func createCodexBrowserLauncherScript(browserID: String) throws -> URL {
+    let scriptDirectoryURL = appSupportURL.appendingPathComponent("temp", isDirectory: true)
+    try ensureDirectory(scriptDirectoryURL)
+    let scriptURL = scriptDirectoryURL.appendingPathComponent("codex-browser-launcher.sh")
+    let script = """
+    #!/bin/sh
+    set -eu
+    if [ "$#" -lt 1 ]; then
+      exit 1
+    fi
+    exec /usr/bin/open -b "\(browserID)" "$1"
+    """
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+    return scriptURL
   }
 
   private func appServerCommand() -> String {
@@ -1376,29 +1367,15 @@ final class AgentBootstrapStore: ObservableObject {
     guard let browserID = await MainActor.run(body: { CodexBrowserSelection.selectBrowserID() }) else {
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
-
-    let openState = CodexLoginBrowserOpenState()
+    let browserLauncherPath = try createCodexBrowserLauncherScript(browserID: browserID)
+    log("선택한 브라우저로 로그인을 시작합니다.")
 
     try await runProcess(
       executableURL: runtimeCodexURL,
       arguments: ["login"],
-      environment: buildLaunchEnvironment(),
+      environment: buildLaunchEnvironment(extra: ["BROWSER": browserLauncherPath.path]),
       currentDirectoryURL: runtimeWorkspaceURL,
-      log: log,
-      onOutputLine: { line in
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        guard let urlToOpen = extractCodexLoginURL(from: trimmed) else {
-          return
-        }
-
-        if let launchURL = openState.openOnce(url: urlToOpen) {
-          Task { @MainActor in
-            CodexBrowserSelection.open(launchURL, usingBrowserID: browserID)
-          }
-        }
-      }
+      log: log
     )
 
     let status = await currentCodexLoginStatus()

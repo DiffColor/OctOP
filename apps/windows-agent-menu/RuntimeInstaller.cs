@@ -25,8 +25,6 @@ sealed class RuntimeInstaller
 
   private static readonly HttpClient HttpClient = new();
   private static readonly Regex AnsiEscapePattern = new(@"\x1B\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
-  private static readonly Regex DeviceAuthUrlPattern = new(@"https://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
   private static readonly IReadOnlyDictionary<string, string> RuntimeResources = new Dictionary<string, string>
   {
     ["OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs"] = "scripts/shared-env.mjs",
@@ -198,48 +196,55 @@ sealed class RuntimeInstaller
       ?? throw new InvalidOperationException("로그인에 사용할 브라우저 선택이 취소되었습니다.");
 
     progress.Report($"브라우저 선택: {browser.DisplayName}");
-
-    string? loginUrl = null;
-    var browserOpened = false;
-
-    void HandleDeviceAuthLine(string line)
-    {
-      var sanitized = StripAnsi(line);
-      if (sanitized.Length == 0)
-      {
-        return;
-      }
-
-      progress.Report(sanitized);
-
-      if (loginUrl is null)
-      {
-        loginUrl = DeviceAuthUrlPattern.Match(sanitized) is { Success: true } match ? match.Value : null;
-      }
-
-      if (!browserOpened && !string.IsNullOrWhiteSpace(loginUrl))
-      {
-        BrowserSelection.Open(browser, loginUrl);
-        browserOpened = true;
-        progress.Report($"{browser.DisplayName} 에 로그인 페이지를 열었습니다.");
-      }
-    }
+    var browserLauncherPath = CreateBrowserLauncher(paths, browser);
+    progress.Report($"{browser.DisplayName} 브라우저로 로그인을 시작합니다.");
 
     var loginResult = await RunCommandAsync(
       CreateCmdWrapperStartInfo(
         codexCommandPath,
         ["login"],
         paths.InstallRoot,
-        BuildToolEnvironment(paths)
+        BuildToolEnvironment(paths, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+          ["BROWSER"] = browserLauncherPath
+        })
       ),
-      HandleDeviceAuthLine,
-      HandleDeviceAuthLine,
+      line => ReportLoginOutput(progress, line),
+      line => ReportLoginOutput(progress, line),
       cancellationToken);
 
     if (loginResult.ExitCode != 0)
     {
       throw new InvalidOperationException($"Codex 로그인 실패: {loginResult.GetSummary()}");
     }
+  }
+
+  private static void ReportLoginOutput(IProgress<string> progress, string line)
+  {
+    var sanitized = StripAnsi(line);
+    if (sanitized.Length == 0)
+    {
+      return;
+    }
+
+    progress.Report(sanitized);
+  }
+
+  private static string CreateBrowserLauncher(OctopPaths paths, BrowserOption browser)
+  {
+    var launcherDirectory = Path.Combine(paths.InstallRoot, "temp");
+    Directory.CreateDirectory(launcherDirectory);
+    var launcherPath = Path.Combine(launcherDirectory, "browser-launcher.cmd");
+    var script = $"""
+    @echo off
+    setlocal
+    set "URL=%~1"
+    if "%URL%"=="" exit /b 1
+    start "" "{browser.ExecutablePath}" "%URL%"
+    exit /b 0
+    """;
+    File.WriteAllText(launcherPath, script, new UTF8Encoding(false));
+    return launcherPath;
   }
 
   public async Task LogoutCodexAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
