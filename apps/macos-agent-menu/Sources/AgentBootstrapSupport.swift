@@ -106,7 +106,7 @@ private enum CodexBrowserSelection {
 
     let buttonStack = NSStackView()
     buttonStack.orientation = .horizontal
-    buttonStack.spacing = 18
+    buttonStack.spacing = 20
     buttonStack.alignment = .top
     buttonStack.distribution = .gravityAreas
 
@@ -193,14 +193,13 @@ private enum CodexBrowserSelection {
     let button = NSButton(title: "", target: nil, action: nil)
     button.identifier = NSUserInterfaceItemIdentifier(browser.id)
     button.setButtonType(.momentaryPushIn)
-    button.isBordered = true
+    button.isBordered = false
     button.translatesAutoresizingMaskIntoConstraints = false
-    button.bezelStyle = .texturedRounded
     button.image = browser.icon
     button.imageScaling = .scaleProportionallyUpOrDown
     button.imagePosition = .imageOnly
-    button.widthAnchor.constraint(equalToConstant: 64).isActive = true
-    button.heightAnchor.constraint(equalToConstant: 64).isActive = true
+    button.widthAnchor.constraint(equalToConstant: 52).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 52).isActive = true
 
     let label = NSTextField(labelWithString: browser.displayName)
     label.alignment = .center
@@ -208,12 +207,15 @@ private enum CodexBrowserSelection {
     label.maximumNumberOfLines = 2
     label.font = .systemFont(ofSize: 12, weight: .regular)
     label.textColor = .labelColor
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.widthAnchor.constraint(equalToConstant: 88).isActive = true
 
     let stack = NSStackView(views: [button, label])
     stack.orientation = .vertical
     stack.alignment = .centerX
     stack.spacing = 8
     stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.setHuggingPriority(.required, for: .horizontal)
     return (stack, button)
   }
 }

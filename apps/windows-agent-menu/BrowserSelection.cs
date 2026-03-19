@@ -98,9 +98,9 @@ static class BrowserSelection
     {
       var tile = new FlowLayoutPanel
       {
-        Width = 116,
-        Height = 120,
-        Margin = new Padding(0, 0, 12, 12),
+        Width = 88,
+        Height = 104,
+        Margin = new Padding(0, 0, 16, 12),
         FlowDirection = FlowDirection.TopDown,
         WrapContents = false,
         BackColor = Color.Transparent
@@ -108,30 +108,29 @@ static class BrowserSelection
 
       var button = new Button
       {
-        Width = 64,
-        Height = 64,
-        Margin = new Padding(26, 0, 26, 8),
-        BackColor = Color.White,
+        Width = 52,
+        Height = 52,
+        Margin = new Padding(18, 0, 18, 8),
+        BackColor = Color.Transparent,
         FlatStyle = FlatStyle.Flat,
         Padding = new Padding(0),
         Text = string.Empty
       };
-      button.FlatAppearance.BorderColor = Color.FromArgb(0xE5, 0xE7, 0xEB);
-      button.FlatAppearance.BorderSize = 1;
-      button.FlatAppearance.MouseDownBackColor = Color.FromArgb(0xF3, 0xF4, 0xF6);
-      button.FlatAppearance.MouseOverBackColor = Color.FromArgb(0xF9, 0xFA, 0xFB);
+      button.FlatAppearance.BorderSize = 0;
+      button.FlatAppearance.MouseDownBackColor = Color.Transparent;
+      button.FlatAppearance.MouseOverBackColor = Color.Transparent;
 
       if (browser.Icon is not null)
       {
-        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(40, 40));
+        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(48, 48));
         button.ImageAlign = ContentAlignment.MiddleCenter;
       }
 
       var label = new Label
       {
         Text = browser.DisplayName,
-        Width = 116,
-        Height = 36,
+        Width = 88,
+        Height = 40,
         TextAlign = ContentAlignment.TopCenter,
         Font = new Font("Segoe UI", 9, FontStyle.Regular),
         ForeColor = Color.FromArgb(0x17, 0x17, 0x17),
