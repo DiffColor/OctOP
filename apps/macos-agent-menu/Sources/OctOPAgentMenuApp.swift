@@ -25,6 +25,7 @@ final class AgentMenuModel: ObservableObject {
   private var stdoutPipe: Pipe? = nil
   private var stderrPipe: Pipe? = nil
   private let maxLines = 2000
+  private let stopGracePeriodUsec: useconds_t = 3_000_000
 
   init() {
     refreshRuntimeStateFromSystem(logDetection: true)
@@ -52,6 +53,13 @@ final class AgentMenuModel: ObservableObject {
   }
 
   func start(using bootstrap: AgentBootstrapStore) {
+    let staleProcesses = findLingeringRuntimeProcesses()
+
+    if !staleProcesses.isEmpty {
+      appendLog("이전 local-agent 잔여 프로세스를 정리합니다.")
+      terminateRuntimeProcesses(staleProcesses)
+    }
+
     if let existingProcessId = findExistingAgentProcessId() {
       processId = existingProcessId
       runtimeState = .running
@@ -144,9 +152,28 @@ final class AgentMenuModel: ObservableObject {
       return
     }
 
-    guard let process else {
+    if process == nil {
+      let staleProcesses = findLingeringRuntimeProcesses()
+
+      if !staleProcesses.isEmpty {
+        runtimeState = .stopping
+        processId = staleProcesses.first?.pid
+        lastUpdatedAt = Date()
+        appendLog("잔여 local-agent 런타임 프로세스를 정리합니다.")
+        terminateRuntimeProcesses(staleProcesses)
+        runtimeState = .stopped
+        processId = nil
+        lastUpdatedAt = Date()
+        appendLog("잔여 local-agent 런타임 프로세스 정리가 완료되었습니다.")
+        return
+      }
+
       runtimeState = .stopped
       appendLog("중지할 local-agent 프로세스가 없습니다.")
+      return
+    }
+
+    guard let process else {
       return
     }
 
@@ -155,12 +182,7 @@ final class AgentMenuModel: ObservableObject {
     appendLog("local-agent 중지를 요청합니다.")
 
     if process.isRunning {
-      process.terminate()
-      DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-        guard let self, let current = self.process, current.isRunning else { return }
-        self.appendLog("SIGTERM 응답이 없어 강제 종료합니다.")
-        kill(current.processIdentifier, SIGKILL)
-      }
+      terminateProcess(process.processIdentifier)
     } else {
       handleTermination(process)
     }
@@ -169,13 +191,21 @@ final class AgentMenuModel: ObservableObject {
   func handleApplicationWillTerminate() {
     if let managedProcess = process, managedProcess.isRunning {
       appendLog("앱 종료에 맞춰 local-agent를 중지합니다.")
-      managedProcess.terminate()
+      terminateProcess(managedProcess.processIdentifier)
       return
     }
 
     if let existingProcessId = findExistingAgentProcessId() {
       appendLog("앱 종료에 맞춰 기존 local-agent를 중지합니다. pid=\(existingProcessId)")
-      kill(existingProcessId, SIGTERM)
+      terminateProcess(existingProcessId)
+      return
+    }
+
+    let staleProcesses = findLingeringRuntimeProcesses()
+
+    if !staleProcesses.isEmpty {
+      appendLog("앱 종료에 맞춰 잔여 local-agent 런타임 프로세스를 정리합니다.")
+      terminateRuntimeProcesses(staleProcesses)
     }
   }
 
@@ -259,23 +289,35 @@ final class AgentMenuModel: ObservableObject {
   }
 
   private func terminateProcess(_ pid: Int32) {
-    kill(pid, SIGTERM)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-      guard let self else { return }
-      guard self.isProcessAlive(pid) else {
+    let runtimeProcesses = findRuntimeProcesses()
+    let relatedProcesses = runtimeProcesses.filter { $0.pid == pid || $0.pgid == getpgid(pid) }
+
+    if relatedProcesses.isEmpty {
+      kill(pid, SIGTERM)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        guard let self else { return }
+        guard self.isProcessAlive(pid) else {
+          self.runtimeState = .stopped
+          self.processId = nil
+          self.lastUpdatedAt = Date()
+          self.appendLog("local-agent 종료됨. pid=\(pid)")
+          return
+        }
+
+        self.appendLog("SIGTERM 응답이 없어 강제 종료합니다. pid=\(pid)")
+        kill(pid, SIGKILL)
         self.runtimeState = .stopped
         self.processId = nil
         self.lastUpdatedAt = Date()
-        self.appendLog("local-agent 종료됨. pid=\(pid)")
-        return
       }
-
-      self.appendLog("SIGTERM 응답이 없어 강제 종료합니다. pid=\(pid)")
-      kill(pid, SIGKILL)
-      self.runtimeState = .stopped
-      self.processId = nil
-      self.lastUpdatedAt = Date()
+      return
     }
+
+    terminateRuntimeProcesses(relatedProcesses)
+    runtimeState = .stopped
+    processId = nil
+    lastUpdatedAt = Date()
+    appendLog("local-agent 런타임 프로세스가 종료되었습니다. pid=\(pid)")
   }
 
   private func isProcessAlive(_ pid: Int32) -> Bool {
@@ -287,10 +329,19 @@ final class AgentMenuModel: ObservableObject {
   }
 
   private func findExistingAgentProcessId() -> Int32? {
+    findRuntimeProcesses().first(where: { $0.command.contains("run-local-agent.mjs") })?.pid
+  }
+
+  private func findLingeringRuntimeProcesses() -> [AgentProcessDescriptor] {
+    findRuntimeProcesses().filter { !$0.command.contains("run-local-agent.mjs") }
+  }
+
+  private func findRuntimeProcesses() -> [AgentProcessDescriptor] {
+    let runtimePath = runtimeRootPath()
     let process = Process()
     let output = Pipe()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-    process.arguments = ["-fal", "run-local-agent.mjs"]
+    process.arguments = ["-fal", runtimePath]
     process.standardOutput = output
     process.standardError = Pipe()
 
@@ -298,28 +349,97 @@ final class AgentMenuModel: ObservableObject {
       try process.run()
       process.waitUntilExit()
     } catch {
-      return nil
+      return []
     }
 
     guard process.terminationStatus == 0 else {
-      return nil
+      return []
     }
 
     let data = output.fileHandleForReading.readDataToEndOfFile()
     let text = String(decoding: data, as: UTF8.self)
+    var results: [AgentProcessDescriptor] = []
 
     for line in text.split(whereSeparator: \.isNewline) {
       let columns = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
       guard columns.count == 2,
-            let pid = Int32(columns[0]),
-            !String(columns[1]).contains("/usr/bin/pgrep") else {
+            let pid = Int32(columns[0]) else {
         continue
       }
 
-      return pid
+      let command = String(columns[1])
+      guard !command.contains("/usr/bin/pgrep"),
+            isRuntimeProcessCommand(command, runtimePath: runtimePath) else {
+        continue
+      }
+
+      let pgid = getpgid(pid)
+      results.append(AgentProcessDescriptor(pid: pid, pgid: pgid > 0 ? pgid : pid, command: command))
     }
 
-    return nil
+    return results
+  }
+
+  private func terminateRuntimeProcesses(_ processes: [AgentProcessDescriptor]) {
+    let processIds = Set(processes.map(\.pid))
+    let processGroupIds = Set(processes.map(\.pgid).filter { $0 > 0 })
+
+    for processGroupId in processGroupIds {
+      kill(-processGroupId, SIGTERM)
+    }
+
+    for processId in processIds where !processGroupIds.contains(processId) {
+      kill(processId, SIGTERM)
+    }
+
+    let deadline = Date().addingTimeInterval(Double(stopGracePeriodUsec) / 1_000_000.0)
+
+    while Date() < deadline {
+      if !processIds.contains(where: { isProcessAlive($0) }) {
+        return
+      }
+
+      usleep(100_000)
+    }
+
+    let aliveProcessIds = processIds.filter { isProcessAlive($0) }
+    if !aliveProcessIds.isEmpty {
+      let processList = aliveProcessIds.map { String($0) }.joined(separator: ",")
+      appendLog("SIGTERM 응답이 없어 런타임 프로세스를 강제 종료합니다. pids=\(processList)")
+    }
+
+    for processGroupId in processGroupIds {
+      kill(-processGroupId, SIGKILL)
+    }
+
+    for processId in aliveProcessIds where !processGroupIds.contains(processId) {
+      kill(processId, SIGKILL)
+    }
+  }
+
+  private func runtimeRootPath() -> String {
+    let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
+      .appendingPathComponent("runtime", isDirectory: true)
+
+    return applicationSupport?.path ?? NSString(string: "~/Library/Application Support/OctOPAgentMenu/runtime").expandingTildeInPath
+  }
+
+  private func isRuntimeProcessCommand(_ command: String, runtimePath: String) -> Bool {
+    guard command.contains(runtimePath) else {
+      return false
+    }
+
+    return command.contains("run-local-agent.mjs") ||
+      command.contains("run-bridge.mjs") ||
+      command.contains("services/codex-adapter/src/index.js") ||
+      command.contains("/runtime/bin/codex app-server --listen")
+  }
+
+  private struct AgentProcessDescriptor {
+    let pid: Int32
+    let pgid: Int32
+    let command: String
   }
 
   private static func makeMenuBarImage(grayscale: Bool) -> NSImage? {
