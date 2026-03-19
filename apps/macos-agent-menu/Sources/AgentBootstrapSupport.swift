@@ -89,7 +89,7 @@ private enum CodexBrowserSelection {
   ]
 
   @MainActor
-  static func selectBrowser() -> CodexBrowserOption? {
+  static func selectBrowserID() -> String? {
     let browsers = discoverBrowsers()
     guard !browsers.isEmpty else {
       return nil
@@ -170,11 +170,16 @@ private enum CodexBrowserSelection {
     panel.makeKeyAndOrderFront(nil)
     let response = NSApp.runModal(for: panel)
     panel.close()
-    return response == .OK ? controller.selectedBrowser : nil
+    return response == .OK ? controller.selectedBrowser?.id : nil
   }
 
   @MainActor
-  static func open(_ url: URL, using browser: CodexBrowserOption) {
+  static func open(_ url: URL, usingBrowserID browserID: String) {
+    guard let browser = discoverBrowsers().first(where: { $0.id == browserID }) else {
+      NSWorkspace.shared.open(url)
+      return
+    }
+
     NSWorkspace.shared.open(
       [url],
       withApplicationAt: browser.appURL,
@@ -1276,7 +1281,7 @@ final class AgentBootstrapStore: ObservableObject {
       try await logoutCodex(log: log)
     }
 
-    guard let browser = await MainActor.run(body: { CodexBrowserSelection.selectBrowser() }) else {
+    guard let browserID = await MainActor.run(body: { CodexBrowserSelection.selectBrowserID() }) else {
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
 
@@ -1294,7 +1299,7 @@ final class AgentBootstrapStore: ObservableObject {
 
         if let urlToOpen = deviceAuthState.register(line: trimmed) {
           Task { @MainActor in
-            CodexBrowserSelection.open(urlToOpen, using: browser)
+            CodexBrowserSelection.open(urlToOpen, usingBrowserID: browserID)
           }
         }
       }
