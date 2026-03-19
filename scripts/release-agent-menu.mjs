@@ -135,14 +135,19 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   const appRoot = resolve(stageRoot, "macos", "OctOPAgentMenu.app");
   const contentsRoot = resolve(appRoot, "Contents");
   const macOsRoot = resolve(contentsRoot, "MacOS");
+  const resourcesRoot = resolve(contentsRoot, "Resources");
+  const iconSourcePath = resolve(workspaceRoot, "apps", "macos-agent-menu", "Sources", "Resources", "icon.png");
+  const iconPath = resolve(resourcesRoot, "AppIcon.icns");
   const standaloneAppName = `OctOPAgentMenu-macos-${arch}-${versionTag}.app`;
   const standaloneAppPath = resolve(outputRoot, standaloneAppName);
   rmSync(resolve(stageRoot, "macos"), { recursive: true, force: true });
   rmSync(standaloneAppPath, { recursive: true, force: true });
   mkdirSync(macOsRoot, { recursive: true });
+  mkdirSync(resourcesRoot, { recursive: true });
 
   cpSync(executablePath, resolve(macOsRoot, "OctOPAgentMenu"));
   cpSync(resourceBundlePath, resolve(appRoot, basename(resourceBundlePath)), { recursive: true });
+  buildMacIcon(iconSourcePath, iconPath, resolve(stageRoot, "macos", "AppIcon.iconset"));
 
   writeFileSync(
     resolve(contentsRoot, "Info.plist"),
@@ -241,6 +246,8 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
   <string>OctOPAgentMenu</string>
   <key>CFBundleIdentifier</key>
   <string>app.diffcolor.octop.agentmenu</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>OctOPAgentMenu</string>
   <key>CFBundlePackageType</key>
@@ -256,6 +263,48 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
 </dict>
 </plist>
 `;
+}
+
+function buildMacIcon(sourceIconPath, outputIconPath, iconsetPath) {
+  if (!existsSync(sourceIconPath)) {
+    throw new Error(`macOS icon source not found: ${sourceIconPath}`);
+  }
+
+  rmSync(iconsetPath, { recursive: true, force: true });
+  rmSync(outputIconPath, { force: true });
+  mkdirSync(iconsetPath, { recursive: true });
+
+  const iconVariants = [
+    ["icon_16x16.png", 16],
+    ["icon_16x16@2x.png", 32],
+    ["icon_32x32.png", 32],
+    ["icon_32x32@2x.png", 64],
+    ["icon_128x128.png", 128],
+    ["icon_128x128@2x.png", 256],
+    ["icon_256x256.png", 256],
+    ["icon_256x256@2x.png", 512],
+    ["icon_512x512.png", 512],
+    ["icon_512x512@2x.png", 1024]
+  ];
+
+  for (const [fileName, size] of iconVariants) {
+    run("sips", [
+      "-z",
+      String(size),
+      String(size),
+      sourceIconPath,
+      "--out",
+      resolve(iconsetPath, fileName)
+    ], workspaceRoot);
+  }
+
+  run("iconutil", [
+    "-c",
+    "icns",
+    iconsetPath,
+    "-o",
+    outputIconPath
+  ], workspaceRoot);
 }
 
 function parseArgs(argv) {
