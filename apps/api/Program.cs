@@ -1128,6 +1128,7 @@ app.MapPost("/api/threads/{threadId}/issues", async (
       thread_id = threadId,
       title = body?["title"]?.GetValue<string>(),
       prompt = body?["prompt"]?.GetValue<string>(),
+      attachments = body?["attachments"],
       source_app_id = body?["source_app_id"]?.GetValue<string>()
     },
     cancellationToken
@@ -1200,7 +1201,8 @@ app.MapPatch("/api/issues/{issueId}", async (
       bridge_id = bridgeId,
       issue_id = issueId,
       title = body?["title"]?.GetValue<string>(),
-      prompt = body?["prompt"]?.GetValue<string>()
+      prompt = body?["prompt"]?.GetValue<string>(),
+      attachments = body?["attachments"]
     },
     cancellationToken
   );

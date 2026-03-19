@@ -1302,6 +1302,7 @@ function normalizeIssueCard(issue = {}) {
       : null,
     title: String(issue.title ?? "").trim() || "Untitled issue",
     prompt: String(issue.prompt ?? "").trim(),
+    attachments: normalizeIssueAttachments(issue.attachments),
     status: String(issue.status ?? "staged").trim() || "staged",
     progress: Number.isFinite(Number(issue.progress)) ? Number(issue.progress) : 0,
     last_event: String(issue.last_event ?? "issue.created").trim(),
@@ -1314,6 +1315,52 @@ function normalizeIssueCard(issue = {}) {
     source: issue.source ?? "bridge",
     deleted_at: issue.deleted_at ?? null
   };
+}
+
+function normalizeIssueAttachment(attachment = {}) {
+  const name = String(attachment.name ?? "").trim().slice(0, 160);
+
+  if (!name) {
+    return null;
+  }
+
+  const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim().slice(0, 120);
+  const previewUrl = String(attachment.preview_url ?? attachment.previewUrl ?? "")
+    .trim()
+    .slice(0, 200_000);
+  const textContent = String(attachment.text_content ?? attachment.textContent ?? "")
+    .replace(/\r\n/g, "\n")
+    .slice(0, 20_000);
+  const kind =
+    attachment.kind === "image" ||
+    mimeType.toLowerCase().startsWith("image/") ||
+    previewUrl.startsWith("data:image/")
+      ? "image"
+      : "file";
+
+  return {
+    id: sanitizeBridgeId(attachment.id ?? createMessageId()),
+    name,
+    kind,
+    mime_type: mimeType || null,
+    size_bytes: Number.isFinite(Number(attachment.size_bytes ?? attachment.sizeBytes))
+      ? Math.max(0, Number(attachment.size_bytes ?? attachment.sizeBytes))
+      : 0,
+    preview_url: previewUrl || null,
+    text_content: textContent || null,
+    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated)
+  };
+}
+
+function normalizeIssueAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  return attachments
+    .map((attachment) => normalizeIssueAttachment(attachment))
+    .filter(Boolean)
+    .slice(0, 8);
 }
 
 function normalizeTodoChat(loginId, chat = {}) {
@@ -3996,6 +4043,7 @@ function getIssueDetail(userId, issueId) {
 async function createThreadIssue(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const prompt = String(payload.prompt ?? "").trim();
+  const attachments = normalizeIssueAttachments(payload.attachments);
 
   if (!threadId) {
     throw new Error("이슈를 등록할 thread가 필요합니다.");
@@ -4021,6 +4069,7 @@ async function createThreadIssue(userId, payload = {}) {
     executed_physical_thread_id: null,
     title: createIssueTitle(payload),
     prompt,
+    attachments,
     status: "staged",
     prep_position: getNextPrepPosition(threadId),
     progress: 0,
@@ -4434,7 +4483,7 @@ async function startIssueTurn(userId, threadId, issueId) {
     threadId,
     activePhysicalThread.id,
     issueId,
-    buildExecutionPrompt(issue.prompt)
+    buildExecutionInputPrompt(issue)
   );
 }
 
@@ -5369,6 +5418,7 @@ async function updateThreadIssue(userId, payload = {}) {
   const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
   const prompt = String(payload.prompt ?? "").trim();
   const title = String(payload.title ?? "").trim();
+  const attachments = normalizeIssueAttachments(payload.attachments);
 
   if (!issueId) {
     throw new Error("수정할 이슈 id가 필요합니다.");
@@ -5397,6 +5447,7 @@ async function updateThreadIssue(userId, payload = {}) {
   const next = updateIssueCard(issueId, {
     title: title || issue.title,
     prompt,
+    attachments,
     last_event: "issue.updated",
     last_message: "",
     updated_at: now()
@@ -5793,7 +5844,71 @@ function buildExecutionPrompt(prompt = "") {
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
 }
 
-function buildHandoffPrompt(summary, issuePrompt = "") {
+function formatIssueAttachmentSize(sizeBytes) {
+  const normalizedSize = Math.max(0, Number(sizeBytes) || 0);
+
+  if (normalizedSize < 1024) {
+    return `${normalizedSize} B`;
+  }
+
+  if (normalizedSize < 1024 * 1024) {
+    return `${(normalizedSize / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(normalizedSize / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildIssueAttachmentPromptSection(attachments = []) {
+  const normalizedAttachments = normalizeIssueAttachments(attachments);
+
+  if (normalizedAttachments.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "[첨부 자료]",
+    "아래 첨부 메타데이터와 포함된 텍스트 내용을 참고해 작업하십시오.",
+    "이미지 첨부는 현재 메타데이터와 썸네일 기반 정보만 전달됩니다."
+  ];
+
+  for (const [index, attachment] of normalizedAttachments.entries()) {
+    lines.push("");
+    lines.push(`${index + 1}. ${attachment.name}`);
+    lines.push(`- kind: ${attachment.kind}`);
+    lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+    lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+
+    if (attachment.text_content) {
+      lines.push("- inline_text:");
+      lines.push("[첨부 내용 시작]");
+      lines.push(attachment.text_content);
+      lines.push("[첨부 내용 끝]");
+
+      if (attachment.text_truncated) {
+        lines.push("- note: 첨부 텍스트가 길어서 앞부분만 포함되었습니다.");
+      }
+    } else if (attachment.kind === "image") {
+      lines.push("- note: 이미지 원본 대신 대시보드 썸네일과 메타데이터만 저장되었습니다.");
+    } else {
+      lines.push("- note: 바이너리 또는 미리보기 불가 파일이라 메타데이터만 전달됩니다.");
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildExecutionInputPrompt(issue = null) {
+  const sections = [String(issue?.prompt ?? "").trim()];
+  const attachmentSection = buildIssueAttachmentPromptSection(issue?.attachments ?? []);
+
+  if (attachmentSection) {
+    sections.push(attachmentSection);
+  }
+
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"));
+}
+
+function buildHandoffPrompt(summary, issue = null) {
   const sections = [
     "이전 thread에서 컨텍스트 사용량 한계로 rollover되었습니다.",
     "아래 handoff summary를 최우선 문맥으로 사용해 같은 작업을 이어가십시오.",
@@ -5802,8 +5917,14 @@ function buildHandoffPrompt(summary, issuePrompt = "") {
     summary.content_markdown,
     "",
     "[현재 issue 원본 프롬프트]",
-    String(issuePrompt ?? "").trim()
+    String(issue?.prompt ?? "").trim()
   ];
+
+  const attachmentSection = buildIssueAttachmentPromptSection(issue?.attachments ?? []);
+
+  if (attachmentSection) {
+    sections.push("", attachmentSection);
+  }
 
   return buildExecutionPrompt(sections.join("\n"));
 }
@@ -6038,7 +6159,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       rootThreadId,
       updatedTargetPhysicalThread.id,
       activeIssueId,
-      buildHandoffPrompt(nextSummary, activeIssue?.prompt ?? ""),
+      buildHandoffPrompt(nextSummary, activeIssue ?? null),
       isPreflight ? "rootThread.rollover.preflight.starting" : "rootThread.rollover.continuation.starting"
     );
 
