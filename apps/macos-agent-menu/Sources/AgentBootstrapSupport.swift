@@ -10,6 +10,20 @@ private struct CodexBrowserOption: Identifiable {
   let icon: NSImage
 }
 
+private enum CodexBrowserOpenError: LocalizedError {
+  case emptyBrowserID
+  case openFailed(Int32)
+
+  var errorDescription: String? {
+    switch self {
+    case .emptyBrowserID:
+      return "선택한 브라우저 정보가 비어 있습니다."
+    case .openFailed(let status):
+      return "브라우저 실행에 실패했습니다. open 종료 코드: \(status)"
+    }
+  }
+}
+
 @MainActor
 private final class CodexBrowserPickerController: NSObject {
   let panel: NSPanel
@@ -159,20 +173,20 @@ private enum CodexBrowserSelection {
   }
 
   @MainActor
-  static func open(_ url: URL, usingBrowserID browserID: String) {
+  static func open(_ url: URL, usingBrowserID browserID: String) throws {
     guard !browserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      NSWorkspace.shared.open(url)
-      return
+      throw CodexBrowserOpenError.emptyBrowserID
     }
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     process.arguments = ["-b", browserID, url.absoluteString]
 
-    do {
-      try process.run()
-    } catch {
-      NSWorkspace.shared.open(url)
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+      throw CodexBrowserOpenError.openFailed(process.terminationStatus)
     }
   }
 
@@ -1456,8 +1470,10 @@ final class AgentBootstrapStore: ObservableObject {
 
       let loginStart = try await session.startChatGptLogin()
       try self.savePendingLogin(loginId: loginStart.loginId)
-      await MainActor.run {
-        CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
+      log("로그인 URL 생성: \(loginStart.authURL.absoluteString)")
+      log("선택한 브라우저 번들 ID: \(browserID)")
+      try await MainActor.run {
+        try CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
       }
       log("브라우저에서 인증을 완료해 주세요.")
       _ = try await session.waitForLoginCompleted(loginId: loginStart.loginId)
