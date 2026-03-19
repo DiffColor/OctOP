@@ -472,6 +472,12 @@ final class AgentBootstrapStore: ObservableObject {
       return true
     }
 
+    for requiredPath in requiredRuntimeWorkspacePaths() {
+      if !FileManager.default.fileExists(atPath: requiredPath.path) {
+        return true
+      }
+    }
+
     let runtimeVersion = (try? String(contentsOf: runtimeVersionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
     if Self.normalizeVersionTag(runtimeVersion) != currentAppVersionTag {
       return true
@@ -1013,6 +1019,17 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     return resolveExecutable(named: "codex", searchPaths: executableSearchPaths())
+  }
+
+  private func requiredRuntimeWorkspacePaths() -> [URL] {
+    [
+      runtimeWorkspaceURL.appendingPathComponent("scripts/run-local-agent.mjs"),
+      runtimeWorkspaceURL.appendingPathComponent("scripts/run-bridge.mjs"),
+      runtimeWorkspaceURL.appendingPathComponent("scripts/shared-env.mjs"),
+      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/package.json"),
+      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/index.js"),
+      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/domain.js")
+    ]
   }
 
   private func executableSearchPaths() -> [String] {

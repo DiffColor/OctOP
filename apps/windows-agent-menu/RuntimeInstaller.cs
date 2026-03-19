@@ -32,6 +32,7 @@ sealed class RuntimeInstaller
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs"] = "scripts/run-local-agent.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs"] = "scripts/run-bridge.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.index.js"] = "services/codex-adapter/src/index.js",
+    ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.domain.js"] = "services/codex-adapter/src/domain.js",
     ["OctOP.WindowsAgentMenu.Runtime.packages.domain.src.index.js"] = "packages/domain/src/index.js"
   };
 
@@ -72,7 +73,7 @@ sealed class RuntimeInstaller
   public async Task<RuntimeStatus> InspectAsync(OctopPaths paths, CancellationToken cancellationToken)
   {
     var configuration = LoadConfiguration(paths);
-    var runtimeBundlePresent = File.Exists(paths.RuntimeAgentEntryPath);
+    var runtimeBundlePresent = RequiredRuntimeFiles(paths).All(File.Exists);
     var configurationSaved = File.Exists(paths.ConfigurationPath) && File.Exists(paths.RuntimeEnvLocalPath);
     var runtimeVersionFileExists = File.Exists(paths.RuntimeVersionPath);
     var runtimeVersion = runtimeVersionFileExists
@@ -175,6 +176,16 @@ sealed class RuntimeInstaller
   {
     Directory.CreateDirectory(paths.RuntimeRoot);
     File.WriteAllText(paths.RuntimeVersionPath, AppMetadata.CurrentVersionTag, new UTF8Encoding(false));
+  }
+
+  private static IEnumerable<string> RequiredRuntimeFiles(OctopPaths paths)
+  {
+    yield return paths.RuntimeAgentEntryPath;
+    yield return Path.Combine(paths.RuntimeRoot, "scripts", "run-bridge.mjs");
+    yield return Path.Combine(paths.RuntimeRoot, "scripts", "shared-env.mjs");
+    yield return Path.Combine(paths.RuntimeRoot, "services", "codex-adapter", "package.json");
+    yield return Path.Combine(paths.RuntimeRoot, "services", "codex-adapter", "src", "index.js");
+    yield return Path.Combine(paths.RuntimeRoot, "services", "codex-adapter", "src", "domain.js");
   }
 
   public void EnsureAutoStartAtLogin(RuntimeConfiguration configuration, IProgress<string> progress)
