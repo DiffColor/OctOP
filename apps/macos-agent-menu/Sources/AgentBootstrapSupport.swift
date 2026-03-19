@@ -160,14 +160,14 @@ private enum CodexBrowserSelection {
 
   @MainActor
   static func open(_ url: URL, usingBrowserID browserID: String) {
-    guard let browser = discoverBrowsers().first(where: { $0.id == browserID }) else {
+    guard !browserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       NSWorkspace.shared.open(url)
       return
     }
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    process.arguments = ["-a", browser.appURL.path, url.absoluteString]
+    process.arguments = ["-b", browserID, url.absoluteString]
 
     do {
       try process.run()

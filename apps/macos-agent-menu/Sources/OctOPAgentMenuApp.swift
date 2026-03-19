@@ -647,7 +647,6 @@ struct AgentMenuContent: View {
           }
         }
       }
-      .disabled(bootstrap.bootstrapInProgress)
 
       Button("환경 설정") {
         openWindowAndActivate(id: "setup")
