@@ -361,8 +361,8 @@ final class AgentBootstrapStore: ObservableObject {
     runBootstrap(log: log)
   }
 
-  func ensureAppUpdatedIfNeeded(log: @escaping @MainActor (String) -> Void) async -> Bool {
-    guard !automaticUpdateAttempted else {
+  func ensureAppUpdatedIfNeeded(log: @escaping @MainActor (String) -> Void, force: Bool = false) async -> Bool {
+    guard force || !automaticUpdateAttempted else {
       return false
     }
 

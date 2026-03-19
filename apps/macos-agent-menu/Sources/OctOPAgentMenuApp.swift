@@ -610,8 +610,30 @@ struct AgentMenuContent: View {
       }
       .disabled(bootstrap.bootstrapInProgress)
 
-      Button("환경설정") {
+      Button("재시작") {
+        Task { @MainActor in
+          model.refreshRuntimeStateFromSystem()
+          model.stop()
+
+          if await bootstrap.ensureAppUpdatedIfNeeded(log: model.appendInstallerLog, force: true) {
+            return
+          }
+
+          model.refreshRuntimeStateFromSystem()
+          if !model.isRunning {
+            model.start(using: bootstrap)
+          }
+        }
+      }
+      .disabled(bootstrap.bootstrapInProgress)
+
+      Button("환경 설정") {
         openWindowAndActivate(id: "setup")
+      }
+
+      Button("종료") {
+        model.handleApplicationWillTerminate()
+        NSApp.terminate(nil)
       }
 
       if let lastError = model.lastError, !lastError.isEmpty {

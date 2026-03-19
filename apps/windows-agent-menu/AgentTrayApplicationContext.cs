@@ -21,6 +21,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private readonly ToolStripMenuItem _environmentItem;
   private readonly ToolStripMenuItem _pidItem;
   private readonly ToolStripMenuItem _toggleItem;
+  private readonly ToolStripMenuItem _restartItem;
   private readonly ToolStripMenuItem _setupItem;
   private readonly ToolStripMenuItem _exitItem;
   private readonly LogWindow _logWindow;
@@ -75,7 +76,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _pidItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
     _toggleItem = new ToolStripMenuItem("실행 시작");
     _toggleItem.Click += (_, _) => ToggleProcess();
-    _setupItem = new ToolStripMenuItem("환경설정");
+    _restartItem = new ToolStripMenuItem("재시작");
+    _restartItem.Click += async (_, _) => await RestartAsync();
+    _setupItem = new ToolStripMenuItem("환경 설정");
     _setupItem.Click += (_, _) => ShowSetup();
     _exitItem = new ToolStripMenuItem("종료");
     _exitItem.Click += (_, _) => ExitApplication();
@@ -88,6 +91,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _pidItem,
       new ToolStripSeparator(),
       _toggleItem,
+      _restartItem,
       _setupItem,
       new ToolStripSeparator(),
       _exitItem
@@ -311,6 +315,25 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       AppendLog($"local-agent 시작 실패: {error.Message}");
       RefreshUi();
     }
+  }
+
+  private async Task RestartAsync()
+  {
+    RefreshRuntimeStateFromSystem();
+    Stop();
+
+    if (await TryApplyAppUpdateAsync())
+    {
+      return;
+    }
+
+    RefreshRuntimeStateFromSystem();
+    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping)
+    {
+      return;
+    }
+
+    await StartAsync();
   }
 
   private void Stop()
@@ -537,6 +560,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping;
     _toggleItem.Text = running ? "실행 중지" : "실행 시작";
     _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
+    _restartItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
   }
 
   private void AppendLog(string message)
