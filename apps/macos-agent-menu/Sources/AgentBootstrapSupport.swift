@@ -345,6 +345,8 @@ final class AgentBootstrapStore: ObservableObject {
   func saveConfiguration() {
     do {
       try persistConfiguration()
+      try ensureDirectory(runtimeURL)
+      try writeRuntimeEnvironmentFile()
       configurationSavedAt = Date()
       bootstrapSummary = "설정을 저장했습니다."
       refreshDiagnostics()

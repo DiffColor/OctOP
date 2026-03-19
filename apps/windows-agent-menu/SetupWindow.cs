@@ -307,6 +307,7 @@ sealed class SetupWindow : Window
       var configuration = GatherConfiguration();
       var paths = new OctopPaths(configuration.InstallRoot);
       _installer.SaveConfiguration(configuration, paths);
+      _installer.WriteEnvironmentFile(configuration, paths);
       _installer.EnsureAutoStartAtLogin(configuration, new Progress<string>(ReportProgress));
       var status = await _installer.InspectAsync(paths, CancellationToken.None);
       UpdateStatus(status);
