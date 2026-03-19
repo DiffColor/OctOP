@@ -258,18 +258,25 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       return;
     }
 
-      setState((current) => ({
-        ...current,
-        loading: true,
-        notice: "",
-        error: ""
-      }));
+    setState((current) => ({
+      ...current,
+      loading: true,
+      notice: "",
+      error: ""
+    }));
 
     try {
       const config = await apiRequest(configPath);
 
       if (!config?.enabled || !config.publicVapidKey) {
-        throw new Error("서버에 VAPID 공개키가 없어 푸시를 켤 수 없습니다.");
+        setState((current) => ({
+          ...current,
+          configured: false,
+          loading: false,
+          notice: "서버에서 아직 웹 푸시 설정이 준비되지 않았습니다.",
+          error: ""
+        }));
+        return;
       }
 
       const registration = await navigator.serviceWorker.ready;
@@ -351,12 +358,12 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       return;
     }
 
-      setState((current) => ({
-        ...current,
-        loading: true,
-        notice: "",
-        error: ""
-      }));
+    setState((current) => ({
+      ...current,
+      loading: true,
+      notice: "",
+      error: ""
+    }));
 
     try {
       await apiRequest(subscriptionsPath, {
@@ -431,7 +438,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         <button
           type="button"
           onClick={() => void enablePushForBridge()}
-          disabled={!selectedBridgeId || state.loading || !supportsPush()}
+          disabled={!selectedBridgeId || state.loading || !supportsPush() || !state.configured}
           className="flex-1 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:border-sky-400/40 hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {state.loading ? "처리 중..." : "현재 브릿지 켜기"}
