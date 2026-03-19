@@ -476,6 +476,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var lastBootstrapAt: Date? = nil
   private var automaticBootstrapAttempted = false
   private var automaticUpdateAttempted = false
+  private var pendingLoginRecoveryAttempted = false
   private var bootstrapTask: Task<Bool, Never>? = nil
 
   init() {
@@ -631,6 +632,43 @@ final class AgentBootstrapStore: ObservableObject {
     let status = await currentCodexLoginStatus()
     codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
+  }
+
+  func recoverPendingLoginAfterRestart(log: @escaping @MainActor (String) -> Void) async {
+    guard !pendingLoginRecoveryAttempted else {
+      return
+    }
+
+    pendingLoginRecoveryAttempted = true
+
+    guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path),
+          let pendingLogin = loadPendingLogin(),
+          !pendingLogin.loginId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return
+    }
+
+    do {
+      try await withCodexAppServerSession(log: log) { session in
+        let status = try await session.readAccount(refreshToken: false)
+        if status.loggedIn {
+          self.clearPendingLogin()
+          return ()
+        }
+
+        do {
+          try await session.cancelLogin(loginId: pendingLogin.loginId)
+          log("이전 로그인 시도를 정리했습니다.")
+        } catch {
+          log("이전 로그인 정리 중 오류가 있었지만 다시 로그인할 수 있도록 상태를 초기화합니다.")
+        }
+
+        self.clearPendingLogin()
+        return ()
+      }
+    } catch {
+      clearPendingLogin()
+      log("이전 로그인 상태를 초기화했습니다.")
+    }
   }
 
   func ensureAppUpdatedIfNeeded(
@@ -1395,8 +1433,7 @@ final class AgentBootstrapStore: ObservableObject {
     do {
       return try await withCodexAppServerSession { session in
         let status = try await session.readAccount(refreshToken: false)
-        let recoveredStatus = try await self.recoverPendingLoginIfNeeded(using: session, accountStatus: status)
-        return (recoveredStatus.loggedIn, recoveredStatus.summary)
+        return (status.loggedIn, status.summary)
       }
     } catch {
       let summary = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1462,33 +1499,6 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func clearPendingLogin() {
     try? FileManager.default.removeItem(at: pendingLoginURL)
-  }
-
-  private func recoverPendingLoginIfNeeded(
-    using session: CodexAppServerSession,
-    accountStatus: CodexAppServerAccountStatus
-  ) async throws -> CodexAppServerAccountStatus {
-    if accountStatus.loggedIn {
-      clearPendingLogin()
-      return accountStatus
-    }
-
-    guard let pendingLogin = loadPendingLogin(),
-          !pendingLogin.loginId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      return accountStatus
-    }
-
-    do {
-      try await session.cancelLogin(loginId: pendingLogin.loginId)
-    } catch {
-    }
-
-    clearPendingLogin()
-    return CodexAppServerAccountStatus(
-      loggedIn: false,
-      requiresOpenAIAuth: accountStatus.requiresOpenAIAuth,
-      summary: "미로그인"
-    )
   }
 
   private var bundleBootstrapURL: URL? {

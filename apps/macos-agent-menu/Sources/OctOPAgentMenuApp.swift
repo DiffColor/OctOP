@@ -728,6 +728,7 @@ struct OctOPAgentMenuApp: App {
           }
 
           model.refreshRuntimeStateFromSystem()
+          await bootstrap.recoverPendingLoginAfterRestart(log: model.appendInstallerLog)
           await bootstrap.ensureInstalledIfNeeded(log: model.appendInstallerLog)
 
           if bootstrap.consumePendingServiceStartAfterUpdate() {
