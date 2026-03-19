@@ -134,14 +134,25 @@ private actor CodexAppServerSessionState {
   }
 }
 
+private actor CodexAppServerLifecycleState {
+  private var intentionalShutdown = false
+
+  func markIntentionalShutdown() {
+    intentionalShutdown = true
+  }
+
+  func isIntentionalShutdown() -> Bool {
+    intentionalShutdown
+  }
+}
+
 final class CodexAppServerSession: @unchecked Sendable {
   private let process: Process
   private let standardInput: FileHandle
   private let standardOutput: FileHandle
   private let standardError: FileHandle
   private let state = CodexAppServerSessionState()
-  private let shutdownLock = NSLock()
-  private var intentionalShutdown = false
+  private let lifecycleState = CodexAppServerLifecycleState()
   private var stdoutTask: Task<Void, Never>?
   private var stderrTask: Task<Void, Never>?
 
@@ -170,19 +181,13 @@ final class CodexAppServerSession: @unchecked Sendable {
 
     process.terminationHandler = { [weak self] process in
       guard let self else { return }
-      self.shutdownLock.lock()
-      let intentionalShutdown = self.intentionalShutdown
-      self.shutdownLock.unlock()
-
-      if intentionalShutdown {
-        Task {
-          await self.state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
-        }
-        return
-      }
-
-      let message = "Codex app-server 종료됨 (status=\(process.terminationStatus))"
       Task {
+        if await self.lifecycleState.isIntentionalShutdown() {
+          await self.state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
+          return
+        }
+
+        let message = "Codex app-server 종료됨 (status=\(process.terminationStatus))"
         await self.state.terminate(with: CodexAppServerSessionError.terminated(message))
       }
     }
@@ -327,9 +332,7 @@ final class CodexAppServerSession: @unchecked Sendable {
   func shutdown() async {
     stdoutTask?.cancel()
     stderrTask?.cancel()
-    shutdownLock.lock()
-    intentionalShutdown = true
-    shutdownLock.unlock()
+    await lifecycleState.markIntentionalShutdown()
     await state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
     if process.isRunning {
       process.terminate()
