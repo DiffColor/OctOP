@@ -827,17 +827,37 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private var preferredCodexHomeURL: URL {
-    if let value = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !value.isEmpty {
-      return URL(fileURLWithPath: value, isDirectory: true)
+    let candidates = [
+      ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+      NSString(string: "~/.codex").expandingTildeInPath,
+      codexHomeURL.path
+    ]
+      .compactMap { value -> URL? in
+        guard let value, !value.isEmpty else {
+          return nil
+        }
+
+        return URL(fileURLWithPath: value, isDirectory: true)
+      }
+
+    if let authenticated = candidates.first(where: hasCodexAuthenticationData(at:)) {
+      return authenticated
     }
 
-    let shared = URL(fileURLWithPath: NSString(string: "~/.codex").expandingTildeInPath, isDirectory: true)
-    if FileManager.default.fileExists(atPath: shared.path) {
-      return shared
+    if let existing = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+      return existing
     }
 
     return codexHomeURL
+  }
+
+  private func hasCodexAuthenticationData(at url: URL) -> Bool {
+    let authURL = url.appendingPathComponent("auth.json")
+    guard let data = try? Data(contentsOf: authURL), !data.isEmpty else {
+      return false
+    }
+
+    return true
   }
 
   var runtimeVersionDisplay: String {

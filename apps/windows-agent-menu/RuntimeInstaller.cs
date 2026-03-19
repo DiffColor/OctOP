@@ -386,22 +386,31 @@ sealed class RuntimeInstaller
 
   private static string ResolvePreferredCodexHome(OctopPaths paths)
   {
-    var currentProcessValue = Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim();
-    if (!string.IsNullOrWhiteSpace(currentProcessValue))
+    var candidates = new[]
     {
-      return currentProcessValue;
+      Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim(),
+      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
+      paths.CodexHome
+    }
+      .Where(static value => !string.IsNullOrWhiteSpace(value))
+      .Select(static value => Path.GetFullPath(value!))
+      .Distinct(StringComparer.OrdinalIgnoreCase)
+      .ToArray();
+
+    var authenticated = candidates.FirstOrDefault(HasCodexAuthenticationData);
+    if (!string.IsNullOrWhiteSpace(authenticated))
+    {
+      return authenticated;
     }
 
-    var sharedCodexHome = Path.Combine(
-      Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-      ".codex");
+    var existing = candidates.FirstOrDefault(Directory.Exists);
+    return string.IsNullOrWhiteSpace(existing) ? paths.CodexHome : existing;
+  }
 
-    if (Directory.Exists(sharedCodexHome))
-    {
-      return sharedCodexHome;
-    }
-
-    return paths.CodexHome;
+  private static bool HasCodexAuthenticationData(string codexHome)
+  {
+    var authPath = Path.Combine(codexHome, "auth.json");
+    return File.Exists(authPath) && new FileInfo(authPath).Length > 0;
   }
 
   private async Task WriteRuntimeBundleAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
