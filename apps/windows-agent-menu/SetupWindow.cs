@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Button = System.Windows.Controls.Button;
@@ -227,8 +228,8 @@ sealed class SetupWindow : Window
   private Border CreateBasicInfoCard()
   {
     var stack = CreateSectionStack();
-    stack.Children.Add(CreateLabeledTextField("로그인 ID", _ownerLoginIdTextBox = CreateTextBox()));
-    stack.Children.Add(CreateLabeledTextField("디바이스 이름", _deviceNameTextBox = CreateTextBox()));
+    stack.Children.Add(CreateLabeledTextField("로그인 ID", _ownerLoginIdTextBox = CreateIdentityTextBox()));
+    stack.Children.Add(CreateLabeledTextField("디바이스 이름", _deviceNameTextBox = CreateIdentityTextBox()));
     stack.Children.Add(CreateFolderField("워크스페이스 루트", _workspaceRootTextBox = CreateTextBox(readOnly: true), HandleBrowseWorkspaceRootClick));
     return CreateCard("기본 정보", stack);
   }
@@ -758,6 +759,14 @@ sealed class SetupWindow : Window
       BorderBrush = CreateBrush(0xD1, 0xD5, 0xDB),
       Background = readOnly ? CreateBrush(0xFA, 0xFA, 0xFA) : System.Windows.Media.Brushes.White
     };
+  }
+
+  private static TextBox CreateIdentityTextBox()
+  {
+    var textBox = CreateTextBox();
+    InputMethod.SetPreferredImeState(textBox, InputMethodState.Off);
+    InputMethod.SetPreferredImeConversionMode(textBox, ImeConversionModeValues.Alphanumeric);
+    return textBox;
   }
 
   private static PasswordBox CreatePasswordBox()
