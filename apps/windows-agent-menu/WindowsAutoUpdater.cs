@@ -62,7 +62,7 @@ sealed class WindowsAutoUpdater
     {
       FileName = "powershell.exe",
       Arguments =
-        $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
+        $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
       UseShellExecute = false,
       CreateNoWindow = true,
       WorkingDirectory = updateRoot
@@ -95,62 +95,96 @@ sealed class WindowsAutoUpdater
     $scriptPath = $MyInvocation.MyCommand.Path
     $updateRoot = Split-Path -Parent $scriptPath
     $backup = "$target.previous-update"
+    $logPath = Join-Path $updateRoot "apply-update.log"
     $replaced = $false
 
-    while (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue) {
-      Start-Sleep -Milliseconds 500
+    function Write-Log {
+      param([string]$Message)
+      try {
+        Add-Content -Path $logPath -Value ("[" + (Get-Date).ToString("s") + "] " + $Message) -Encoding UTF8
+      } catch {
+      }
     }
 
-    for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
+    try {
+      while (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue) {
+        Start-Sleep -Milliseconds 500
+      }
+
+      Start-Sleep -Seconds 1
+
+      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+        try {
+          if (Test-Path $backup) {
+            Remove-Item -Path $backup -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          if (Test-Path $target) {
+            Move-Item -Path $target -Destination $backup -Force
+          }
+
+          Copy-Item -Path $source -Destination $target -Force
+          $replaced = $true
+          break
+        } catch {
+          Write-Log("replace attempt failed: " + $_.Exception.Message)
+          try {
+            if (Test-Path $target) {
+              Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
+            }
+
+            if (Test-Path $backup) {
+              Move-Item -Path $backup -Destination $target -Force
+            }
+          } catch {
+            Write-Log("rollback failed: " + $_.Exception.Message)
+          }
+
+          if ($attempt -ge 59) {
+            break
+          }
+
+          Start-Sleep -Seconds 1
+        }
+      }
+
+      if (-not $replaced) {
+        Write-Log("app replacement failed; restored existing executable if possible")
+        if (Test-Path $target) {
+          Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
+        }
+        exit 0
+      }
+
+      Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
+
       try {
         if (Test-Path $backup) {
-          Remove-Item -Path $backup -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue
         }
-
-        if (Test-Path $target) {
-          Move-Item -Path $target -Destination $backup -Force
-        }
-
-        Copy-Item -Path $source -Destination $target -Force
-        $replaced = $true
-        break
       } catch {
-        try {
+      }
+
+      try {
+        $cleanupCommand = 'ping 127.0.0.1 -n 3 > nul & rmdir /s /q "' + $updateRoot + '"'
+        Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cleanupCommand) -WindowStyle Hidden | Out-Null
+      } catch {
+      }
+    } catch {
+      Write-Log("update script failed unexpectedly: " + $_.Exception.Message)
+      try {
+        if (Test-Path $backup) {
           if (Test-Path $target) {
             Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
           }
-
-          if (Test-Path $backup) {
-            Move-Item -Path $backup -Destination $target -Force
-          }
-        } catch {
+          Move-Item -Path $backup -Destination $target -Force
         }
-
-        if ($attempt -ge 29) {
-          throw
+        if (Test-Path $target) {
+          Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
         }
-
-        Start-Sleep -Seconds 1
+      } catch {
+        Write-Log("final recovery failed: " + $_.Exception.Message)
       }
-    }
-
-    if (-not $replaced) {
-      throw "앱 교체에 실패했습니다."
-    }
-
-    Start-Process -FilePath $target | Out-Null
-
-    try {
-      if (Test-Path $backup) {
-        Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue
-      }
-    } catch {
-    }
-
-    try {
-      $cleanupCommand = 'ping 127.0.0.1 -n 3 > nul & rmdir /s /q "' + $updateRoot + '"'
-      Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cleanupCommand) -WindowStyle Hidden | Out-Null
-    } catch {
     }
     """;
 

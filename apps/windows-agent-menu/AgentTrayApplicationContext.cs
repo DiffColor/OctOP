@@ -354,6 +354,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     RefreshRuntimeStateFromSystem();
     Stop();
+    await WaitForRuntimeStopAsync();
 
     if (await TryApplyAppUpdateAsync(startServiceAfterUpdate: true))
     {
@@ -383,6 +384,24 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     await StartAsync();
+  }
+
+  private async Task WaitForRuntimeStopAsync(int timeoutMs = 5000)
+  {
+    var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+      RefreshRuntimeStateFromSystem();
+      if (_runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping))
+      {
+        return;
+      }
+
+      await Task.Delay(100);
+    }
+
+    RefreshRuntimeStateFromSystem();
   }
 
   private void Stop()

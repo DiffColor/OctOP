@@ -157,8 +157,9 @@ extension AgentBootstrapStore {
       rm -rf "$CURRENT_APP"
       if [ -d "$BACKUP_APP" ]; then
         mv "$BACKUP_APP" "$CURRENT_APP"
+        open "$CURRENT_APP" || true
       fi
-      exit 1
+      exit 0
     fi
     rm -rf "$BACKUP_APP"
     open "$CURRENT_APP" || true

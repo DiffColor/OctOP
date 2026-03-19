@@ -855,6 +855,7 @@ final class AgentBootstrapStore: ObservableObject {
       try persistConfiguration()
       try ensureDirectory(runtimeURL)
       try writeRuntimeEnvironmentFile()
+      try installLaunchAgent(enabled: configuration.autoStartAtLogin, log: { _ in })
       configurationSavedAt = Date()
       bootstrapSummary = "설정을 저장했습니다."
       refreshDiagnostics()
@@ -1070,6 +1071,8 @@ final class AgentBootstrapStore: ObservableObject {
     if let bootstrapTask {
       return await bootstrapTask.value
     }
+
+    await recoverPendingLoginAfterRestart(log: log)
 
     if !requiresBootstrap {
       let status = await currentCodexLoginStatus()
@@ -1333,53 +1336,54 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func installLaunchAgent(enabled: Bool, log: @escaping @MainActor (String) -> Void) throws {
     let bundlePath = Bundle.main.bundleURL.path
-    let plist = """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-      <key>Label</key>
-      <string>app.diffcolor.octop.agentmenu.launcher</string>
-      <key>ProgramArguments</key>
-      <array>
-        <string>/usr/bin/open</string>
-        <string>\(bundlePath)</string>
-      </array>
-      <key>RunAtLoad</key>
-      <true/>
-      <key>KeepAlive</key>
-      <false/>
-      <key>LimitLoadToSessionType</key>
-      <array>
-        <string>Aqua</string>
-      </array>
-      <key>StandardOutPath</key>
-      <string>\(NSHomeDirectory())/Library/Logs/OctOPAgentMenu.launcher.out.log</string>
-      <key>StandardErrorPath</key>
-      <string>\(NSHomeDirectory())/Library/Logs/OctOPAgentMenu.launcher.err.log</string>
-    </dict>
-    </plist>
-    """
-
     try ensureDirectory(launchAgentURL.deletingLastPathComponent())
-    try plist.write(to: launchAgentURL, atomically: true, encoding: .utf8)
 
     let uid = String(getuid())
     let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+    let launchAgentPath = launchAgentURL.path
 
     if enabled {
+      let plist = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>Label</key>
+        <string>app.diffcolor.octop.agentmenu.launcher</string>
+        <key>ProgramArguments</key>
+        <array>
+          <string>/usr/bin/open</string>
+          <string>\(bundlePath)</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>KeepAlive</key>
+        <false/>
+        <key>LimitLoadToSessionType</key>
+        <array>
+          <string>Aqua</string>
+        </array>
+        <key>StandardOutPath</key>
+        <string>\(NSHomeDirectory())/Library/Logs/OctOPAgentMenu.launcher.out.log</string>
+        <key>StandardErrorPath</key>
+        <string>\(NSHomeDirectory())/Library/Logs/OctOPAgentMenu.launcher.err.log</string>
+      </dict>
+      </plist>
+      """
+
+      try plist.write(to: launchAgentURL, atomically: true, encoding: .utf8)
       log("LaunchAgent를 현재 세션에 로드합니다.")
       Task {
         try? await runProcess(
           executableURL: launchctlURL,
-          arguments: ["bootout", "gui/\(uid)", launchAgentURL.path],
+          arguments: ["bootout", "gui/\(uid)", launchAgentPath],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log
         )
         try? await runProcess(
           executableURL: launchctlURL,
-          arguments: ["bootstrap", "gui/\(uid)", launchAgentURL.path],
+          arguments: ["bootstrap", "gui/\(uid)", launchAgentPath],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log
@@ -1390,11 +1394,12 @@ final class AgentBootstrapStore: ObservableObject {
       Task {
         try? await runProcess(
           executableURL: launchctlURL,
-          arguments: ["bootout", "gui/\(uid)", launchAgentURL.path],
+          arguments: ["bootout", "gui/\(uid)", launchAgentPath],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log
         )
+        try? FileManager.default.removeItem(at: self.launchAgentURL)
       }
     }
   }

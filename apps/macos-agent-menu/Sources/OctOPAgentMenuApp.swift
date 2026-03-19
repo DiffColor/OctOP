@@ -183,6 +183,21 @@ final class AgentMenuModel: ObservableObject {
     }
   }
 
+  func waitUntilStopped(timeoutNanoseconds: UInt64 = 5_000_000_000) async {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      refreshRuntimeStateFromSystem()
+      if !isRunning {
+        return
+      }
+
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    refreshRuntimeStateFromSystem()
+  }
+
   func handleApplicationWillTerminate() {
     if let managedProcess = process, managedProcess.isRunning {
       appendLog("앱 종료에 맞춰 local-agent를 중지합니다.")
@@ -683,6 +698,7 @@ struct AgentMenuContent: View {
         Task { @MainActor in
           model.refreshRuntimeStateFromSystem()
           model.stop()
+          await model.waitUntilStopped()
 
           if await bootstrap.ensureAppUpdatedIfNeeded(
             log: model.appendInstallerLog,
