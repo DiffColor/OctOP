@@ -9,6 +9,7 @@ public sealed class PushNotificationEventMonitorService(
   BridgeNatsClient bridgeNatsClient,
   PushSubscriptionService pushSubscriptionService,
   WebPushNotificationService webPushNotificationService,
+  PushNotificationTemplateService pushNotificationTemplateService,
   VapidKeyService vapidKeyService,
   ILogger<PushNotificationEventMonitorService> logger) : BackgroundService
 {
@@ -112,17 +113,31 @@ public sealed class PushNotificationEventMonitorService(
       var projectSnapshot = !string.IsNullOrWhiteSpace(resolvedProjectId)
         ? await pushSubscriptionService.GetProjectSnapshotAsync(userId, bridgeId, resolvedProjectId, cancellationToken)
         : null;
+      var sourceAppId = PushNotificationTemplateService.NormalizeAppId(issueSnapshot?.Value<string>("source_app_id"));
+      var targetSubscriptions = subscriptions
+        .Where((subscription) => PushNotificationTemplateService.ShouldDeliverToApp(sourceAppId, subscription.AppId))
+        .ToList();
+
+      if (targetSubscriptions.Count == 0)
+      {
+        return;
+      }
+
       var issueTitle = issueSnapshot?.Value<string>("title") ?? issueId;
       var projectName = projectSnapshot?.Value<string>("name");
-      var notification = BuildNotificationRequest(
-        bridgeId,
-        resolvedProjectId,
-        threadId,
-        issueId,
-        issueStatus,
-        issueTitle,
-        projectName);
-      var response = await webPushNotificationService.SendAsync(subscriptions, notification, cancellationToken);
+      var response = await webPushNotificationService.SendAsync(
+        targetSubscriptions,
+        (subscription) => pushNotificationTemplateService.BuildIssueTerminalNotification(
+          bridgeId,
+          resolvedProjectId,
+          threadId,
+          issueId,
+          issueStatus,
+          issueTitle,
+          projectName,
+          sourceAppId,
+          subscription.AppId),
+        cancellationToken);
 
       if (response.SuccessCount <= 0)
       {
@@ -167,38 +182,6 @@ public sealed class PushNotificationEventMonitorService(
     {
       _inFlightReceiptIds.TryRemove(receiptId, out _);
     }
-  }
-
-  private static PushNotificationRequest BuildNotificationRequest(
-    string bridgeId,
-    string? projectId,
-    string? threadId,
-    string issueId,
-    string issueStatus,
-    string issueTitle,
-    string? projectName)
-  {
-    var statusLabel = issueStatus == "completed" ? "완료" : "실패";
-    var title = string.IsNullOrWhiteSpace(projectName)
-      ? $"OctOP 이슈 {statusLabel}"
-      : $"{projectName} · 이슈 {statusLabel}";
-    var body = string.IsNullOrWhiteSpace(issueTitle)
-      ? $"이슈 {issueId} 가 {statusLabel} 상태가 되었습니다."
-      : $"{issueTitle} 이(가) {statusLabel} 상태가 되었습니다.";
-
-    return new PushNotificationRequest
-    {
-      Title = title,
-      Body = body,
-      Url = "/",
-      Tag = $"issue-{issueId}-{issueStatus}",
-      Kind = "issue-terminal",
-      BridgeId = bridgeId,
-      ProjectId = projectId,
-      ThreadId = threadId,
-      IssueId = issueId,
-      IssueStatus = issueStatus
-    };
   }
 
   private sealed class PushEventEnvelope

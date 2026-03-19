@@ -1308,6 +1308,7 @@ function normalizeIssueCard(issue = {}) {
     last_message: String(issue.last_message ?? "").trim(),
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
     prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    source_app_id: String(issue.source_app_id ?? issue.sourceAppId ?? "").trim() || null,
     created_at: issue.created_at ?? now(),
     updated_at: issue.updated_at ?? now(),
     source: issue.source ?? "bridge",
@@ -4024,7 +4025,8 @@ async function createThreadIssue(userId, payload = {}) {
     prep_position: getNextPrepPosition(threadId),
     progress: 0,
     last_event: "issue.created",
-    last_message: ""
+    last_message: "",
+    source_app_id: payload.source_app_id ?? payload.sourceAppId ?? null
   });
 
   issueCardsById.set(issue.id, issue);

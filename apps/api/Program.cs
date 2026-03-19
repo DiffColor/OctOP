@@ -31,6 +31,7 @@ builder.Services.AddSingleton<OctopStore>();
 builder.Services.AddSingleton<VapidKeyService>();
 builder.Services.AddSingleton<PushSubscriptionService>();
 builder.Services.AddSingleton<WebPushNotificationService>();
+builder.Services.AddSingleton<PushNotificationTemplateService>();
 builder.Services.AddHostedService<PushNotificationEventMonitorService>();
 
 var app = builder.Build();
@@ -1126,7 +1127,8 @@ app.MapPost("/api/threads/{threadId}/issues", async (
       bridge_id = bridgeId,
       thread_id = threadId,
       title = body?["title"]?.GetValue<string>(),
-      prompt = body?["prompt"]?.GetValue<string>()
+      prompt = body?["prompt"]?.GetValue<string>(),
+      source_app_id = body?["source_app_id"]?.GetValue<string>()
     },
     cancellationToken
   );

@@ -17,6 +17,7 @@ const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
+const ISSUE_SOURCE_APP_ID = "mobile-web";
 const createDefaultStatus = () => ({
   app_server: {
     connected: false,
@@ -79,6 +80,42 @@ function extractBridgeIdFromPath(path) {
   const query = String(path).slice(queryIndex + 1);
   const params = new URLSearchParams(query);
   return String(params.get("bridge_id") ?? "").trim();
+}
+
+function readPushDeepLink() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const bridgeId = String(params.get("bridge_id") ?? "").trim();
+  const projectId = String(params.get("project_id") ?? "").trim();
+  const threadId = String(params.get("thread_id") ?? "").trim();
+  const issueId = String(params.get("issue_id") ?? "").trim();
+
+  if (!bridgeId && !projectId && !threadId && !issueId) {
+    return null;
+  }
+
+  return {
+    bridgeId,
+    projectId,
+    threadId,
+    issueId
+  };
+}
+
+function clearPushDeepLink() {
+  if (typeof window === "undefined" || !window.history?.replaceState) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete("bridge_id");
+  url.searchParams.delete("project_id");
+  url.searchParams.delete("thread_id");
+  url.searchParams.delete("issue_id");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function formatSilentDuration(ms) {
@@ -1004,6 +1041,7 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     prompt: issue.prompt ?? "",
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
     prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    source_app_id: issue.source_app_id ?? null,
     continuity: issue.continuity ?? null,
     created_physical_thread_id: issue.created_physical_thread_id ?? null,
     executed_physical_thread_id: issue.executed_physical_thread_id ?? issue.created_physical_thread_id ?? null
@@ -5677,6 +5715,7 @@ export default function App() {
   );
   const [selectedScope, setSelectedScope] = useState({ kind: "project", id: "" });
   const [selectedThreadId, setSelectedThreadId] = useState("");
+  const pendingPushDeepLinkRef = useRef(readPushDeepLink());
   const [selectedTodoChatId, setSelectedTodoChatId] = useState("");
   const [draftThreadProjectId, setDraftThreadProjectId] = useState("");
   const [search, setSearch] = useState("");
@@ -7372,6 +7411,51 @@ export default function App() {
   }, [projects, selectProjectScope, selectedProjectId, selectedScope.kind]);
 
   useEffect(() => {
+    const pending = pendingPushDeepLinkRef.current;
+
+    if (!pending || !session?.loginId) {
+      return;
+    }
+
+    if (pending.bridgeId && bridges.some((bridge) => bridge.bridge_id === pending.bridgeId) && selectedBridgeId !== pending.bridgeId) {
+      setSelectedBridgeId(pending.bridgeId);
+      return;
+    }
+
+    if (
+      pending.projectId &&
+      projects.some((project) => project.id === pending.projectId) &&
+      selectedProjectId !== pending.projectId
+    ) {
+      selectProjectScope(pending.projectId);
+      return;
+    }
+
+    const scopedThreads = threads.filter((thread) => !pending.projectId || thread.project_id === pending.projectId);
+
+    if (pending.threadId && scopedThreads.some((thread) => thread.id === pending.threadId) && selectedThreadId !== pending.threadId) {
+      setSelectedThreadId(pending.threadId);
+      setActiveView("thread");
+      return;
+    }
+
+    if (!pending.threadId || selectedThreadId === pending.threadId) {
+      setActiveView("thread");
+      pendingPushDeepLinkRef.current = null;
+      clearPushDeepLink();
+    }
+  }, [
+    bridges,
+    projects,
+    selectProjectScope,
+    selectedBridgeId,
+    selectedProjectId,
+    selectedThreadId,
+    session?.loginId,
+    threads
+  ]);
+
+  useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
       return;
     }
@@ -8106,7 +8190,10 @@ export default function App() {
         `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
       const createIssueOptions = {
         method: "POST",
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          ...payload,
+          source_app_id: ISSUE_SOURCE_APP_ID
+        })
       };
       let createdIssue;
 
@@ -8241,7 +8328,10 @@ export default function App() {
         `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
       const createIssueOptions = {
         method: "POST",
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({
+          prompt,
+          source_app_id: ISSUE_SOURCE_APP_ID
+        })
       };
       let createdIssue;
 

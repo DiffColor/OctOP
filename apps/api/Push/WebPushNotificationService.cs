@@ -15,6 +15,14 @@ public sealed class WebPushNotificationService(
     PushNotificationRequest request,
     CancellationToken cancellationToken)
   {
+    return await SendAsync(subscriptions, (_) => request, cancellationToken);
+  }
+
+  public async Task<PushSendResponse> SendAsync(
+    IReadOnlyList<PushSubscriptionEntity> subscriptions,
+    Func<PushSubscriptionEntity, PushNotificationRequest?> requestFactory,
+    CancellationToken cancellationToken)
+  {
     if (!vapidKeyService.IsConfigured)
     {
       return new PushSendResponse
@@ -49,29 +57,38 @@ public sealed class WebPushNotificationService(
       };
     }
 
-    var sentAt = DateTimeOffset.UtcNow;
-    var notificationTag = string.IsNullOrWhiteSpace(request.Tag)
-      ? $"octop-push-{sentAt.ToUnixTimeMilliseconds()}"
-      : request.Tag.Trim();
-    var payload = JsonSerializer.Serialize(new
-    {
-      title = request.Title,
-      body = request.Body,
-      tag = notificationTag,
-      url = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
-      kind = request.Kind,
-      bridgeId = request.BridgeId,
-      projectId = request.ProjectId,
-      threadId = request.ThreadId,
-      issueId = request.IssueId,
-      issueStatus = request.IssueStatus,
-      sentAt = sentAt.ToString("O")
-    });
     var authentication = vapidKeyService.CreateAuthentication();
     var results = new List<PushSendResultItem>(subscriptions.Count);
 
     foreach (var subscription in subscriptions)
     {
+      var request = requestFactory(subscription);
+
+      if (request is null)
+      {
+        continue;
+      }
+
+      var sentAt = DateTimeOffset.UtcNow;
+      var notificationTag = string.IsNullOrWhiteSpace(request.Tag)
+        ? $"octop-push-{sentAt.ToUnixTimeMilliseconds()}"
+        : request.Tag.Trim();
+      var payload = JsonSerializer.Serialize(new
+      {
+        title = request.Title,
+        body = request.Body,
+        tag = notificationTag,
+        url = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
+        kind = request.Kind,
+        bridgeId = request.BridgeId,
+        projectId = request.ProjectId,
+        threadId = request.ThreadId,
+        issueId = request.IssueId,
+        issueStatus = request.IssueStatus,
+        sourceAppId = request.SourceAppId,
+        targetAppId = request.TargetAppId,
+        sentAt = sentAt.ToString("O")
+      });
       var target = new PushSubscription
       {
         Endpoint = subscription.Endpoint

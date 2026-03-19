@@ -33,4 +33,10 @@ public sealed class PushNotificationRequest
 
   [JsonPropertyName("issueStatus")]
   public string? IssueStatus { get; set; }
+
+  [JsonPropertyName("sourceAppId")]
+  public string? SourceAppId { get; set; }
+
+  [JsonPropertyName("targetAppId")]
+  public string? TargetAppId { get; set; }
 }
