@@ -1,15 +1,17 @@
 node_modules
 .DS_Store
-dist
-build
-.env
-.env.local
+dist/
+build/
+.release-stage/
+.env*
+!.env.example
+*.swp
 .turbo
 coverage
 .idea
 .vscode
-bin
-obj
+bin/
+obj/
 backend alias
 playwright-report
 blob-report
