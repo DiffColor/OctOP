@@ -625,7 +625,10 @@ struct AgentMenuContent: View {
           model.refreshRuntimeStateFromSystem()
           model.stop()
 
-          if await bootstrap.ensureAppUpdatedIfNeeded(log: model.appendInstallerLog, force: true) {
+          if await bootstrap.ensureAppUpdatedIfNeeded(
+            log: model.appendInstallerLog,
+            force: true,
+            startServiceAfterUpdate: true) {
             return
           }
 
@@ -726,6 +729,15 @@ struct OctOPAgentMenuApp: App {
 
           model.refreshRuntimeStateFromSystem()
           await bootstrap.ensureInstalledIfNeeded(log: model.appendInstallerLog)
+
+          if bootstrap.consumePendingServiceStartAfterUpdate() {
+            model.appendInstallerLog("업데이트 후 서비스 자동 시작을 이어갑니다.")
+            let ready = await bootstrap.ensureReadyForLaunch(log: model.appendInstallerLog)
+            model.refreshRuntimeStateFromSystem()
+            if ready && !model.isRunning {
+              model.start(using: bootstrap)
+            }
+          }
         }
     }
 
@@ -738,8 +750,15 @@ struct OctOPAgentMenuApp: App {
       AgentSetupWindow(
         bootstrap: bootstrap,
         onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) },
-        onLogin: { Task { await bootstrap.loginCodex(log: model.appendInstallerLog) } },
-        onRelogin: { Task { await bootstrap.reloginCodex(log: model.appendInstallerLog) } }
+        onCodexLogin: {
+          Task {
+            if bootstrap.codexLoggedIn {
+              await bootstrap.reloginCodex(log: model.appendInstallerLog)
+            } else {
+              await bootstrap.loginCodex(log: model.appendInstallerLog)
+            }
+          }
+        }
       )
     }
     .defaultSize(width: 520, height: 760)

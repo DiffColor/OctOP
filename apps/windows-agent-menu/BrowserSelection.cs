@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -126,6 +127,11 @@ static class BrowserSelection
     root.Controls.Add(browserPanel);
     dialog.Controls.Add(root);
     return dialog.ShowDialog() == DialogResult.OK ? selectedBrowser : null;
+  }
+
+  public static Icon? GetRepresentativeIcon()
+  {
+    return DiscoverBrowsers().FirstOrDefault()?.Icon;
   }
 
   public static void Open(BrowserOption browser, string url)

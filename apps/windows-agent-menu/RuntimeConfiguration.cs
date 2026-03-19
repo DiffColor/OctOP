@@ -65,6 +65,7 @@ sealed class RuntimeConfiguration
       ["OCTOP_BRIDGE_HOST"] = BridgeHost.Trim(),
       ["OCTOP_BRIDGE_PORT"] = BridgePort.Trim(),
       ["OCTOP_BRIDGE_TOKEN"] = BridgeToken.Trim(),
+      ["OCTOP_BRIDGE_ID"] = paths.ResolveOrCreateBridgeId(),
       ["OCTOP_BRIDGE_DEVICE_NAME"] = DeviceName.Trim(),
       ["OCTOP_BRIDGE_OWNER_LOGIN_ID"] = OwnerLoginId.Trim(),
       ["OCTOP_BRIDGE_OWNER_USER_ID"] = OwnerLoginId.Trim(),

@@ -189,6 +189,19 @@ private enum CodexBrowserSelection {
   }
 
   @MainActor
+  static func representativeImage() -> NSImage? {
+    if let defaultBrowserURL = NSWorkspace.shared.urlForApplication(toOpen: codexDeviceAuthDefaultURL) {
+      let icon = NSWorkspace.shared.icon(forFile: defaultBrowserURL.path)
+      icon.size = NSSize(width: 18, height: 18)
+      return icon
+    }
+
+    let icon = discoverBrowsers().first?.icon
+    icon?.size = NSSize(width: 18, height: 18)
+    return icon
+  }
+
+  @MainActor
   private static func discoverBrowsers() -> [CodexBrowserOption] {
     browserCandidates.compactMap { candidate in
       guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate.bundleID) else {
@@ -446,6 +459,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var bootstrapInProgress = false
   @Published var bootstrapSummary = "환경설정 필요"
   @Published var codexLoginStatus = "확인 전"
+  @Published var codexLoggedIn = false
   @Published var configurationSavedAt: Date? = nil
   @Published var lastBootstrapAt: Date? = nil
   private var automaticBootstrapAttempted = false
@@ -522,6 +536,18 @@ final class AgentBootstrapStore: ObservableObject {
     appSupportURL.appendingPathComponent("config.json")
   }
 
+  var bridgeIdURL: URL {
+    appSupportURL.appendingPathComponent("bridge-id")
+  }
+
+  var legacyBridgeIdURL: URL {
+    stateHomeURL.appendingPathComponent("bridge-id")
+  }
+
+  var pendingServiceStartURL: URL {
+    appSupportURL.appendingPathComponent("pending-service-start")
+  }
+
   var launchAgentURL: URL {
     URL(fileURLWithPath: NSString(string: "~/Library/LaunchAgents/app.diffcolor.octop.agentmenu.launcher.plist").expandingTildeInPath)
   }
@@ -573,10 +599,15 @@ final class AgentBootstrapStore: ObservableObject {
 
   func refreshCodexLoginStatus() async {
     let status = await currentCodexLoginStatus()
+    codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
   }
 
-  func ensureAppUpdatedIfNeeded(log: @escaping @MainActor (String) -> Void, force: Bool = false) async -> Bool {
+  func ensureAppUpdatedIfNeeded(
+    log: @escaping @MainActor (String) -> Void,
+    force: Bool = false,
+    startServiceAfterUpdate: Bool = false
+  ) async -> Bool {
     guard force || !automaticUpdateAttempted else {
       return false
     }
@@ -587,7 +618,9 @@ final class AgentBootstrapStore: ObservableObject {
       return false
     }
 
-    return await applyAppUpdateIfNeeded(log: log)
+    return await applyAppUpdateIfNeeded(
+      log: log,
+      beforeTermination: startServiceAfterUpdate ? { try self.markPendingServiceStartAfterUpdate() } : nil)
   }
 
   func selectWorkspaceRoot() {
@@ -718,6 +751,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     if !requiresBootstrap {
       let status = await currentCodexLoginStatus()
+      codexLoggedIn = status.loggedIn
       codexLoginStatus = status.summary
       if status.loggedIn {
         bootstrapSummary = "실행 준비됨"
@@ -741,10 +775,13 @@ final class AgentBootstrapStore: ObservableObject {
       }
 
       do {
-        try await self.performBootstrap(log: log)
-        self.bootstrapSummary = "환경 자동 설치 완료"
-        self.lastBootstrapAt = Date()
-        return true
+      try await self.performBootstrap(log: log)
+      let status = await self.currentCodexLoginStatus()
+      self.codexLoggedIn = status.loggedIn
+      self.codexLoginStatus = status.summary
+      self.bootstrapSummary = "환경 자동 설치 완료"
+      self.lastBootstrapAt = Date()
+      return true
       } catch {
         self.bootstrapSummary = "환경 자동 설치 실패: \(error.localizedDescription)"
         log("bootstrap 실패: \(error.localizedDescription)")
@@ -889,6 +926,7 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func ensureCodexLogin(log: @escaping @MainActor (String) -> Void) async throws {
     let status = await currentCodexLoginStatus()
+    codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
     if status.loggedIn {
       log("Codex 로그인 상태를 재사용합니다.")
@@ -906,6 +944,7 @@ final class AgentBootstrapStore: ObservableObject {
     do {
       try await loginWithBrowserSelection(log: log, logoutFirst: true)
       let status = await currentCodexLoginStatus()
+      codexLoggedIn = status.loggedIn
       codexLoginStatus = status.summary
       bootstrapSummary = status.loggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
     } catch {
@@ -924,6 +963,7 @@ final class AgentBootstrapStore: ObservableObject {
     do {
       try await loginWithBrowserSelection(log: log, logoutFirst: false)
       let status = await currentCodexLoginStatus()
+      codexLoggedIn = status.loggedIn
       codexLoginStatus = status.summary
       bootstrapSummary = status.loggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
     } catch {
@@ -944,6 +984,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     let envText = [
       "OCTOP_BRIDGE_OWNER_LOGIN_ID=\(configuration.ownerLoginId)",
+      "OCTOP_BRIDGE_ID=\(resolveOrCreateBridgeId())",
       "OCTOP_BRIDGE_DEVICE_NAME=\(configuration.deviceName)",
       "OCTOP_WORKSPACE_ROOTS=\(workspaceRoots)",
       "OCTOP_NATS_URL=\(configuration.natsUrl)",
@@ -1181,6 +1222,42 @@ final class AgentBootstrapStore: ObservableObject {
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
   }
 
+  private func resolveOrCreateBridgeId() -> String {
+    for candidate in [bridgeIdURL, legacyBridgeIdURL] {
+      if let value = try? String(contentsOf: candidate, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+         !value.isEmpty {
+        try? persistBridgeId(value)
+        return value
+      }
+    }
+
+    let generated = "bridge-\(UUID().uuidString.lowercased())"
+    try? persistBridgeId(generated)
+    return generated
+  }
+
+  private func persistBridgeId(_ bridgeId: String) throws {
+    try ensureDirectory(appSupportURL)
+    try ensureDirectory(stateHomeURL)
+    try bridgeId.write(to: bridgeIdURL, atomically: true, encoding: .utf8)
+    try bridgeId.write(to: legacyBridgeIdURL, atomically: true, encoding: .utf8)
+  }
+
+  func markPendingServiceStartAfterUpdate() throws {
+    try ensureDirectory(appSupportURL)
+    try "1".write(to: pendingServiceStartURL, atomically: true, encoding: .utf8)
+  }
+
+  func consumePendingServiceStartAfterUpdate() -> Bool {
+    guard FileManager.default.fileExists(atPath: pendingServiceStartURL.path) else {
+      return false
+    }
+
+    try? FileManager.default.removeItem(at: pendingServiceStartURL)
+    return true
+  }
+
   private func persistConfiguration() throws {
     try ensureDirectory(appSupportURL)
     let encoder = JSONEncoder()
@@ -1205,6 +1282,7 @@ final class AgentBootstrapStore: ObservableObject {
 
     let values: [String: String] = [
       "OCTOP_BRIDGE_OWNER_LOGIN_ID": configuration.ownerLoginId,
+      "OCTOP_BRIDGE_ID": resolveOrCreateBridgeId(),
       "OCTOP_BRIDGE_DEVICE_NAME": configuration.deviceName,
       "OCTOP_WORKSPACE_ROOTS": configuration.workspaceRoots,
       "OCTOP_NATS_URL": configuration.natsUrl,
@@ -1446,8 +1524,7 @@ final class AgentBootstrapStore: ObservableObject {
 struct AgentSetupWindow: View {
   @ObservedObject var bootstrap: AgentBootstrapStore
   let onInstall: () -> Void
-  let onLogin: () -> Void
-  let onRelogin: () -> Void
+  let onCodexLogin: () -> Void
   @Environment(\.openWindow) private var openWindow
   @State private var sensitiveConnectionExpanded = false
 
@@ -1653,13 +1730,17 @@ struct AgentSetupWindow: View {
         )
 
       HStack(spacing: 10) {
-        Button("브라우저 선택 로그인") {
-          onLogin()
-        }
-        .disabled(bootstrap.bootstrapInProgress)
-
-        Button("계정 전환") {
-          onRelogin()
+        Button {
+          onCodexLogin()
+        } label: {
+          HStack(spacing: 8) {
+            if let image = CodexBrowserSelection.representativeImage() {
+              Image(nsImage: image)
+                .resizable()
+                .frame(width: 18, height: 18)
+            }
+            Text(bootstrap.codexLoggedIn ? "계정 전환" : "브라우저 로그인")
+          }
         }
         .disabled(bootstrap.bootstrapInProgress)
       }

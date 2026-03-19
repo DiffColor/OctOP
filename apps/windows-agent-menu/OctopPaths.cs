@@ -12,6 +12,9 @@ sealed class OctopPaths
   public string CodexHome => Path.Combine(InstallRoot, "codex-home");
   public string StateHome => Path.Combine(InstallRoot, "state");
   public string ConfigurationPath => Path.Combine(InstallRoot, "config.json");
+  public string BridgeIdPath => Path.Combine(InstallRoot, "bridge-id.txt");
+  public string LegacyBridgeIdPath => Path.Combine(StateHome, "bridge-id");
+  public string PendingServiceStartPath => Path.Combine(InstallRoot, "pending-service-start");
   public string RuntimePackageJsonPath => Path.Combine(RuntimeRoot, "package.json");
   public string RuntimeEnvLocalPath => Path.Combine(RuntimeRoot, ".env.local");
   public string RuntimeVersionPath => Path.Combine(RuntimeRoot, "version.txt");
@@ -109,5 +112,46 @@ sealed class OctopPaths
 
     var legacyGlobalShimPath = Path.Combine(NpmPrefix, "codex.cmd");
     return File.Exists(legacyGlobalShimPath) ? legacyGlobalShimPath : localShimPath;
+  }
+
+  public string ResolveOrCreateBridgeId()
+  {
+    var existing = ReadExistingBridgeId();
+    if (!string.IsNullOrWhiteSpace(existing))
+    {
+      PersistBridgeId(existing);
+      return existing;
+    }
+
+    var generated = $"bridge-{Guid.NewGuid():D}";
+    PersistBridgeId(generated);
+    return generated;
+  }
+
+  private string? ReadExistingBridgeId()
+  {
+    foreach (var path in new[] { BridgeIdPath, LegacyBridgeIdPath })
+    {
+      if (!File.Exists(path))
+      {
+        continue;
+      }
+
+      var value = File.ReadAllText(path).Trim();
+      if (!string.IsNullOrWhiteSpace(value))
+      {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private void PersistBridgeId(string bridgeId)
+  {
+    Directory.CreateDirectory(InstallRoot);
+    Directory.CreateDirectory(StateHome);
+    File.WriteAllText(BridgeIdPath, bridgeId, new UTF8Encoding(false));
+    File.WriteAllText(LegacyBridgeIdPath, bridgeId, new UTF8Encoding(false));
   }
 }

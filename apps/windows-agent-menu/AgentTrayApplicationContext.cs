@@ -44,6 +44,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private string? _lastError;
   private DateTimeOffset? _lastUpdatedAt;
   private bool _isExiting;
+  private bool _suppressRuntimeStopOnExit;
 
   public AgentTrayApplicationContext()
   {
@@ -157,6 +158,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
+
+    if (!ConsumePendingServiceStartRequest())
+    {
+      return;
+    }
+
+    AppendLog("업데이트 후 서비스 자동 시작을 이어갑니다.");
+    await RefreshRuntimeStatusAsync();
+    if (_runtimeStatus?.ReadyToRun != true)
+    {
+      ShowSetup();
+      var completedStatus = await _setupWindow.EnsureInstalledAsync(automatic: true, showMessageBoxOnFailure: true);
+      _runtimeStatus = completedStatus ?? _runtimeStatus;
+      await RefreshRuntimeStatusAsync();
+    }
+
+    if (_runtimeStatus?.ReadyToRun == true)
+    {
+      await StartAsync();
+    }
   }
 
   private async Task RefreshRuntimeStatusAsync(bool showSetupWhenIncomplete = false)
@@ -331,7 +352,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     RefreshRuntimeStateFromSystem();
     Stop();
 
-    if (await TryApplyAppUpdateAsync())
+    if (await TryApplyAppUpdateAsync(startServiceAfterUpdate: true))
     {
       return;
     }
@@ -460,7 +481,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     _isExiting = true;
 
-    if (_process is not null)
+    if (!_suppressRuntimeStopOnExit && _process is not null)
     {
       try
       {
@@ -475,7 +496,10 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
     }
 
-    KillRuntimeProcesses(FindRuntimeProcessIds());
+    if (!_suppressRuntimeStopOnExit)
+    {
+      KillRuntimeProcesses(FindRuntimeProcessIds());
+    }
 
     _setupWindow.AllowClose = true;
     _setupWindow.Close();
@@ -484,7 +508,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     ExitThread();
   }
 
-  private async Task<bool> TryApplyAppUpdateAsync()
+  private async Task<bool> TryApplyAppUpdateAsync(bool startServiceAfterUpdate = false)
   {
     if (!_configuration.AutoUpdateEnabled)
     {
@@ -492,13 +516,41 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return false;
     }
 
-    var updateApplied = await _autoUpdater.TryApplyUpdateAsync(AppendLog, CancellationToken.None);
+    var updateApplied = await _autoUpdater.TryApplyUpdateAsync(
+      AppendLog,
+      CancellationToken.None,
+      beforeReplacement: startServiceAfterUpdate ? MarkPendingServiceStartRequest : null);
     if (!updateApplied)
     {
       return false;
     }
 
+    _suppressRuntimeStopOnExit = startServiceAfterUpdate;
     ExitApplication();
+    return true;
+  }
+
+  private void MarkPendingServiceStartRequest()
+  {
+    Directory.CreateDirectory(_paths.InstallRoot);
+    File.WriteAllText(_paths.PendingServiceStartPath, "1", new UTF8Encoding(false));
+  }
+
+  private bool ConsumePendingServiceStartRequest()
+  {
+    if (!File.Exists(_paths.PendingServiceStartPath))
+    {
+      return false;
+    }
+
+    try
+    {
+      File.Delete(_paths.PendingServiceStartPath);
+    }
+    catch
+    {
+    }
+
     return true;
   }
 

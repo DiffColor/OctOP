@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Button = System.Windows.Controls.Button;
@@ -40,7 +41,6 @@ sealed class SetupWindow : Window
   private Button _installButton = null!;
   private Button _saveButton = null!;
   private Button _codexLoginButton = null!;
-  private Button _codexReloginButton = null!;
   private TextBlock _activityTitleTextBlock = null!;
   private TextBlock _activityHintTextBlock = null!;
   private ProgressBar _activityProgressBar = null!;
@@ -49,6 +49,7 @@ sealed class SetupWindow : Window
   private string _currentInstallRoot;
   private string _latestActivityMessage = "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다.";
   private RuntimeStatus? _lastKnownStatus;
+  private bool _codexLoggedIn;
 
   public bool AllowClose { get; set; }
   public bool InstallationInProgress => _activeInstallTask is { IsCompleted: false };
@@ -117,7 +118,9 @@ sealed class SetupWindow : Window
     UpdateDiagnostic("dependencies", status.RuntimeDependenciesInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeDependenciesInstalled ? "정상" : "누락");
     UpdateDiagnostic("codex", status.CodexInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.CodexInstalled ? "정상" : "누락");
     UpdateDiagnostic("login", status.CodexLoggedIn ? DiagnosticState.Ok : DiagnosticState.Warning, status.CodexLoggedIn ? "정상" : status.CodexLoginStatus);
+    _codexLoggedIn = status.CodexLoggedIn;
     _codexLoginStatusTextBlock.Text = status.CodexLoginStatus;
+    UpdateCodexLoginButton();
     UpdateDiagnostic(
       "autostart",
       status.AutoStartRequested
@@ -332,14 +335,12 @@ sealed class SetupWindow : Window
       Orientation = Orientation.Horizontal
     };
 
-    _codexLoginButton = CreateSecondaryButton("브라우저 선택 로그인");
-    _codexLoginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: false);
-
-    _codexReloginButton = CreateSecondaryButton("계정 전환");
-    _codexReloginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: true);
+    _codexLoginButton = CreateSecondaryButton("브라우저 로그인");
+    _codexLoginButton.Padding = new Thickness(12, 8, 12, 8);
+    _codexLoginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: _codexLoggedIn);
+    UpdateCodexLoginButton();
 
     buttons.Children.Add(_codexLoginButton);
-    buttons.Children.Add(_codexReloginButton);
     stack.Children.Add(buttons);
 
     return stack;
@@ -587,6 +588,52 @@ sealed class SetupWindow : Window
     LogProduced?.Invoke(this, message);
   }
 
+  private void UpdateCodexLoginButton()
+  {
+    if (_codexLoginButton is null)
+    {
+      return;
+    }
+
+    var label = _codexLoggedIn ? "계정 전환" : "브라우저 로그인";
+    _codexLoginButton.Content = CreateBrowserButtonContent(label);
+    _codexLoginButton.ToolTip = _codexLoggedIn
+      ? "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다."
+      : "브라우저를 선택해 Codex 계정을 로그인합니다.";
+  }
+
+  private static UIElement CreateBrowserButtonContent(string label)
+  {
+    var content = new StackPanel
+    {
+      Orientation = Orientation.Horizontal,
+      Margin = new Thickness(0),
+      VerticalAlignment = VerticalAlignment.Center
+    };
+
+    if (BrowserSelection.GetRepresentativeIcon() is { } icon)
+    {
+      content.Children.Add(new System.Windows.Controls.Image
+      {
+        Width = 18,
+        Height = 18,
+        Margin = new Thickness(0, 0, 8, 0),
+        Source = Imaging.CreateBitmapSourceFromHIcon(
+          icon.Handle,
+          Int32Rect.Empty,
+          System.Windows.Media.Imaging.BitmapSizeOptions.FromWidthAndHeight(18, 18))
+      });
+    }
+
+    content.Children.Add(new TextBlock
+    {
+      Text = label,
+      VerticalAlignment = VerticalAlignment.Center
+    });
+
+    return content;
+  }
+
   private void SetBusy(bool busy, bool installing)
   {
     _installButton.IsEnabled = !busy;
@@ -595,10 +642,6 @@ sealed class SetupWindow : Window
     if (_codexLoginButton is not null)
     {
       _codexLoginButton.IsEnabled = !busy;
-    }
-    if (_codexReloginButton is not null)
-    {
-      _codexReloginButton.IsEnabled = !busy;
     }
     _installButton.Content = installing ? "설치 중..." : "런타임 다시 설치";
     System.Windows.Input.Mouse.OverrideCursor = busy ? WpfCursors.Wait : null;

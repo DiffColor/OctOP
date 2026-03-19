@@ -7,7 +7,7 @@ sealed class WindowsAutoUpdater
 {
   private readonly GitHubTagUpdateClient _releaseClient = new();
 
-  public async Task<bool> TryApplyUpdateAsync(Action<string> log, CancellationToken cancellationToken)
+  public async Task<bool> TryApplyUpdateAsync(Action<string> log, CancellationToken cancellationToken, Action? beforeReplacement = null)
   {
     var currentTag = AppMetadata.CurrentVersionTag;
     if (!SemVersion.TryParse(currentTag, out var currentVersion))
@@ -52,6 +52,7 @@ sealed class WindowsAutoUpdater
     log($"새 버전 {latestRelease.Tag}를 다운로드합니다.");
     await DownloadAsync(latestRelease.DownloadUrl, downloadPath, cancellationToken);
     WriteUpdateScript(scriptPath, downloadPath, currentExecutablePath, Environment.ProcessId);
+    beforeReplacement?.Invoke();
 
     Process.Start(new ProcessStartInfo
     {

@@ -4,7 +4,10 @@ import Foundation
 
 @MainActor
 extension AgentBootstrapStore {
-  func applyAppUpdateIfNeeded(log: @escaping @MainActor (String) -> Void) async -> Bool {
+  func applyAppUpdateIfNeeded(
+    log: @escaping @MainActor (String) -> Void,
+    beforeTermination: (() throws -> Void)? = nil
+  ) async -> Bool {
     let currentTag = currentAppVersionTag
     guard let currentVersion = MacSemVersion.parse(currentTag) else {
       log("현재 앱 버전을 해석하지 못했습니다: \(currentTag)")
@@ -60,6 +63,7 @@ extension AgentBootstrapStore {
 
       let scriptURL = updateRoot.appendingPathComponent("apply-update.sh")
       try writeReplacementScript(scriptURL: scriptURL, updatedAppURL: updatedAppURL, currentAppURL: bundleURL)
+      try beforeTermination?()
       try launchReplacementScript(scriptURL: scriptURL)
 
       log("새 버전 \(latestRelease.tag) 적용을 시작합니다.")
