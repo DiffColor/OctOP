@@ -53,19 +53,11 @@ final class AgentMenuModel: ObservableObject {
   }
 
   func start(using bootstrap: AgentBootstrapStore) {
-    let staleProcesses = findLingeringRuntimeProcesses()
+    let runtimeProcesses = findRuntimeProcesses()
 
-    if !staleProcesses.isEmpty {
-      appendLog("이전 local-agent 잔여 프로세스를 정리합니다.")
-      terminateRuntimeProcesses(staleProcesses)
-    }
-
-    if let existingProcessId = findExistingAgentProcessId() {
-      processId = existingProcessId
-      runtimeState = .running
-      lastUpdatedAt = Date()
-      appendLog("이미 실행 중인 local-agent를 감지했습니다. pid=\(existingProcessId)")
-      return
+    if !runtimeProcesses.isEmpty {
+      appendLog("기존 local-agent 런타임 프로세스를 무시하고 새 실행을 위해 정리합니다.")
+      terminateRuntimeProcesses(runtimeProcesses)
     }
 
     guard process == nil else {

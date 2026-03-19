@@ -193,14 +193,19 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task StartAsync()
   {
-    if (FindExistingAgentProcessId() is int existingProcessId)
+    var runtimeProcessIds = FindRuntimeProcessIds();
+    if (runtimeProcessIds.Count > 0)
     {
-      _processId = existingProcessId;
-      _runtimeState = AgentRuntimeState.Running;
+      _processId = runtimeProcessIds[0];
+      _runtimeState = AgentRuntimeState.Stopping;
       _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"이미 실행 중인 local-agent를 감지했습니다. pid={existingProcessId}");
+      AppendLog($"기존 local-agent 런타임 프로세스를 무시하고 새 실행을 위해 정리합니다. pids={string.Join(",", runtimeProcessIds)}");
       RefreshUi();
-      return;
+      KillRuntimeProcesses(runtimeProcessIds);
+      _processId = null;
+      _runtimeState = AgentRuntimeState.Stopped;
+      _lastUpdatedAt = DateTimeOffset.Now;
+      RefreshUi();
     }
 
     await RefreshRuntimeStatusAsync();
@@ -314,39 +319,28 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void Stop()
   {
-    if (_process is null && FindExistingAgentProcessId() is int existingProcessId)
-    {
-      _runtimeState = AgentRuntimeState.Stopping;
-      _processId = existingProcessId;
-      _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"기존 local-agent 프로세스 중지를 요청합니다. pid={existingProcessId}");
-      RefreshUi();
-
-      try
-      {
-        using var existingProcess = Process.GetProcessById(existingProcessId);
-        if (!existingProcess.HasExited)
-        {
-          existingProcess.Kill(entireProcessTree: true);
-          existingProcess.WaitForExit(3000);
-        }
-      }
-      catch
-      {
-      }
-
-      DeleteAgentPidFile();
-      _runtimeState = AgentRuntimeState.Stopped;
-      _processId = null;
-      _lastError = null;
-      _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"local-agent 종료됨. pid={existingProcessId}");
-      RefreshUi();
-      return;
-    }
-
     if (_process is null)
     {
+      var runtimeProcessIds = FindRuntimeProcessIds();
+
+      if (runtimeProcessIds.Count > 0)
+      {
+        _runtimeState = AgentRuntimeState.Stopping;
+        _processId = runtimeProcessIds[0];
+        _lastUpdatedAt = DateTimeOffset.Now;
+        AppendLog($"기존 local-agent 런타임 프로세스 중지를 요청합니다. pids={string.Join(",", runtimeProcessIds)}");
+        RefreshUi();
+        KillRuntimeProcesses(runtimeProcessIds);
+        DeleteAgentPidFile();
+        _runtimeState = AgentRuntimeState.Stopped;
+        _processId = null;
+        _lastError = null;
+        _lastUpdatedAt = DateTimeOffset.Now;
+        AppendLog("local-agent 런타임 프로세스가 종료되었습니다.");
+        RefreshUi();
+        return;
+      }
+
       _runtimeState = AgentRuntimeState.Stopped;
       AppendLog("중지할 local-agent 프로세스가 없습니다.");
       RefreshUi();
@@ -363,11 +357,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       if (!_process.HasExited)
       {
         _process.Kill(entireProcessTree: true);
+        _process.WaitForExit(3000);
       }
       else
       {
         HandleTermination(_process);
       }
+
+      KillRuntimeProcesses(FindRuntimeProcessIds());
     }
     catch (Exception error)
     {
@@ -426,6 +423,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         if (!_process.HasExited)
         {
           _process.Kill(entireProcessTree: true);
+          _process.WaitForExit(3000);
         }
       }
       catch
@@ -433,22 +431,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
     }
 
-    if (_process is null && FindExistingAgentProcessId() is int existingProcessId)
-    {
-      try
-      {
-        using var existingProcess = Process.GetProcessById(existingProcessId);
-        if (!existingProcess.HasExited)
-        {
-          existingProcess.Kill(entireProcessTree: true);
-        }
-      }
-      catch
-      {
-      }
-
-      DeleteAgentPidFile();
-    }
+    KillRuntimeProcesses(FindRuntimeProcessIds());
 
     _setupWindow.AllowClose = true;
     _setupWindow.Close();
@@ -715,6 +698,88 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     return discoveredProcessId;
+  }
+
+  private List<int> FindRuntimeProcessIds()
+  {
+    var runtimeRoot = _paths.RuntimeRoot.Replace("'", "''");
+    var command = string.Join(
+      " ",
+      [
+        "$runtimeRoot = '" + runtimeRoot + "';",
+        "Get-CimInstance Win32_Process |",
+        "Where-Object {",
+        "$_.CommandLine -and",
+        "$_.CommandLine -like ('*' + $runtimeRoot + '*') -and",
+        "(",
+        "$_.CommandLine -like '*run-local-agent.mjs*' -or",
+        "$_.CommandLine -like '*run-bridge.mjs*' -or",
+        "$_.CommandLine -like '*services\\\\codex-adapter\\\\src\\\\index.js*' -or",
+        "$_.CommandLine -like '*codex*app-server*--listen*'",
+        ")",
+        "} |",
+        "Select-Object -ExpandProperty ProcessId"
+      ]);
+
+    using var process = new Process
+    {
+      StartInfo = new ProcessStartInfo
+      {
+        FileName = "powershell.exe",
+        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8
+      }
+    };
+
+    try
+    {
+      if (!process.Start())
+      {
+        return [];
+      }
+
+      var output = process.StandardOutput.ReadToEnd();
+      process.WaitForExit(3000);
+
+      return output
+        .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(static value => int.TryParse(value, out var pid) ? pid : 0)
+        .Where(static pid => pid > 0)
+        .Distinct()
+        .ToList();
+    }
+    catch
+    {
+      return [];
+    }
+  }
+
+  private void KillRuntimeProcesses(IEnumerable<int> processIds)
+  {
+    foreach (var processId in processIds.Where(static pid => pid > 0).Distinct())
+    {
+      try
+      {
+        using var process = Process.GetProcessById(processId);
+        if (process.HasExited)
+        {
+          continue;
+        }
+
+        process.Kill(entireProcessTree: true);
+        process.WaitForExit(3000);
+      }
+      catch
+      {
+      }
+    }
+
+    DeleteAgentPidFile();
   }
 
   private bool TryReadPersistedAgentProcessId(out int processId)
