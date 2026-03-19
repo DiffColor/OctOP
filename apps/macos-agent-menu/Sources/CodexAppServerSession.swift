@@ -17,6 +17,10 @@ struct CodexAppServerLoginCompletedResult: Sendable {
   let error: String?
 }
 
+struct CodexAppServerAccountUpdatedResult: Sendable {
+  let authMode: String?
+}
+
 private enum CodexAppServerSessionError: LocalizedError {
   case terminated(String)
   case invalidResponse(String)
@@ -35,6 +39,8 @@ private actor CodexAppServerSessionState {
   private var pendingRequests: [String: CheckedContinuation<Data?, Error>] = [:]
   private var loginWaiters: [String: CheckedContinuation<CodexAppServerLoginCompletedResult, Error>] = [:]
   private var bufferedLoginResults: [String: CodexAppServerLoginCompletedResult] = [:]
+  private var accountUpdateWaiters: [UUID: (authMode: String?, continuation: CheckedContinuation<CodexAppServerAccountUpdatedResult, Error>)] = [:]
+  private var bufferedAccountUpdates: [CodexAppServerAccountUpdatedResult] = []
   private var terminalError: Error?
 
   func registerRequest(id: String, continuation: CheckedContinuation<Data?, Error>) {
@@ -113,6 +119,44 @@ private actor CodexAppServerSessionState {
     }
   }
 
+  func registerAccountUpdateWaiter(
+    authMode: String?,
+    continuation: CheckedContinuation<CodexAppServerAccountUpdatedResult, Error>
+  ) -> UUID {
+    if let terminalError {
+      continuation.resume(throwing: terminalError)
+      return UUID()
+    }
+
+    if let bufferedIndex = bufferedAccountUpdates.firstIndex(where: { $0.authMode == authMode }) {
+      let buffered = bufferedAccountUpdates.remove(at: bufferedIndex)
+      continuation.resume(returning: buffered)
+      return UUID()
+    }
+
+    let waiterId = UUID()
+    accountUpdateWaiters[waiterId] = (authMode: authMode, continuation: continuation)
+    return waiterId
+  }
+
+  func cancelAccountUpdateWaiter(id: UUID, error: Error) {
+    guard let waiter = accountUpdateWaiters.removeValue(forKey: id) else {
+      return
+    }
+
+    waiter.continuation.resume(throwing: error)
+  }
+
+  func handleAccountUpdated(_ result: CodexAppServerAccountUpdatedResult) {
+    if let matchingEntry = accountUpdateWaiters.first(where: { $0.value.authMode == result.authMode }) {
+      accountUpdateWaiters.removeValue(forKey: matchingEntry.key)
+      matchingEntry.value.continuation.resume(returning: result)
+      return
+    }
+
+    bufferedAccountUpdates.append(result)
+  }
+
   func terminate(with error: Error) {
     if terminalError != nil {
       return
@@ -131,6 +175,13 @@ private actor CodexAppServerSessionState {
     for continuation in waiters {
       continuation.resume(throwing: error)
     }
+
+    let accountWaiters = accountUpdateWaiters.values
+    accountUpdateWaiters.removeAll()
+    bufferedAccountUpdates.removeAll()
+    for waiter in accountWaiters {
+      waiter.continuation.resume(throwing: error)
+    }
   }
 }
 
@@ -143,6 +194,18 @@ private actor CodexAppServerLifecycleState {
 
   func isIntentionalShutdown() -> Bool {
     intentionalShutdown
+  }
+}
+
+private actor CodexAppServerWaiterIDBox {
+  private var value: UUID?
+
+  func set(_ value: UUID) {
+    self.value = value
+  }
+
+  func get() -> UUID? {
+    value
   }
 }
 
@@ -318,6 +381,28 @@ final class CodexAppServerSession: @unchecked Sendable {
     return result
   }
 
+  func waitForAccountUpdated(authMode: String?) async throws -> CodexAppServerAccountUpdatedResult {
+    let waiterIDBox = CodexAppServerWaiterIDBox()
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        Task {
+          let registeredWaiterId = await state.registerAccountUpdateWaiter(
+            authMode: authMode,
+            continuation: continuation
+          )
+          await waiterIDBox.set(registeredWaiterId)
+        }
+      }
+    } onCancel: {
+      Task {
+        guard let waiterId = await waiterIDBox.get() else {
+          return
+        }
+        await self.state.cancelAccountUpdateWaiter(id: waiterId, error: CancellationError())
+      }
+    }
+  }
+
   func logout() async throws {
     _ = try await request(method: "account/logout", params: nil)
   }
@@ -411,17 +496,26 @@ final class CodexAppServerSession: @unchecked Sendable {
     }
 
     guard let method = raw["method"] as? String,
-          method == "account/login/completed",
           let params = raw["params"] as? [String: Any] else {
       return
     }
 
-    let completed = CodexAppServerLoginCompletedResult(
-      loginId: params["loginId"] as? String,
-      success: params["success"] as? Bool ?? false,
-      error: params["error"] as? String
-    )
+    if method == "account/login/completed" {
+      let completed = CodexAppServerLoginCompletedResult(
+        loginId: params["loginId"] as? String,
+        success: params["success"] as? Bool ?? false,
+        error: params["error"] as? String
+      )
 
-    await state.handleLoginCompleted(completed)
+      await state.handleLoginCompleted(completed)
+      return
+    }
+
+    if method == "account/updated" {
+      let updated = CodexAppServerAccountUpdatedResult(
+        authMode: params["authMode"] as? String
+      )
+      await state.handleAccountUpdated(updated)
+    }
   }
 }

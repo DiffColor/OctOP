@@ -12,6 +12,18 @@ sealed class CodexAppServerSession : IAsyncDisposable
     public string? Error { get; init; }
   }
 
+  private sealed class AccountUpdatedResult
+  {
+    public string? AuthMode { get; init; }
+  }
+
+  private sealed class AccountUpdateWaiter
+  {
+    public string? ExpectedAuthMode { get; init; }
+    public TaskCompletionSource<AccountUpdatedResult> Completion { get; init; } =
+      new(TaskCreationOptions.RunContinuationsAsynchronously);
+  }
+
   public sealed class AccountStatus
   {
     public bool LoggedIn { get; init; }
@@ -32,6 +44,10 @@ sealed class CodexAppServerSession : IAsyncDisposable
     new(StringComparer.Ordinal);
   private readonly ConcurrentDictionary<string, LoginCompletedResult> _bufferedLoginResults =
     new(StringComparer.Ordinal);
+  private readonly object _accountUpdateLock = new();
+  private readonly Dictionary<string, AccountUpdateWaiter> _accountUpdateWaiters =
+    new(StringComparer.Ordinal);
+  private readonly List<AccountUpdatedResult> _bufferedAccountUpdates = [];
   private readonly Action<string>? _log;
   private int _requestSequence;
   private int _terminated;
@@ -177,6 +193,55 @@ sealed class CodexAppServerSession : IAsyncDisposable
 
     var result = await waiter.Task;
     EnsureLoginSucceeded(result);
+  }
+
+  public async Task WaitForAccountUpdatedAsync(string? expectedAuthMode, CancellationToken cancellationToken)
+  {
+    AccountUpdatedResult? buffered = null;
+    string? waiterId = null;
+    AccountUpdateWaiter? waiter = null;
+
+    lock (_accountUpdateLock)
+    {
+      var bufferedIndex = _bufferedAccountUpdates.FindIndex(result => AuthModeMatches(result.AuthMode, expectedAuthMode));
+      if (bufferedIndex >= 0)
+      {
+        buffered = _bufferedAccountUpdates[bufferedIndex];
+        _bufferedAccountUpdates.RemoveAt(bufferedIndex);
+      }
+      else
+      {
+        waiterId = $"account-update-{Guid.NewGuid():N}";
+        waiter = new AccountUpdateWaiter
+        {
+          ExpectedAuthMode = expectedAuthMode
+        };
+        _accountUpdateWaiters[waiterId] = waiter;
+      }
+    }
+
+    if (buffered is not null)
+    {
+      return;
+    }
+
+    if (waiterId is null || waiter is null)
+    {
+      throw new InvalidOperationException("계정 갱신 대기 상태를 초기화하지 못했습니다.");
+    }
+
+    using var registration = cancellationToken.Register(() =>
+    {
+      lock (_accountUpdateLock)
+      {
+        if (_accountUpdateWaiters.Remove(waiterId, out var pending))
+        {
+          pending.Completion.TrySetCanceled(cancellationToken);
+        }
+      }
+    });
+
+    await waiter.Completion.Task;
   }
 
   public async Task LogoutAsync(CancellationToken cancellationToken)
@@ -356,36 +421,73 @@ sealed class CodexAppServerSession : IAsyncDisposable
       }
 
       var method = methodProperty.GetString();
-      if (!string.Equals(method, "account/login/completed", StringComparison.Ordinal))
+      if (string.Equals(method, "account/login/completed", StringComparison.Ordinal))
+      {
+        var parameters = root.TryGetProperty("params", out var paramsProperty)
+          ? paramsProperty
+          : default;
+        var completed = new LoginCompletedResult
+        {
+          LoginId = parameters.TryGetProperty("loginId", out var loginIdProperty)
+            ? loginIdProperty.GetString()
+            : null,
+          Success = parameters.TryGetProperty("success", out var successProperty) &&
+            successProperty.ValueKind == JsonValueKind.True,
+          Error = parameters.TryGetProperty("error", out var errorProperty)
+            ? errorProperty.GetString()
+            : null
+        };
+
+        if (!string.IsNullOrWhiteSpace(completed.LoginId) &&
+            _loginWaiters.TryRemove(completed.LoginId, out var waiter))
+        {
+          waiter.TrySetResult(completed);
+          return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(completed.LoginId))
+        {
+          _bufferedLoginResults[completed.LoginId] = completed;
+        }
+
+        return;
+      }
+
+      if (!string.Equals(method, "account/updated", StringComparison.Ordinal))
       {
         return;
       }
 
-      var parameters = root.TryGetProperty("params", out var paramsProperty)
-        ? paramsProperty
+      var updatedParameters = root.TryGetProperty("params", out var updatedParamsProperty)
+        ? updatedParamsProperty
         : default;
-      var completed = new LoginCompletedResult
+      var updated = new AccountUpdatedResult
       {
-        LoginId = parameters.TryGetProperty("loginId", out var loginIdProperty)
-          ? loginIdProperty.GetString()
-          : null,
-        Success = parameters.TryGetProperty("success", out var successProperty) &&
-          successProperty.ValueKind == JsonValueKind.True,
-        Error = parameters.TryGetProperty("error", out var errorProperty)
-          ? errorProperty.GetString()
-          : null
+        AuthMode = updatedParameters.TryGetProperty("authMode", out var authModeProperty) &&
+          authModeProperty.ValueKind != JsonValueKind.Null
+            ? authModeProperty.GetString()
+            : null
       };
 
-      if (!string.IsNullOrWhiteSpace(completed.LoginId) &&
-          _loginWaiters.TryRemove(completed.LoginId, out var waiter))
+      TaskCompletionSource<AccountUpdatedResult>? accountUpdatedWaiter = null;
+      lock (_accountUpdateLock)
       {
-        waiter.TrySetResult(completed);
-        return;
+        var matchingWaiter = _accountUpdateWaiters.FirstOrDefault(entry =>
+          AuthModeMatches(entry.Value.ExpectedAuthMode, updated.AuthMode));
+        if (!string.IsNullOrEmpty(matchingWaiter.Key))
+        {
+          accountUpdatedWaiter = matchingWaiter.Value.Completion;
+          _accountUpdateWaiters.Remove(matchingWaiter.Key);
+        }
+        else
+        {
+          _bufferedAccountUpdates.Add(updated);
+        }
       }
 
-      if (!string.IsNullOrWhiteSpace(completed.LoginId))
+      if (accountUpdatedWaiter is not null)
       {
-        _bufferedLoginResults[completed.LoginId] = completed;
+        accountUpdatedWaiter.TrySetResult(updated);
       }
     }
     catch (Exception error)
@@ -431,6 +533,21 @@ sealed class CodexAppServerSession : IAsyncDisposable
         waiter.TrySetException(error);
       }
     }
+
+    lock (_accountUpdateLock)
+    {
+      foreach (var entry in _accountUpdateWaiters.Values)
+      {
+        entry.Completion.TrySetException(error);
+      }
+      _accountUpdateWaiters.Clear();
+      _bufferedAccountUpdates.Clear();
+    }
+  }
+
+  private static bool AuthModeMatches(string? expected, string? actual)
+  {
+    return string.Equals(expected, actual, StringComparison.Ordinal);
   }
 
   private static void EnsureLoginSucceeded(LoginCompletedResult result)

@@ -206,6 +206,7 @@ sealed class RuntimeInstaller
     BrowserSelection.Open(browser, loginStart.AuthUri.AbsoluteUri);
     progress.Report("브라우저에서 인증을 완료해 주세요.");
     await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+    await session.WaitForAccountUpdatedAsync("chatgpt", cancellationToken);
     ClearPendingLogin(paths);
     var accountStatus = await session.ReadAccountAsync(cancellationToken);
     progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");

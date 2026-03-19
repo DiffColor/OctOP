@@ -138,7 +138,7 @@ private enum CodexBrowserSelection {
       let buttonStack = NSStackView()
       buttonStack.orientation = .horizontal
       buttonStack.spacing = 28
-      buttonStack.alignment = .top
+      buttonStack.alignment = .centerY
       buttonStack.distribution = .gravityAreas
 
       var optionMap: [String: CodexBrowserOption] = [:]
@@ -166,8 +166,9 @@ private enum CodexBrowserSelection {
       NSLayoutConstraint.activate([
         rootStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
         rootStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-        rootStack.topAnchor.constraint(equalTo: contentView.topAnchor),
-        rootStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor)
+        rootStack.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor),
+        rootStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor),
+        rootStack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
       ])
 
       let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow
@@ -265,6 +266,7 @@ private enum CodexBrowserSelection {
     stack.orientation = .vertical
     stack.alignment = .centerX
     stack.spacing = 10
+    stack.edgeInsets = NSEdgeInsets(top: 20, left: 0, bottom: 20, right: 0)
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.setHuggingPriority(.required, for: .horizontal)
     return (stack, button)
@@ -549,7 +551,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var bootstrapInProgress = false
   @Published var codexLoginInProgress = false
   @Published var bootstrapSummary = "환경설정 필요"
-  @Published var codexLoginStatus = "확인 전"
+  @Published var codexLoginStatus = ""
   @Published var codexLoggedIn = false
   @Published var configurationSavedAt: Date? = nil
   @Published var lastBootstrapAt: Date? = nil
@@ -1886,7 +1888,24 @@ struct AgentSetupWindow: View {
         }
 
         configurationCard(title: "연결 설정", icon: "lock.shield") {
-          DisclosureGroup(isExpanded: $sensitiveConnectionExpanded) {
+          VStack(alignment: .leading, spacing: 0) {
+            Button {
+              sensitiveConnectionExpanded.toggle()
+            } label: {
+              HStack(alignment: .center, spacing: 0) {
+                Image(systemName: sensitiveConnectionExpanded ? "chevron.down" : "chevron.right")
+                  .font(.system(size: 11, weight: .semibold))
+                  .padding(.leading, 12)
+                  .padding(.trailing, 4)
+                Text("연결 값")
+                  .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+              }
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if sensitiveConnectionExpanded {
             VStack(alignment: .leading, spacing: 12) {
               settingField("NATS URL", text: $bootstrap.configuration.natsUrl)
               settingField("Bridge Host", text: $bootstrap.configuration.bridgeHost)
@@ -1896,11 +1915,12 @@ struct AgentSetupWindow: View {
               settingField("App Server WS URL", text: $bootstrap.configuration.appServerWsUrl)
             }
             .padding(.top, 12)
-          } label: {
-            Text("연결 값")
-              .font(.subheadline.weight(.semibold))
+            }
           }
-          .accentColor(.primary)
+        }
+
+        configurationCard(title: "Codex 로그인", icon: "person.badge.key") {
+          codexLoginField
         }
 
         configurationCard(title: "Codex 실행 정책", icon: "slider.horizontal.3") {
@@ -1908,7 +1928,6 @@ struct AgentSetupWindow: View {
           pickerField("Reasoning", selection: $bootstrap.configuration.reasoningEffort, options: bootstrap.reasoningOptions)
           pickerField("Approval", selection: $bootstrap.configuration.approvalPolicy, options: bootstrap.approvalOptions)
           pickerField("Sandbox", selection: $bootstrap.configuration.sandboxMode, options: bootstrap.sandboxOptions)
-          codexLoginField
           settingField("Watchdog (ms)", text: $bootstrap.configuration.watchdogIntervalMs)
           settingField("Stale (ms)", text: $bootstrap.configuration.staleMs)
           toggleField("로그인 시 자동 실행", isOn: $bootstrap.configuration.autoStartAtLogin)
@@ -2059,36 +2078,30 @@ struct AgentSetupWindow: View {
   }
 
   private var codexLoginField: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Codex 로그인")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: 12) {
+      if !bootstrap.codexLoggedIn,
+         !bootstrap.codexLoginStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text(bootstrap.codexLoginStatus)
+          .font(.body.weight(.semibold))
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
 
-      Text("현재 연결 상태를 확인하고, 필요할 때만 브라우저를 선택해 로그인 또는 계정 전환을 진행합니다.")
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      HStack(alignment: .center, spacing: 16) {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("계정 연결")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(Color(red: 0.01, green: 0.41, blue: 0.63))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-              Capsule(style: .continuous)
-                .fill(Color(red: 0.01, green: 0.41, blue: 0.63).opacity(0.12))
-            )
-
-          Text(bootstrap.codexLoginStatus)
-            .font(.body.weight(.semibold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-          Text("로그인 중 문제가 생기면 앱을 다시 시작한 뒤 바로 다시 로그인할 수 있습니다.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+      HStack(alignment: .center, spacing: 14) {
+        Group {
+          if bootstrap.codexLoggedIn,
+             !bootstrap.codexLoginStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(bootstrap.codexLoginStatus)
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          } else {
+            Text("로그인 중 문제가 생기면 재시작 후 다시 로그인 가능.")
+              .font(.system(size: 11.9))
+              .foregroundStyle(.secondary)
+              .padding(.leading, 14.7)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
 
         Spacer(minLength: 0)
@@ -2114,16 +2127,6 @@ struct AgentSetupWindow: View {
         }
         .disabled(bootstrap.codexLoginInProgress)
       }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 14)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(Color(nsColor: .textBackgroundColor))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-      )
     }
   }
 

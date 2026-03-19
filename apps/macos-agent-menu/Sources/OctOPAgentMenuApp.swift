@@ -602,12 +602,6 @@ struct AgentMenuContent: View {
         .font(.subheadline)
         .foregroundStyle(statusColor)
 
-      if let processId = model.processId {
-        Text("PID \(processId)")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-
       Divider()
 
       Button(model.isRunning ? "서비스 정지" : "서비스 시작") {

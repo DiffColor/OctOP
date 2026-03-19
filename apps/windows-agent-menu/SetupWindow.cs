@@ -43,6 +43,7 @@ sealed class SetupWindow : Window
   private TextBlock _activityTitleTextBlock = null!;
   private TextBlock _activityHintTextBlock = null!;
   private ProgressBar _activityProgressBar = null!;
+  private TextBlock _codexLoginSecondaryTextBlock = null!;
 
   private Task? _activeInstallTask;
   private string _currentInstallRoot;
@@ -120,6 +121,7 @@ sealed class SetupWindow : Window
     UpdateDiagnostic("login", status.CodexLoggedIn ? DiagnosticState.Ok : DiagnosticState.Warning, status.CodexLoggedIn ? "정상" : status.CodexLoginStatus);
     _codexLoggedIn = status.CodexLoggedIn;
     _codexLoginStatusTextBlock.Text = status.CodexLoginStatus;
+    RefreshCodexLoginPresentation();
     UpdateCodexLoginButton();
     UpdateDiagnostic(
       "autostart",
@@ -184,6 +186,7 @@ sealed class SetupWindow : Window
     content.Children.Add(CreateDiagnosticsCard());
     content.Children.Add(CreateBasicInfoCard());
     content.Children.Add(CreateConnectionCard());
+    content.Children.Add(CreateCodexLoginCard());
     content.Children.Add(CreateExecutionPolicyCard());
     content.Children.Add(CreateActionRow());
 
@@ -269,25 +272,67 @@ sealed class SetupWindow : Window
     fields.Children.Add(CreateLabeledValueField("App Server Mode", "ws-local"));
     fields.Children.Add(CreateLabeledTextField("App Server WS URL", _appServerWsUrlTextBox = CreateTextBox()));
 
-    var expander = new Expander
+    var fieldsContainer = new Border
     {
-      Header = new TextBlock
-      {
-        Text = "연결 값",
-        FontSize = 13,
-        FontWeight = FontWeights.SemiBold,
-        Foreground = CreateBrush(0x17, 0x17, 0x17)
-      },
-      IsExpanded = false,
-      Margin = new Thickness(0, 2, 0, 0),
-      Content = new Border
-      {
-        Padding = new Thickness(0, 12, 0, 0),
-        Child = fields
-      }
+      Padding = new Thickness(0, 12, 0, 0),
+      Child = fields,
+      Visibility = Visibility.Collapsed
     };
 
-    return CreateCard("연결 설정", expander);
+    var chevronTextBlock = new TextBlock
+    {
+      Text = ">",
+      FontSize = 11,
+      FontWeight = FontWeights.SemiBold,
+      Foreground = CreateBrush(0x17, 0x17, 0x17),
+      Margin = new Thickness(12, 0, 4, 0),
+      VerticalAlignment = VerticalAlignment.Center
+    };
+
+    var headerRow = new StackPanel
+    {
+      Orientation = Orientation.Horizontal
+    };
+    headerRow.Children.Add(chevronTextBlock);
+    headerRow.Children.Add(new TextBlock
+    {
+      Text = "연결 값",
+      FontSize = 13,
+      FontWeight = FontWeights.SemiBold,
+      Foreground = CreateBrush(0x17, 0x17, 0x17),
+      VerticalAlignment = VerticalAlignment.Center
+    });
+
+    var headerButton = new Button
+    {
+      Background = System.Windows.Media.Brushes.Transparent,
+      BorderThickness = new Thickness(0),
+      Padding = new Thickness(0),
+      HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
+      Content = headerRow,
+      Margin = new Thickness(0, 2, 0, 0)
+    };
+    headerButton.Click += (_, _) =>
+    {
+      fieldsContainer.Visibility = fieldsContainer.Visibility == Visibility.Visible
+        ? Visibility.Collapsed
+        : Visibility.Visible;
+      chevronTextBlock.Text = fieldsContainer.Visibility == Visibility.Visible ? "v" : ">";
+    };
+
+    var stack = new StackPanel
+    {
+      Orientation = Orientation.Vertical
+    };
+    stack.Children.Add(headerButton);
+    stack.Children.Add(fieldsContainer);
+
+    return CreateCard("연결 설정", stack);
+  }
+
+  private Border CreateCodexLoginCard()
+  {
+    return CreateCard("Codex 로그인", CreateCodexLoginField());
   }
 
   private Border CreateExecutionPolicyCard()
@@ -297,7 +342,6 @@ sealed class SetupWindow : Window
     stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(["none", "low", "medium", "high", "xhigh"])));
     stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(["never", "on-request", "untrusted"])));
     stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(["workspace-write", "read-only", "danger-full-access"])));
-    stack.Children.Add(CreateCodexLoginField());
     stack.Children.Add(CreateLabeledTextField("Watchdog (ms)", _watchdogTextBox = CreateTextBox()));
     stack.Children.Add(CreateLabeledTextField("Stale (ms)", _staleTextBox = CreateTextBox()));
     stack.Children.Add(CreateToggleField("로그인 시 자동 실행", _autoStartCheckBox = CreateToggleSwitch()));
@@ -309,80 +353,36 @@ sealed class SetupWindow : Window
   {
     var stack = new StackPanel
     {
-      Orientation = Orientation.Vertical,
-      Margin = new Thickness(0, 0, 0, 12)
-    };
-
-    stack.Children.Add(new TextBlock
-    {
-      Text = "Codex 로그인",
-      FontSize = 12,
-      Foreground = CreateBrush(0x6B, 0x72, 0x80),
-      Margin = new Thickness(0, 0, 0, 6)
-    });
-
-    stack.Children.Add(new TextBlock
-    {
-      Text = "현재 연결 상태를 확인하고, 필요할 때만 브라우저를 선택해 로그인 또는 계정 전환을 진행합니다.",
-      Foreground = CreateBrush(0x52, 0x52, 0x52),
-      TextWrapping = TextWrapping.Wrap,
-      Margin = new Thickness(0, 0, 0, 10)
-    });
-
-    var statusCard = new Border
-    {
-      Background = CreateBrush(0xFA, 0xFA, 0xFA),
-      BorderBrush = CreateBrush(0xE5, 0xE7, 0xEB),
-      BorderThickness = new Thickness(1),
-      CornerRadius = new CornerRadius(12),
-      Padding = new Thickness(14, 14, 14, 14)
-    };
-
-    var statusLayout = new Grid();
-    statusLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-    statusLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-    var statusStack = new StackPanel
-    {
       Orientation = Orientation.Vertical
     };
 
-    var statusBadge = new Border
-    {
-      Background = CreateAlphaBrush(0x03, 0x69, 0xA1, 24),
-      CornerRadius = new CornerRadius(999),
-      Padding = new Thickness(10, 5, 10, 5),
-      HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
-      Margin = new Thickness(0, 0, 0, 8),
-      Child = new TextBlock
-      {
-        Text = "계정 연결",
-        Foreground = CreateBrush(0x03, 0x69, 0xA1),
-        FontSize = 12,
-        FontWeight = FontWeights.SemiBold
-      }
-    };
-    statusStack.Children.Add(statusBadge);
-
     _codexLoginStatusTextBlock = new TextBlock
     {
-      Text = "확인 전",
+      Text = string.Empty,
       Foreground = CreateBrush(0x17, 0x17, 0x17),
       FontSize = 14,
       FontWeight = FontWeights.SemiBold,
-      TextWrapping = TextWrapping.Wrap
+      TextWrapping = TextWrapping.Wrap,
+      Visibility = Visibility.Collapsed,
+      Margin = new Thickness(0, 0, 0, 10)
     };
-    statusStack.Children.Add(_codexLoginStatusTextBlock);
+    stack.Children.Add(_codexLoginStatusTextBlock);
 
-    statusStack.Children.Add(new TextBlock
+    var row = new Grid
     {
-      Text = "로그인 중 문제가 생기면 앱을 다시 시작한 뒤 바로 다시 로그인할 수 있습니다.",
-      Foreground = CreateBrush(0x6B, 0x72, 0x80),
-      Margin = new Thickness(0, 6, 0, 0),
-      TextWrapping = TextWrapping.Wrap
-    });
+      Margin = new Thickness(0, 0, 0, 12)
+    };
+    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-    statusLayout.Children.Add(statusStack);
+    _codexLoginSecondaryTextBlock = new TextBlock
+    {
+      Text = "로그인 중 문제가 생기면 재시작 후 다시 로그인 가능.",
+      Foreground = CreateBrush(0x6B, 0x72, 0x80),
+      TextWrapping = TextWrapping.Wrap,
+      VerticalAlignment = VerticalAlignment.Center
+    };
+    row.Children.Add(_codexLoginSecondaryTextBlock);
 
     var actionStack = new StackPanel
     {
@@ -399,10 +399,10 @@ sealed class SetupWindow : Window
     actionStack.Children.Add(_codexLoginButton);
 
     Grid.SetColumn(actionStack, 1);
-    statusLayout.Children.Add(actionStack);
+    row.Children.Add(actionStack);
 
-    statusCard.Child = statusLayout;
-    stack.Children.Add(statusCard);
+    stack.Children.Add(row);
+    RefreshCodexLoginPresentation();
 
     return stack;
   }
@@ -665,6 +665,25 @@ sealed class SetupWindow : Window
       ? "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다."
       : "브라우저를 선택해 Codex 계정을 로그인합니다.";
     _codexLoginButton.IsEnabled = !_codexLoginInProgress && !InstallationInProgress;
+  }
+
+  private void RefreshCodexLoginPresentation()
+  {
+    if (_codexLoginStatusTextBlock is null || _codexLoginSecondaryTextBlock is null)
+    {
+      return;
+    }
+
+    var status = _codexLoginStatusTextBlock.Text?.Trim() ?? string.Empty;
+    var hasStatus = !string.IsNullOrWhiteSpace(status);
+
+    _codexLoginStatusTextBlock.Visibility = !_codexLoggedIn && hasStatus
+      ? Visibility.Visible
+      : Visibility.Collapsed;
+
+    _codexLoginSecondaryTextBlock.Text = _codexLoggedIn && hasStatus
+      ? status
+      : "로그인 중 문제가 생기면 재시작 후 다시 로그인 가능.";
   }
 
   private void SetBusy(bool busy, bool installing)

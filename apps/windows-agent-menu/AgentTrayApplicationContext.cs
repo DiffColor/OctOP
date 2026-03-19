@@ -633,8 +633,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       : (_runtimeStatus.ReadyToRun ? "환경 준비됨" : "환경설정 필요");
     _environmentItem.ForeColor = _runtimeStatus?.ReadyToRun == true ? Color.ForestGreen : Color.DarkOrange;
 
-    _pidItem.Text = _processId is int processId ? $"PID {processId}" : string.Empty;
-    _pidItem.Visible = _processId is not null;
+    _pidItem.Text = string.Empty;
+    _pidItem.Visible = false;
 
     var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping;
     _toggleItem.Text = running ? "서비스 정지" : "서비스 시작";

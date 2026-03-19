@@ -87,6 +87,8 @@ function createJsonRpcSession({ codex }) {
   const pending = new Map();
   const loginWaiters = new Map();
   const bufferedLoginResults = new Map();
+  const accountUpdateWaiters = [];
+  const bufferedAccountUpdates = [];
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -141,6 +143,23 @@ function createJsonRpcSession({ codex }) {
         } else if (loginId) {
           bufferedLoginResults.set(loginId, result);
         }
+        continue;
+      }
+
+      if (message.method === "account/updated") {
+        const params = message.params ?? {};
+        const authMode = typeof params.authMode === "string" ? params.authMode.trim() : null;
+        const result = { authMode };
+        const waiterIndex = accountUpdateWaiters.findIndex(
+          (waiter) => waiter.expectedAuthMode === authMode
+        );
+
+        if (waiterIndex >= 0) {
+          const [waiter] = accountUpdateWaiters.splice(waiterIndex, 1);
+          waiter.resolve(result);
+        } else {
+          bufferedAccountUpdates.push(result);
+        }
       }
     }
   });
@@ -162,6 +181,10 @@ function createJsonRpcSession({ codex }) {
       deferred.reject(error);
     }
     loginWaiters.clear();
+    while (accountUpdateWaiters.length > 0) {
+      const waiter = accountUpdateWaiters.pop();
+      waiter?.reject(error);
+    }
   });
 
   function request(method, params, timeoutMs) {
@@ -226,7 +249,41 @@ function createJsonRpcSession({ codex }) {
     });
   }
 
-  return { request, shutdown, waitForLoginCompleted };
+  function waitForAccountUpdated(expectedAuthMode, timeoutMs) {
+    const bufferedIndex = bufferedAccountUpdates.findIndex(
+      (result) => result.authMode === expectedAuthMode
+    );
+    if (bufferedIndex >= 0) {
+      const [result] = bufferedAccountUpdates.splice(bufferedIndex, 1);
+      return Promise.resolve(result);
+    }
+
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        expectedAuthMode,
+        resolve(value) {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject(error) {
+          clearTimeout(timer);
+          reject(error);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        const waiterIndex = accountUpdateWaiters.indexOf(waiter);
+        if (waiterIndex >= 0) {
+          accountUpdateWaiters.splice(waiterIndex, 1);
+        }
+        reject(new Error(`계정 갱신 대기 타임아웃: authMode=${expectedAuthMode ?? "null"}`));
+      }, timeoutMs);
+
+      accountUpdateWaiters.push(waiter);
+    });
+  }
+
+  return { request, shutdown, waitForLoginCompleted, waitForAccountUpdated };
 }
 
 async function openInBrowser(browserBundleId, authUrl) {
@@ -287,6 +344,7 @@ async function main() {
       throw new Error(loginCompleted.error || "로그인에 실패했습니다.");
     }
 
+    await session.waitForAccountUpdated("chatgpt", options.timeoutMs);
     const accountResult = await session.request("account/read", { refreshToken: false }, options.timeoutMs);
     const accountStatus = summarizeAccount(accountResult);
     emit("loginComplete", accountStatus);
