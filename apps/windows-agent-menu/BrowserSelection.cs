@@ -104,6 +104,7 @@ static class BrowserSelection
         Text = browser.DisplayName,
         TextAlign = ContentAlignment.BottomCenter,
         ImageAlign = ContentAlignment.TopCenter,
+        TextImageRelation = TextImageRelation.ImageAboveText,
         BackColor = Color.White,
         FlatStyle = FlatStyle.Standard,
         Padding = new Padding(10, 12, 10, 12)

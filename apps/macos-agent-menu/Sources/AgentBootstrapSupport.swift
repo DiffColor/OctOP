@@ -114,17 +114,7 @@ private enum CodexBrowserSelection {
     for browser in browsers {
       optionMap[browser.id] = browser
 
-      let button = NSButton(title: browser.displayName, target: nil, action: nil)
-      button.identifier = NSUserInterfaceItemIdentifier(browser.id)
-      button.image = browser.icon
-      button.imageScaling = .scaleProportionallyDown
-      button.imagePosition = .imageAbove
-      button.setButtonType(.momentaryPushIn)
-      button.bezelStyle = .rounded
-      button.font = .systemFont(ofSize: 12, weight: .medium)
-      button.translatesAutoresizingMaskIntoConstraints = false
-      button.widthAnchor.constraint(equalToConstant: 92).isActive = true
-      button.heightAnchor.constraint(equalToConstant: 92).isActive = true
+      let button = makeBrowserButton(for: browser)
       buttonStack.addArrangedSubview(button)
     }
 
@@ -194,6 +184,46 @@ private enum CodexBrowserSelection {
         icon: icon
       )
     }
+  }
+
+  @MainActor
+  private static func makeBrowserButton(for browser: CodexBrowserOption) -> NSButton {
+    let button = NSButton(title: "", target: nil, action: nil)
+    button.identifier = NSUserInterfaceItemIdentifier(browser.id)
+    button.setButtonType(.momentaryPushIn)
+    button.isBordered = true
+    button.bezelStyle = .regularSquare
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.widthAnchor.constraint(equalToConstant: 96).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 104).isActive = true
+
+    let iconView = NSImageView(image: browser.icon)
+    iconView.imageScaling = .scaleProportionallyUpOrDown
+    iconView.translatesAutoresizingMaskIntoConstraints = false
+    iconView.widthAnchor.constraint(equalToConstant: 32).isActive = true
+    iconView.heightAnchor.constraint(equalToConstant: 32).isActive = true
+
+    let label = NSTextField(labelWithString: browser.displayName)
+    label.alignment = .center
+    label.lineBreakMode = .byWordWrapping
+    label.maximumNumberOfLines = 2
+    label.font = .systemFont(ofSize: 12, weight: .medium)
+
+    let stack = NSStackView(views: [iconView, label])
+    stack.orientation = .vertical
+    stack.alignment = .centerX
+    stack.spacing = 10
+    stack.translatesAutoresizingMaskIntoConstraints = false
+
+    button.addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+      stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+      stack.leadingAnchor.constraint(greaterThanOrEqualTo: button.leadingAnchor, constant: 8),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -8)
+    ])
+
+    return button
   }
 }
 
