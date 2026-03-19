@@ -14,11 +14,19 @@ private struct CodexBrowserOption: Identifiable {
 private final class CodexBrowserPickerController: NSObject {
   let panel: NSPanel
   let optionsById: [String: CodexBrowserOption]
-  var selectedBrowser: CodexBrowserOption?
+  let completion: (CodexBrowserOption?) -> Void
+  weak var presentingWindow: NSWindow?
 
-  init(panel: NSPanel, optionsById: [String: CodexBrowserOption]) {
+  init(
+    panel: NSPanel,
+    optionsById: [String: CodexBrowserOption],
+    presentingWindow: NSWindow?,
+    completion: @escaping (CodexBrowserOption?) -> Void
+  ) {
     self.panel = panel
     self.optionsById = optionsById
+    self.presentingWindow = presentingWindow
+    self.completion = completion
   }
 
   @objc func chooseBrowser(_ sender: NSButton) {
@@ -27,14 +35,21 @@ private final class CodexBrowserPickerController: NSObject {
       return
     }
 
-    selectedBrowser = option
-    NSApp.stopModal(withCode: .OK)
-    panel.orderOut(nil)
+    close(with: option)
   }
 
   @objc func cancel(_ sender: NSButton) {
-    NSApp.stopModal(withCode: .cancel)
-    panel.orderOut(nil)
+    close(with: nil)
+  }
+
+  private func close(with selection: CodexBrowserOption?) {
+    if let presentingWindow {
+      presentingWindow.endSheet(panel)
+    } else {
+      panel.orderOut(nil)
+    }
+
+    completion(selection)
   }
 }
 
@@ -49,80 +64,92 @@ private enum CodexBrowserSelection {
   ]
 
   @MainActor
-  static func selectBrowserID() -> String? {
+  static func selectBrowserID() async -> String? {
     let browsers = discoverBrowsers()
     guard !browsers.isEmpty else {
       return nil
     }
 
-    let panel = NSPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 760, height: 320),
-      styleMask: [.titled, .closable],
-      backing: .buffered,
-      defer: false
-    )
-    panel.title = "브라우저 선택"
-    panel.isReleasedWhenClosed = false
+    return await withCheckedContinuation { continuation in
+      let panel = NSPanel(
+        contentRect: NSRect(x: 0, y: 0, width: 760, height: 320),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+      )
+      panel.title = "브라우저 선택"
+      panel.isReleasedWhenClosed = false
 
-    let contentView = NSView(frame: panel.contentView?.bounds ?? .zero)
-    contentView.translatesAutoresizingMaskIntoConstraints = false
+      let contentView = NSView(frame: panel.contentView?.bounds ?? .zero)
+      contentView.translatesAutoresizingMaskIntoConstraints = false
 
-    let titleLabel = NSTextField(labelWithString: "로그인에 사용할 브라우저를 선택해 주세요.")
-    titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+      let titleLabel = NSTextField(labelWithString: "로그인에 사용할 브라우저를 선택해 주세요.")
+      titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
 
-    let subtitleLabel = NSTextField(labelWithString: "기본 브라우저 대신 다른 브라우저를 선택해 로그인할 수 있습니다.")
-    subtitleLabel.textColor = .secondaryLabelColor
-    subtitleLabel.font = .systemFont(ofSize: 12)
+      let subtitleLabel = NSTextField(labelWithString: "기본 브라우저 대신 다른 브라우저를 선택해 로그인할 수 있습니다.")
+      subtitleLabel.textColor = .secondaryLabelColor
+      subtitleLabel.font = .systemFont(ofSize: 12)
 
-    let buttonStack = NSStackView()
-    buttonStack.orientation = .horizontal
-    buttonStack.spacing = 28
-    buttonStack.alignment = .top
-    buttonStack.distribution = .gravityAreas
+      let buttonStack = NSStackView()
+      buttonStack.orientation = .horizontal
+      buttonStack.spacing = 28
+      buttonStack.alignment = .top
+      buttonStack.distribution = .gravityAreas
 
-    var optionMap: [String: CodexBrowserOption] = [:]
-    var optionButtons: [NSButton] = []
-    for browser in browsers {
-      optionMap[browser.id] = browser
+      var optionMap: [String: CodexBrowserOption] = [:]
+      var optionButtons: [NSButton] = []
+      for browser in browsers {
+        optionMap[browser.id] = browser
 
-      let (tile, button) = makeBrowserTile(for: browser)
-      optionButtons.append(button)
-      buttonStack.addArrangedSubview(tile)
+        let (tile, button) = makeBrowserTile(for: browser)
+        optionButtons.append(button)
+        buttonStack.addArrangedSubview(tile)
+      }
+
+      let cancelButton = NSButton(title: "취소", target: nil, action: nil)
+      cancelButton.bezelStyle = .rounded
+
+      let rootStack = NSStackView(views: [titleLabel, subtitleLabel, buttonStack, cancelButton])
+      rootStack.orientation = .vertical
+      rootStack.spacing = 12
+      rootStack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+      rootStack.translatesAutoresizingMaskIntoConstraints = false
+
+      contentView.addSubview(rootStack)
+      panel.contentView = contentView
+
+      NSLayoutConstraint.activate([
+        rootStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+        rootStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+        rootStack.topAnchor.constraint(equalTo: contentView.topAnchor),
+        rootStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor)
+      ])
+
+      let presentingWindow = NSApp.keyWindow ?? NSApp.mainWindow
+      let controller = CodexBrowserPickerController(
+        panel: panel,
+        optionsById: optionMap,
+        presentingWindow: presentingWindow,
+        completion: { selection in
+          continuation.resume(returning: selection?.id)
+        }
+      )
+
+      for button in optionButtons {
+        button.target = controller
+        button.action = #selector(CodexBrowserPickerController.chooseBrowser(_:))
+      }
+      cancelButton.target = controller
+      cancelButton.action = #selector(CodexBrowserPickerController.cancel(_:))
+
+      NSApp.activate(ignoringOtherApps: true)
+      panel.center()
+      if let presentingWindow {
+        presentingWindow.beginSheet(panel)
+      } else {
+        panel.makeKeyAndOrderFront(nil)
+      }
     }
-
-    let cancelButton = NSButton(title: "취소", target: nil, action: nil)
-    cancelButton.bezelStyle = .rounded
-
-    let rootStack = NSStackView(views: [titleLabel, subtitleLabel, buttonStack, cancelButton])
-    rootStack.orientation = .vertical
-    rootStack.spacing = 12
-    rootStack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
-    rootStack.translatesAutoresizingMaskIntoConstraints = false
-
-    contentView.addSubview(rootStack)
-    panel.contentView = contentView
-
-    NSLayoutConstraint.activate([
-      rootStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-      rootStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-      rootStack.topAnchor.constraint(equalTo: contentView.topAnchor),
-      rootStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor)
-    ])
-
-    let controller = CodexBrowserPickerController(panel: panel, optionsById: optionMap)
-    for button in optionButtons {
-      button.target = controller
-      button.action = #selector(CodexBrowserPickerController.chooseBrowser(_:))
-    }
-    cancelButton.target = controller
-    cancelButton.action = #selector(CodexBrowserPickerController.cancel(_:))
-
-    NSApp.activate(ignoringOtherApps: true)
-    panel.center()
-    panel.makeKeyAndOrderFront(nil)
-    let response = NSApp.runModal(for: panel)
-    panel.close()
-    return response == .OK ? controller.selectedBrowser?.id : nil
   }
 
   @MainActor
@@ -1369,7 +1396,7 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func loginWithBrowserSelection(log: @escaping @MainActor (String) -> Void, logoutFirst: Bool) async throws {
-    guard let browserID = await MainActor.run(body: { CodexBrowserSelection.selectBrowserID() }) else {
+    guard let browserID = await CodexBrowserSelection.selectBrowserID() else {
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
     log("선택한 브라우저로 로그인을 시작합니다.")
