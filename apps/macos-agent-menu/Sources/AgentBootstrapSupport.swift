@@ -427,6 +427,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var configuration: AgentBootstrapConfiguration
   @Published var diagnostics: [AgentDiagnosticItem] = []
   @Published var bootstrapInProgress = false
+  @Published var codexLoginInProgress = false
   @Published var bootstrapSummary = "환경설정 필요"
   @Published var codexLoginStatus = "확인 전"
   @Published var codexLoggedIn = false
@@ -923,6 +924,7 @@ final class AgentBootstrapStore: ObservableObject {
 
   func reloginCodex(log: @escaping @MainActor (String) -> Void) async {
     bootstrapInProgress = true
+    codexLoginInProgress = true
     bootstrapSummary = "Codex 계정 전환 중"
 
     do {
@@ -937,11 +939,13 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     bootstrapInProgress = false
+    codexLoginInProgress = false
     refreshDiagnostics()
   }
 
   func loginCodex(log: @escaping @MainActor (String) -> Void) async {
     bootstrapInProgress = true
+    codexLoginInProgress = true
     bootstrapSummary = "Codex 로그인 진행 중"
 
     do {
@@ -956,6 +960,7 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     bootstrapInProgress = false
+    codexLoginInProgress = false
     refreshDiagnostics()
   }
 
@@ -1723,7 +1728,7 @@ struct AgentSetupWindow: View {
         } label: {
           Text(bootstrap.codexLoggedIn ? "계정 전환" : "로그인")
         }
-        .disabled(bootstrap.bootstrapInProgress)
+        .disabled(bootstrap.codexLoginInProgress)
       }
     }
   }

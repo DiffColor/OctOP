@@ -49,6 +49,7 @@ sealed class SetupWindow : Window
   private string _latestActivityMessage = "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다.";
   private RuntimeStatus? _lastKnownStatus;
   private bool _codexLoggedIn;
+  private bool _codexLoginInProgress;
 
   public bool AllowClose { get; set; }
   public bool InstallationInProgress => _activeInstallTask is { IsCompleted: false };
@@ -541,6 +542,8 @@ sealed class SetupWindow : Window
   {
     try
     {
+      _codexLoginInProgress = true;
+      UpdateCodexLoginButton();
       SetBusy(true, installing: false);
       await Dispatcher.Yield(DispatcherPriority.Background);
 
@@ -571,6 +574,8 @@ sealed class SetupWindow : Window
     }
     finally
     {
+      _codexLoginInProgress = false;
+      UpdateCodexLoginButton();
       SetBusy(false, installing: false);
     }
   }
@@ -597,6 +602,7 @@ sealed class SetupWindow : Window
     _codexLoginButton.ToolTip = _codexLoggedIn
       ? "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다."
       : "브라우저를 선택해 Codex 계정을 로그인합니다.";
+    _codexLoginButton.IsEnabled = !_codexLoginInProgress && !InstallationInProgress;
   }
 
   private void SetBusy(bool busy, bool installing)
@@ -606,7 +612,7 @@ sealed class SetupWindow : Window
     _logButton.IsEnabled = true;
     if (_codexLoginButton is not null)
     {
-      _codexLoginButton.IsEnabled = !busy;
+      _codexLoginButton.IsEnabled = !_codexLoginInProgress && !installing;
     }
     _installButton.Content = installing ? "설치 중..." : "런타임 다시 설치";
     System.Windows.Input.Mouse.OverrideCursor = busy ? WpfCursors.Wait : null;
