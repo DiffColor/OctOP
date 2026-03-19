@@ -4,6 +4,7 @@ import {
   resolveRealtimeIssuePayloadScope,
   shouldApplyRealtimeIssueToSelectedThread
 } from "./realtimeIssue";
+import PushNotificationCard from "./PushNotificationCard.jsx";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
@@ -3453,6 +3454,7 @@ function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
 }
 
 function MainPage({
+  pushNotificationCard,
   language,
   onChangeLanguage,
   session,
@@ -4196,6 +4198,7 @@ function MainPage({
                   )}
                 </select>
               </div>
+              {pushNotificationCard ? <div className="px-2">{pushNotificationCard}</div> : null}
 
               {bridgeAvailable ? (
                 <>
@@ -7765,6 +7768,13 @@ export default function App() {
 
   return (
     <MainPage
+      pushNotificationCard={
+        <PushNotificationCard
+          apiRequest={apiRequest}
+          session={session}
+          selectedBridgeId={selectedBridgeId}
+        />
+      }
       language={language}
       onChangeLanguage={setLanguage}
       session={session}
