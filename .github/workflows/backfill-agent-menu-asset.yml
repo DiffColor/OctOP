@@ -1,0 +1,123 @@
+name: Backfill Agent Menu Asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "대상 릴리스 태그 (예: v1.2.3)"
+        required: true
+        type: string
+      platform:
+        description: "누락된 산출물을 추가할 플랫폼"
+        required: true
+        type: choice
+        options:
+          - windows
+          - macos
+          - all
+
+permissions:
+  contents: write
+
+jobs:
+  backfill-windows:
+    if: ${{ inputs.platform == 'windows' || inputs.platform == 'all' }}
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify release exists
+        shell: pwsh
+        run: gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY
+
+      - name: Resolve Windows asset name
+        id: windows-asset
+        shell: pwsh
+        run: |
+          $assetName = "OctOP.WindowsAgentMenu-win-x64-$env:RELEASE_TAG.exe"
+          "name=$assetName" >> $env:GITHUB_OUTPUT
+          "path=dist/releases/$env:RELEASE_TAG/$assetName" >> $env:GITHUB_OUTPUT
+
+      - name: Check whether Windows asset already exists
+        id: windows-exists
+        shell: pwsh
+        run: |
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
+          $exists = @($release.assets | Where-Object { $_.name -eq "${{ steps.windows-asset.outputs.name }}" }).Count -gt 0
+          if ($exists) {
+            Write-Host "Asset already exists: ${{ steps.windows-asset.outputs.name }}"
+            "exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build Windows artifact
+        if: ${{ steps.windows-exists.outputs.exists != 'true' }}
+        shell: pwsh
+        run: node ./scripts/release-agent-menu.mjs --platform windows --version "$env:RELEASE_TAG"
+
+      - name: Upload Windows asset
+        if: ${{ steps.windows-exists.outputs.exists != 'true' }}
+        shell: pwsh
+        run: gh release upload $env:RELEASE_TAG "${{ steps.windows-asset.outputs.path }}" --repo $env:GITHUB_REPOSITORY
+
+  backfill-macos:
+    if: ${{ inputs.platform == 'macos' || inputs.platform == 'all' }}
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify release exists
+        run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Resolve macOS asset name
+        id: macos-asset
+        run: |
+          arch="$(uname -m)"
+          asset_name="OctOPAgentMenu-macos-${arch}-${RELEASE_TAG}.zip"
+          echo "name=${asset_name}" >> "$GITHUB_OUTPUT"
+          echo "path=dist/releases/${RELEASE_TAG}/${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether macOS asset already exists
+        id: macos-exists
+        run: |
+          release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
+          asset_name='${{ steps.macos-asset.outputs.name }}'
+          if printf '%s' "$release_json" | jq -e --arg name "$asset_name" '.assets[] | select(.name == $name)' >/dev/null; then
+            echo "Asset already exists: $asset_name"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build macOS artifact
+        if: ${{ steps.macos-exists.outputs.exists != 'true' }}
+        run: node ./scripts/release-agent-menu.mjs --platform macos --version "$RELEASE_TAG"
+
+      - name: Upload macOS asset
+        if: ${{ steps.macos-exists.outputs.exists != 'true' }}
+        run: gh release upload "$RELEASE_TAG" "${{ steps.macos-asset.outputs.path }}" --repo "$GITHUB_REPOSITORY"
