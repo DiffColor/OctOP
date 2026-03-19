@@ -95,21 +95,9 @@ sealed class RuntimeInstaller
 
     if (codexInstalled)
     {
-      var result = await RunCommandAsync(
-        CreateCmdWrapperStartInfo(
-          paths.GetCodexCommandPath(),
-          ["login", "status"],
-          paths.InstallRoot,
-          BuildToolEnvironment(paths)
-        ),
-        cancellationToken: cancellationToken
-      );
-
-      var combined = string.Join("\n", new[] { result.StandardOutput, result.StandardError }.Where(static value => !string.IsNullOrWhiteSpace(value))).Trim();
-      codexLoggedIn = result.ExitCode == 0;
-      loginStatus = string.IsNullOrWhiteSpace(combined)
-        ? (codexLoggedIn ? "로그인됨" : "미로그인")
-        : StripAnsi(combined).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? "확인 실패";
+      var accountStatus = await ReadCodexAccountStatusAsync(paths, cancellationToken);
+      codexLoggedIn = accountStatus.LoggedIn;
+      loginStatus = accountStatus.Summary;
     }
 
     var autoStartConfigured = AppMetadata.CurrentExecutablePath is { Length: > 0 } executablePath &&
@@ -180,12 +168,6 @@ sealed class RuntimeInstaller
 
   public async Task LoginWithBrowserSelectionAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken, bool logoutFirst)
   {
-    if (logoutFirst)
-    {
-      progress.Report("현재 로그인 계정을 로그아웃합니다.");
-      await LogoutCodexAsync(paths, progress, cancellationToken);
-    }
-
     var codexCommandPath = paths.GetCodexCommandPath();
     if (!File.Exists(codexCommandPath))
     {
@@ -196,55 +178,27 @@ sealed class RuntimeInstaller
       ?? throw new InvalidOperationException("로그인에 사용할 브라우저 선택이 취소되었습니다.");
 
     progress.Report($"브라우저 선택: {browser.DisplayName}");
-    var browserLauncherPath = CreateBrowserLauncher(paths, browser);
     progress.Report($"{browser.DisplayName} 브라우저로 로그인을 시작합니다.");
 
-    var loginResult = await RunCommandAsync(
-      CreateCmdWrapperStartInfo(
-        codexCommandPath,
-        ["login"],
-        paths.InstallRoot,
-        BuildToolEnvironment(paths, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-          ["BROWSER"] = browserLauncherPath
-        })
-      ),
-      line => ReportLoginOutput(progress, line),
-      line => ReportLoginOutput(progress, line),
+    await using var session = await CodexAppServerSession.StartAsync(
+      codexCommandPath,
+      paths.InstallRoot,
+      BuildToolEnvironment(paths),
+      progress.Report,
       cancellationToken);
 
-    if (loginResult.ExitCode != 0)
+    if (logoutFirst)
     {
-      throw new InvalidOperationException($"Codex 로그인 실패: {loginResult.GetSummary()}");
-    }
-  }
-
-  private static void ReportLoginOutput(IProgress<string> progress, string line)
-  {
-    var sanitized = StripAnsi(line);
-    if (sanitized.Length == 0)
-    {
-      return;
+      progress.Report("현재 로그인 계정을 로그아웃합니다.");
+      await session.LogoutAsync(cancellationToken);
     }
 
-    progress.Report(sanitized);
-  }
-
-  private static string CreateBrowserLauncher(OctopPaths paths, BrowserOption browser)
-  {
-    var launcherDirectory = Path.Combine(paths.InstallRoot, "temp");
-    Directory.CreateDirectory(launcherDirectory);
-    var launcherPath = Path.Combine(launcherDirectory, "browser-launcher.cmd");
-    var script = $"""
-    @echo off
-    setlocal
-    set "URL=%~1"
-    if "%URL%"=="" exit /b 1
-    start "" "{browser.ExecutablePath}" "%URL%"
-    exit /b 0
-    """;
-    File.WriteAllText(launcherPath, script, new UTF8Encoding(false));
-    return launcherPath;
+    var loginStart = await session.StartChatGptLoginAsync(cancellationToken);
+    BrowserSelection.Open(browser, loginStart.AuthUri.AbsoluteUri);
+    progress.Report("브라우저에서 인증을 완료해 주세요.");
+    await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+    var accountStatus = await session.ReadAccountAsync(cancellationToken);
+    progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
   }
 
   public async Task LogoutCodexAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
@@ -256,21 +210,13 @@ sealed class RuntimeInstaller
       return;
     }
 
-    var result = await RunCommandAsync(
-      CreateCmdWrapperStartInfo(
-        codexCommandPath,
-        ["logout"],
-        paths.InstallRoot,
-        BuildToolEnvironment(paths)
-      ),
-      progress.Report,
+    await using var session = await CodexAppServerSession.StartAsync(
+      codexCommandPath,
+      paths.InstallRoot,
+      BuildToolEnvironment(paths),
       progress.Report,
       cancellationToken);
-
-    if (result.ExitCode != 0)
-    {
-      throw new InvalidOperationException($"Codex 로그아웃 실패: {result.GetSummary()}");
-    }
+    await session.LogoutAsync(cancellationToken);
 
     progress.Report("Codex 로그아웃을 완료했습니다.");
   }
@@ -495,6 +441,19 @@ sealed class RuntimeInstaller
 
     progress.Report("ChatGPT 로그인을 시작합니다.");
     await LoginWithBrowserSelectionAsync(paths, progress, cancellationToken, logoutFirst: false);
+  }
+
+  private async Task<CodexAppServerSession.AccountStatus> ReadCodexAccountStatusAsync(
+    OctopPaths paths,
+    CancellationToken cancellationToken)
+  {
+    await using var session = await CodexAppServerSession.StartAsync(
+      paths.GetCodexCommandPath(),
+      paths.InstallRoot,
+      BuildToolEnvironment(paths),
+      null,
+      cancellationToken);
+    return await session.ReadAccountAsync(cancellationToken);
   }
 
   private async Task<string> ResolveLatestLtsNodeVersionAsync(CancellationToken cancellationToken)

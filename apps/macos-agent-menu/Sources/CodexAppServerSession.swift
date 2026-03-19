@@ -1,0 +1,407 @@
+import Foundation
+
+struct CodexAppServerAccountStatus: Sendable {
+  let loggedIn: Bool
+  let requiresOpenAIAuth: Bool
+  let summary: String
+}
+
+struct CodexAppServerLoginStartResult: Sendable {
+  let loginId: String
+  let authURL: URL
+}
+
+struct CodexAppServerLoginCompletedResult: Sendable {
+  let loginId: String?
+  let success: Bool
+  let error: String?
+}
+
+private enum CodexAppServerSessionError: LocalizedError {
+  case terminated(String)
+  case invalidResponse(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .terminated(let detail):
+      return detail
+    case .invalidResponse(let detail):
+      return detail
+    }
+  }
+}
+
+private actor CodexAppServerSessionState {
+  private var pendingRequests: [String: CheckedContinuation<Data?, Error>] = [:]
+  private var loginWaiters: [String: CheckedContinuation<CodexAppServerLoginCompletedResult, Error>] = [:]
+  private var bufferedLoginResults: [String: CodexAppServerLoginCompletedResult] = [:]
+  private var terminalError: Error?
+
+  func registerRequest(id: String, continuation: CheckedContinuation<Data?, Error>) {
+    if let terminalError {
+      continuation.resume(throwing: terminalError)
+      return
+    }
+
+    pendingRequests[id] = continuation
+  }
+
+  func resolveRequest(id: String, result: Data?) {
+    guard let continuation = pendingRequests.removeValue(forKey: id) else {
+      return
+    }
+
+    continuation.resume(returning: result)
+  }
+
+  func rejectRequest(id: String, error: Error) {
+    guard let continuation = pendingRequests.removeValue(forKey: id) else {
+      return
+    }
+
+    continuation.resume(throwing: error)
+  }
+
+  func registerLoginWaiter(
+    loginId: String,
+    continuation: CheckedContinuation<CodexAppServerLoginCompletedResult, Error>
+  ) {
+    if let terminalError {
+      continuation.resume(throwing: terminalError)
+      return
+    }
+
+    if let buffered = bufferedLoginResults.removeValue(forKey: loginId) {
+      continuation.resume(returning: buffered)
+      return
+    }
+
+    loginWaiters[loginId] = continuation
+  }
+
+  func cancelLoginWaiter(loginId: String, error: Error) {
+    guard let continuation = loginWaiters.removeValue(forKey: loginId) else {
+      return
+    }
+
+    continuation.resume(throwing: error)
+  }
+
+  func handleLoginCompleted(_ result: CodexAppServerLoginCompletedResult) {
+    if let loginId = result.loginId, let waiter = loginWaiters.removeValue(forKey: loginId) {
+      let completed = CodexAppServerLoginCompletedResult(
+        loginId: result.loginId,
+        success: result.success,
+        error: result.error
+      )
+      waiter.resume(returning: completed)
+      return
+    }
+
+    if let loginId = result.loginId {
+      bufferedLoginResults[loginId] = result
+      return
+    }
+
+    if let firstKey = loginWaiters.keys.first, let waiter = loginWaiters.removeValue(forKey: firstKey) {
+      let completed = CodexAppServerLoginCompletedResult(
+        loginId: result.loginId,
+        success: result.success,
+        error: result.error
+      )
+      waiter.resume(returning: completed)
+    }
+  }
+
+  func terminate(with error: Error) {
+    if terminalError != nil {
+      return
+    }
+
+    terminalError = error
+
+    let pending = pendingRequests.values
+    pendingRequests.removeAll()
+    for continuation in pending {
+      continuation.resume(throwing: error)
+    }
+
+    let waiters = loginWaiters.values
+    loginWaiters.removeAll()
+    for continuation in waiters {
+      continuation.resume(throwing: error)
+    }
+  }
+}
+
+final class CodexAppServerSession: @unchecked Sendable {
+  private let process: Process
+  private let standardInput: FileHandle
+  private let standardOutput: FileHandle
+  private let standardError: FileHandle
+  private let state = CodexAppServerSessionState()
+  private var stdoutTask: Task<Void, Never>?
+  private var stderrTask: Task<Void, Never>?
+
+  init(
+    executableURL: URL,
+    environment: [String: String],
+    currentDirectoryURL: URL?,
+    log: (@escaping @Sendable (String) -> Void)
+  ) throws {
+    let stdinPipe = Pipe()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+
+    process = Process()
+    process.executableURL = executableURL
+    process.arguments = ["app-server", "--listen", "stdio://"]
+    process.environment = environment
+    process.currentDirectoryURL = currentDirectoryURL
+    process.standardInput = stdinPipe
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    standardInput = stdinPipe.fileHandleForWriting
+    standardOutput = stdoutPipe.fileHandleForReading
+    standardError = stderrPipe.fileHandleForReading
+
+    process.terminationHandler = { [weak self] process in
+      let message = "Codex app-server 종료됨 (status=\(process.terminationStatus))"
+      Task {
+        await self?.state.terminate(with: CodexAppServerSessionError.terminated(message))
+      }
+    }
+
+    try process.run()
+
+    stdoutTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        for try await line in self.standardOutput.bytes.lines {
+          await self.handleStdoutLine(String(line))
+        }
+      } catch {
+        await self.state.terminate(with: error)
+      }
+    }
+
+    stderrTask = Task {
+      do {
+        for try await line in self.standardError.bytes.lines {
+          let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+          guard !trimmed.isEmpty else { continue }
+          log(trimmed)
+        }
+      } catch {
+      }
+    }
+  }
+
+  deinit {
+    stdoutTask?.cancel()
+    stderrTask?.cancel()
+    if process.isRunning {
+      process.terminate()
+    }
+  }
+
+  func initialize() async throws {
+    _ = try await request(
+      method: "initialize",
+      params: [
+        "clientInfo": [
+          "name": "octop-agent-menu",
+          "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "v0.0.0-dev"
+        ],
+        "capabilities": [
+          "experimentalApi": true
+        ]
+      ]
+    )
+  }
+
+  func readAccount(refreshToken: Bool = false) async throws -> CodexAppServerAccountStatus {
+    let raw = try await request(
+      method: "account/read",
+      params: ["refreshToken": refreshToken]
+    )
+
+    guard let result = raw as? [String: Any] else {
+      throw CodexAppServerSessionError.invalidResponse("account/read 응답 형식이 올바르지 않습니다.")
+    }
+
+    let requiresOpenAIAuth = result["requiresOpenaiAuth"] as? Bool ?? false
+    guard let account = result["account"] as? [String: Any] else {
+      return CodexAppServerAccountStatus(
+        loggedIn: false,
+        requiresOpenAIAuth: requiresOpenAIAuth,
+        summary: requiresOpenAIAuth ? "미로그인" : "계정 정보 없음"
+      )
+    }
+
+    let email = account["email"] as? String
+    let type = account["type"] as? String
+    let summary: String
+    if let email, !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      summary = email
+    } else if type == "apiKey" {
+      summary = "API Key 로그인됨"
+    } else {
+      summary = "로그인됨"
+    }
+
+    return CodexAppServerAccountStatus(
+      loggedIn: true,
+      requiresOpenAIAuth: requiresOpenAIAuth,
+      summary: summary
+    )
+  }
+
+  func startChatGptLogin() async throws -> CodexAppServerLoginStartResult {
+    let raw = try await request(
+      method: "account/login/start",
+      params: ["type": "chatgpt"]
+    )
+
+    guard let result = raw as? [String: Any],
+          let type = result["type"] as? String,
+          type == "chatgpt",
+          let loginId = result["loginId"] as? String,
+          let authURLText = result["authUrl"] as? String,
+          let authURL = URL(string: authURLText) else {
+      throw CodexAppServerSessionError.invalidResponse("app-server 로그인 URL을 확인하지 못했습니다.")
+    }
+
+    return CodexAppServerLoginStartResult(loginId: loginId, authURL: authURL)
+  }
+
+  func waitForLoginCompleted(loginId: String) async throws -> CodexAppServerLoginCompletedResult {
+    let result = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        Task {
+          await state.registerLoginWaiter(loginId: loginId, continuation: continuation)
+        }
+      }
+    } onCancel: {
+      Task {
+        await self.state.cancelLoginWaiter(
+          loginId: loginId,
+          error: CancellationError()
+        )
+      }
+    }
+
+    guard result.success else {
+      throw CodexAppServerSessionError.terminated(result.error ?? "Codex 로그인에 실패했습니다.")
+    }
+
+    return result
+  }
+
+  func logout() async throws {
+    _ = try await request(method: "account/logout", params: nil)
+  }
+
+  func cancelLogin(loginId: String) async throws {
+    _ = try await request(
+      method: "account/login/cancel",
+      params: ["loginId": loginId]
+    )
+  }
+
+  func shutdown() async {
+    stdoutTask?.cancel()
+    stderrTask?.cancel()
+    if process.isRunning {
+      process.terminate()
+    }
+    await state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
+  }
+
+  private func request(method: String, params: Any?) async throws -> Any? {
+    let id = "req-\(UUID().uuidString.lowercased())"
+    let requestData = try buildRequestData(id: id, method: method, params: params)
+
+    let responseData: Data? = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        Task { [state, requestData] in
+          await state.registerRequest(id: id, continuation: continuation)
+
+          do {
+            try standardInput.write(contentsOf: requestData)
+          } catch {
+            await state.rejectRequest(id: id, error: error)
+          }
+        }
+      }
+    } onCancel: {
+      Task {
+        await self.state.rejectRequest(id: id, error: CancellationError())
+      }
+    }
+
+    guard let responseData else {
+      return nil
+    }
+
+    return try JSONSerialization.jsonObject(with: responseData, options: [])
+  }
+
+  private func buildRequestData(id: String, method: String, params: Any?) throws -> Data {
+    var payload: [String: Any] = [
+      "jsonrpc": "2.0",
+      "id": id,
+      "method": method
+    ]
+
+    if let params {
+      payload["params"] = params
+    }
+
+    var data = try JSONSerialization.data(withJSONObject: payload, options: [])
+    data.append(0x0A)
+    return data
+  }
+
+  private func handleStdoutLine(_ line: String) async {
+    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let data = trimmed.data(using: .utf8),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return
+    }
+
+    if let id = raw["id"] {
+      if let error = raw["error"] as? [String: Any] {
+        let message = (error["message"] as? String) ?? "Codex app-server 요청 실패"
+        await state.rejectRequest(id: String(describing: id), error: CodexAppServerSessionError.terminated(message))
+        return
+      }
+
+      let resultData: Data?
+      if let result = raw["result"] {
+        resultData = try? JSONSerialization.data(withJSONObject: result, options: [])
+      } else {
+        resultData = nil
+      }
+
+      await state.resolveRequest(id: String(describing: id), result: resultData)
+      return
+    }
+
+    guard let method = raw["method"] as? String,
+          method == "account/login/completed",
+          let params = raw["params"] as? [String: Any] else {
+      return
+    }
+
+    let completed = CodexAppServerLoginCompletedResult(
+      loginId: params["loginId"] as? String,
+      success: params["success"] as? Bool ?? false,
+      error: params["error"] as? String
+    )
+
+    await state.handleLoginCompleted(completed)
+  }
+}

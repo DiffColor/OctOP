@@ -1297,25 +1297,35 @@ final class AgentBootstrapStore: ObservableObject {
     return environment
   }
 
-  private func createCodexBrowserLauncherScript(browserID: String) throws -> URL {
-    let scriptDirectoryURL = appSupportURL.appendingPathComponent("temp", isDirectory: true)
-    try ensureDirectory(scriptDirectoryURL)
-    let scriptURL = scriptDirectoryURL.appendingPathComponent("codex-browser-launcher.sh")
-    let script = """
-    #!/bin/sh
-    set -eu
-    if [ "$#" -lt 1 ]; then
-      exit 1
-    fi
-    exec /usr/bin/open -b "\(browserID)" "$1"
-    """
-    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
-    return scriptURL
-  }
-
   private func appServerCommand() -> String {
     "\(shellEscape(runtimeCodexURL.path)) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
+  }
+
+  private func withCodexAppServerSession<T>(
+    log: (@MainActor (String) -> Void)? = nil,
+    operation: @escaping (CodexAppServerSession) async throws -> T
+  ) async throws -> T {
+    let session = try CodexAppServerSession(
+      executableURL: runtimeCodexURL,
+      environment: buildLaunchEnvironment(),
+      currentDirectoryURL: runtimeWorkspaceURL,
+      log: { line in
+        guard let log else { return }
+        Task { @MainActor in
+          log(line)
+        }
+      }
+    )
+
+    do {
+      try await session.initialize()
+      let result = try await operation(session)
+      await session.shutdown()
+      return result
+    } catch {
+      await session.shutdown()
+      throw error
+    }
   }
 
   private func shellEscape(_ value: String) -> String {
@@ -1332,54 +1342,40 @@ final class AgentBootstrapStore: ObservableObject {
       return (false, "Codex 미설치")
     }
 
-    var lines: [String] = []
-
     do {
-      try await runProcess(
-        executableURL: runtimeCodexURL,
-        arguments: ["login", "status"],
-        environment: buildLaunchEnvironment(),
-        currentDirectoryURL: runtimeWorkspaceURL,
-        log: { line in
-          let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-          if !trimmed.isEmpty {
-            lines.append(trimmed)
-          }
-        }
-      )
-
-      return (true, lines.last ?? "로그인됨")
+      return try await withCodexAppServerSession { session in
+        let status = try await session.readAccount(refreshToken: false)
+        return (status.loggedIn, status.summary)
+      }
     } catch {
-      let summary = error.localizedDescription
-        .split(whereSeparator: \.isNewline)
-        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        .last { !$0.isEmpty } ?? "미로그인"
+      let summary = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
       return (false, summary)
     }
   }
 
   private func loginWithBrowserSelection(log: @escaping @MainActor (String) -> Void, logoutFirst: Bool) async throws {
-    if logoutFirst {
-      log("현재 Codex 로그인 계정을 로그아웃합니다.")
-      try await logoutCodex(log: log)
-    }
-
     guard let browserID = await MainActor.run(body: { CodexBrowserSelection.selectBrowserID() }) else {
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
-    let browserLauncherPath = try createCodexBrowserLauncherScript(browserID: browserID)
     log("선택한 브라우저로 로그인을 시작합니다.")
 
-    try await runProcess(
-      executableURL: runtimeCodexURL,
-      arguments: ["login"],
-      environment: buildLaunchEnvironment(extra: ["BROWSER": browserLauncherPath.path]),
-      currentDirectoryURL: runtimeWorkspaceURL,
-      log: log
-    )
+    let accountStatus = try await withCodexAppServerSession(log: log) { session in
+      if logoutFirst {
+        log("현재 Codex 로그인 계정을 로그아웃합니다.")
+        try await session.logout()
+      }
 
-    let status = await currentCodexLoginStatus()
-    codexLoginStatus = status.summary
+      let loginStart = try await session.startChatGptLogin()
+      await MainActor.run {
+        CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
+      }
+      log("브라우저에서 인증을 완료해 주세요.")
+      _ = try await session.waitForLoginCompleted(loginId: loginStart.loginId)
+      return try await session.readAccount(refreshToken: false)
+    }
+
+    codexLoggedIn = accountStatus.loggedIn
+    codexLoginStatus = accountStatus.summary
   }
 
   private func logoutCodex(log: @escaping @MainActor (String) -> Void) async throws {
@@ -1388,13 +1384,10 @@ final class AgentBootstrapStore: ObservableObject {
       return
     }
 
-    try await runProcess(
-      executableURL: runtimeCodexURL,
-      arguments: ["logout"],
-      environment: buildLaunchEnvironment(),
-      currentDirectoryURL: runtimeWorkspaceURL,
-      log: log
-    )
+    try await withCodexAppServerSession(log: log) { session in
+      try await session.logout()
+      return ()
+    }
   }
 
   private var bundleBootstrapURL: URL? {
