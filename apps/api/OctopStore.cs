@@ -564,6 +564,22 @@ public sealed class OctopStore : IAsyncDisposable
       string.IsNullOrWhiteSpace(issue.Value<string>("deleted_at")));
   }
 
+  public async Task<JObject?> GetSourceThreadIssueAsync(
+    string userId,
+    string bridgeId,
+    string issueId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    var issues = await ReadTableRowsAsync(connection, ThreadIssueCardTable);
+    return issues.FirstOrDefault(issue =>
+      string.Equals(issue.Value<string>("login_id") ?? issue.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+      string.Equals(issue.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+      string.Equals(issue.Value<string>("id"), issueId, StringComparison.Ordinal) &&
+      string.IsNullOrWhiteSpace(issue.Value<string>("deleted_at")));
+  }
+
   public async Task<JObject?> GetProjectAsync(
     string userId,
     string bridgeId,

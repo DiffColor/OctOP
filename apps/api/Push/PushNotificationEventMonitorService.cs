@@ -13,6 +13,7 @@ public sealed class PushNotificationEventMonitorService(
   VapidKeyService vapidKeyService,
   ILogger<PushNotificationEventMonitorService> logger) : BackgroundService
 {
+  private const string UntitledIssueTitle = "Untitled issue";
   private readonly ConcurrentDictionary<string, byte> _inFlightReceiptIds = new(StringComparer.Ordinal);
 
   protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -128,11 +129,13 @@ public sealed class PushNotificationEventMonitorService(
       }
 
       var issueSnapshot = await pushSubscriptionService.GetIssueSnapshotAsync(userId, bridgeId, issueId, cancellationToken);
+      var sourceIssueSnapshot = await pushSubscriptionService.GetSourceIssueSnapshotAsync(userId, bridgeId, issueId, cancellationToken);
       var resolvedProjectId = issueSnapshot?.Value<string>("project_id") ?? projectId;
       var projectSnapshot = !string.IsNullOrWhiteSpace(resolvedProjectId)
         ? await pushSubscriptionService.GetProjectSnapshotAsync(userId, bridgeId, resolvedProjectId, cancellationToken)
         : null;
-      var sourceAppId = PushNotificationTemplateService.NormalizeAppId(issueSnapshot?.Value<string>("source_app_id"));
+      var sourceAppId = PushNotificationTemplateService.NormalizeAppId(
+        issueSnapshot?.Value<string>("source_app_id") ?? sourceIssueSnapshot?.Value<string>("source_app_id"));
       var targetSubscriptions = subscriptions
         .Where((subscription) => PushNotificationTemplateService.ShouldDeliverToApp(sourceAppId, subscription.AppId))
         .ToList();
@@ -143,7 +146,7 @@ public sealed class PushNotificationEventMonitorService(
         return;
       }
 
-      var issueTitle = issueSnapshot?.Value<string>("title") ?? issueId;
+      var issueTitle = ResolveIssueTitle(issueSnapshot, sourceIssueSnapshot);
       var projectName = projectSnapshot?.Value<string>("name");
       var response = await webPushNotificationService.SendAsync(
         targetSubscriptions,
@@ -225,6 +228,25 @@ public sealed class PushNotificationEventMonitorService(
     {
       _inFlightReceiptIds.TryRemove(receiptId, out _);
     }
+  }
+
+  private static string ResolveIssueTitle(JObject? issueSnapshot, JObject? sourceIssueSnapshot)
+  {
+    var title = issueSnapshot?.Value<string>("title");
+
+    if (!string.IsNullOrWhiteSpace(title))
+    {
+      return title.Trim();
+    }
+
+    title = sourceIssueSnapshot?.Value<string>("title");
+
+    if (!string.IsNullOrWhiteSpace(title))
+    {
+      return title.Trim();
+    }
+
+    return UntitledIssueTitle;
   }
 
   private sealed class PushEventEnvelope

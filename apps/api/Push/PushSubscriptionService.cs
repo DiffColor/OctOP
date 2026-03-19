@@ -172,6 +172,15 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     return octopStore.GetLogicalThreadIssueAsync(userId, bridgeId, issueId, cancellationToken);
   }
 
+  public Task<JObject?> GetSourceIssueSnapshotAsync(
+    string userId,
+    string bridgeId,
+    string issueId,
+    CancellationToken cancellationToken)
+  {
+    return octopStore.GetSourceThreadIssueAsync(userId, bridgeId, issueId, cancellationToken);
+  }
+
   public Task<JObject?> GetProjectSnapshotAsync(
     string userId,
     string bridgeId,
