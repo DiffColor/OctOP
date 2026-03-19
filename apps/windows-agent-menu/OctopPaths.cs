@@ -14,6 +14,7 @@ sealed class OctopPaths
   public string ConfigurationPath => Path.Combine(InstallRoot, "config.json");
   public string BridgeIdPath => Path.Combine(InstallRoot, "bridge-id.txt");
   public string LegacyBridgeIdPath => Path.Combine(StateHome, "bridge-id");
+  public string PendingLoginPath => Path.Combine(InstallRoot, "pending-login.json");
   public string PendingServiceStartPath => Path.Combine(InstallRoot, "pending-service-start");
   public string RuntimePackageJsonPath => Path.Combine(RuntimeRoot, "package.json");
   public string RuntimeEnvLocalPath => Path.Combine(RuntimeRoot, ".env.local");

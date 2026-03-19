@@ -196,6 +196,11 @@ struct AgentLaunchContext {
   let environment: [String: String]
 }
 
+private struct PendingLoginState: Codable {
+  let loginId: String
+  let startedAt: Date
+}
+
 struct AgentDiagnosticItem: Identifiable {
   let id = UUID()
   let title: String
@@ -517,6 +522,10 @@ final class AgentBootstrapStore: ObservableObject {
 
   var pendingServiceStartURL: URL {
     appSupportURL.appendingPathComponent("pending-service-start")
+  }
+
+  var pendingLoginURL: URL {
+    appSupportURL.appendingPathComponent("pending-login.json")
   }
 
   var launchAgentURL: URL {
@@ -1350,7 +1359,8 @@ final class AgentBootstrapStore: ObservableObject {
     do {
       return try await withCodexAppServerSession { session in
         let status = try await session.readAccount(refreshToken: false)
-        return (status.loggedIn, status.summary)
+        let recoveredStatus = try await self.recoverPendingLoginIfNeeded(using: session, accountStatus: status)
+        return (recoveredStatus.loggedIn, recoveredStatus.summary)
       }
     } catch {
       let summary = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1368,14 +1378,17 @@ final class AgentBootstrapStore: ObservableObject {
       if logoutFirst {
         log("현재 Codex 로그인 계정을 로그아웃합니다.")
         try await session.logout()
+        self.clearPendingLogin()
       }
 
       let loginStart = try await session.startChatGptLogin()
+      try self.savePendingLogin(loginId: loginStart.loginId)
       await MainActor.run {
         CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
       }
       log("브라우저에서 인증을 완료해 주세요.")
       _ = try await session.waitForLoginCompleted(loginId: loginStart.loginId)
+      self.clearPendingLogin()
       return try await session.readAccount(refreshToken: false)
     }
 
@@ -1391,8 +1404,55 @@ final class AgentBootstrapStore: ObservableObject {
 
     try await withCodexAppServerSession(log: log) { session in
       try await session.logout()
+      self.clearPendingLogin()
       return ()
     }
+  }
+
+  private func loadPendingLogin() -> PendingLoginState? {
+    guard FileManager.default.fileExists(atPath: pendingLoginURL.path),
+          let data = try? Data(contentsOf: pendingLoginURL) else {
+      return nil
+    }
+
+    return try? JSONDecoder().decode(PendingLoginState.self, from: data)
+  }
+
+  private func savePendingLogin(loginId: String) throws {
+    try ensureDirectory(appSupportURL)
+    let data = try JSONEncoder().encode(PendingLoginState(loginId: loginId, startedAt: Date()))
+    try data.write(to: pendingLoginURL, options: .atomic)
+  }
+
+  private func clearPendingLogin() {
+    try? FileManager.default.removeItem(at: pendingLoginURL)
+  }
+
+  private func recoverPendingLoginIfNeeded(
+    using session: CodexAppServerSession,
+    accountStatus: CodexAppServerAccountStatus
+  ) async throws -> CodexAppServerAccountStatus {
+    if accountStatus.loggedIn {
+      clearPendingLogin()
+      return accountStatus
+    }
+
+    guard let pendingLogin = loadPendingLogin(),
+          !pendingLogin.loginId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return accountStatus
+    }
+
+    do {
+      try await session.cancelLogin(loginId: pendingLogin.loginId)
+    } catch {
+    }
+
+    clearPendingLogin()
+    return CodexAppServerAccountStatus(
+      loggedIn: false,
+      requiresOpenAIAuth: accountStatus.requiresOpenAIAuth,
+      summary: "미로그인"
+    )
   }
 
   private var bundleBootstrapURL: URL? {

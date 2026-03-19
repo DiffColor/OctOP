@@ -10,6 +10,12 @@ using System.Text.RegularExpressions;
 
 sealed class RuntimeInstaller
 {
+  private sealed class PendingLoginState
+  {
+    public string LoginId { get; init; } = string.Empty;
+    public DateTimeOffset StartedAt { get; init; } = DateTimeOffset.UtcNow;
+  }
+
   private const string NodeIndexUrl = "https://nodejs.org/dist/index.json";
   private const string RuntimePackageJson = """
   {
@@ -96,6 +102,7 @@ sealed class RuntimeInstaller
     if (codexInstalled)
     {
       var accountStatus = await ReadCodexAccountStatusAsync(paths, cancellationToken);
+      accountStatus = await RecoverPendingLoginIfNeededAsync(paths, accountStatus, cancellationToken);
       codexLoggedIn = accountStatus.LoggedIn;
       loginStatus = accountStatus.Summary;
     }
@@ -191,12 +198,15 @@ sealed class RuntimeInstaller
     {
       progress.Report("현재 로그인 계정을 로그아웃합니다.");
       await session.LogoutAsync(cancellationToken);
+      ClearPendingLogin(paths);
     }
 
     var loginStart = await session.StartChatGptLoginAsync(cancellationToken);
+    SavePendingLogin(paths, loginStart.LoginId);
     BrowserSelection.Open(browser, loginStart.AuthUri.AbsoluteUri);
     progress.Report("브라우저에서 인증을 완료해 주세요.");
     await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+    ClearPendingLogin(paths);
     var accountStatus = await session.ReadAccountAsync(cancellationToken);
     progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
   }
@@ -217,8 +227,98 @@ sealed class RuntimeInstaller
       progress.Report,
       cancellationToken);
     await session.LogoutAsync(cancellationToken);
+    ClearPendingLogin(paths);
 
     progress.Report("Codex 로그아웃을 완료했습니다.");
+  }
+
+  private static PendingLoginState? LoadPendingLogin(OctopPaths paths)
+  {
+    if (!File.Exists(paths.PendingLoginPath))
+    {
+      return null;
+    }
+
+    try
+    {
+      return JsonSerializer.Deserialize<PendingLoginState>(
+        File.ReadAllText(paths.PendingLoginPath, Encoding.UTF8),
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  private static void SavePendingLogin(OctopPaths paths, string loginId)
+  {
+    Directory.CreateDirectory(paths.InstallRoot);
+    var json = JsonSerializer.Serialize(
+      new PendingLoginState
+      {
+        LoginId = loginId,
+        StartedAt = DateTimeOffset.UtcNow
+      },
+      new JsonSerializerOptions(JsonSerializerDefaults.Web)
+      {
+        WriteIndented = true
+      });
+    File.WriteAllText(paths.PendingLoginPath, json, new UTF8Encoding(false));
+  }
+
+  private static void ClearPendingLogin(OctopPaths paths)
+  {
+    try
+    {
+      if (File.Exists(paths.PendingLoginPath))
+      {
+        File.Delete(paths.PendingLoginPath);
+      }
+    }
+    catch
+    {
+    }
+  }
+
+  private async Task<CodexAppServerSession.AccountStatus> RecoverPendingLoginIfNeededAsync(
+    OctopPaths paths,
+    CodexAppServerSession.AccountStatus accountStatus,
+    CancellationToken cancellationToken)
+  {
+    if (accountStatus.LoggedIn)
+    {
+      ClearPendingLogin(paths);
+      return accountStatus;
+    }
+
+    var pendingLogin = LoadPendingLogin(paths);
+    if (pendingLogin is null || string.IsNullOrWhiteSpace(pendingLogin.LoginId))
+    {
+      return accountStatus;
+    }
+
+    try
+    {
+      await using var session = await CodexAppServerSession.StartAsync(
+        paths.GetCodexCommandPath(),
+        paths.InstallRoot,
+        BuildToolEnvironment(paths),
+        null,
+        cancellationToken);
+      await session.CancelLoginAsync(pendingLogin.LoginId, cancellationToken);
+    }
+    catch
+    {
+    }
+
+    ClearPendingLogin(paths);
+    return new CodexAppServerSession.AccountStatus
+    {
+      LoggedIn = false,
+      RequiresOpenAiAuth = accountStatus.RequiresOpenAiAuth,
+      Summary = "미로그인"
+    };
   }
 
   private static IEnumerable<string> RequiredRuntimeFiles(OctopPaths paths)
