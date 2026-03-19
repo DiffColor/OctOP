@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+using System.Windows.Forms.Integration;
 
 sealed class AgentTrayApplicationContext : ApplicationContext
 {
@@ -56,6 +57,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _grayscaleIcon = CreateTrayIcon(grayscale: true);
     _logWindow = new LogWindow(ClearLogs);
     _setupWindow = new SetupWindow(_runtimeInstaller);
+    EnableModelessKeyboardInterop(_logWindow);
+    EnableModelessKeyboardInterop(_setupWindow);
     _setupWindow.LoadConfiguration(_configuration);
     _setupWindow.LogsRequested += (_, _) => ShowLogs();
     _setupWindow.LogProduced += (_, message) =>
@@ -604,6 +607,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private void PostToUi(Action action)
   {
     _uiContext.Post(static state => ((Action)state!).Invoke(), action);
+  }
+
+  private static void EnableModelessKeyboardInterop(System.Windows.Window window)
+  {
+    ElementHost.EnableModelessKeyboardInterop(window);
   }
 
   private static string GetRuntimeStateLabel(AgentRuntimeState state) => state switch
