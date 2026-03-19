@@ -21,6 +21,8 @@ public sealed class OctopStore : IAsyncDisposable
   private const string DashboardArchiveTable = "dashboard_archives";
   private const string TodoChatTable = "todo_chats";
   private const string TodoMessageTable = "todo_messages";
+  private const string PushSubscriptionTable = "push_subscriptions";
+  private const string PushNotificationReceiptTable = "push_notification_receipts";
 
   private readonly string _host;
   private readonly int _port;
@@ -87,6 +89,8 @@ public sealed class OctopStore : IAsyncDisposable
       await EnsureTableAsync(connection, tables, TodoChatTable);
       await EnsureTableAsync(connection, tables, TodoMessageTable);
       await EnsureTableAsync(connection, tables, DashboardArchiveTable);
+      await EnsureTableAsync(connection, tables, PushSubscriptionTable);
+      await EnsureTableAsync(connection, tables, PushNotificationReceiptTable);
       _storageEnsured = true;
     }
     finally
@@ -294,7 +298,9 @@ public sealed class OctopStore : IAsyncDisposable
       LogicalThreadTimelineTable,
       LogicalThreadIssueBoardTable,
       TodoChatTable,
-      TodoMessageTable
+      TodoMessageTable,
+      PushSubscriptionTable,
+      PushNotificationReceiptTable
     })
     {
       await DeleteRowsByBridgeIdAsync(connection, tableName, bridgeId);
@@ -401,5 +407,139 @@ public sealed class OctopStore : IAsyncDisposable
       })
       .Delete()
       .RunResultAsync<object>(connection);
+  }
+
+  public async Task<IReadOnlyList<PushSubscriptionEntity>> ListPushSubscriptionsAsync(
+    string userId,
+    string bridgeId,
+    string? appId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    using var cursor = await _r.Db(_db)
+      .Table(PushSubscriptionTable)
+      .RunCursorAsync<PushSubscriptionEntity>(connection, cancellationToken);
+    var rows = new List<PushSubscriptionEntity>();
+
+    while (await cursor.MoveNextAsync(cancellationToken))
+    {
+      var row = cursor.Current;
+
+      if (
+        row is null ||
+        !row.IsActive ||
+        !string.Equals(row.LoginId ?? row.UserId, userId, StringComparison.Ordinal) ||
+        !string.Equals(row.BridgeId, bridgeId, StringComparison.Ordinal) ||
+        (!string.IsNullOrWhiteSpace(appId) && !string.Equals(row.AppId, appId, StringComparison.Ordinal)))
+      {
+        continue;
+      }
+
+      rows.Add(row);
+    }
+
+    return rows;
+  }
+
+  public async Task<PushSubscriptionEntity?> GetPushSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    return await _r.Db(_db)
+      .Table(PushSubscriptionTable)
+      .Get(subscriptionId)
+      .RunResultAsync<PushSubscriptionEntity?>(connection);
+  }
+
+  public async Task UpsertPushSubscriptionAsync(PushSubscriptionEntity subscription, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    await _r.Db(_db)
+      .Table(PushSubscriptionTable)
+      .Insert(JObject.FromObject(subscription))
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task DeletePushSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    await _r.Db(_db)
+      .Table(PushSubscriptionTable)
+      .Get(subscriptionId)
+      .Delete()
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task DeletePushSubscriptionsByEndpointAsync(string endpoint, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    await _r.Db(_db)
+      .Table(PushSubscriptionTable)
+      .Filter(new JObject
+      {
+        ["endpoint"] = endpoint
+      })
+      .Delete()
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task<PushNotificationReceiptEntity?> GetPushNotificationReceiptAsync(
+    string receiptId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    return await _r.Db(_db)
+      .Table(PushNotificationReceiptTable)
+      .Get(receiptId)
+      .RunResultAsync<PushNotificationReceiptEntity?>(connection);
+  }
+
+  public async Task UpsertPushNotificationReceiptAsync(
+    PushNotificationReceiptEntity receipt,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    await _r.Db(_db)
+      .Table(PushNotificationReceiptTable)
+      .Insert(JObject.FromObject(receipt))
+      .OptArg("conflict", "replace")
+      .RunResultAsync<object>(connection);
+  }
+
+  public async Task<JObject?> GetLogicalThreadIssueAsync(
+    string userId,
+    string bridgeId,
+    string issueId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    var issues = await ReadTableRowsAsync(connection, LogicalThreadIssueBoardTable);
+    return issues.FirstOrDefault(issue =>
+      string.Equals(issue.Value<string>("login_id") ?? issue.Value<string>("user_id"), userId, StringComparison.Ordinal) &&
+      string.Equals(issue.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+      string.Equals(issue.Value<string>("id"), issueId, StringComparison.Ordinal) &&
+      string.IsNullOrWhiteSpace(issue.Value<string>("deleted_at")));
+  }
+
+  public async Task<JObject?> GetProjectAsync(
+    string userId,
+    string bridgeId,
+    string projectId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var connection = await GetConnectionAsync();
+    var projects = await ReadTableRowsAsync(connection, ProjectTable);
+    return projects.FirstOrDefault(project =>
+      string.Equals(project.Value<string>("id"), projectId, StringComparison.Ordinal) &&
+      string.Equals(project.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
   }
 }

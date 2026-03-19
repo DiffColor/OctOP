@@ -1,10 +1,9 @@
 const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "dev";
-const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
-const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-icon-192.png", "/octop-home-icon-512.png", "/octop-home-icon-180.png"];
+const CACHE_NAME = `octop-dashboard-${BUILD_ID}`;
+const APP_SHELL = ["/", "/favicon.ico", "/icon-192.png", "/icon-512.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 
 const getContentType = (response) => response?.headers?.get("content-type")?.toLowerCase() ?? "";
-
 const isHtmlResponse = (response) => getContentType(response).includes("text/html");
 
 const isAssetRequest = (request, requestUrl) => {
@@ -12,7 +11,12 @@ const isAssetRequest = (request, requestUrl) => {
     return false;
   }
 
-  if (request.destination === "script" || request.destination === "style" || request.destination === "worker") {
+  if (
+    request.destination === "script" ||
+    request.destination === "style" ||
+    request.destination === "worker" ||
+    request.destination === "document"
+  ) {
     return true;
   }
 
@@ -79,18 +83,15 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
-  const isSameOrigin = requestUrl.origin === self.location.origin;
 
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
           const cloned = response.clone();
-
           caches.open(CACHE_NAME).then((cache) => {
             cache.put("/", cloned);
           });
-
           return response;
         })
         .catch(async () => {
@@ -98,11 +99,10 @@ self.addEventListener("fetch", (event) => {
           return cached ?? Response.error();
         })
     );
-
     return;
   }
 
-  if (!isSameOrigin) {
+  if (requestUrl.origin !== self.location.origin) {
     return;
   }
 
@@ -155,10 +155,10 @@ self.addEventListener("push", (event) => {
     (async () => {
       await self.registration.showNotification(title, {
         body,
-        tag: payload.tag || `octop-mobile-${Date.parse(sentAt) || Date.now()}`,
+        tag: payload.tag || `octop-dashboard-${Date.parse(sentAt) || Date.now()}`,
         renotify: true,
-        icon: "/octop-home-icon-192.png",
-        badge: "/octop-home-icon-192.png",
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
         data: notificationData
       });
 

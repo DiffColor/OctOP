@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
+import PushNotificationCard from "./PushNotificationCard.jsx";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -4919,6 +4920,7 @@ function ThreadDetail({
 }
 
 function MainPage({
+  pushNotificationCard,
   session,
   bridges,
   status,
@@ -5418,6 +5420,7 @@ function MainPage({
             onInstall={onInstallPwa}
             onDismiss={onDismissInstallPrompt}
           />
+          {pushNotificationCard ? <div className="px-4 pb-3">{pushNotificationCard}</div> : null}
 
           <div className="border-b border-white/10 px-4 pb-3 pt-2">
             <div className="flex gap-2 overflow-x-auto pb-1">
@@ -8813,6 +8816,13 @@ export default function App() {
   return (
     <>
       <MainPage
+        pushNotificationCard={
+          <PushNotificationCard
+            apiRequest={apiRequest}
+            session={session}
+            selectedBridgeId={selectedBridgeId}
+          />
+        }
         session={session}
         bridges={bridges}
         status={status}

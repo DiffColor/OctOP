@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Lib.Net.Http.WebPush;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
 using Newtonsoft.Json.Linq;
@@ -23,8 +24,13 @@ var allowedOriginSet = corsOrigins.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
 builder.WebHost.UseUrls($"http://{gatewayHost}:{gatewayPort}");
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<PushServiceClient>();
 builder.Services.AddSingleton(_ => new BridgeNatsClient(natsUrl));
 builder.Services.AddSingleton<OctopStore>();
+builder.Services.AddSingleton<VapidKeyService>();
+builder.Services.AddSingleton<PushSubscriptionService>();
+builder.Services.AddSingleton<WebPushNotificationService>();
+builder.Services.AddHostedService<PushNotificationEventMonitorService>();
 
 var app = builder.Build();
 app.UseExceptionHandler(errorApp =>
@@ -1624,6 +1630,262 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
   );
 });
 
+app.MapGet("/api/push/config", async (
+  HttpContext httpContext,
+  PushSubscriptionService pushSubscriptionService,
+  VapidKeyService vapidKeyService,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+  var appId = ResolvePushAppId(httpContext);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"enabled\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  if (string.IsNullOrWhiteSpace(appId))
+  {
+    return Results.Text(
+      "{\"enabled\":false,\"error\":\"app_id is required\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  var count = vapidKeyService.IsConfigured
+    ? await pushSubscriptionService.GetCountAsync(userId, bridgeId, appId, cancellationToken)
+    : 0;
+
+  return Results.Json(new PushConfigResponse
+  {
+    Enabled = vapidKeyService.IsConfigured,
+    PublicVapidKey = vapidKeyService.PublicKey,
+    AppId = appId,
+    BridgeId = bridgeId,
+    SubscriptionCount = count
+  });
+});
+
+app.MapGet("/api/push/subscriptions", async (
+  HttpContext httpContext,
+  PushSubscriptionService pushSubscriptionService,
+  VapidKeyService vapidKeyService,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+  var appId = ResolvePushAppId(httpContext);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"enabled\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  if (string.IsNullOrWhiteSpace(appId))
+  {
+    return Results.Text(
+      "{\"enabled\":false,\"error\":\"app_id is required\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  var endpoints = vapidKeyService.IsConfigured
+    ? await pushSubscriptionService.GetEndpointsAsync(userId, bridgeId, appId, cancellationToken)
+    : [];
+
+  return Results.Json(new PushSubscriptionSummaryResponse
+  {
+    Enabled = vapidKeyService.IsConfigured,
+    Count = endpoints.Count,
+    Endpoints = endpoints
+  });
+});
+
+app.MapPost("/api/push/subscriptions", async (
+  PushSubscriptionDto subscription,
+  HttpContext httpContext,
+  PushSubscriptionService pushSubscriptionService,
+  VapidKeyService vapidKeyService,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  if (!vapidKeyService.IsConfigured)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"push is not configured\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+  var appId = ResolvePushAppId(httpContext);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  if (string.IsNullOrWhiteSpace(appId))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"app_id is required\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  try
+  {
+    var count = await pushSubscriptionService.UpsertAsync(
+      userId,
+      bridgeId,
+      appId,
+      httpContext.Request.Headers.Origin.ToString(),
+      subscription,
+      httpContext.Request.Headers.UserAgent.ToString(),
+      cancellationToken);
+
+    return Results.Json(new Dictionary<string, object?>
+    {
+      ["ok"] = true,
+      ["count"] = count
+    }, statusCode: StatusCodes.Status201Created);
+  }
+  catch (ArgumentException exception)
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = exception.Message
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+});
+
+app.MapDelete("/api/push/subscriptions", async (
+  PushSubscriptionDeleteRequest request,
+  HttpContext httpContext,
+  PushSubscriptionService pushSubscriptionService,
+  VapidKeyService vapidKeyService,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  if (!vapidKeyService.IsConfigured)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"push is not configured\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+  var appId = ResolvePushAppId(httpContext);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  if (string.IsNullOrWhiteSpace(appId))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"app_id is required\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  try
+  {
+    var count = await pushSubscriptionService.DeleteAsync(
+      userId,
+      bridgeId,
+      appId,
+      request.Endpoint,
+      cancellationToken);
+
+    return Results.Json(new Dictionary<string, object?>
+    {
+      ["ok"] = true,
+      ["count"] = count
+    });
+  }
+  catch (ArgumentException exception)
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = exception.Message
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+});
+
+app.MapPost("/api/push/send", async (
+  PushNotificationRequest request,
+  HttpContext httpContext,
+  PushSubscriptionService pushSubscriptionService,
+  WebPushNotificationService webPushNotificationService,
+  VapidKeyService vapidKeyService,
+  OctopStore octopStore,
+  CancellationToken cancellationToken) =>
+{
+  if (!vapidKeyService.IsConfigured)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"push is not configured\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var subscriptions = await pushSubscriptionService.GetActiveSubscriptionsAsync(userId, bridgeId, cancellationToken);
+  var payload = new PushNotificationRequest
+  {
+    Title = string.IsNullOrWhiteSpace(request.Title) ? "OctOP Push" : request.Title,
+    Body = string.IsNullOrWhiteSpace(request.Body) ? "테스트 푸시입니다." : request.Body,
+    Url = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
+    Tag = request.Tag,
+    Kind = request.Kind,
+    BridgeId = bridgeId,
+    ProjectId = request.ProjectId,
+    ThreadId = request.ThreadId,
+    IssueId = request.IssueId,
+    IssueStatus = request.IssueStatus
+  };
+  var response = await webPushNotificationService.SendAsync(subscriptions, payload, cancellationToken);
+  return Results.Json(response);
+});
+
 app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridgeNatsClient, OctopStore octopStore, CancellationToken cancellationToken) =>
 {
   httpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
@@ -1740,6 +2002,24 @@ static string ResolveIdentityKey(HttpContext httpContext)
   }
 
   return BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+}
+
+static string ResolvePushAppId(HttpContext httpContext)
+{
+  var appId = httpContext.Request.Query["app_id"].ToString();
+
+  if (string.IsNullOrWhiteSpace(appId))
+  {
+    return string.Empty;
+  }
+
+  var chars = appId
+    .Trim()
+    .ToLowerInvariant()
+    .Select(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '-')
+    .ToArray();
+
+  return new string(chars).Trim('-');
 }
 
 static int ResolveBridgeNatsStatusCode(BridgeNatsRequestException exception)
