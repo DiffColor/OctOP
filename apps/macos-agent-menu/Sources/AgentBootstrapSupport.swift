@@ -750,6 +750,37 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
+  func cleanupCompletedAppUpdateArtifacts(log: @escaping @MainActor (String) -> Void) {
+    let fileManager = FileManager.default
+    let cleanupTargets = [
+      URL(fileURLWithPath: Bundle.main.bundleURL.path + ".previous-update", isDirectory: true),
+      appUpdateDataBackupURL,
+      appUpdateDataBackupStagingURL,
+      URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
+        .appendingPathComponent("updates", isDirectory: true)
+    ]
+
+    var removedItems: [String] = []
+
+    for target in cleanupTargets {
+      guard fileManager.fileExists(atPath: target.path) else {
+        continue
+      }
+
+      do {
+        try fileManager.removeItem(at: target)
+        removedItems.append(target.lastPathComponent)
+      } catch {
+        log("업데이트 백업 정리 실패: \(target.path) - \(error.localizedDescription)")
+      }
+    }
+
+    if !removedItems.isEmpty {
+      log("업데이트 백업과 임시 파일을 정리했습니다. items=\(removedItems.joined(separator: ","))")
+    }
+  }
+
   func terminateProcessesHoldingManagedPorts(log: @escaping @MainActor (String) -> Void) {
     let ports = resolveManagedPorts()
     guard !ports.isEmpty else {

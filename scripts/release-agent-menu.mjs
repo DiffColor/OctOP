@@ -37,14 +37,14 @@ if (requestedPlatform === "all" || requestedPlatform === "windows") {
 }
 
 if (requestedPlatform === "all" || requestedPlatform === "macos") {
-  const artifact = buildMacRelease({
+  const artifacts = buildMacRelease({
     workspaceRoot,
     stageRoot,
     outputRoot,
     versionTag,
     numericVersion
   });
-  manifest.artifacts.push(artifact);
+  manifest.artifacts.push(...artifacts);
 }
 
 writeFileSync(
@@ -135,7 +135,10 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   const appRoot = resolve(stageRoot, "macos", "OctOPAgentMenu.app");
   const contentsRoot = resolve(appRoot, "Contents");
   const macOsRoot = resolve(contentsRoot, "MacOS");
+  const standaloneAppName = `OctOPAgentMenu-macos-${arch}-${versionTag}.app`;
+  const standaloneAppPath = resolve(outputRoot, standaloneAppName);
   rmSync(resolve(stageRoot, "macos"), { recursive: true, force: true });
+  rmSync(standaloneAppPath, { recursive: true, force: true });
   mkdirSync(macOsRoot, { recursive: true });
 
   cpSync(executablePath, resolve(macOsRoot, "OctOPAgentMenu"));
@@ -146,6 +149,8 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     createMacInfoPlist({ versionTag, numericVersion }),
     "utf8"
   );
+
+  cpSync(appRoot, standaloneAppPath, { recursive: true });
 
   const archiveName = `OctOPAgentMenu-macos-${arch}-${versionTag}.zip`;
   const archivePath = resolve(outputRoot, archiveName);
@@ -160,11 +165,18 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     archivePath
   ], dirname(appRoot));
 
-  return {
-    platform: "macos",
-    path: archivePath,
-    kind: "zip-app-bundle"
-  };
+  return [
+    {
+      platform: "macos",
+      path: standaloneAppPath,
+      kind: "app-bundle"
+    },
+    {
+      platform: "macos",
+      path: archivePath,
+      kind: "zip-app-bundle"
+    }
+  ];
 }
 
 function resolveReleaseVersion(explicitVersion) {

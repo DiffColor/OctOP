@@ -833,6 +833,8 @@ struct OctOPAgentMenuApp: App {
               model.start(using: bootstrap)
             }
           }
+
+          bootstrap.cleanupCompletedAppUpdateArtifacts(log: model.appendInstallerLog)
         }
     }
 
