@@ -31,6 +31,7 @@ sealed class RuntimeInstaller
     ["OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs"] = "scripts/shared-env.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs"] = "scripts/run-local-agent.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs"] = "scripts/run-bridge.mjs",
+    ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.package.json"] = "services/codex-adapter/package.json",
     ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.index.js"] = "services/codex-adapter/src/index.js",
     ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.domain.js"] = "services/codex-adapter/src/domain.js",
     ["OctOP.WindowsAgentMenu.Runtime.packages.domain.src.index.js"] = "packages/domain/src/index.js"

@@ -2,11 +2,13 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Button = System.Windows.Controls.Button;
 using ComboBox = System.Windows.Controls.ComboBox;
 using Forms = System.Windows.Forms;
 using MessageBox = System.Windows.MessageBox;
 using Orientation = System.Windows.Controls.Orientation;
+using ProgressBar = System.Windows.Controls.ProgressBar;
 using TextBox = System.Windows.Controls.TextBox;
 using WpfColor = System.Windows.Media.Color;
 using WpfCursors = System.Windows.Input.Cursors;
@@ -35,9 +37,13 @@ sealed class SetupWindow : Window
   private Button _logButton = null!;
   private Button _installButton = null!;
   private Button _saveButton = null!;
+  private TextBlock _activityTitleTextBlock = null!;
+  private TextBlock _activityHintTextBlock = null!;
+  private ProgressBar _activityProgressBar = null!;
 
   private Task? _activeInstallTask;
   private string _currentInstallRoot;
+  private string _latestActivityMessage = "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다.";
 
   public bool AllowClose { get; set; }
   public bool InstallationInProgress => _activeInstallTask is { IsCompleted: false };
@@ -122,7 +128,14 @@ sealed class SetupWindow : Window
       return;
     }
 
-    _ = RunInstallAsync(clearProgress: false, showMessageBoxOnFailure: false, automatic: true);
+    UpdateActivityState(
+      busy: true,
+      installing: true,
+      title: "초기 설치를 준비하고 있습니다.",
+      hint: "창을 닫지 않아도 설치는 계속 진행됩니다. 진행 상태를 여기에서 바로 확인하실 수 있습니다.");
+    Dispatcher.BeginInvoke(
+      new Action(() => _ = RunInstallAsync(clearProgress: false, showMessageBoxOnFailure: false, automatic: true)),
+      DispatcherPriority.Background);
   }
 
   public void BringToFront()
@@ -141,6 +154,7 @@ sealed class SetupWindow : Window
       Margin = new Thickness(18)
     };
 
+    content.Children.Add(CreateActivityCard());
     content.Children.Add(CreateDiagnosticsCard());
     content.Children.Add(CreateBasicInfoCard());
     content.Children.Add(CreateConnectionCard());
@@ -167,6 +181,47 @@ sealed class SetupWindow : Window
     AddDiagnosticRow(stack, "autostart", "로그인 시 자동 실행");
 
     return CreateCard("설치 진단", stack);
+  }
+
+  private Border CreateActivityCard()
+  {
+    var stack = new StackPanel
+    {
+      Orientation = Orientation.Vertical
+    };
+
+    _activityTitleTextBlock = new TextBlock
+    {
+      Text = "설치 대기 중",
+      FontSize = 15,
+      FontWeight = FontWeights.SemiBold,
+      Foreground = CreateBrush(0x17, 0x17, 0x17)
+    };
+    _activityHintTextBlock = new TextBlock
+    {
+      Text = _latestActivityMessage,
+      Margin = new Thickness(0, 8, 0, 0),
+      Foreground = CreateBrush(0x52, 0x52, 0x52),
+      TextWrapping = TextWrapping.Wrap
+    };
+    _activityProgressBar = new ProgressBar
+    {
+      Height = 6,
+      Margin = new Thickness(0, 14, 0, 0),
+      IsIndeterminate = false,
+      Minimum = 0,
+      Maximum = 100,
+      Value = 0,
+      Visibility = Visibility.Collapsed,
+      Foreground = CreateBrush(0x17, 0x17, 0x17),
+      Background = CreateBrush(0xE5, 0xE7, 0xEB)
+    };
+
+    stack.Children.Add(_activityTitleTextBlock);
+    stack.Children.Add(_activityHintTextBlock);
+    stack.Children.Add(_activityProgressBar);
+
+    return CreateCard("설치 상태", stack);
   }
 
   private Border CreateBasicInfoCard()
@@ -304,6 +359,7 @@ sealed class SetupWindow : Window
     try
     {
       SetBusy(true, installing: false);
+      await Dispatcher.Yield(DispatcherPriority.Background);
       var configuration = GatherConfiguration();
       var paths = new OctopPaths(configuration.InstallRoot);
       _installer.SaveConfiguration(configuration, paths);
@@ -313,10 +369,20 @@ sealed class SetupWindow : Window
       UpdateStatus(status);
       UpdateSavedAt(paths.InstallRoot);
       ReportProgress("설정을 저장했습니다.");
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: "설정 저장 완료",
+        hint: "변경된 로그인 ID와 디바이스 이름은 서비스 재시작 후 반영됩니다.");
     }
     catch (Exception error)
     {
       ReportProgress($"설정 저장 실패: {error.Message}");
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: "설정 저장 실패",
+        hint: error.Message);
       MessageBox.Show(this, error.Message, "설정 저장 실패", MessageBoxButton.OK, MessageBoxImage.Error);
     }
     finally
@@ -357,16 +423,27 @@ sealed class SetupWindow : Window
         ReportProgress("앱 시작 시 설치 상태를 점검했고 자동 설치를 시작합니다.");
       }
 
+      await Dispatcher.Yield(DispatcherPriority.Background);
       var progress = new Progress<string>(ReportProgress);
       var status = await _installer.InstallOrUpdateAsync(configuration, progress, CancellationToken.None);
       UpdateStatus(status);
       UpdateSavedAt(configuration.InstallRoot);
       ReportProgress("설치 완료");
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: "설치 완료",
+        hint: "이제 서비스 시작 또는 재시작으로 바로 연결하실 수 있습니다.");
       InstallationCompleted?.Invoke(this, status);
     }
     catch (Exception error)
     {
       ReportProgress($"설치 실패: {error.Message}");
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: "설치 실패",
+        hint: error.Message);
       if (showMessageBoxOnFailure)
       {
         MessageBox.Show(this, error.Message, "설치 실패", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -397,6 +474,12 @@ sealed class SetupWindow : Window
 
   private void ReportProgress(string message)
   {
+    _latestActivityMessage = message;
+    UpdateActivityState(
+      busy: InstallationInProgress,
+      installing: InstallationInProgress,
+      title: InstallationInProgress ? "설치 중..." : "최근 작업",
+      hint: message);
     LogProduced?.Invoke(this, message);
   }
 
@@ -407,6 +490,30 @@ sealed class SetupWindow : Window
     _logButton.IsEnabled = true;
     _installButton.Content = installing ? "설치 중..." : "런타임 다시 설치";
     System.Windows.Input.Mouse.OverrideCursor = busy ? WpfCursors.Wait : null;
+    UpdateActivityState(
+      busy: busy,
+      installing: installing,
+      title: busy
+        ? (installing ? "설치 중..." : "설정을 저장하는 중입니다.")
+        : "설치 대기 중",
+      hint: busy
+        ? _latestActivityMessage
+        : "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다.");
+  }
+
+  private void UpdateActivityState(bool busy, bool installing, string title, string hint)
+  {
+    if (_activityTitleTextBlock is null || _activityHintTextBlock is null || _activityProgressBar is null)
+    {
+      return;
+    }
+
+    _activityTitleTextBlock.Text = title;
+    _activityHintTextBlock.Text = string.IsNullOrWhiteSpace(hint)
+      ? "설치를 시작하면 여기에서 진행 상태를 확인할 수 있습니다."
+      : hint;
+    _activityProgressBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+    _activityProgressBar.IsIndeterminate = busy;
   }
 
   private void OnClosing(object? sender, CancelEventArgs eventArgs)

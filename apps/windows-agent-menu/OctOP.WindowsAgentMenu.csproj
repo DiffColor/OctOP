@@ -16,6 +16,7 @@
     <EmbeddedResource Include="..\..\scripts\shared-env.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs" />
     <EmbeddedResource Include="..\..\scripts\run-local-agent.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs" />
     <EmbeddedResource Include="..\..\scripts\run-bridge.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs" />
+    <EmbeddedResource Include="..\..\services\codex-adapter\package.json" LogicalName="OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.package.json" />
     <EmbeddedResource Include="..\..\services\codex-adapter\src\index.js" LogicalName="OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.index.js" />
     <EmbeddedResource Include="..\..\services\codex-adapter\src\domain.js" LogicalName="OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.domain.js" />
     <EmbeddedResource Include="..\..\packages\domain\src\index.js" LogicalName="OctOP.WindowsAgentMenu.Runtime.packages.domain.src.index.js" />
