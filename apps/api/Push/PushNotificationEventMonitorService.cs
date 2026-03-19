@@ -70,8 +70,8 @@ public sealed class PushNotificationEventMonitorService(
       return;
     }
 
-    var userId = Convert.ToString(envelope.LoginId ?? envelope.UserId ?? string.Empty)?.Trim() ?? string.Empty;
-    var bridgeId = Convert.ToString(envelope.BridgeId ?? string.Empty)?.Trim() ?? string.Empty;
+    var userId = Convert.ToString(envelope.ResolvedLoginId ?? envelope.ResolvedUserId ?? string.Empty)?.Trim() ?? string.Empty;
+    var bridgeId = Convert.ToString(envelope.ResolvedBridgeId ?? string.Empty)?.Trim() ?? string.Empty;
     var issueId = Convert.ToString(envelope.Payload?.ResolvedIssueId ?? string.Empty)?.Trim() ?? string.Empty;
     var threadId = Convert.ToString(envelope.Payload?.ResolvedThreadId ?? string.Empty)?.Trim() ?? string.Empty;
     var projectId = Convert.ToString(envelope.Payload?.ResolvedProjectId ?? string.Empty)?.Trim() ?? string.Empty;
@@ -205,13 +205,25 @@ public sealed class PushNotificationEventMonitorService(
   {
     public string? UserId { get; set; }
 
+    public string? User_id { get; set; }
+
     public string? LoginId { get; set; }
 
+    public string? Login_id { get; set; }
+
     public string? BridgeId { get; set; }
+
+    public string? Bridge_id { get; set; }
 
     public string? Type { get; set; }
 
     public PushEventPayload? Payload { get; set; }
+
+    public string? ResolvedUserId => UserId ?? User_id;
+
+    public string? ResolvedLoginId => LoginId ?? Login_id;
+
+    public string? ResolvedBridgeId => BridgeId ?? Bridge_id;
   }
 
   private sealed class PushEventPayload
