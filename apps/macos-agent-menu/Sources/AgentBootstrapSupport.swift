@@ -165,12 +165,15 @@ private enum CodexBrowserSelection {
       return
     }
 
-    NSWorkspace.shared.open(
-      [url],
-      withApplicationAt: browser.appURL,
-      configuration: NSWorkspace.OpenConfiguration(),
-      completionHandler: nil
-    )
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    process.arguments = ["-a", browser.appURL.path, url.absoluteString]
+
+    do {
+      try process.run()
+    } catch {
+      NSWorkspace.shared.open(url)
+    }
   }
 
   @MainActor
