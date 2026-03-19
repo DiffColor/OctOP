@@ -140,6 +140,8 @@ final class CodexAppServerSession: @unchecked Sendable {
   private let standardOutput: FileHandle
   private let standardError: FileHandle
   private let state = CodexAppServerSessionState()
+  private let shutdownLock = NSLock()
+  private var intentionalShutdown = false
   private var stdoutTask: Task<Void, Never>?
   private var stderrTask: Task<Void, Never>?
 
@@ -167,9 +169,21 @@ final class CodexAppServerSession: @unchecked Sendable {
     standardError = stderrPipe.fileHandleForReading
 
     process.terminationHandler = { [weak self] process in
+      guard let self else { return }
+      self.shutdownLock.lock()
+      let intentionalShutdown = self.intentionalShutdown
+      self.shutdownLock.unlock()
+
+      if intentionalShutdown {
+        Task {
+          await self.state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
+        }
+        return
+      }
+
       let message = "Codex app-server 종료됨 (status=\(process.terminationStatus))"
       Task {
-        await self?.state.terminate(with: CodexAppServerSessionError.terminated(message))
+        await self.state.terminate(with: CodexAppServerSessionError.terminated(message))
       }
     }
 
@@ -313,10 +327,13 @@ final class CodexAppServerSession: @unchecked Sendable {
   func shutdown() async {
     stdoutTask?.cancel()
     stderrTask?.cancel()
+    shutdownLock.lock()
+    intentionalShutdown = true
+    shutdownLock.unlock()
+    await state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
     if process.isRunning {
       process.terminate()
     }
-    await state.terminate(with: CodexAppServerSessionError.terminated("Codex app-server 세션이 종료되었습니다."))
   }
 
   private func request(method: String, params: Any?) async throws -> Any? {
