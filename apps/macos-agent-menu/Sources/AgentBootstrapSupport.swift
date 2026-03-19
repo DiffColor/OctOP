@@ -277,6 +277,11 @@ struct AgentLaunchContext {
   let environment: [String: String]
 }
 
+private struct BrowserLoginHelperResult: Sendable {
+  let loggedIn: Bool
+  let summary: String
+}
+
 private struct PendingLoginState: Codable {
   let loginId: String
   let startedAt: Date
@@ -505,6 +510,35 @@ private final class ProcessOutputBuffer: @unchecked Sendable {
       .joined(separator: "\n")
     lock.unlock()
     return summary
+  }
+}
+
+private final class BrowserLoginHelperState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var finished = false
+  private var result = BrowserLoginHelperResult(loggedIn: false, summary: "미로그인")
+
+  func markFinished() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    if finished {
+      return false
+    }
+    finished = true
+    return true
+  }
+
+  func setResult(_ value: BrowserLoginHelperResult) {
+    lock.lock()
+    result = value
+    lock.unlock()
+  }
+
+  func snapshot() -> BrowserLoginHelperResult {
+    lock.lock()
+    let value = result
+    lock.unlock()
+    return value
   }
 }
 
@@ -1494,29 +1528,11 @@ final class AgentBootstrapStore: ObservableObject {
     log("선택한 브라우저로 로그인을 시작합니다.")
     AgentLoginDebugLog.write("browser selected: \(browserID)")
 
-    let accountStatus = try await withCodexAppServerSession(log: log) { session in
-      if logoutFirst {
-        log("현재 Codex 로그인 계정을 로그아웃합니다.")
-        AgentLoginDebugLog.write("logout before relogin start")
-        try await session.logout()
-        self.clearPendingLogin()
-      }
-
-      let loginStart = try await session.startChatGptLogin()
-      AgentLoginDebugLog.write("login start received: loginId=\(loginStart.loginId)")
-      try self.savePendingLogin(loginId: loginStart.loginId)
-      log("로그인 URL 생성: \(loginStart.authURL.absoluteString)")
-      log("선택한 브라우저 번들 ID: \(browserID)")
-      try await MainActor.run {
-        try CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
-      }
-      log("브라우저에서 인증을 완료해 주세요.")
-      AgentLoginDebugLog.write("waiting for login completion: loginId=\(loginStart.loginId)")
-      _ = try await session.waitForLoginCompleted(loginId: loginStart.loginId)
-      AgentLoginDebugLog.write("login completion received: loginId=\(loginStart.loginId)")
-      self.clearPendingLogin()
-      return try await session.readAccount(refreshToken: false)
-    }
+    let accountStatus = try await runBrowserLoginHelper(
+      browserID: browserID,
+      logoutFirst: logoutFirst,
+      log: log
+    )
 
     AgentLoginDebugLog.write("account read after login: summary=\(accountStatus.summary)")
     codexLoggedIn = accountStatus.loggedIn
@@ -1555,6 +1571,180 @@ final class AgentBootstrapStore: ObservableObject {
     try? FileManager.default.removeItem(at: pendingLoginURL)
   }
 
+  private func runBrowserLoginHelper(
+    browserID: String,
+    logoutFirst: Bool,
+    log: @escaping @MainActor (String) -> Void
+  ) async throws -> BrowserLoginHelperResult {
+    let scriptURL = runtimeWorkspaceURL.appendingPathComponent("scripts/login-via-app-server.mjs")
+    guard FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path) else {
+      throw AgentBootstrapError.nodeUnavailable
+    }
+
+    guard FileManager.default.fileExists(atPath: scriptURL.path) else {
+      throw NSError(
+        domain: "OctOPAgentMenu.Login",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "로그인 도우미 스크립트를 찾지 못했습니다: \(scriptURL.path)"]
+      )
+    }
+
+    return try await withCheckedThrowingContinuation { continuation in
+      let process = Process()
+      let stdout = Pipe()
+      let stderr = Pipe()
+      let outputBuffer = ProcessOutputBuffer()
+      let helperState = BrowserLoginHelperState()
+      let pendingLoginURL = self.pendingLoginURL
+      let applicationSupportURL = self.appSupportURL
+
+      let resumeOnce: @Sendable (Result<BrowserLoginHelperResult, Error>) -> Void = { outcome in
+        guard helperState.markFinished() else {
+          return
+        }
+
+        continuation.resume(with: outcome)
+      }
+
+      let savePendingLogin: @Sendable (String) -> Void = { loginId in
+        guard !loginId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+          return
+        }
+
+        do {
+          try FileManager.default.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
+          let data = try JSONEncoder().encode(PendingLoginState(loginId: loginId, startedAt: Date()))
+          try data.write(to: pendingLoginURL, options: .atomic)
+        } catch {
+          AgentLoginDebugLog.write("save pending login failed: \(error.localizedDescription)")
+        }
+      }
+
+      let clearPendingLogin: @Sendable () -> Void = {
+        try? FileManager.default.removeItem(at: pendingLoginURL)
+      }
+
+      let postLog: @Sendable (String) -> Void = { message in
+        Task { @MainActor in
+          log(message)
+        }
+      }
+
+      let handleStructuredLine: @Sendable (String) -> Void = { line in
+        guard let data = line.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let event = raw["event"] as? String else {
+          outputBuffer.append(line)
+          postLog(line)
+          return
+        }
+
+        switch event {
+        case "logout":
+          AgentLoginDebugLog.write("logout before relogin start")
+          postLog("현재 Codex 로그인 계정을 로그아웃합니다.")
+          clearPendingLogin()
+        case "loginStart":
+          let loginId = raw["loginId"] as? String ?? ""
+          let authUrl = raw["authUrl"] as? String ?? ""
+          AgentLoginDebugLog.write("login start received: loginId=\(loginId)")
+          savePendingLogin(loginId)
+          postLog("로그인 URL 생성: \(authUrl)")
+          postLog("선택한 브라우저 번들 ID: \(browserID)")
+        case "browserOpened":
+          AgentLoginDebugLog.write("browser open exit: bundle=\(browserID) status=0")
+          postLog("선택한 브라우저를 열었습니다.")
+        case "waitingForCompletion":
+          let loginId = raw["loginId"] as? String ?? ""
+          AgentLoginDebugLog.write("waiting for login completion: loginId=\(loginId)")
+          postLog("브라우저에서 인증을 완료해 주세요.")
+        case "loginComplete":
+          let loggedIn = raw["loggedIn"] as? Bool ?? false
+          let summary = raw["summary"] as? String ?? "로그인됨"
+          helperState.setResult(BrowserLoginHelperResult(loggedIn: loggedIn, summary: summary))
+          AgentLoginDebugLog.write("login completion received: summary=\(summary)")
+          clearPendingLogin()
+        case "stderr":
+          let message = raw["message"] as? String ?? ""
+          outputBuffer.append(message)
+          postLog(message)
+        case "error":
+          let message = raw["message"] as? String ?? "로그인 처리 중 오류가 발생했습니다."
+          outputBuffer.append(message)
+          AgentLoginDebugLog.write("login helper error: \(message)")
+        default:
+          break
+        }
+      }
+
+      process.executableURL = runtimeNodeURL
+      process.arguments = [
+        scriptURL.path,
+        "--codex", runtimeCodexURL.path,
+        "--browser-bundle-id", browserID
+      ] + (logoutFirst ? ["--logout-first"] : [])
+      process.environment = buildLaunchEnvironment()
+      process.currentDirectoryURL = runtimeWorkspaceURL
+      process.standardOutput = stdout
+      process.standardError = stderr
+
+      let stdoutHandler: @Sendable (FileHandle) -> Void = { handle in
+        let data = handle.availableData
+        guard !data.isEmpty else { return }
+        let text = String(decoding: data, as: UTF8.self)
+        for line in text.split(whereSeparator: \.isNewline) {
+          handleStructuredLine(String(line))
+        }
+      }
+
+      let stderrHandler: @Sendable (FileHandle) -> Void = { handle in
+        let data = handle.availableData
+        guard !data.isEmpty else { return }
+        let text = String(decoding: data, as: UTF8.self)
+        for line in text.split(whereSeparator: \.isNewline) {
+          let logLine = String(line)
+          outputBuffer.append(logLine)
+          AgentLoginDebugLog.write("login helper stderr: \(logLine)")
+          Task { @MainActor in
+            log(logLine)
+          }
+        }
+      }
+
+      stdout.fileHandleForReading.readabilityHandler = stdoutHandler
+      stderr.fileHandleForReading.readabilityHandler = stderrHandler
+
+      process.terminationHandler = { process in
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+
+        if process.terminationReason == .exit, process.terminationStatus == 0 {
+          resumeOnce(.success(helperState.snapshot()))
+          return
+        }
+
+        let summary = outputBuffer.joinedSummary()
+        let description = summary.isEmpty
+          ? "로그인 도우미 실행 실패 (exit=\(process.terminationStatus))"
+          : summary
+        resumeOnce(.failure(NSError(
+          domain: "OctOPAgentMenu.Login",
+          code: Int(process.terminationStatus),
+          userInfo: [NSLocalizedDescriptionKey: description]
+        )))
+      }
+
+      do {
+        AgentLoginDebugLog.write("login helper process start: browser=\(browserID)")
+        try process.run()
+      } catch {
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+        resumeOnce(.failure(error))
+      }
+    }
+  }
+
   private var bundleBootstrapURL: URL? {
     Bundle.module.resourceURL?.appendingPathComponent("bootstrap", isDirectory: true)
   }
@@ -1579,6 +1769,7 @@ final class AgentBootstrapStore: ObservableObject {
       runtimeWorkspaceURL.appendingPathComponent("scripts/run-local-agent.mjs"),
       runtimeWorkspaceURL.appendingPathComponent("scripts/run-bridge.mjs"),
       runtimeWorkspaceURL.appendingPathComponent("scripts/shared-env.mjs"),
+      runtimeWorkspaceURL.appendingPathComponent("scripts/login-via-app-server.mjs"),
       runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/package.json"),
       runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/index.js"),
       runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/domain.js")
