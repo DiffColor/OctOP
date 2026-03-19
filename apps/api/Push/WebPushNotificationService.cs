@@ -120,7 +120,16 @@ public sealed class WebPushNotificationService(
       }
       catch (PushServiceClientException exception)
       {
-        var shouldDelete = exception.StatusCode is HttpStatusCode.Gone or HttpStatusCode.NotFound;
+        var shouldDelete = ShouldDeactivateSubscription(exception);
+
+        if (shouldDelete)
+        {
+          logger.LogInformation(
+            "Push subscription will be deleted after provider rejection. subscription={SubscriptionId}, status={StatusCode}",
+            subscription.Id,
+            (int)exception.StatusCode);
+        }
+
         await pushSubscriptionService.MarkFailureAsync(
           subscription.Id,
           subscription.Endpoint,
@@ -163,5 +172,25 @@ public sealed class WebPushNotificationService(
       FailureCount = results.Count - successCount,
       Results = results
     };
+  }
+
+  private static bool ShouldDeactivateSubscription(PushServiceClientException exception)
+  {
+    if (exception.StatusCode is HttpStatusCode.Gone or HttpStatusCode.NotFound)
+    {
+      return true;
+    }
+
+    if (exception.StatusCode is not HttpStatusCode.Forbidden)
+    {
+      return false;
+    }
+
+    var message = $"{exception.Body}\n{exception.Message}".ToLowerInvariant();
+    return message.Contains("vapid") && (
+      message.Contains("do not correspond") ||
+      message.Contains("used to create the subscriptions") ||
+      message.Contains("authorization header")
+    );
   }
 }
