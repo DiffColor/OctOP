@@ -3,6 +3,34 @@ import Darwin
 import Foundation
 import SwiftUI
 
+private enum AgentLoginDebugLog {
+  private static var logURL: URL {
+    let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
+      ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/OctOPAgentMenu", isDirectory: true)
+    return baseURL.appendingPathComponent("login-debug.log")
+  }
+
+  static func write(_ message: String) {
+    let formatter = ISO8601DateFormatter()
+    let line = "[\(formatter.string(from: Date()))] \(message)\n"
+    let data = Data(line.utf8)
+
+    do {
+      try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+      if FileManager.default.fileExists(atPath: logURL.path) {
+        let handle = try FileHandle(forWritingTo: logURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+      } else {
+        try data.write(to: logURL, options: .atomic)
+      }
+    } catch {
+    }
+  }
+}
+
 private struct CodexBrowserOption: Identifiable {
   let id: String
   let displayName: String
@@ -175,15 +203,18 @@ private enum CodexBrowserSelection {
   @MainActor
   static func open(_ url: URL, usingBrowserID browserID: String) throws {
     guard !browserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      AgentLoginDebugLog.write("browser open skipped: empty browser id")
       throw CodexBrowserOpenError.emptyBrowserID
     }
 
+    AgentLoginDebugLog.write("browser open start: bundle=\(browserID) url=\(url.absoluteString)")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     process.arguments = ["-b", browserID, url.absoluteString]
 
     try process.run()
     process.waitUntilExit()
+    AgentLoginDebugLog.write("browser open exit: bundle=\(browserID) status=\(process.terminationStatus)")
 
     guard process.terminationStatus == 0 else {
       throw CodexBrowserOpenError.openFailed(process.terminationStatus)
@@ -1457,18 +1488,22 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func loginWithBrowserSelection(log: @escaping @MainActor (String) -> Void, logoutFirst: Bool) async throws {
     guard let browserID = await CodexBrowserSelection.selectBrowserID() else {
+      AgentLoginDebugLog.write("browser selection cancelled")
       throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
     }
     log("선택한 브라우저로 로그인을 시작합니다.")
+    AgentLoginDebugLog.write("browser selected: \(browserID)")
 
     let accountStatus = try await withCodexAppServerSession(log: log) { session in
       if logoutFirst {
         log("현재 Codex 로그인 계정을 로그아웃합니다.")
+        AgentLoginDebugLog.write("logout before relogin start")
         try await session.logout()
         self.clearPendingLogin()
       }
 
       let loginStart = try await session.startChatGptLogin()
+      AgentLoginDebugLog.write("login start received: loginId=\(loginStart.loginId)")
       try self.savePendingLogin(loginId: loginStart.loginId)
       log("로그인 URL 생성: \(loginStart.authURL.absoluteString)")
       log("선택한 브라우저 번들 ID: \(browserID)")
@@ -1476,11 +1511,14 @@ final class AgentBootstrapStore: ObservableObject {
         try CodexBrowserSelection.open(loginStart.authURL, usingBrowserID: browserID)
       }
       log("브라우저에서 인증을 완료해 주세요.")
+      AgentLoginDebugLog.write("waiting for login completion: loginId=\(loginStart.loginId)")
       _ = try await session.waitForLoginCompleted(loginId: loginStart.loginId)
+      AgentLoginDebugLog.write("login completion received: loginId=\(loginStart.loginId)")
       self.clearPendingLogin()
       return try await session.readAccount(refreshToken: false)
     }
 
+    AgentLoginDebugLog.write("account read after login: summary=\(accountStatus.summary)")
     codexLoggedIn = accountStatus.loggedIn
     codexLoginStatus = accountStatus.summary
   }
