@@ -10921,6 +10921,20 @@ createServer(async (request, response) => {
     return sendJson(response, 200, getIssueDetail(userId, issueId));
   }
 
+  if (request.method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
+    try {
+      const issueId = url.pathname.split("/").at(-1);
+      const body = await readJsonBody(request);
+      const payload = await updateThreadIssue(userId, {
+        ...body,
+        issue_id: issueId
+      });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      return sendJson(response, 400, { accepted: false, error: error.message });
+    }
+  }
+
   if (request.method === "DELETE" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
     try {
       const issueId = url.pathname.split("/").at(-1);

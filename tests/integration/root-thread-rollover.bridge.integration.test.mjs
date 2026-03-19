@@ -3558,3 +3558,123 @@ test("account/read가 signed-in account와 requiresOpenaiAuth를 함께 반환�
     throw error;
   }
 });
+
+test("issue 첨부는 생성과 수정 후 유지되고 실행 프롬프트에도 포함된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-issue-attachments-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-issue-attachments-token",
+    userId: "integration-user",
+    bridgeId: `issue-attachments-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const createdThread = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Issue Attachments Thread"
+      })
+    });
+    const threadId = createdThread.thread.id;
+
+    const initialAttachments = [
+      {
+        id: "attachment-text-1",
+        name: "notes.md",
+        kind: "file",
+        mime_type: "text/markdown",
+        size_bytes: 42,
+        text_content: "# Context\n- preserve attachment metadata",
+        text_truncated: false
+      }
+    ];
+    const updatedAttachments = [
+      {
+        id: "attachment-text-2",
+        name: "spec.txt",
+        kind: "file",
+        mime_type: "text/plain",
+        size_bytes: 31,
+        text_content: "updated attachment body",
+        text_truncated: false
+      }
+    ];
+
+    const normalizedInitialAttachments = initialAttachments.map((attachment) => ({
+      ...attachment,
+      preview_url: null
+    }));
+    const normalizedUpdatedAttachments = updatedAttachments.map((attachment) => ({
+      ...attachment,
+      preview_url: null
+    }));
+
+    const createdIssue = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Issue With Attachments",
+        prompt: "첨부를 참고해서 작업해 주세요.",
+        attachments: initialAttachments
+      })
+    });
+    const issueId = createdIssue.issue.id;
+
+    assert.deepEqual(createdIssue.issue.attachments, normalizedInitialAttachments);
+
+    const updatedIssue = await bridge.request(`/api/issues/${issueId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: "Issue With Updated Attachments",
+        prompt: "수정된 첨부를 참고해서 작업해 주세요.",
+        attachments: updatedAttachments
+      })
+    });
+
+    assert.deepEqual(updatedIssue.issue.attachments, normalizedUpdatedAttachments);
+
+    const detailPayload = await bridge.request(`/api/issues/${issueId}`);
+    assert.deepEqual(detailPayload.issue?.attachments, normalizedUpdatedAttachments);
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+    assert.equal(startPayload.accepted, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${issueId}`);
+      assert.equal(issuePayload.issue?.status, "running");
+      return issuePayload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "issue with attachments running"
+    });
+
+    const turnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
+    const input = String(turnStartRequest?.params?.input?.[0]?.text ?? "");
+
+    assert.match(input, /\[첨부 자료\]/);
+    assert.match(input, /spec\.txt/);
+    assert.match(input, /updated attachment body/);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
