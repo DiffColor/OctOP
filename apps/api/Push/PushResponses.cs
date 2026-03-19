@@ -11,6 +11,8 @@ public sealed class PushConfigResponse
   public string BridgeId { get; set; } = string.Empty;
 
   public int SubscriptionCount { get; set; }
+
+  public PushTemplateSnapshot Templates { get; set; } = new();
 }
 
 public sealed class PushSubscriptionSummaryResponse
@@ -42,4 +44,27 @@ public sealed class PushSendResponse
   public int FailureCount { get; set; }
 
   public IReadOnlyList<PushSendResultItem> Results { get; set; } = [];
+}
+
+public sealed class PushTemplateSnapshot
+{
+  public string CompletedTitle { get; set; } = string.Empty;
+
+  public string CompletedBody { get; set; } = string.Empty;
+
+  public string FailedTitle { get; set; } = string.Empty;
+
+  public string FailedBody { get; set; } = string.Empty;
+
+  public string DefaultTitle { get; set; } = string.Empty;
+
+  public string DefaultBody { get; set; } = string.Empty;
+
+  public string CompletedTag { get; set; } = string.Empty;
+
+  public string FailedTag { get; set; } = string.Empty;
+
+  public string DashboardUrl { get; set; } = string.Empty;
+
+  public string MobileUrl { get; set; } = string.Empty;
 }

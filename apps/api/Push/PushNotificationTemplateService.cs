@@ -6,6 +6,8 @@ public sealed partial class PushNotificationTemplateService
 {
   public const string DashboardAppId = "dashboard-web";
   public const string MobileAppId = "mobile-web";
+  private const string DefaultTitleTemplate = "OctOP Push";
+  private const string DefaultBodyTemplate = "테스트 푸시입니다.";
   private const string DefaultCompletedTitleTemplate = "{projectPrefix}이슈 완료";
   private const string DefaultCompletedBodyTemplate = "{issueTitleOrId} 이(가) 완료 상태가 되었습니다.";
   private const string DefaultFailedTitleTemplate = "{projectPrefix}이슈 실패";
@@ -16,6 +18,8 @@ public sealed partial class PushNotificationTemplateService
 
   public PushNotificationTemplateService()
   {
+    DefaultTitle = ReadTemplate("OCTOP_PUSH_TEMPLATE_DEFAULT_TITLE", DefaultTitleTemplate);
+    DefaultBody = ReadTemplate("OCTOP_PUSH_TEMPLATE_DEFAULT_BODY", DefaultBodyTemplate);
     CompletedTitleTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_COMPLETED_TITLE", DefaultCompletedTitleTemplate);
     CompletedBodyTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_COMPLETED_BODY", DefaultCompletedBodyTemplate);
     FailedTitleTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_FAILED_TITLE", DefaultFailedTitleTemplate);
@@ -30,6 +34,10 @@ public sealed partial class PushNotificationTemplateService
   public string CompletedTitleTemplate { get; }
 
   public string CompletedBodyTemplate { get; }
+
+  public string DefaultTitle { get; }
+
+  public string DefaultBody { get; }
 
   public string FailedTitleTemplate { get; }
 
@@ -101,6 +109,81 @@ public sealed partial class PushNotificationTemplateService
       IssueStatus = issueStatus,
       SourceAppId = normalizedSourceAppId,
       TargetAppId = normalizedTargetAppId
+    };
+  }
+
+  public PushNotificationRequest BuildManualNotification(
+    PushNotificationRequest request,
+    string bridgeId,
+    string? targetAppId)
+  {
+    var normalizedSourceAppId = NormalizeAppId(request.SourceAppId);
+    var normalizedTargetAppId = NormalizeAppId(targetAppId);
+    var normalizedIssueStatus = string.IsNullOrWhiteSpace(request.IssueStatus)
+      ? string.Empty
+      : request.IssueStatus.Trim().ToLowerInvariant();
+    var statusLabel = string.Equals(normalizedIssueStatus, "completed", StringComparison.OrdinalIgnoreCase)
+      ? "완료"
+      : string.Equals(normalizedIssueStatus, "failed", StringComparison.OrdinalIgnoreCase)
+        ? "실패"
+        : normalizedIssueStatus;
+    var issueId = request.IssueId?.Trim() ?? string.Empty;
+    var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+      ["bridgeId"] = bridgeId,
+      ["projectId"] = request.ProjectId?.Trim() ?? string.Empty,
+      ["threadId"] = request.ThreadId?.Trim() ?? string.Empty,
+      ["issueId"] = issueId,
+      ["issueStatus"] = normalizedIssueStatus,
+      ["statusLabel"] = statusLabel,
+      ["issueTitle"] = request.Title?.Trim() ?? string.Empty,
+      ["issueTitleOrId"] = string.IsNullOrWhiteSpace(request.Title) ? issueId : request.Title.Trim(),
+      ["projectName"] = request.ProjectName?.Trim() ?? string.Empty,
+      ["projectPrefix"] = string.IsNullOrWhiteSpace(request.ProjectName) ? string.Empty : $"{request.ProjectName.Trim()} · ",
+      ["sourceAppId"] = normalizedSourceAppId,
+      ["targetAppId"] = normalizedTargetAppId
+    };
+
+    var renderedUrl = string.IsNullOrWhiteSpace(request.Url)
+      ? RenderTemplate(GetUrlTemplateForTargetApp(normalizedTargetAppId), values)
+      : request.Url.Trim();
+
+    return new PushNotificationRequest
+    {
+      Title = string.IsNullOrWhiteSpace(request.Title)
+        ? RenderTemplate(DefaultTitle, values)
+        : request.Title.Trim(),
+      Body = string.IsNullOrWhiteSpace(request.Body)
+        ? RenderTemplate(DefaultBody, values)
+        : request.Body.Trim(),
+      Url = string.IsNullOrWhiteSpace(renderedUrl) ? DefaultUrlTemplate : renderedUrl,
+      Tag = string.IsNullOrWhiteSpace(request.Tag) ? null : request.Tag.Trim(),
+      Kind = request.Kind,
+      BridgeId = bridgeId,
+      ProjectId = request.ProjectId,
+      ThreadId = request.ThreadId,
+      IssueId = request.IssueId,
+      IssueStatus = request.IssueStatus,
+      ProjectName = request.ProjectName,
+      SourceAppId = normalizedSourceAppId,
+      TargetAppId = normalizedTargetAppId
+    };
+  }
+
+  public PushTemplateSnapshot CreateSnapshot()
+  {
+    return new PushTemplateSnapshot
+    {
+      CompletedTitle = CompletedTitleTemplate,
+      CompletedBody = CompletedBodyTemplate,
+      FailedTitle = FailedTitleTemplate,
+      FailedBody = FailedBodyTemplate,
+      DefaultTitle = DefaultTitle,
+      DefaultBody = DefaultBody,
+      CompletedTag = CompletedTagTemplate,
+      FailedTag = FailedTagTemplate,
+      DashboardUrl = DashboardUrlTemplate,
+      MobileUrl = MobileUrlTemplate
     };
   }
 

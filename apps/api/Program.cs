@@ -1636,6 +1636,7 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
 app.MapGet("/api/push/config", async (
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
+  PushNotificationTemplateService pushNotificationTemplateService,
   VapidKeyService vapidKeyService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
@@ -1670,7 +1671,8 @@ app.MapGet("/api/push/config", async (
     PublicVapidKey = vapidKeyService.PublicKey,
     AppId = appId,
     BridgeId = bridgeId,
-    SubscriptionCount = count
+    SubscriptionCount = count,
+    Templates = pushNotificationTemplateService.CreateSnapshot()
   });
 });
 
@@ -1848,6 +1850,7 @@ app.MapPost("/api/push/send", async (
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
   WebPushNotificationService webPushNotificationService,
+  PushNotificationTemplateService pushNotificationTemplateService,
   VapidKeyService vapidKeyService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
@@ -1872,20 +1875,10 @@ app.MapPost("/api/push/send", async (
   }
 
   var subscriptions = await pushSubscriptionService.GetActiveSubscriptionsAsync(userId, bridgeId, cancellationToken);
-  var payload = new PushNotificationRequest
-  {
-    Title = string.IsNullOrWhiteSpace(request.Title) ? "OctOP Push" : request.Title,
-    Body = string.IsNullOrWhiteSpace(request.Body) ? "테스트 푸시입니다." : request.Body,
-    Url = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url,
-    Tag = request.Tag,
-    Kind = request.Kind,
-    BridgeId = bridgeId,
-    ProjectId = request.ProjectId,
-    ThreadId = request.ThreadId,
-    IssueId = request.IssueId,
-    IssueStatus = request.IssueStatus
-  };
-  var response = await webPushNotificationService.SendAsync(subscriptions, payload, cancellationToken);
+  var response = await webPushNotificationService.SendAsync(
+    subscriptions,
+    (subscription) => pushNotificationTemplateService.BuildManualNotification(request, bridgeId, subscription.AppId),
+    cancellationToken);
   return Results.Json(response);
 });
 

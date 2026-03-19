@@ -28,6 +28,8 @@
 
 ### 공통
 
+- `OCTOP_PUSH_TEMPLATE_DEFAULT_TITLE`
+- `OCTOP_PUSH_TEMPLATE_DEFAULT_BODY`
 - `OCTOP_PUSH_TEMPLATE_URL`
 - `OCTOP_PUSH_TEMPLATE_DASHBOARD_URL`
 - `OCTOP_PUSH_TEMPLATE_MOBILE_URL`
@@ -35,6 +37,8 @@
 ## 기본값
 
 ```env
+OCTOP_PUSH_TEMPLATE_DEFAULT_TITLE=OctOP Push
+OCTOP_PUSH_TEMPLATE_DEFAULT_BODY=테스트 푸시입니다.
 OCTOP_PUSH_TEMPLATE_COMPLETED_TITLE={projectPrefix}이슈 완료
 OCTOP_PUSH_TEMPLATE_COMPLETED_BODY={issueTitleOrId} 이(가) 완료 상태가 되었습니다.
 OCTOP_PUSH_TEMPLATE_FAILED_TITLE={projectPrefix}이슈 실패
@@ -139,6 +143,7 @@ url=/?bridge_id=bridge-abc&project_id=project-123&thread_id=thread-456&issue_id=
 ## 운영 메모
 
 - 템플릿을 바꾸면 API 프로세스 재시작이 필요하다.
+- `/api/push/config` 응답의 `templates` 필드로 현재 API 프로세스가 실제로 읽고 있는 템플릿 값을 확인할 수 있다.
 - 기존 브라우저 푸시 구독과는 무관하다. 템플릿 변경만으로 재구독은 필요하지 않다.
 - `title`, `body`, `tag`, `url` 가 모두 빈 문자열이 되지 않도록 최소한 하나 이상의 의미 있는 기본값을 유지하는 편이 안전하다.
 - `source_app_id=mobile-web` 인 이슈는 모바일 구독으로만 전송된다.
