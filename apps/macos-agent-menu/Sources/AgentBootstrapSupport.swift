@@ -106,16 +106,18 @@ private enum CodexBrowserSelection {
 
     let buttonStack = NSStackView()
     buttonStack.orientation = .horizontal
-    buttonStack.spacing = 12
-    buttonStack.alignment = .centerY
-    buttonStack.distribution = .fillEqually
+    buttonStack.spacing = 18
+    buttonStack.alignment = .top
+    buttonStack.distribution = .gravityAreas
 
     var optionMap: [String: CodexBrowserOption] = [:]
+    var optionButtons: [NSButton] = []
     for browser in browsers {
       optionMap[browser.id] = browser
 
-      let button = makeBrowserButton(for: browser)
-      buttonStack.addArrangedSubview(button)
+      let (tile, button) = makeBrowserTile(for: browser)
+      optionButtons.append(button)
+      buttonStack.addArrangedSubview(tile)
     }
 
     let cancelButton = NSButton(title: "취소", target: nil, action: nil)
@@ -138,7 +140,7 @@ private enum CodexBrowserSelection {
     ])
 
     let controller = CodexBrowserPickerController(panel: panel, optionsById: optionMap)
-    for case let button as NSButton in buttonStack.arrangedSubviews {
+    for button in optionButtons {
       button.target = controller
       button.action = #selector(CodexBrowserPickerController.chooseBrowser(_:))
     }
@@ -187,47 +189,32 @@ private enum CodexBrowserSelection {
   }
 
   @MainActor
-  private static func makeBrowserButton(for browser: CodexBrowserOption) -> NSButton {
+  private static func makeBrowserTile(for browser: CodexBrowserOption) -> (NSView, NSButton) {
     let button = NSButton(title: "", target: nil, action: nil)
     button.identifier = NSUserInterfaceItemIdentifier(browser.id)
     button.setButtonType(.momentaryPushIn)
-    button.isBordered = false
+    button.isBordered = true
     button.translatesAutoresizingMaskIntoConstraints = false
-    button.wantsLayer = true
-    button.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    button.layer?.cornerRadius = 12
-    button.layer?.borderWidth = 1
-    button.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
-    button.widthAnchor.constraint(equalToConstant: 104).isActive = true
-    button.heightAnchor.constraint(equalToConstant: 112).isActive = true
-
-    let iconView = NSImageView(image: browser.icon)
-    iconView.imageScaling = .scaleProportionallyUpOrDown
-    iconView.translatesAutoresizingMaskIntoConstraints = false
-    iconView.widthAnchor.constraint(equalToConstant: 42).isActive = true
-    iconView.heightAnchor.constraint(equalToConstant: 42).isActive = true
+    button.bezelStyle = .texturedRounded
+    button.image = browser.icon
+    button.imageScaling = .scaleProportionallyUpOrDown
+    button.imagePosition = .imageOnly
+    button.widthAnchor.constraint(equalToConstant: 64).isActive = true
+    button.heightAnchor.constraint(equalToConstant: 64).isActive = true
 
     let label = NSTextField(labelWithString: browser.displayName)
     label.alignment = .center
     label.lineBreakMode = .byWordWrapping
     label.maximumNumberOfLines = 2
     label.font = .systemFont(ofSize: 12, weight: .regular)
+    label.textColor = .labelColor
 
-    let stack = NSStackView(views: [iconView, label])
+    let stack = NSStackView(views: [button, label])
     stack.orientation = .vertical
     stack.alignment = .centerX
-    stack.spacing = 12
+    stack.spacing = 8
     stack.translatesAutoresizingMaskIntoConstraints = false
-
-    button.addSubview(stack)
-    NSLayoutConstraint.activate([
-      stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-      stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-      stack.leadingAnchor.constraint(greaterThanOrEqualTo: button.leadingAnchor, constant: 8),
-      stack.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -8)
-    ])
-
-    return button
+    return (stack, button)
   }
 }
 

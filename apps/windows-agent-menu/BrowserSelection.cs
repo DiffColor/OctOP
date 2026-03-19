@@ -96,58 +96,49 @@ static class BrowserSelection
 
     foreach (var browser in browsers)
     {
-      var button = new Button
+      var tile = new FlowLayoutPanel
       {
-        Width = 136,
+        Width = 116,
         Height = 120,
         Margin = new Padding(0, 0, 12, 12),
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        BackColor = Color.Transparent
+      };
+
+      var button = new Button
+      {
+        Width = 64,
+        Height = 64,
+        Margin = new Padding(26, 0, 26, 8),
         BackColor = Color.White,
         FlatStyle = FlatStyle.Flat,
-        Padding = new Padding(8),
+        Padding = new Padding(0),
         Text = string.Empty
       };
-      button.FlatAppearance.BorderColor = Color.FromArgb(0xD1, 0xD5, 0xDB);
+      button.FlatAppearance.BorderColor = Color.FromArgb(0xE5, 0xE7, 0xEB);
       button.FlatAppearance.BorderSize = 1;
-
-      var card = new TableLayoutPanel
-      {
-        Dock = DockStyle.Fill,
-        ColumnCount = 1,
-        RowCount = 2,
-        Margin = new Padding(0),
-        Padding = new Padding(0),
-        BackColor = Color.Transparent
-      };
-      card.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
-      card.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
-
-      var iconBox = new PictureBox
-      {
-        Width = 44,
-        Height = 44,
-        SizeMode = PictureBoxSizeMode.Zoom,
-        Anchor = AnchorStyles.None,
-        BackColor = Color.Transparent
-      };
+      button.FlatAppearance.MouseDownBackColor = Color.FromArgb(0xF3, 0xF4, 0xF6);
+      button.FlatAppearance.MouseOverBackColor = Color.FromArgb(0xF9, 0xFA, 0xFB);
 
       if (browser.Icon is not null)
       {
-        iconBox.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(44, 44));
+        button.Image = new Bitmap(browser.Icon.ToBitmap(), new Size(40, 40));
+        button.ImageAlign = ContentAlignment.MiddleCenter;
       }
 
       var label = new Label
       {
         Text = browser.DisplayName,
+        Width = 116,
+        Height = 36,
         TextAlign = ContentAlignment.TopCenter,
-        Dock = DockStyle.Fill,
         Font = new Font("Segoe UI", 9, FontStyle.Regular),
         ForeColor = Color.FromArgb(0x17, 0x17, 0x17),
         BackColor = Color.Transparent
       };
-
-      card.Controls.Add(iconBox, 0, 0);
-      card.Controls.Add(label, 0, 1);
-      button.Controls.Add(card);
+      tile.Controls.Add(button);
+      tile.Controls.Add(label);
 
       button.Click += (_, _) =>
       {
@@ -156,7 +147,7 @@ static class BrowserSelection
         dialog.Close();
       };
 
-      foreach (Control control in new Control[] { card, iconBox, label })
+      foreach (Control control in new Control[] { tile, label })
       {
         control.Click += (_, _) =>
         {
@@ -166,7 +157,7 @@ static class BrowserSelection
         };
       }
 
-      browserPanel.Controls.Add(button);
+      browserPanel.Controls.Add(tile);
     }
 
     root.Controls.Add(browserPanel);
