@@ -35,9 +35,12 @@ sealed class SetupWindow : Window
   private MacToggleSwitch _autoStartCheckBox = null!;
   private MacToggleSwitch _autoUpdateCheckBox = null!;
   private TextBlock _savedAtTextBlock = null!;
+  private TextBlock _codexLoginStatusTextBlock = null!;
   private Button _logButton = null!;
   private Button _installButton = null!;
   private Button _saveButton = null!;
+  private Button _codexLoginButton = null!;
+  private Button _codexReloginButton = null!;
   private TextBlock _activityTitleTextBlock = null!;
   private TextBlock _activityHintTextBlock = null!;
   private ProgressBar _activityProgressBar = null!;
@@ -114,6 +117,7 @@ sealed class SetupWindow : Window
     UpdateDiagnostic("dependencies", status.RuntimeDependenciesInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeDependenciesInstalled ? "정상" : "누락");
     UpdateDiagnostic("codex", status.CodexInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.CodexInstalled ? "정상" : "누락");
     UpdateDiagnostic("login", status.CodexLoggedIn ? DiagnosticState.Ok : DiagnosticState.Warning, status.CodexLoggedIn ? "정상" : status.CodexLoginStatus);
+    _codexLoginStatusTextBlock.Text = status.CodexLoginStatus;
     UpdateDiagnostic(
       "autostart",
       status.AutoStartRequested
@@ -290,12 +294,55 @@ sealed class SetupWindow : Window
     stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(["none", "low", "medium", "high", "xhigh"])));
     stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(["never", "on-request", "untrusted"])));
     stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(["workspace-write", "read-only", "danger-full-access"])));
-    stack.Children.Add(CreateLabeledValueField("Codex 로그인", "ChatGPT 로그인"));
+    stack.Children.Add(CreateCodexLoginField());
     stack.Children.Add(CreateLabeledTextField("Watchdog (ms)", _watchdogTextBox = CreateTextBox()));
     stack.Children.Add(CreateLabeledTextField("Stale (ms)", _staleTextBox = CreateTextBox()));
     stack.Children.Add(CreateToggleField("로그인 시 자동 실행", _autoStartCheckBox = CreateToggleSwitch()));
     stack.Children.Add(CreateToggleField("자동 업데이트", _autoUpdateCheckBox = CreateToggleSwitch()));
     return CreateCard("Codex 실행 정책", stack);
+  }
+
+  private UIElement CreateCodexLoginField()
+  {
+    var stack = new StackPanel
+    {
+      Orientation = Orientation.Vertical,
+      Margin = new Thickness(0, 0, 0, 12)
+    };
+
+    stack.Children.Add(new TextBlock
+    {
+      Text = "Codex 로그인",
+      FontSize = 12,
+      Foreground = CreateBrush(0x6B, 0x72, 0x80),
+      Margin = new Thickness(0, 0, 0, 4)
+    });
+
+    _codexLoginStatusTextBlock = new TextBlock
+    {
+      Text = "확인 전",
+      Foreground = CreateBrush(0x17, 0x17, 0x17),
+      Margin = new Thickness(0, 0, 0, 8),
+      TextWrapping = TextWrapping.Wrap
+    };
+    stack.Children.Add(_codexLoginStatusTextBlock);
+
+    var buttons = new StackPanel
+    {
+      Orientation = Orientation.Horizontal
+    };
+
+    _codexLoginButton = CreateSecondaryButton("브라우저 선택 로그인");
+    _codexLoginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: false);
+
+    _codexReloginButton = CreateSecondaryButton("계정 전환");
+    _codexReloginButton.Click += async (_, _) => await HandleCodexLoginClickAsync(logoutFirst: true);
+
+    buttons.Children.Add(_codexLoginButton);
+    buttons.Children.Add(_codexReloginButton);
+    stack.Children.Add(buttons);
+
+    return stack;
   }
 
   private UIElement CreateActionRow()
@@ -491,6 +538,44 @@ sealed class SetupWindow : Window
     _workspaceRootTextBox.Text = dialog.SelectedPath;
   }
 
+  private async Task HandleCodexLoginClickAsync(bool logoutFirst)
+  {
+    try
+    {
+      SetBusy(true, installing: false);
+      await Dispatcher.Yield(DispatcherPriority.Background);
+
+      var configuration = GatherConfiguration();
+      var paths = new OctopPaths(configuration.InstallRoot);
+      _installer.SaveConfiguration(configuration, paths);
+      _installer.WriteEnvironmentFile(configuration, paths);
+      var progress = new Progress<string>(ReportProgress);
+      await _installer.LoginWithBrowserSelectionAsync(paths, progress, CancellationToken.None, logoutFirst);
+      var status = await _installer.InspectAsync(paths, CancellationToken.None);
+      UpdateStatus(status);
+      UpdateSavedAt(paths.InstallRoot);
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: logoutFirst ? "계정 전환 완료" : "로그인 완료",
+        hint: "선택한 브라우저에서 인증한 계정이 반영되었습니다.");
+    }
+    catch (Exception error)
+    {
+      ReportProgress($"{(logoutFirst ? "계정 전환" : "로그인")} 실패: {error.Message}");
+      UpdateActivityState(
+        busy: false,
+        installing: false,
+        title: logoutFirst ? "계정 전환 실패" : "로그인 실패",
+        hint: error.Message);
+      MessageBox.Show(this, error.Message, logoutFirst ? "계정 전환 실패" : "로그인 실패", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+    finally
+    {
+      SetBusy(false, installing: false);
+    }
+  }
+
   private void ReportProgress(string message)
   {
     _latestActivityMessage = message;
@@ -507,6 +592,14 @@ sealed class SetupWindow : Window
     _installButton.IsEnabled = !busy;
     _saveButton.IsEnabled = !busy;
     _logButton.IsEnabled = true;
+    if (_codexLoginButton is not null)
+    {
+      _codexLoginButton.IsEnabled = !busy;
+    }
+    if (_codexReloginButton is not null)
+    {
+      _codexReloginButton.IsEnabled = !busy;
+    }
     _installButton.Content = installing ? "설치 중..." : "런타임 다시 설치";
     System.Windows.Input.Mouse.OverrideCursor = busy ? WpfCursors.Wait : null;
     UpdateActivityState(

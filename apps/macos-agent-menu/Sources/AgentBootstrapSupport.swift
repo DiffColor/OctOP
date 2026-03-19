@@ -3,6 +3,205 @@ import Darwin
 import Foundation
 import SwiftUI
 
+private let codexDeviceAuthDefaultURL = URL(string: "https://auth.openai.com/codex/device")!
+
+private struct CodexBrowserOption: Identifiable {
+  let id: String
+  let displayName: String
+  let appURL: URL
+  let icon: NSImage
+}
+
+private final class CodexDeviceAuthState: @unchecked Sendable {
+  private let lock = NSLock()
+  private var loginURL: URL?
+  private var deviceCode: String?
+  private var browserOpened = false
+
+  func register(line: String) -> URL? {
+    lock.lock()
+    defer { lock.unlock() }
+
+    if loginURL == nil,
+       let range = line.range(of: #"https://\S+"#, options: .regularExpression) {
+      loginURL = URL(string: String(line[range]))
+    }
+
+    if deviceCode == nil,
+       let range = line.range(of: #"\b[A-Z0-9]{4}-[A-Z0-9]{4,}\b"#, options: .regularExpression) {
+      deviceCode = String(line[range])
+    }
+
+    guard !browserOpened else {
+      return nil
+    }
+
+    if let loginURL {
+      browserOpened = true
+      return loginURL
+    }
+
+    if deviceCode != nil {
+      browserOpened = true
+      return codexDeviceAuthDefaultURL
+    }
+
+    return nil
+  }
+}
+
+@MainActor
+private final class CodexBrowserPickerController: NSObject {
+  let panel: NSPanel
+  let optionsById: [String: CodexBrowserOption]
+  var selectedBrowser: CodexBrowserOption?
+
+  init(panel: NSPanel, optionsById: [String: CodexBrowserOption]) {
+    self.panel = panel
+    self.optionsById = optionsById
+  }
+
+  @objc func chooseBrowser(_ sender: NSButton) {
+    guard let identifier = sender.identifier?.rawValue,
+          let option = optionsById[identifier] else {
+      return
+    }
+
+    selectedBrowser = option
+    NSApp.stopModal(withCode: .OK)
+    panel.orderOut(nil)
+  }
+
+  @objc func cancel(_ sender: NSButton) {
+    NSApp.stopModal(withCode: .cancel)
+    panel.orderOut(nil)
+  }
+}
+
+private enum CodexBrowserSelection {
+  private static let browserCandidates: [(bundleID: String, displayName: String)] = [
+    ("com.apple.Safari", "Safari"),
+    ("com.google.Chrome", "Google Chrome"),
+    ("com.microsoft.edgemac", "Microsoft Edge"),
+    ("company.thebrowser.Browser", "Arc"),
+    ("com.brave.Browser", "Brave"),
+    ("org.mozilla.firefox", "Firefox")
+  ]
+
+  @MainActor
+  static func selectBrowser() -> CodexBrowserOption? {
+    let browsers = discoverBrowsers()
+    guard !browsers.isEmpty else {
+      return nil
+    }
+
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+      styleMask: [.titled, .closable],
+      backing: .buffered,
+      defer: false
+    )
+    panel.title = "브라우저 선택"
+    panel.isReleasedWhenClosed = false
+
+    let contentView = NSView(frame: panel.contentView?.bounds ?? .zero)
+    contentView.translatesAutoresizingMaskIntoConstraints = false
+
+    let titleLabel = NSTextField(labelWithString: "로그인에 사용할 브라우저를 선택해 주세요.")
+    titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+
+    let subtitleLabel = NSTextField(labelWithString: "기본 브라우저 대신 다른 브라우저를 선택해 로그인할 수 있습니다.")
+    subtitleLabel.textColor = .secondaryLabelColor
+    subtitleLabel.font = .systemFont(ofSize: 12)
+
+    let buttonStack = NSStackView()
+    buttonStack.orientation = .horizontal
+    buttonStack.spacing = 12
+    buttonStack.alignment = .centerY
+    buttonStack.distribution = .fillEqually
+
+    var optionMap: [String: CodexBrowserOption] = [:]
+    for browser in browsers {
+      optionMap[browser.id] = browser
+
+      let button = NSButton(title: browser.displayName, target: nil, action: nil)
+      button.identifier = NSUserInterfaceItemIdentifier(browser.id)
+      button.image = browser.icon
+      button.imageScaling = .scaleProportionallyDown
+      button.imagePosition = .imageAbove
+      button.setButtonType(.momentaryPushIn)
+      button.bezelStyle = .rounded
+      button.font = .systemFont(ofSize: 12, weight: .medium)
+      button.translatesAutoresizingMaskIntoConstraints = false
+      button.widthAnchor.constraint(equalToConstant: 92).isActive = true
+      button.heightAnchor.constraint(equalToConstant: 92).isActive = true
+      buttonStack.addArrangedSubview(button)
+    }
+
+    let cancelButton = NSButton(title: "취소", target: nil, action: nil)
+    cancelButton.bezelStyle = .rounded
+
+    let rootStack = NSStackView(views: [titleLabel, subtitleLabel, buttonStack, cancelButton])
+    rootStack.orientation = .vertical
+    rootStack.spacing = 12
+    rootStack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+    rootStack.translatesAutoresizingMaskIntoConstraints = false
+
+    contentView.addSubview(rootStack)
+    panel.contentView = contentView
+
+    NSLayoutConstraint.activate([
+      rootStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+      rootStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+      rootStack.topAnchor.constraint(equalTo: contentView.topAnchor),
+      rootStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor)
+    ])
+
+    let controller = CodexBrowserPickerController(panel: panel, optionsById: optionMap)
+    for case let button as NSButton in buttonStack.arrangedSubviews {
+      button.target = controller
+      button.action = #selector(CodexBrowserPickerController.chooseBrowser(_:))
+    }
+    cancelButton.target = controller
+    cancelButton.action = #selector(CodexBrowserPickerController.cancel(_:))
+
+    NSApp.activate(ignoringOtherApps: true)
+    panel.center()
+    panel.makeKeyAndOrderFront(nil)
+    let response = NSApp.runModal(for: panel)
+    panel.close()
+    return response == .OK ? controller.selectedBrowser : nil
+  }
+
+  @MainActor
+  static func open(_ url: URL, using browser: CodexBrowserOption) {
+    NSWorkspace.shared.open(
+      [url],
+      withApplicationAt: browser.appURL,
+      configuration: NSWorkspace.OpenConfiguration(),
+      completionHandler: nil
+    )
+  }
+
+  @MainActor
+  private static func discoverBrowsers() -> [CodexBrowserOption] {
+    browserCandidates.compactMap { candidate in
+      guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate.bundleID) else {
+        return nil
+      }
+
+      let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+      icon.size = NSSize(width: 32, height: 32)
+      return CodexBrowserOption(
+        id: candidate.bundleID,
+        displayName: candidate.displayName,
+        appURL: appURL,
+        icon: icon
+      )
+    }
+  }
+}
+
 struct AgentLaunchContext {
   let nodeExecutableURL: URL
   let workspaceURL: URL
@@ -241,6 +440,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var diagnostics: [AgentDiagnosticItem] = []
   @Published var bootstrapInProgress = false
   @Published var bootstrapSummary = "환경설정 필요"
+  @Published var codexLoginStatus = "확인 전"
   @Published var configurationSavedAt: Date? = nil
   @Published var lastBootstrapAt: Date? = nil
   private var automaticBootstrapAttempted = false
@@ -364,6 +564,11 @@ final class AgentBootstrapStore: ObservableObject {
     automaticBootstrapAttempted = true
 
     _ = await ensureReadyForLaunch(log: log)
+  }
+
+  func refreshCodexLoginStatus() async {
+    let status = await currentCodexLoginStatus()
+    codexLoginStatus = status.summary
   }
 
   func ensureAppUpdatedIfNeeded(log: @escaping @MainActor (String) -> Void, force: Bool = false) async -> Bool {
@@ -507,7 +712,9 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     if !requiresBootstrap {
-      if await isManagedCodexLoggedIn() {
+      let status = await currentCodexLoginStatus()
+      codexLoginStatus = status.summary
+      if status.loggedIn {
         bootstrapSummary = "실행 준비됨"
         refreshDiagnostics()
         return true
@@ -676,20 +883,51 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func ensureCodexLogin(log: @escaping @MainActor (String) -> Void) async throws {
-    if await isManagedCodexLoggedIn() {
+    let status = await currentCodexLoginStatus()
+    codexLoginStatus = status.summary
+    if status.loggedIn {
       log("Codex 로그인 상태를 재사용합니다.")
       return
     }
 
     log("ChatGPT 로그인을 시작합니다.")
+    try await loginWithBrowserSelection(log: log, logoutFirst: false)
+  }
 
-    try await runProcess(
-      executableURL: runtimeCodexURL,
-      arguments: ["login"],
-      environment: buildLaunchEnvironment(),
-      currentDirectoryURL: runtimeWorkspaceURL,
-      log: log
-    )
+  func reloginCodex(log: @escaping @MainActor (String) -> Void) async {
+    bootstrapInProgress = true
+    bootstrapSummary = "Codex 계정 전환 중"
+
+    do {
+      try await loginWithBrowserSelection(log: log, logoutFirst: true)
+      let status = await currentCodexLoginStatus()
+      codexLoginStatus = status.summary
+      bootstrapSummary = status.loggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
+    } catch {
+      bootstrapSummary = "Codex 계정 전환 실패: \(error.localizedDescription)"
+      log("Codex 계정 전환 실패: \(error.localizedDescription)")
+    }
+
+    bootstrapInProgress = false
+    refreshDiagnostics()
+  }
+
+  func loginCodex(log: @escaping @MainActor (String) -> Void) async {
+    bootstrapInProgress = true
+    bootstrapSummary = "Codex 로그인 진행 중"
+
+    do {
+      try await loginWithBrowserSelection(log: log, logoutFirst: false)
+      let status = await currentCodexLoginStatus()
+      codexLoginStatus = status.summary
+      bootstrapSummary = status.loggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
+    } catch {
+      bootstrapSummary = "Codex 로그인 실패: \(error.localizedDescription)"
+      log("Codex 로그인 실패: \(error.localizedDescription)")
+    }
+
+    bootstrapInProgress = false
+    refreshDiagnostics()
   }
 
   private func writeRuntimeEnvironmentFile() throws {
@@ -851,7 +1089,8 @@ final class AgentBootstrapStore: ObservableObject {
     arguments: [String],
     environment: [String: String],
     currentDirectoryURL: URL?,
-    log: @escaping @MainActor (String) -> Void
+    log: @escaping @MainActor (String) -> Void,
+    onOutputLine: (@Sendable (String) -> Void)? = nil
   ) async throws {
     try await withCheckedThrowingContinuation { continuation in
       let process = Process()
@@ -873,6 +1112,7 @@ final class AgentBootstrapStore: ObservableObject {
         for line in text.split(whereSeparator: \.isNewline) {
           let logLine = String(line)
           outputBuffer.append(logLine)
+          onOutputLine?(logLine)
           Task { @MainActor in
             log(logLine)
           }
@@ -999,10 +1239,12 @@ final class AgentBootstrapStore: ObservableObject {
     return "'\(text.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
   }
 
-  private func isManagedCodexLoggedIn() async -> Bool {
+  private func currentCodexLoginStatus() async -> (loggedIn: Bool, summary: String) {
     guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
-      return false
+      return (false, "Codex 미설치")
     }
+
+    var lines: [String] = []
 
     do {
       try await runProcess(
@@ -1010,12 +1252,71 @@ final class AgentBootstrapStore: ObservableObject {
         arguments: ["login", "status"],
         environment: buildLaunchEnvironment(),
         currentDirectoryURL: runtimeWorkspaceURL,
-        log: { _ in }
+        log: { line in
+          let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+          if !trimmed.isEmpty {
+            lines.append(trimmed)
+          }
+        }
       )
-      return true
+
+      return (true, lines.last ?? "로그인됨")
     } catch {
-      return false
+      let summary = error.localizedDescription
+        .split(whereSeparator: \.isNewline)
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .last { !$0.isEmpty } ?? "미로그인"
+      return (false, summary)
     }
+  }
+
+  private func loginWithBrowserSelection(log: @escaping @MainActor (String) -> Void, logoutFirst: Bool) async throws {
+    if logoutFirst {
+      log("현재 Codex 로그인 계정을 로그아웃합니다.")
+      try await logoutCodex(log: log)
+    }
+
+    guard let browser = await MainActor.run(body: { CodexBrowserSelection.selectBrowser() }) else {
+      throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
+    }
+
+    let deviceAuthState = CodexDeviceAuthState()
+
+    try await runProcess(
+      executableURL: runtimeCodexURL,
+      arguments: ["login", "--device-auth"],
+      environment: buildLaunchEnvironment(),
+      currentDirectoryURL: runtimeWorkspaceURL,
+      log: log,
+      onOutputLine: { line in
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if let urlToOpen = deviceAuthState.register(line: trimmed) {
+          Task { @MainActor in
+            CodexBrowserSelection.open(urlToOpen, using: browser)
+          }
+        }
+      }
+    )
+
+    let status = await currentCodexLoginStatus()
+    codexLoginStatus = status.summary
+  }
+
+  private func logoutCodex(log: @escaping @MainActor (String) -> Void) async throws {
+    guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
+      log("Codex CLI가 아직 준비되지 않아 로그아웃을 건너뜁니다.")
+      return
+    }
+
+    try await runProcess(
+      executableURL: runtimeCodexURL,
+      arguments: ["logout"],
+      environment: buildLaunchEnvironment(),
+      currentDirectoryURL: runtimeWorkspaceURL,
+      log: log
+    )
   }
 
   private var bundleBootstrapURL: URL? {
@@ -1140,6 +1441,8 @@ final class AgentBootstrapStore: ObservableObject {
 struct AgentSetupWindow: View {
   @ObservedObject var bootstrap: AgentBootstrapStore
   let onInstall: () -> Void
+  let onLogin: () -> Void
+  let onRelogin: () -> Void
   @Environment(\.openWindow) private var openWindow
   @State private var sensitiveConnectionExpanded = false
 
@@ -1179,7 +1482,7 @@ struct AgentSetupWindow: View {
           pickerField("Reasoning", selection: $bootstrap.configuration.reasoningEffort, options: bootstrap.reasoningOptions)
           pickerField("Approval", selection: $bootstrap.configuration.approvalPolicy, options: bootstrap.approvalOptions)
           pickerField("Sandbox", selection: $bootstrap.configuration.sandboxMode, options: bootstrap.sandboxOptions)
-          valueField("Codex 로그인", value: "ChatGPT 로그인")
+          codexLoginField
           settingField("Watchdog (ms)", text: $bootstrap.configuration.watchdogIntervalMs)
           settingField("Stale (ms)", text: $bootstrap.configuration.staleMs)
           toggleField("로그인 시 자동 실행", isOn: $bootstrap.configuration.autoStartAtLogin)
@@ -1225,6 +1528,9 @@ struct AgentSetupWindow: View {
     )
     .background(WindowTitleConfigurator(title: "환경설정"))
     .frame(minWidth: 520, minHeight: 680)
+    .task {
+      await bootstrap.refreshCodexLoginStatus()
+    }
   }
 
   private var diagnosticsCard: some View {
@@ -1323,6 +1629,35 @@ struct AgentSetupWindow: View {
       .labelsHidden()
       .pickerStyle(.menu)
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private var codexLoginField: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Codex 로그인")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+      Text(bootstrap.codexLoginStatus)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color(nsColor: .textBackgroundColor))
+        )
+
+      HStack(spacing: 10) {
+        Button("브라우저 선택 로그인") {
+          onLogin()
+        }
+        .disabled(bootstrap.bootstrapInProgress)
+
+        Button("계정 전환") {
+          onRelogin()
+        }
+        .disabled(bootstrap.bootstrapInProgress)
+      }
     }
   }
 

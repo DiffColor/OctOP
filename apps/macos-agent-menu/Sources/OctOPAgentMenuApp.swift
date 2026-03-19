@@ -737,7 +737,9 @@ struct OctOPAgentMenuApp: App {
     WindowGroup(id: "setup") {
       AgentSetupWindow(
         bootstrap: bootstrap,
-        onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) }
+        onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) },
+        onLogin: { Task { await bootstrap.loginCodex(log: model.appendInstallerLog) } },
+        onRelogin: { Task { await bootstrap.reloginCodex(log: model.appendInstallerLog) } }
       )
     }
     .defaultSize(width: 520, height: 760)
