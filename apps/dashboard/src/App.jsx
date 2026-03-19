@@ -5525,12 +5525,9 @@ export default function App() {
     setLoadingState("loading");
 
     try {
-      const [nextStatus, nextProjects] = await Promise.all([
-        apiRequest(
-          `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        ),
-        apiRequest(`/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`)
-      ]);
+      const nextStatus = await apiRequest(
+        `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+      );
 
       if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
         return;
@@ -5543,6 +5540,34 @@ export default function App() {
       }
       setStatus(nextStatus);
       markStreamActivity();
+
+      if (!nextStatus?.app_server?.connected) {
+        setProjects([]);
+        setProjectThreads([]);
+        loadedProjectThreadsRef.current = {};
+        pendingProjectThreadLoadsRef.current.clear();
+        setIssues([]);
+        archivedIssueSnapshotsRef.current = {};
+        visibleIssueSnapshotsRef.current = {};
+        setArchivedIssues([]);
+        setSelectedProjectId("");
+        setSelectedProjectThreadId("");
+        setSelectedIssueId("");
+        setSelectedIssueIds([]);
+        setIssueQueueOrderIds([]);
+        setPrepIssueOrderIds([]);
+        setLoadingState("ready");
+        return;
+      }
+
+      const nextProjects = await apiRequest(
+        `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+      );
+
+      if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+        return;
+      }
+
       setProjects(nextProjects.projects ?? []);
       setSelectedProjectId((current) => {
         if (current && nextProjects.projects?.some((project) => project.id === current)) {
@@ -5564,6 +5589,31 @@ export default function App() {
         return;
       }
 
+      markBridgeDisconnectedOverride(bridgeId);
+      setStatus((current) => ({
+        ...current,
+        app_server: {
+          ...(current?.app_server ?? {}),
+          connected: false,
+          initialized: false,
+          last_error: error.message
+        },
+        updated_at: new Date().toISOString()
+      }));
+      setProjects([]);
+      setProjectThreads([]);
+      loadedProjectThreadsRef.current = {};
+      pendingProjectThreadLoadsRef.current.clear();
+      setIssues([]);
+      archivedIssueSnapshotsRef.current = {};
+      visibleIssueSnapshotsRef.current = {};
+      setArchivedIssues([]);
+      setSelectedProjectId("");
+      setSelectedProjectThreadId("");
+      setSelectedIssueId("");
+      setSelectedIssueIds([]);
+      setIssueQueueOrderIds([]);
+      setPrepIssueOrderIds([]);
       setLoadingState("error");
       setRecentEvents((current) => [
         {

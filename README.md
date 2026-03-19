@@ -130,6 +130,14 @@ scripts\run-bridge.cmd
 scripts\run-local-agent.cmd
 ```
 
+윈도우 트레이 앱으로 local agent를 시작/중지하고 로그를 보려면:
+
+```bat
+npm run local-agent:menu
+```
+
+이 앱은 `%LOCALAPPDATA%\OctOP` 아래에 앱 전용 런타임을 만들고, 필요하면 Windows용 포터블 Node.js를 내려받아 `@openai/codex`와 bridge 런타임 의존성을 그 안에 설치합니다. Codex 인증은 ChatGPT device auth 또는 API key 로그인을 앱 안에서 시작하며, 인증 저장소는 앱 전용 `CODEX_HOME` 아래로 분리됩니다.
+
 Bridge 또는 local agent 실행 시 인자를 넘길 수 있습니다.
 
 ```bash
@@ -143,7 +151,47 @@ macOS 메뉴바에서 local agent를 시작/중지하고 로그를 보려면:
 npm run local-agent:menu
 ```
 
-이 실행기는 macOS 상단 메뉴바에 아이콘을 만들고, `npm run local-agent:start`를 직접 실행/중지하며 stdout/stderr 로그를 별도 창에서 보여줍니다.
+이 실행기는 macOS에서는 상단 메뉴바 아이콘으로, Windows에서는 시스템 트레이 아이콘으로 동작하며 `local-agent`를 직접 시작/중지하고 stdout/stderr 로그를 별도 창에서 보여줍니다.
+
+Windows 트레이 앱은 설치/설정 창에서 다음을 한 번에 처리하도록 되어 있습니다.
+
+- bridge 실행에 필요한 `.env.local` 생성
+- workspace root 목록 지정
+- 앱 전용 상태 저장소(`OCTOP_STATE_HOME`) 구성
+- 앱 전용 Node/Codex 설치
+- Codex 로그인 상태 점검 및 로그인 수행
+
+## 릴리즈 빌드
+
+agent menu 앱들은 git 태그 기반 자동 버전 또는 수동 버전 지정으로 릴리즈 산출물을 만들 수 있습니다.
+
+현재 커밋에 `v1.0.0` 같은 태그를 붙이는 경우:
+
+```bash
+npm run release:tag -- 1.0.0
+git push origin v1.0.0
+npm run release:agent-menu
+```
+
+태그 없이 수동으로 버전을 지정하는 경우:
+
+```bash
+npm run release:agent-menu -- --version 1.0.0
+```
+
+플랫폼별 개별 빌드도 가능합니다.
+
+```bash
+npm run release:agent-menu:macos -- --version 1.0.0
+npm run release:agent-menu:windows -- --version 1.0.0
+```
+
+산출물은 `dist/releases/v1.0.0` 아래에 생성됩니다.
+
+- Windows: `OctOP.WindowsAgentMenu-win-x64-v1.0.0.exe`
+- macOS: `OctOPAgentMenu-macos-arm64-v1.0.0.zip`
+
+macOS는 SwiftPM 리소스 번들이 필요하기 때문에 릴리즈 자산을 `.app` 번들이 들어 있는 zip 한 파일로 만들고, Windows는 self-contained single-file exe로 게시합니다.
 
 ## 환경 변수
 

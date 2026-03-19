@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Foundation
 import SwiftUI
 import Darwin
 
@@ -25,6 +26,10 @@ final class AgentMenuModel: ObservableObject {
   private var stderrPipe: Pipe? = nil
   private let maxLines = 2000
 
+  init() {
+    refreshRuntimeStateFromSystem(logDetection: true)
+  }
+
   lazy var colorMenuBarImage: NSImage = {
     Self.makeMenuBarImage(grayscale: false) ?? NSImage(systemSymbolName: "terminal.fill", accessibilityDescription: nil) ?? NSImage()
   }()
@@ -46,15 +51,15 @@ final class AgentMenuModel: ObservableObject {
     }
   }
 
-  var repoRootURL: URL {
-    URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-  }
+  func start(using bootstrap: AgentBootstrapStore) {
+    if let existingProcessId = findExistingAgentProcessId() {
+      processId = existingProcessId
+      runtimeState = .running
+      lastUpdatedAt = Date()
+      appendLog("이미 실행 중인 local-agent를 감지했습니다. pid=\(existingProcessId)")
+      return
+    }
 
-  func start() {
     guard process == nil else {
       appendLog("local-agent가 이미 실행 중입니다.")
       return
@@ -64,16 +69,28 @@ final class AgentMenuModel: ObservableObject {
     lastError = nil
     appendLog("local-agent 실행을 시작합니다.")
 
+    let launchContext: AgentLaunchContext
+    do {
+      launchContext = try bootstrap.makeLaunchContext()
+    } catch {
+      runtimeState = .failed
+      lastError = error.localizedDescription
+      lastUpdatedAt = Date()
+      appendLog("local-agent 시작 실패: \(error.localizedDescription)")
+      return
+    }
+
     let nextProcess = Process()
     let stdout = Pipe()
     let stderr = Pipe()
+    let scriptURL = launchContext.workspaceURL.appendingPathComponent("scripts/run-local-agent.mjs")
 
-    nextProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    nextProcess.arguments = ["-lc", "exec node ./scripts/run-local-agent.mjs"]
-    nextProcess.currentDirectoryURL = repoRootURL
+    nextProcess.executableURL = launchContext.nodeExecutableURL
+    nextProcess.arguments = [scriptURL.path]
+    nextProcess.currentDirectoryURL = launchContext.workspaceURL
     nextProcess.standardOutput = stdout
     nextProcess.standardError = stderr
-    nextProcess.environment = ProcessInfo.processInfo.environment
+    nextProcess.environment = launchContext.environment
 
     stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
       let data = handle.availableData
@@ -118,6 +135,15 @@ final class AgentMenuModel: ObservableObject {
   }
 
   func stop() {
+    if process == nil, let existingProcessId = findExistingAgentProcessId() {
+      runtimeState = .stopping
+      processId = existingProcessId
+      lastUpdatedAt = Date()
+      appendLog("기존 local-agent 프로세스 중지를 요청합니다. pid=\(existingProcessId)")
+      terminateProcess(existingProcessId)
+      return
+    }
+
     guard let process else {
       runtimeState = .stopped
       appendLog("중지할 local-agent 프로세스가 없습니다.")
@@ -140,9 +166,53 @@ final class AgentMenuModel: ObservableObject {
     }
   }
 
+  func handleApplicationWillTerminate() {
+    if let managedProcess = process, managedProcess.isRunning {
+      appendLog("앱 종료에 맞춰 local-agent를 중지합니다.")
+      managedProcess.terminate()
+      return
+    }
+
+    if let existingProcessId = findExistingAgentProcessId() {
+      appendLog("앱 종료에 맞춰 기존 local-agent를 중지합니다. pid=\(existingProcessId)")
+      kill(existingProcessId, SIGTERM)
+    }
+  }
+
+  func refreshRuntimeStateFromSystem(logDetection: Bool = false) {
+    if let managedProcess = process, managedProcess.isRunning {
+      processId = managedProcess.processIdentifier
+      runtimeState = .running
+      lastUpdatedAt = Date()
+      return
+    }
+
+    guard let existingProcessId = findExistingAgentProcessId() else {
+      processId = nil
+      if runtimeState != .failed {
+        runtimeState = .stopped
+      }
+      lastUpdatedAt = Date()
+      return
+    }
+
+    let shouldLog = logDetection && processId != existingProcessId
+    processId = existingProcessId
+    runtimeState = .running
+    lastUpdatedAt = Date()
+
+    if shouldLog {
+      appendLog("기존 local-agent 프로세스를 감지했습니다. pid=\(existingProcessId)")
+    }
+  }
+
   func clearLogs() {
     lines.removeAll(keepingCapacity: true)
     appendLog("로그를 초기화했습니다.")
+  }
+
+  func appendInstallerLog(_ message: String) {
+    appendLog(message)
   }
 
   private func appendStreamText(_ data: Data) {
@@ -186,6 +256,70 @@ final class AgentMenuModel: ObservableObject {
     stderrPipe?.fileHandleForReading.readabilityHandler = nil
     stdoutPipe = nil
     stderrPipe = nil
+  }
+
+  private func terminateProcess(_ pid: Int32) {
+    kill(pid, SIGTERM)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+      guard let self else { return }
+      guard self.isProcessAlive(pid) else {
+        self.runtimeState = .stopped
+        self.processId = nil
+        self.lastUpdatedAt = Date()
+        self.appendLog("local-agent 종료됨. pid=\(pid)")
+        return
+      }
+
+      self.appendLog("SIGTERM 응답이 없어 강제 종료합니다. pid=\(pid)")
+      kill(pid, SIGKILL)
+      self.runtimeState = .stopped
+      self.processId = nil
+      self.lastUpdatedAt = Date()
+    }
+  }
+
+  private func isProcessAlive(_ pid: Int32) -> Bool {
+    if kill(pid, 0) == 0 {
+      return true
+    }
+
+    return errno == EPERM
+  }
+
+  private func findExistingAgentProcessId() -> Int32? {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    process.arguments = ["-fal", "run-local-agent.mjs"]
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+      return nil
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let text = String(decoding: data, as: UTF8.self)
+
+    for line in text.split(whereSeparator: \.isNewline) {
+      let columns = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+      guard columns.count == 2,
+            let pid = Int32(columns[0]),
+            !String(columns[1]).contains("/usr/bin/pgrep") else {
+        continue
+      }
+
+      return pid
+    }
+
+    return nil
   }
 
   private static func makeMenuBarImage(grayscale: Bool) -> NSImage? {
@@ -244,26 +378,9 @@ struct AgentLogWindow: View {
           .foregroundStyle(statusColor)
       }
 
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(model.lines.enumerated()), id: \.offset) { index, line in
-              Text(line)
-                .font(.system(.caption, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .id(index)
-            }
-          }
-          .padding(12)
-        }
+      SelectableLogTextView(text: model.lines.joined(separator: "\n"))
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .onChange(of: model.lines.count) {
-          guard let lastIndex = model.lines.indices.last else { return }
-          proxy.scrollTo(lastIndex, anchor: .bottom)
-        }
-      }
 
       HStack {
         Button("로그 지우기") {
@@ -295,8 +412,54 @@ struct AgentLogWindow: View {
   }
 }
 
+private struct SelectableLogTextView: NSViewRepresentable {
+  let text: String
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let scrollView = NSScrollView()
+    scrollView.hasVerticalScroller = true
+    scrollView.hasHorizontalScroller = true
+    scrollView.autohidesScrollers = true
+    scrollView.borderType = .noBorder
+    scrollView.drawsBackground = false
+
+    let textView = NSTextView()
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.isRichText = false
+    textView.importsGraphics = false
+    textView.drawsBackground = false
+    textView.isHorizontallyResizable = true
+    textView.isVerticallyResizable = true
+    textView.autoresizingMask = [.width]
+    textView.textContainerInset = NSSize(width: 12, height: 12)
+    textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    textView.textContainer?.widthTracksTextView = false
+    textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+    scrollView.documentView = textView
+    return scrollView
+  }
+
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    guard let textView = scrollView.documentView as? NSTextView else {
+      return
+    }
+
+    let selection = textView.selectedRange()
+    textView.string = text
+
+    if selection.location != NSNotFound, NSMaxRange(selection) <= (text as NSString).length {
+      textView.setSelectedRange(selection)
+    }
+
+    textView.scrollToEndOfDocument(nil)
+  }
+}
+
 struct AgentMenuContent: View {
   @ObservedObject var model: AgentMenuModel
+  @ObservedObject var bootstrap: AgentBootstrapStore
   @Environment(\.openWindow) private var openWindow
 
   var body: some View {
@@ -317,15 +480,17 @@ struct AgentMenuContent: View {
       Divider()
 
       Button(model.isRunning ? "실행 중지" : "실행 시작") {
+        model.refreshRuntimeStateFromSystem()
         if model.isRunning {
           model.stop()
         } else {
-          model.start()
+          model.start(using: bootstrap)
         }
       }
+      .disabled(bootstrap.bootstrapInProgress)
 
-      Button("로그 보기") {
-        openWindow(id: "logs")
+      Button("환경설정") {
+        openWindowAndActivate(id: "setup")
       }
 
       if let lastError = model.lastError, !lastError.isEmpty {
@@ -338,6 +503,13 @@ struct AgentMenuContent: View {
     }
     .padding(14)
     .frame(width: 240)
+  }
+
+  private func openWindowAndActivate(id: String) {
+    NSApp.activate(ignoringOtherApps: true)
+    DispatchQueue.main.async {
+      openWindow(id: id)
+    }
   }
 
   private var statusColor: Color {
@@ -354,9 +526,19 @@ struct AgentMenuContent: View {
   }
 }
 
+final class OctOPAgentMenuAppDelegate: NSObject, NSApplicationDelegate {
+  var onWillTerminate: (() -> Void)?
+
+  func applicationWillTerminate(_ notification: Notification) {
+    onWillTerminate?()
+  }
+}
+
 @main
 struct OctOPAgentMenuApp: App {
+  @NSApplicationDelegateAdaptor(OctOPAgentMenuAppDelegate.self) private var appDelegate
   @StateObject private var model = AgentMenuModel()
+  @StateObject private var bootstrap = AgentBootstrapStore()
 
   init() {
     NSApplication.shared.setActivationPolicy(.accessory)
@@ -364,15 +546,37 @@ struct OctOPAgentMenuApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      AgentMenuContent(model: model)
+      AgentMenuContent(model: model, bootstrap: bootstrap)
     } label: {
       Image(nsImage: model.menuBarImage)
         .renderingMode(.original)
+        .task {
+          appDelegate.onWillTerminate = {
+            Task { @MainActor in
+              model.handleApplicationWillTerminate()
+            }
+          }
+
+          if await bootstrap.ensureAppUpdatedIfNeeded(log: model.appendInstallerLog) {
+            return
+          }
+
+          model.refreshRuntimeStateFromSystem()
+          await bootstrap.ensureInstalledIfNeeded(log: model.appendInstallerLog)
+        }
     }
 
     WindowGroup(id: "logs") {
       AgentLogWindow(model: model)
     }
     .defaultSize(width: 760, height: 520)
+
+    WindowGroup(id: "setup") {
+      AgentSetupWindow(
+        bootstrap: bootstrap,
+        onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) }
+      )
+    }
+    .defaultSize(width: 520, height: 760)
   }
 }

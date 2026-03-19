@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>AnyCPU;x64</Platforms>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\design\icon.png" LogicalName="OctOP.WindowsAgentMenu.Assets.icon.png" />
+    <EmbeddedResource Include="..\..\scripts\shared-env.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs" />
+    <EmbeddedResource Include="..\..\scripts\run-local-agent.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs" />
+    <EmbeddedResource Include="..\..\scripts\run-bridge.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs" />
+    <EmbeddedResource Include="..\..\services\codex-adapter\src\index.js" LogicalName="OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.index.js" />
+    <EmbeddedResource Include="..\..\packages\domain\src\index.js" LogicalName="OctOP.WindowsAgentMenu.Runtime.packages.domain.src.index.js" />
+  </ItemGroup>
+</Project>
