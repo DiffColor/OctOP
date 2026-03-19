@@ -6,6 +6,9 @@ namespace OctOP.Gateway;
 
 public sealed class PushSubscriptionService(OctopStore octopStore)
 {
+  public const string ClientModeBrowser = "browser";
+  public const string ClientModeStandalone = "standalone";
+
   public async Task<int> GetCountAsync(
     string userId,
     string bridgeId,
@@ -34,7 +37,7 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     string bridgeId,
     CancellationToken cancellationToken)
   {
-    return octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId: null, cancellationToken);
+    return GetEffectiveSubscriptionsAsync(userId, bridgeId, cancellationToken);
   }
 
   public async Task<int> UpsertAsync(
@@ -61,6 +64,7 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
       Endpoint = subscriptionDto.Endpoint,
       Origin = origin,
       UserAgent = userAgent,
+      ClientMode = NormalizeClientMode(subscriptionDto.ClientMode),
       P256dh = subscriptionDto.Keys.P256dh,
       Auth = subscriptionDto.Keys.Auth,
       CreatedAt = existing?.CreatedAt ?? now,
@@ -191,6 +195,54 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
   {
     var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
     return Convert.ToHexString(bytes).ToLowerInvariant();
+  }
+
+  private async Task<IReadOnlyList<PushSubscriptionEntity>> GetEffectiveSubscriptionsAsync(
+    string userId,
+    string bridgeId,
+    CancellationToken cancellationToken)
+  {
+    var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId: null, cancellationToken);
+    return SelectDeliveryTargets(subscriptions);
+  }
+
+  private static IReadOnlyList<PushSubscriptionEntity> SelectDeliveryTargets(
+    IReadOnlyList<PushSubscriptionEntity> subscriptions)
+  {
+    if (subscriptions.Count <= 1)
+    {
+      return subscriptions;
+    }
+
+    var deliveryTargets = new List<PushSubscriptionEntity>(subscriptions.Count);
+    var mobileSubscriptions = subscriptions
+      .Where(subscription => string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
+      .ToList();
+
+    if (mobileSubscriptions.Count > 0)
+    {
+      var preferredMobileSubscriptions = mobileSubscriptions
+        .Where(subscription => string.Equals(
+          NormalizeClientMode(subscription.ClientMode),
+          ClientModeStandalone,
+          StringComparison.Ordinal))
+        .ToList();
+
+      deliveryTargets.AddRange(preferredMobileSubscriptions.Count > 0 ? preferredMobileSubscriptions : mobileSubscriptions);
+    }
+
+    deliveryTargets.AddRange(
+      subscriptions.Where(subscription => !string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
+    );
+
+    return deliveryTargets;
+  }
+
+  private static string NormalizeClientMode(string? value)
+  {
+    return string.Equals(value?.Trim(), ClientModeStandalone, StringComparison.OrdinalIgnoreCase)
+      ? ClientModeStandalone
+      : ClientModeBrowser;
   }
 
   private static void Validate(PushSubscriptionDto subscriptionDto)

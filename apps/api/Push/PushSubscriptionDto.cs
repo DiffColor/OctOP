@@ -7,6 +7,9 @@ public sealed class PushSubscriptionDto
   [JsonPropertyName("endpoint")]
   public string Endpoint { get; set; } = string.Empty;
 
+  [JsonPropertyName("clientMode")]
+  public string? ClientMode { get; set; }
+
   [JsonPropertyName("expirationTime")]
   public long? ExpirationTime { get; set; }
 

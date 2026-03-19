@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const APP_ID = "mobile-web";
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 const MAX_LOG_ENTRIES = 5;
+const CLIENT_MODE_STANDALONE = "standalone";
+const CLIENT_MODE_BROWSER = "browser";
 
 function supportsPush() {
   return (
@@ -40,6 +42,17 @@ function delay(ms) {
   });
 }
 
+function resolveClientMode() {
+  if (typeof window === "undefined") {
+    return CLIENT_MODE_BROWSER;
+  }
+
+  const isStandalone =
+    window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+  return isStandalone ? CLIENT_MODE_STANDALONE : CLIENT_MODE_BROWSER;
+}
+
 async function readExistingSubscription(registration, attempts = 1, delayMs = 0) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const subscription = await registration.pushManager.getSubscription().catch(() => null);
@@ -54,6 +67,27 @@ async function readExistingSubscription(registration, attempts = 1, delayMs = 0)
   }
 
   return null;
+}
+
+async function syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, clientMode) {
+  const payload = subscription?.toJSON?.();
+
+  if (!payload?.endpoint || !payload.keys?.p256dh || !payload.keys?.auth) {
+    return;
+  }
+
+  await apiRequest(subscriptionsPath, {
+    method: "POST",
+    body: JSON.stringify({
+      endpoint: payload.endpoint,
+      clientMode,
+      expirationTime: payload.expirationTime ?? null,
+      keys: {
+        p256dh: payload.keys.p256dh,
+        auth: payload.keys.auth
+      }
+    })
+  });
 }
 
 function formatPermission(permission) {
@@ -183,10 +217,17 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         }
 
         const registration = await navigator.serviceWorker.ready;
-        const [summary, subscription] = await Promise.all([
-          apiRequest(subscriptionsPath),
-          readExistingSubscription(registration, Notification.permission === "granted" ? 5 : 1, 250)
-        ]);
+        const subscription = await readExistingSubscription(
+          registration,
+          Notification.permission === "granted" ? 5 : 1,
+          250
+        );
+
+        if (subscription) {
+          await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, resolveClientMode());
+        }
+
+        const summary = await apiRequest(subscriptionsPath);
 
         if (cancelled) {
           return;
@@ -305,17 +346,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         throw new Error("브라우저 푸시 구독 객체를 읽지 못했습니다.");
       }
 
-      await apiRequest(subscriptionsPath, {
-        method: "POST",
-        body: JSON.stringify({
-          endpoint: payload.endpoint,
-          expirationTime: payload.expirationTime ?? null,
-          keys: {
-            p256dh: payload.keys.p256dh,
-            auth: payload.keys.auth
-          }
-        })
-      });
+      await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, resolveClientMode());
 
       const summary = await apiRequest(subscriptionsPath);
       endpointRef.current = payload.endpoint;

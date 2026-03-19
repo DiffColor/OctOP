@@ -28,6 +28,9 @@ public sealed class PushSubscriptionEntity
   [JsonProperty("user_agent")]
   public string? UserAgent { get; set; }
 
+  [JsonProperty("client_mode")]
+  public string? ClientMode { get; set; }
+
   [JsonProperty("p256dh")]
   public string P256dh { get; set; } = string.Empty;
 
