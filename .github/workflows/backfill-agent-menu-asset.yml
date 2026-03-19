@@ -91,6 +91,10 @@ jobs:
         with:
           node-version: 22
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.1"
+
       - name: Verify release exists
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
