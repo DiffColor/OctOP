@@ -70,7 +70,7 @@ final class AgentMenuModel: ObservableObject {
 
     runtimeState = .starting
     lastError = nil
-    appendLog("local-agent 실행을 시작합니다.")
+    appendLog("서비스 시작을 요청합니다.")
 
     let launchContext: AgentLaunchContext
     do {
@@ -125,7 +125,7 @@ final class AgentMenuModel: ObservableObject {
       processId = nextProcess.processIdentifier
       runtimeState = .running
       lastUpdatedAt = Date()
-      appendLog("local-agent가 시작되었습니다. pid=\(nextProcess.processIdentifier)")
+      appendLog("서비스가 시작되었습니다. pid=\(nextProcess.processIdentifier)")
     } catch {
       runtimeState = .failed
       lastError = error.localizedDescription
@@ -164,7 +164,7 @@ final class AgentMenuModel: ObservableObject {
       }
 
       runtimeState = .stopped
-      appendLog("중지할 local-agent 프로세스가 없습니다.")
+      appendLog("중지할 서비스가 없습니다.")
       return
     }
 
@@ -174,7 +174,7 @@ final class AgentMenuModel: ObservableObject {
 
     runtimeState = .stopping
     lastUpdatedAt = Date()
-    appendLog("local-agent 중지를 요청합니다.")
+    appendLog("서비스 정지를 요청합니다.")
 
     if process.isRunning {
       terminateProcess(process.processIdentifier)
@@ -600,7 +600,7 @@ struct AgentMenuContent: View {
 
       Divider()
 
-      Button(model.isRunning ? "실행 중지" : "실행 시작") {
+      Button(model.isRunning ? "서비스 정지" : "서비스 시작") {
         model.refreshRuntimeStateFromSystem()
         if model.isRunning {
           model.stop()

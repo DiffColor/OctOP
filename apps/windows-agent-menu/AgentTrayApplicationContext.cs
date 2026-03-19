@@ -74,7 +74,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _statusItem = new ToolStripMenuItem() { Enabled = false };
     _environmentItem = new ToolStripMenuItem("환경 확인 중") { Enabled = false };
     _pidItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
-    _toggleItem = new ToolStripMenuItem("실행 시작");
+    _toggleItem = new ToolStripMenuItem("서비스 시작");
     _toggleItem.Click += (_, _) => ToggleProcess();
     _restartItem = new ToolStripMenuItem("재시작");
     _restartItem.Click += async (_, _) => await RestartAsync();
@@ -219,7 +219,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     _runtimeState = AgentRuntimeState.Starting;
     _lastError = null;
-    AppendLog("local-agent 실행을 시작합니다.");
+    AppendLog("서비스 시작을 요청합니다.");
     RefreshUi();
 
     var nodeExecutablePath = _paths.GetNodeExecutablePath();
@@ -304,7 +304,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       WriteAgentPidFile(process.Id);
       _runtimeState = AgentRuntimeState.Running;
       _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"local-agent가 시작되었습니다. pid={process.Id}");
+      AppendLog($"서비스가 시작되었습니다. pid={process.Id}");
       RefreshUi();
     }
     catch (Exception error)
@@ -347,7 +347,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         _runtimeState = AgentRuntimeState.Stopping;
         _processId = runtimeProcessIds[0];
         _lastUpdatedAt = DateTimeOffset.Now;
-        AppendLog($"기존 local-agent 런타임 프로세스 중지를 요청합니다. pids={string.Join(",", runtimeProcessIds)}");
+        AppendLog($"기존 local-agent 런타임 프로세스 정지를 요청합니다. pids={string.Join(",", runtimeProcessIds)}");
         RefreshUi();
         KillRuntimeProcesses(runtimeProcessIds);
         DeleteAgentPidFile();
@@ -361,14 +361,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
 
       _runtimeState = AgentRuntimeState.Stopped;
-      AppendLog("중지할 local-agent 프로세스가 없습니다.");
+      AppendLog("중지할 서비스가 없습니다.");
       RefreshUi();
       return;
     }
 
     _runtimeState = AgentRuntimeState.Stopping;
     _lastUpdatedAt = DateTimeOffset.Now;
-    AppendLog("local-agent 중지를 요청합니다.");
+    AppendLog("서비스 정지를 요청합니다.");
     RefreshUi();
 
     try
@@ -558,7 +558,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _pidItem.Visible = _processId is not null;
 
     var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping;
-    _toggleItem.Text = running ? "실행 중지" : "실행 시작";
+    _toggleItem.Text = running ? "서비스 정지" : "서비스 시작";
     _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
     _restartItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
   }
