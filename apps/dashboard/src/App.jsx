@@ -3102,6 +3102,68 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
   );
 }
 
+function SettingsDialog({ open, session, bridgeSignal, selectedBridge, pushNotificationCard, onClose, onLogout }) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div className="w-full max-w-lg rounded-[2rem] border border-slate-800 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Workspace</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">설정</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">현재 브릿지 기준 푸시 알림과 계정 상태를 확인할 수 있습니다.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            닫기
+          </button>
+        </div>
+
+        <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
+              <p className="mt-1 truncate text-xs text-slate-500">{session.loginId}</p>
+            </div>
+            <span className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]" style={bridgeSignal.chipStyle}>
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
+              {bridgeSignal.label}
+            </span>
+          </div>
+          <p className="mt-3 truncate text-xs text-slate-400">
+            현재 브릿지: {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "선택된 브릿지 없음"}
+          </p>
+        </section>
+
+        <section className="mt-4">{pushNotificationCard}</section>
+
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="rounded-2xl border border-rose-400/20 px-4 py-3 text-sm font-medium text-rose-100 transition hover:bg-rose-500/10"
+          >
+            로그아웃
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PrepThreadCard({
   language,
   thread,
@@ -3454,7 +3516,6 @@ function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
 }
 
 function MainPage({
-  pushNotificationCard,
   language,
   onChangeLanguage,
   session,
@@ -3551,6 +3612,7 @@ function MainPage({
   );
   const [expandedProjectIds, setExpandedProjectIds] = useState({});
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [boardScrollbarVisible, setBoardScrollbarVisible] = useState(false);
   const [boardScrollbarDragging, setBoardScrollbarDragging] = useState(false);
   const [boardScrollState, setBoardScrollState] = useState({
@@ -4198,8 +4260,6 @@ function MainPage({
                   )}
                 </select>
               </div>
-              {pushNotificationCard ? <div className="px-2">{pushNotificationCard}</div> : null}
-
               {bridgeAvailable ? (
                 <>
                   <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[11px] uppercase tracking-[0.24em] text-slate-500">
@@ -4856,8 +4916,15 @@ function MainPage({
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <div className="relative mr-2" ref={languageMenuRef}>
+	            <div className="flex flex-wrap items-center justify-end gap-2">
+	              <button
+	                type="button"
+	                onClick={() => setSettingsOpen(true)}
+	                className="rounded-full border border-slate-700 px-3 py-1.5 text-[11px] font-medium text-slate-200 transition hover:border-slate-500 hover:text-white"
+	              >
+	                설정
+	              </button>
+	              <div className="relative mr-2" ref={languageMenuRef}>
                 {languageMenuOpen ? (
                   <div className="absolute bottom-full left-0 mb-2 min-w-[9rem] rounded-xl border border-slate-800 bg-slate-950/98 p-1.5 shadow-2xl shadow-slate-950/60">
                     {[
@@ -4947,17 +5014,32 @@ function MainPage({
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
       />
-      <ProjectInstructionDialog
-        language={language}
-        open={projectInstructionDialogOpen}
+	      <ProjectInstructionDialog
+	        language={language}
+	        open={projectInstructionDialogOpen}
         busy={projectInstructionBusy}
         project={selectedProject}
         instructionType={projectInstructionType}
-        onClose={onCloseProjectInstructionDialog}
-        onSubmit={onSubmitProjectInstruction}
-      />
-      <ThreadDetailModal
-        language={language}
+	        onClose={onCloseProjectInstructionDialog}
+	        onSubmit={onSubmitProjectInstruction}
+	      />
+	      <SettingsDialog
+	        open={settingsOpen}
+	        session={session}
+	        bridgeSignal={bridgeSignal}
+	        selectedBridge={selectedBridge}
+	        pushNotificationCard={
+	          <PushNotificationCard
+	            apiRequest={apiRequest}
+	            session={session}
+	            selectedBridgeId={selectedBridgeId}
+	          />
+	        }
+	        onClose={() => setSettingsOpen(false)}
+	        onLogout={onLogout}
+	      />
+	      <ThreadDetailModal
+	        language={language}
         open={detailState.open}
         loading={detailState.loading}
         thread={detailState.thread}
@@ -7818,13 +7900,6 @@ export default function App() {
 
   return (
     <MainPage
-      pushNotificationCard={
-        <PushNotificationCard
-          apiRequest={apiRequest}
-          session={session}
-          selectedBridgeId={selectedBridgeId}
-        />
-      }
       language={language}
       onChangeLanguage={setLanguage}
       session={session}

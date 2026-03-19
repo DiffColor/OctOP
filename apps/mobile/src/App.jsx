@@ -1908,6 +1908,7 @@ function UtilitySheet({
   session,
   bridgeSignal,
   selectedProject,
+  pushNotificationCard,
   onOpenProjectInstructionDialog,
   onClose,
   onOpenProjectComposer,
@@ -1960,6 +1961,8 @@ function UtilitySheet({
             개발지침 설정
           </button>
         </section>
+
+        {pushNotificationCard ? <section className="border-t border-white/10 pt-4">{pushNotificationCard}</section> : null}
 
         <section className="grid grid-cols-2 gap-2 border-t border-white/10 pt-4">
           <button
@@ -5420,7 +5423,6 @@ function MainPage({
             onInstall={onInstallPwa}
             onDismiss={onDismissInstallPrompt}
           />
-          {pushNotificationCard ? <div className="px-4 pb-3">{pushNotificationCard}</div> : null}
 
           <div className="border-b border-white/10 px-4 pb-3 pt-2">
             <div className="flex gap-2 overflow-x-auto pb-1">
@@ -5623,6 +5625,7 @@ function MainPage({
         session={session}
         bridgeSignal={bridgeSignal}
         selectedProject={selectedProject}
+        pushNotificationCard={pushNotificationCard}
         onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
         onClose={onCloseUtility}
         onOpenProjectComposer={onOpenProjectComposer}

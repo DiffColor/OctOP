@@ -22,6 +22,7 @@ function createInitialState() {
     permission: typeof Notification === "undefined" ? "default" : Notification.permission,
     subscriptionCount: 0,
     received: [],
+    notice: "",
     error: ""
   };
 }
@@ -128,6 +129,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         browserSubscriptionReady: false,
         permission: typeof Notification === "undefined" ? "default" : Notification.permission,
         subscriptionCount: 0,
+        notice: "",
         error: "이 브라우저는 웹 푸시를 지원하지 않습니다."
       }));
       return undefined;
@@ -140,6 +142,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         bridgeRegistered: false,
         browserSubscriptionReady: false,
         subscriptionCount: 0,
+        notice: "",
         error: ""
       }));
       endpointRef.current = "";
@@ -173,7 +176,8 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
             browserSubscriptionReady: false,
             permission: Notification.permission,
             subscriptionCount: 0,
-            error: "서버에 VAPID 키가 없어 푸시가 비활성화되어 있습니다."
+            notice: "서버에서 아직 웹 푸시 설정이 준비되지 않았습니다.",
+            error: ""
           }));
           return;
         }
@@ -200,6 +204,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           browserSubscriptionReady: Boolean(subscription),
           permission: Notification.permission,
           subscriptionCount: Number(summary?.count ?? endpoints.length ?? 0),
+          notice: "",
           error: ""
         }));
       } catch (error) {
@@ -212,6 +217,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           configured: false,
           loading: false,
           permission: Notification.permission,
+          notice: "",
           error: error instanceof Error ? error.message : String(error)
         }));
       }
@@ -252,11 +258,12 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       return;
     }
 
-    setState((current) => ({
-      ...current,
-      loading: true,
-      error: ""
-    }));
+      setState((current) => ({
+        ...current,
+        loading: true,
+        notice: "",
+        error: ""
+      }));
 
     try {
       const config = await apiRequest(configPath);
@@ -314,6 +321,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         browserSubscriptionReady: true,
         permission,
         subscriptionCount: Number(summary?.count ?? 1),
+        notice: "",
         error: ""
       }));
     } catch (error) {
@@ -321,6 +329,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         ...current,
         loading: false,
         permission: typeof Notification === "undefined" ? current.permission : Notification.permission,
+        notice: "",
         error: error instanceof Error ? error.message : String(error)
       }));
     }
@@ -342,11 +351,12 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       return;
     }
 
-    setState((current) => ({
-      ...current,
-      loading: true,
-      error: ""
-    }));
+      setState((current) => ({
+        ...current,
+        loading: true,
+        notice: "",
+        error: ""
+      }));
 
     try {
       await apiRequest(subscriptionsPath, {
@@ -360,19 +370,21 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         loading: false,
         bridgeRegistered: false,
         subscriptionCount: Number(summary?.count ?? 0),
+        notice: "",
         error: ""
       }));
     } catch (error) {
       setState((current) => ({
         ...current,
         loading: false,
+        notice: "",
         error: error instanceof Error ? error.message : String(error)
       }));
     }
   };
 
   return (
-    <section className="mt-3 rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 shadow-telegram-card">
+    <section className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 shadow-telegram-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Push Alerts</p>
@@ -412,6 +424,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         </div>
       </div>
 
+      {state.notice ? <p className="mt-3 text-[12px] leading-5 text-slate-400">{state.notice}</p> : null}
       {state.error ? <p className="mt-3 text-[12px] leading-5 text-rose-300">{state.error}</p> : null}
 
       <div className="mt-3 flex gap-2">
