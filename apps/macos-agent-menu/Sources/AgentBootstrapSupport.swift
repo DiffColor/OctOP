@@ -1089,6 +1089,7 @@ final class AgentBootstrapStore: ObservableObject {
   }
 }
 
+@MainActor
 struct AgentSetupWindow: View {
   @ObservedObject var bootstrap: AgentBootstrapStore
   let onInstall: () -> Void

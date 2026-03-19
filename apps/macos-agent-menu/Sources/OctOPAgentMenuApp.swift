@@ -485,6 +485,7 @@ final class AgentMenuModel: ObservableObject {
   }
 }
 
+@MainActor
 struct AgentLogWindow: View {
   @ObservedObject var model: AgentMenuModel
 
@@ -578,6 +579,7 @@ private struct SelectableLogTextView: NSViewRepresentable {
   }
 }
 
+@MainActor
 struct AgentMenuContent: View {
   @ObservedObject var model: AgentMenuModel
   @ObservedObject var bootstrap: AgentBootstrapStore
@@ -678,6 +680,7 @@ final class OctOPAgentMenuAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
+@MainActor
 struct OctOPAgentMenuApp: App {
   @NSApplicationDelegateAdaptor(OctOPAgentMenuAppDelegate.self) private var appDelegate
   @StateObject private var model = AgentMenuModel()
