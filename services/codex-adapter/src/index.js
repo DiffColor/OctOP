@@ -28,6 +28,7 @@ import {
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
 // Runtime update verification marker 2: second non-functional comment for follow-up validation.
+// Runtime update verification marker 3: menu indicator validation without logic change.
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
