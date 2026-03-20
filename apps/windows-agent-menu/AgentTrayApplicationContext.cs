@@ -1505,7 +1505,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 15000)
   {
-    var requiredPorts = ResolveServicePorts(_configuration);
+    var requiredPorts = ResolveStartupValidationPorts(_configuration);
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
 
     while (DateTimeOffset.UtcNow < deadline)
@@ -1522,18 +1522,38 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return false;
       }
 
-      if (requiredPorts.Count == 0 || FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count)
+      if (requiredPorts.Count == 0)
       {
-        if (await ProbeBridgeHealthAsync())
-        {
-          return true;
-        }
+        return true;
+      }
+
+      if (FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count)
+      {
+        return true;
       }
 
       await Task.Delay(500);
     }
 
     return false;
+  }
+
+  private static IReadOnlyCollection<int> ResolveStartupValidationPorts(RuntimeConfiguration configuration)
+  {
+    var ports = new List<int>();
+
+    if (Uri.TryCreate(configuration.AppServerWsUrl?.Trim(), UriKind.Absolute, out var appServerUrl))
+    {
+      var appServerPort = appServerUrl.IsDefaultPort
+        ? appServerUrl.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80
+        : appServerUrl.Port;
+      if (appServerPort is >= 1 and <= 65535)
+      {
+        ports.Add(appServerPort);
+      }
+    }
+
+    return ports;
   }
 
   private static IReadOnlyCollection<int> ResolveServicePorts(RuntimeConfiguration configuration)
@@ -1557,48 +1577,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     return ports;
-  }
-
-  private async Task<bool> ProbeBridgeHealthAsync()
-  {
-    var host = NormalizeBridgeProbeHost(_configuration.BridgeHost);
-    if (!int.TryParse(_configuration.BridgePort?.Trim(), out var bridgePort) || bridgePort is < 1 or > 65535)
-    {
-      return false;
-    }
-
-    try
-    {
-      using var request = new HttpRequestMessage(
-        HttpMethod.Get,
-        new Uri($"http://{host}:{bridgePort}/health"));
-      request.Headers.TryAddWithoutValidation("x-bridge-token", _configuration.BridgeToken?.Trim() ?? string.Empty);
-      using var cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-
-      using var response = await HealthcheckClient.SendAsync(
-        request,
-        HttpCompletionOption.ResponseHeadersRead,
-        cancellationSource.Token);
-      return response.IsSuccessStatusCode;
-    }
-    catch
-    {
-      return false;
-    }
-  }
-
-  private static string NormalizeBridgeProbeHost(string? bridgeHost)
-  {
-    var normalized = bridgeHost?.Trim();
-    if (string.IsNullOrWhiteSpace(normalized) ||
-        string.Equals(normalized, "0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(normalized, "::", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(normalized, "[::]", StringComparison.OrdinalIgnoreCase))
-    {
-      return "127.0.0.1";
-    }
-
-    return normalized;
   }
 
   private List<int> RunPowerShellProcessQuery(string command)
