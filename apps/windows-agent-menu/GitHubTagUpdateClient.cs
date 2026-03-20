@@ -5,27 +5,32 @@ sealed class GitHubTagUpdateClient
 {
   private const string Owner = "DiffColor";
   private const string Repo = "OctOP";
-  private const string ReleasesApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=30";
+  private const string TagsApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/tags?per_page=30";
 
   private static readonly HttpClient HttpClient = CreateHttpClient();
 
-  public async Task<ReleaseDescriptor?> GetLatestWindowsReleaseAsync(CancellationToken cancellationToken)
+  public async Task<AppUpdateDescriptor?> GetLatestWindowsReleaseAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
-    return await GetLatestReleaseAsync(cancellationToken);
+    return await GetLatestReleaseAsync(currentVersionTag, cancellationToken);
   }
 
-  private static async Task<ReleaseDescriptor?> GetLatestReleaseAsync(CancellationToken cancellationToken)
+  private static async Task<AppUpdateDescriptor?> GetLatestReleaseAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
-    using var response = await HttpClient.GetAsync(ReleasesApiUrl, cancellationToken);
+    if (!SemVersion.TryParse(currentVersionTag, out var currentVersion))
+    {
+      return null;
+    }
+
+    using var response = await HttpClient.GetAsync(TagsApiUrl, cancellationToken);
     response.EnsureSuccessStatusCode();
 
     await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
     using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-    var candidates = new List<(SemVersion version, ReleaseDescriptor release)>();
+    var candidates = new List<(SemVersion version, AppUpdateDescriptor release)>();
 
     foreach (var item in document.RootElement.EnumerateArray())
     {
-      if (!item.TryGetProperty("tag_name", out var tagProperty))
+      if (!item.TryGetProperty("name", out var tagProperty))
       {
         continue;
       }
@@ -42,39 +47,37 @@ sealed class GitHubTagUpdateClient
       }
 
       var normalizedTag = AppMetadata.NormalizeVersionTag(rawTag);
-      var expectedAssetName = $"OctOP.WindowsAgentMenu-win-x64-{normalizedTag}.exe";
-      if (!item.TryGetProperty("assets", out var assetsProperty) || assetsProperty.ValueKind != JsonValueKind.Array)
+      if (version.CompareTo(currentVersion) <= 0)
       {
         continue;
       }
 
-      foreach (var asset in assetsProperty.EnumerateArray())
+      var expectedAssetName = $"OctOP.WindowsAgentMenu-win-x64-{normalizedTag}.exe";
+      var downloadUrl = new Uri($"https://github.com/{Owner}/{Repo}/releases/download/{normalizedTag}/{expectedAssetName}");
+      if (!await AssetExistsAsync(downloadUrl, cancellationToken))
       {
-        if (!asset.TryGetProperty("name", out var assetNameProperty) ||
-            !asset.TryGetProperty("browser_download_url", out var downloadUrlProperty))
-        {
-          continue;
-        }
-
-        var assetName = assetNameProperty.GetString();
-        var downloadUrl = downloadUrlProperty.GetString();
-        if (!string.Equals(assetName, expectedAssetName, StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(assetName) ||
-            string.IsNullOrWhiteSpace(downloadUrl) ||
-            !Uri.TryCreate(downloadUrl, UriKind.Absolute, out var downloadUri))
-        {
-          continue;
-        }
-
-        candidates.Add((version, new ReleaseDescriptor(normalizedTag, assetName, downloadUri)));
-        break;
+        continue;
       }
+
+      candidates.Add((version, new AppUpdateDescriptor
+      {
+        Tag = normalizedTag,
+        AssetName = expectedAssetName,
+        DownloadUrl = downloadUrl
+      }));
     }
 
     return candidates
       .OrderByDescending(static item => item.version)
       .Select(static item => item.release)
       .FirstOrDefault();
+  }
+
+  private static async Task<bool> AssetExistsAsync(Uri downloadUrl, CancellationToken cancellationToken)
+  {
+    using var request = new HttpRequestMessage(HttpMethod.Head, downloadUrl);
+    using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    return response.IsSuccessStatusCode;
   }
 
   private static HttpClient CreateHttpClient()
@@ -85,8 +88,6 @@ sealed class GitHubTagUpdateClient
     return client;
   }
 }
-
-sealed record ReleaseDescriptor(string Tag, string AssetName, Uri DownloadUrl);
 
 readonly record struct SemVersion(int Major, int Minor, int Patch, string? Suffix) : IComparable<SemVersion>
 {

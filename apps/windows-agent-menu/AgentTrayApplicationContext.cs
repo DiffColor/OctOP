@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -13,6 +14,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 {
   private const int MaxLines = 2000;
   private static readonly string AppTitle = "OctOP Local Agent";
+  private static readonly HttpClient HealthcheckClient = new();
 
   private readonly SynchronizationContext _uiContext;
   private readonly NotifyIcon _notifyIcon;
@@ -24,13 +26,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private readonly ToolStripMenuItem _environmentItem;
   private readonly ToolStripMenuItem _pidItem;
   private readonly ToolStripMenuItem _toggleItem;
-  private readonly ToolStripMenuItem _restartItem;
+  private readonly ToolStripMenuItem _appUpdateItem;
   private readonly ToolStripMenuItem _setupItem;
   private readonly ToolStripMenuItem _exitItem;
   private readonly LogWindow _logWindow;
   private readonly SetupWindow _setupWindow;
   private readonly RuntimeInstaller _runtimeInstaller;
   private readonly WindowsAutoUpdater _autoUpdater;
+  private readonly System.Threading.Timer _updateMonitorTimer;
   private OctopPaths _paths;
   private readonly Icon _colorIcon;
   private readonly Icon _grayscaleIcon;
@@ -38,6 +41,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private RuntimeConfiguration _configuration;
   private RuntimeStatus? _runtimeStatus;
+  private RuntimeUpdateDescriptor? _availableRuntimeUpdate;
+  private AppUpdateDescriptor? _availableAppUpdate;
   private AgentRuntimeState _runtimeState = AgentRuntimeState.Stopped;
   private Process? _process;
   private int? _processId;
@@ -45,6 +50,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private DateTimeOffset? _lastUpdatedAt;
   private bool _isExiting;
   private bool _suppressRuntimeStopOnExit;
+  private bool _exitInProgress;
+  private bool _stopInProgress;
 
   public AgentTrayApplicationContext()
   {
@@ -84,12 +91,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _pidItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
     _toggleItem = new ToolStripMenuItem("서비스 시작");
     _toggleItem.Click += (_, _) => ToggleProcess();
-    _restartItem = new ToolStripMenuItem("재시작");
-    _restartItem.Click += async (_, _) => await RestartAsync();
+    _appUpdateItem = new ToolStripMenuItem("앱 업데이트");
+    _appUpdateItem.Click += async (_, _) => await BeginAppUpdateAsync();
     _setupItem = new ToolStripMenuItem("환경 설정");
     _setupItem.Click += (_, _) => ShowSetup();
     _exitItem = new ToolStripMenuItem("종료");
-    _exitItem.Click += (_, _) => ExitApplication();
+    _exitItem.Click += async (_, _) => await ExitApplicationAsync();
 
     _menu.Items.AddRange(
     [
@@ -101,7 +108,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _pidItem,
       new ToolStripSeparator(),
       _toggleItem,
-      _restartItem,
+      _appUpdateItem,
       _setupItem,
       new ToolStripSeparator(),
       _exitItem
@@ -128,6 +135,18 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     AppendLog("윈도우 트레이 앱이 시작되었습니다.");
     RefreshRuntimeStateFromSystem(logDetection: true);
     RefreshUi();
+    _updateMonitorTimer = new System.Threading.Timer(
+      _ =>
+      {
+        PostToUi(() =>
+        {
+          _ = RefreshAvailableRuntimeUpdateAsync();
+          _ = RefreshAvailableAppUpdateAsync();
+        });
+      },
+      null,
+      TimeSpan.FromSeconds(60),
+      TimeSpan.FromSeconds(60));
     _ = InitializeAsync();
   }
 
@@ -144,6 +163,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _logWindow.Close();
       _colorIcon.Dispose();
       _grayscaleIcon.Dispose();
+      _updateMonitorTimer.Dispose();
       DisposeProcess();
     }
 
@@ -152,22 +172,27 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task InitializeAsync()
   {
-    RestorePreservedAppDataIfNeeded();
-    TerminateProcessesHoldingConfiguredPorts();
-
-    if (await TryApplyAppUpdateAsync())
-    {
-      return;
-    }
+    _autoUpdater.MarkPendingAppUpdateLaunchSucceededIfNeeded(_paths, AppendLog);
+    _autoUpdater.CleanupCompletedUpdateArtifactsIfNeeded(_paths, AppendLog);
 
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
+    await RefreshAvailableRuntimeUpdateAsync();
+    await RefreshAvailableAppUpdateAsync();
 
-    if (!ConsumePendingServiceStartRequest())
+    var resumePendingServiceStart = ConsumePendingServiceStartRequest();
+    var shouldAutoStartService =
+      _runtimeStatus?.ReadyToRun == true &&
+      _runtimeStatus.AutoStartRequested &&
+      _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting);
+
+    if (!resumePendingServiceStart && !shouldAutoStartService)
     {
       return;
     }
 
-    AppendLog("업데이트 후 서비스 자동 시작을 이어갑니다.");
+    AppendLog(resumePendingServiceStart
+      ? "업데이트 후 서비스 자동 시작을 이어갑니다."
+      : "자동 시작 설정에 따라 서비스 시작을 진행합니다.");
     await RefreshRuntimeStatusAsync();
     if (_runtimeStatus?.ReadyToRun != true)
     {
@@ -177,7 +202,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       await RefreshRuntimeStatusAsync();
     }
 
-    if (_runtimeStatus?.ReadyToRun == true)
+    if (_runtimeStatus?.ReadyToRun == true &&
+        _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting))
     {
       await StartAsync();
     }
@@ -218,8 +244,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void ToggleProcess()
   {
-    RefreshRuntimeStateFromSystem();
-    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping)
+    if (_stopInProgress)
+    {
+      return;
+    }
+
+    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting)
     {
       Stop();
       return;
@@ -230,17 +260,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task StartAsync()
   {
-    var runtimeProcessIds = FindRuntimeProcessIds();
-    if (runtimeProcessIds.Count > 0)
-    {
-      _processId = runtimeProcessIds[0];
-      _runtimeState = AgentRuntimeState.Running;
-      _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog($"기존 local-agent 런타임 프로세스를 재사용합니다. pids={string.Join(",", runtimeProcessIds)}");
-      RefreshUi();
-      return;
-    }
-
     await RefreshRuntimeStatusAsync();
     if (_runtimeStatus?.ReadyToRun != true)
     {
@@ -254,6 +273,21 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _lastError = null;
     AppendLog("서비스 시작을 요청합니다.");
     RefreshUi();
+
+    var preparedRelease = await _runtimeInstaller.PrepareRuntimeReleaseAsync(
+      _configuration,
+      _paths,
+      new Progress<string>(AppendLog),
+      CancellationToken.None);
+
+    await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+    await LaunchPreparedRuntimeReleaseAsync(preparedRelease, allowRollback: true);
+  }
+
+  private async Task LaunchPreparedRuntimeReleaseAsync(PreparedRuntimeRelease preparedRelease, bool allowRollback)
+  {
+    _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
+    _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
 
     var nodeExecutablePath = _paths.GetNodeExecutablePath();
     if (nodeExecutablePath is null || !File.Exists(nodeExecutablePath))
@@ -280,7 +314,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var startInfo = new ProcessStartInfo
     {
       FileName = nodeExecutablePath,
-      WorkingDirectory = _paths.RuntimeRoot,
+      WorkingDirectory = preparedRelease.ReleaseRoot,
       UseShellExecute = false,
       RedirectStandardOutput = true,
       RedirectStandardError = true,
@@ -288,7 +322,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       StandardOutputEncoding = Encoding.UTF8,
       StandardErrorEncoding = Encoding.UTF8
     };
-    startInfo.ArgumentList.Add(_paths.RuntimeAgentEntryPath);
+    startInfo.ArgumentList.Add(Path.Combine(preparedRelease.ReleaseRoot, "scripts", "run-local-agent.mjs"));
 
     foreach (var entry in environment)
     {
@@ -339,6 +373,41 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _lastUpdatedAt = DateTimeOffset.Now;
       AppendLog($"서비스가 시작되었습니다. pid={process.Id}");
       RefreshUi();
+
+      var launchValidated = await WaitForServiceReadyAsync(process);
+      if (!launchValidated)
+      {
+        AppendLog("새 런타임 기동 검증에 실패했습니다. 이전 런타임으로 롤백합니다.");
+        await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+
+        if (allowRollback && _paths.ReadPreviousRuntimeReleaseId() is { Length: > 0 } previousReleaseId)
+        {
+          var previousRoot = _paths.GetRuntimeReleaseRoot(previousReleaseId);
+          if (Directory.Exists(previousRoot))
+          {
+            await LaunchPreparedRuntimeReleaseAsync(
+              new PreparedRuntimeRelease
+              {
+                RuntimeId = previousReleaseId,
+                ReleaseRoot = previousRoot,
+                BuildInfo = _runtimeInstaller.LoadRuntimeBuildInfo(previousRoot) ?? new RuntimeReleaseBuildInfo
+                {
+                  RuntimeId = previousReleaseId
+                }
+              },
+              allowRollback: false);
+            return;
+          }
+        }
+
+        _runtimeState = AgentRuntimeState.Failed;
+        _lastError = "service launch validation failed";
+        RefreshUi();
+        return;
+      }
+
+      _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
+      _ = RefreshAvailableRuntimeUpdateAsync();
     }
     catch (Exception error)
     {
@@ -356,13 +425,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     Stop();
     await WaitForRuntimeStopAsync();
 
-    if (await TryApplyAppUpdateAsync(startServiceAfterUpdate: true))
-    {
-      return;
-    }
-
     RefreshRuntimeStateFromSystem();
-    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping)
+    if (_stopInProgress || _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting)
     {
       return;
     }
@@ -393,7 +457,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     while (DateTimeOffset.UtcNow < deadline)
     {
       RefreshRuntimeStateFromSystem();
-      if (_runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping))
+      if (_runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping) &&
+          !_stopInProgress)
       {
         return;
       }
@@ -406,58 +471,68 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void Stop()
   {
-    if (_process is null)
+    if (_stopInProgress)
     {
-      var runtimeProcessIds = FindRuntimeProcessIds();
-
-      if (runtimeProcessIds.Count > 0)
-      {
-        _runtimeState = AgentRuntimeState.Stopping;
-        _processId = runtimeProcessIds[0];
-        _lastUpdatedAt = DateTimeOffset.Now;
-        AppendLog($"기존 local-agent 런타임 프로세스 정지를 요청합니다. pids={string.Join(",", runtimeProcessIds)}");
-        RefreshUi();
-        KillRuntimeProcesses(runtimeProcessIds);
-        DeleteAgentPidFile();
-        _runtimeState = AgentRuntimeState.Stopped;
-        _processId = null;
-        _lastError = null;
-        _lastUpdatedAt = DateTimeOffset.Now;
-        AppendLog("local-agent 런타임 프로세스가 종료되었습니다.");
-        RefreshUi();
-        return;
-      }
-
-      _runtimeState = AgentRuntimeState.Stopped;
-      AppendLog("중지할 서비스가 없습니다.");
-      RefreshUi();
       return;
     }
 
-    _runtimeState = AgentRuntimeState.Stopping;
+    _stopInProgress = true;
+    _runtimeState = AgentRuntimeState.Stopped;
     _lastUpdatedAt = DateTimeOffset.Now;
     AppendLog("서비스 정지를 요청합니다.");
     RefreshUi();
 
+    _ = StopAsync();
+  }
+
+  private async Task StopAsync()
+  {
     try
     {
-      if (!_process.HasExited)
+      var stopResult = await Task.Run(() =>
       {
-        _process.Kill(entireProcessTree: true);
-        _process.WaitForExit(3000);
-      }
-      else
+        var managedProcessIds = CollectManagedProcessIds(includeStdioSessions: true);
+        if (managedProcessIds.Count == 0)
+        {
+          return managedProcessIds;
+        }
+
+        ForceKillProcesses(managedProcessIds);
+        return managedProcessIds;
+      });
+
+      if (stopResult.Count == 0)
       {
-        HandleTermination(_process);
+        DeleteAgentPidFile();
+        DisposeProcess();
+        _processId = null;
+        _runtimeState = AgentRuntimeState.Stopped;
+        _lastError = null;
+        _lastUpdatedAt = DateTimeOffset.Now;
+        AppendLog("중지할 서비스가 없습니다.");
+        return;
       }
 
-      KillRuntimeProcesses(FindRuntimeProcessIds());
+      AppendLog($"서비스 관련 프로세스를 강제 종료합니다. pids={string.Join(",", stopResult)}");
+      DeleteAgentPidFile();
+      DisposeProcess();
+      _processId = null;
+      _runtimeState = AgentRuntimeState.Stopped;
+      _lastError = null;
+      _lastUpdatedAt = DateTimeOffset.Now;
+      AppendLog("서비스와 보조 세션 종료가 완료되었습니다.");
+      return;
     }
     catch (Exception error)
     {
       _runtimeState = AgentRuntimeState.Failed;
-      _lastError = error.Message;
-      AppendLog($"local-agent 중지 실패: {error.Message}");
+      _lastError = $"서비스 정지 실패: {error.Message}";
+      _lastUpdatedAt = DateTimeOffset.Now;
+      AppendLog($"서비스 정지 실패: {error.Message}");
+    }
+    finally
+    {
+      _stopInProgress = false;
       RefreshUi();
     }
   }
@@ -499,204 +574,51 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     RefreshUi();
   }
 
-  private void ExitApplication()
+  private Task ExitApplicationAsync()
   {
+    if (_exitInProgress)
+    {
+      return Task.CompletedTask;
+    }
+
+    _exitInProgress = true;
     _isExiting = true;
+    ScheduleForcedProcessTermination();
 
-    if (!_suppressRuntimeStopOnExit && _process is not null)
+    try
     {
-      try
+      _setupWindow.AllowClose = true;
+      _setupWindow.Close();
+      _logWindow.AllowClose = true;
+      _logWindow.Close();
+      _notifyIcon.Visible = false;
+
+      if (!_suppressRuntimeStopOnExit)
       {
-        if (!_process.HasExited)
+        try
         {
-          _process.Kill(entireProcessTree: true);
-          _process.WaitForExit(3000);
+          StopServiceProcessesImmediatelyForExit(includeStdioSessions: true);
+        }
+        catch
+        {
         }
       }
-      catch
-      {
-      }
-    }
 
-    if (!_suppressRuntimeStopOnExit)
+      _updateMonitorTimer.Dispose();
+      ExitThread();
+    }
+    finally
     {
-      KillRuntimeProcesses(FindRuntimeProcessIds());
+      Environment.Exit(0);
     }
 
-    _setupWindow.AllowClose = true;
-    _setupWindow.Close();
-    _logWindow.AllowClose = true;
-    _notifyIcon.Visible = false;
-    ExitThread();
-  }
-
-  private async Task<bool> TryApplyAppUpdateAsync(bool startServiceAfterUpdate = false)
-  {
-    if (!_configuration.AutoUpdateEnabled)
-    {
-      AppendLog("자동 업데이트가 비활성화되어 앱 업데이트 확인을 건너뜁니다.");
-      return false;
-    }
-
-    var updateApplied = await _autoUpdater.TryApplyUpdateAsync(
-      AppendLog,
-      CancellationToken.None,
-      beforeReplacement: () =>
-      {
-        var preserved = PreserveAppDataForUpdate();
-        if (preserved && startServiceAfterUpdate)
-        {
-          MarkPendingServiceStartRequest();
-        }
-
-        return preserved;
-      });
-    if (!updateApplied)
-    {
-      return false;
-    }
-
-    _suppressRuntimeStopOnExit = startServiceAfterUpdate;
-    ExitApplication();
-    return true;
+    return Task.CompletedTask;
   }
 
   private void MarkPendingServiceStartRequest()
   {
     Directory.CreateDirectory(_paths.InstallRoot);
     File.WriteAllText(_paths.PendingServiceStartPath, "1", new UTF8Encoding(false));
-  }
-
-  private IEnumerable<(string Name, string SourcePath)> EnumerateUpdatePreservedItems()
-  {
-    yield return ("config.json", _paths.ConfigurationPath);
-    yield return ("bridge-id.txt", _paths.BridgeIdPath);
-    yield return ("pending-login.json", _paths.PendingLoginPath);
-    yield return ("codex-home", _paths.CodexHome);
-    yield return ("state", _paths.StateHome);
-  }
-
-  private string GetAppUpdateBackupRoot()
-  {
-    return _paths.InstallRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".update-backup";
-  }
-
-  private string GetAppUpdateBackupStagingRoot()
-  {
-    return GetAppUpdateBackupRoot() + ".staging";
-  }
-
-  private void RestorePreservedAppDataIfNeeded()
-  {
-    var backupRoot = GetAppUpdateBackupRoot();
-    if (!Directory.Exists(backupRoot))
-    {
-      return;
-    }
-
-    var restoredItems = new List<string>();
-
-    foreach (var (name, sourcePath) in EnumerateUpdatePreservedItems())
-    {
-      var backupPath = Path.Combine(backupRoot, name);
-      if (!File.Exists(backupPath) && !Directory.Exists(backupPath))
-      {
-        continue;
-      }
-
-      if (File.Exists(sourcePath) || Directory.Exists(sourcePath))
-      {
-        continue;
-      }
-
-      try
-      {
-        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
-        if (Directory.Exists(backupPath))
-        {
-          CopyDirectoryRecursively(backupPath, sourcePath);
-        }
-        else
-        {
-          File.Copy(backupPath, sourcePath, overwrite: false);
-        }
-
-        restoredItems.Add(name);
-      }
-      catch (Exception error)
-      {
-        AppendLog($"업데이트 백업 복구 실패: {name} - {error.Message}");
-      }
-    }
-
-    if (restoredItems.Count > 0)
-    {
-      AppendLog($"업데이트 백업에서 로그인 정보와 상태 데이터를 복구했습니다. items={string.Join(",", restoredItems)}");
-    }
-  }
-
-  private bool PreserveAppDataForUpdate()
-  {
-    var existingItems = EnumerateUpdatePreservedItems()
-      .Where(static item => File.Exists(item.SourcePath) || Directory.Exists(item.SourcePath))
-      .ToList();
-
-    if (existingItems.Count == 0)
-    {
-      return true;
-    }
-
-    var backupRoot = GetAppUpdateBackupRoot();
-    var stagingRoot = GetAppUpdateBackupStagingRoot();
-
-    try
-    {
-      if (Directory.Exists(stagingRoot))
-      {
-        Directory.Delete(stagingRoot, recursive: true);
-      }
-
-      Directory.CreateDirectory(stagingRoot);
-
-      foreach (var (name, sourcePath) in existingItems)
-      {
-        var backupPath = Path.Combine(stagingRoot, name);
-        if (Directory.Exists(sourcePath))
-        {
-          CopyDirectoryRecursively(sourcePath, backupPath);
-        }
-        else
-        {
-          Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
-          File.Copy(sourcePath, backupPath, overwrite: true);
-        }
-      }
-
-      if (Directory.Exists(backupRoot))
-      {
-        Directory.Delete(backupRoot, recursive: true);
-      }
-
-      Directory.Move(stagingRoot, backupRoot);
-      AppendLog("앱 업데이트에 대비해 로그인 정보와 상태 데이터를 백업했습니다.");
-      return true;
-    }
-    catch (Exception error)
-    {
-      AppendLog($"앱 업데이트 백업 실패: {error.Message}");
-      try
-      {
-        if (Directory.Exists(stagingRoot))
-        {
-          Directory.Delete(stagingRoot, recursive: true);
-        }
-      }
-      catch
-      {
-      }
-
-      return false;
-    }
   }
 
   private bool ConsumePendingServiceStartRequest()
@@ -787,32 +709,47 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private void RefreshMenuState()
   {
     _appVersionItem.Text = $"앱 버전 {AppMetadata.CurrentVersionTag}";
-    _runtimeVersionItem.Text = $"런타임 버전 {ResolveRuntimeVersionDisplay()}";
+    _runtimeVersionItem.Text = ResolveRuntimeVersionDisplay();
+    _runtimeVersionItem.ForeColor = _availableRuntimeUpdate is null ? SystemColors.GrayText : Color.RoyalBlue;
     _statusItem.Text = GetRuntimeStateLabel(_runtimeState);
     _statusItem.ForeColor = GetRuntimeColor(_runtimeState);
 
-    _environmentItem.Text = _runtimeStatus is null
-      ? "환경 확인 필요"
-      : (_runtimeStatus.ReadyToRun ? "환경 준비됨" : "환경설정 필요");
-    _environmentItem.ForeColor = _runtimeStatus?.ReadyToRun == true ? Color.ForestGreen : Color.DarkOrange;
+    var requiresSetup = _runtimeStatus is null || _runtimeStatus.ReadyToRun != true;
+    _environmentItem.Text = requiresSetup ? "환경 설정 필요" : string.Empty;
+    _environmentItem.ForeColor = requiresSetup ? Color.Firebrick : SystemColors.GrayText;
+    _environmentItem.Visible = requiresSetup;
 
     _pidItem.Text = string.Empty;
     _pidItem.Visible = false;
 
-    var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting or AgentRuntimeState.Stopping;
+    var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting;
     _toggleItem.Text = running ? "서비스 정지" : "서비스 시작";
-    _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
-    _restartItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress;
+    _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress && !_stopInProgress;
+    _appUpdateItem.Visible = _availableAppUpdate is not null && AppMetadata.CanSelfUpdate();
+    _appUpdateItem.Enabled = _availableAppUpdate is not null && !_setupWindow.InstallationInProgress;
+    _appUpdateItem.Text = _availableAppUpdate is null ? "앱 업데이트" : $"앱 업데이트 {_availableAppUpdate.Tag}";
+    _appUpdateItem.ForeColor = _availableAppUpdate is null ? SystemColors.ControlText : Color.RoyalBlue;
   }
 
   private string ResolveRuntimeVersionDisplay()
   {
-    if (_runtimeStatus is { RuntimeVersion.Length: > 0 } status)
+    var buildInfo = _runtimeInstaller.LoadRuntimeBuildInfo(_paths.RuntimeRoot);
+    var currentToken = buildInfo?.SourceRevision;
+    if (string.IsNullOrWhiteSpace(currentToken))
     {
-      return status.RuntimeVersion;
+      currentToken = buildInfo?.SourceContentRevision;
     }
 
-    return "미설치";
+    var currentDisplay = string.IsNullOrWhiteSpace(currentToken)
+      ? "미설치"
+      : string.Concat(currentToken.Take(12));
+
+    if (_availableRuntimeUpdate is null)
+    {
+      return $"런타임 ID {currentDisplay}";
+    }
+
+    return $"런타임 ID {currentDisplay} · 업데이트 {_availableRuntimeUpdate.DisplayRevision}";
   }
 
   private void AppendLog(string message)
@@ -833,6 +770,75 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var suffix = _runtimeStatus?.ReadyToRun == true ? stateText : "환경설정 필요";
     var text = $"{AppTitle} - {suffix}";
     return text.Length <= 63 ? text : AppTitle;
+  }
+
+  private async Task RefreshAvailableRuntimeUpdateAsync()
+  {
+    try
+    {
+      _availableRuntimeUpdate = await _runtimeInstaller.ResolveAvailableRuntimeUpdateAsync(
+        _paths,
+        CancellationToken.None,
+        new Progress<string>(AppendLog));
+    }
+    catch (Exception error)
+    {
+      _availableRuntimeUpdate = null;
+      AppendLog($"런타임 업데이트 확인 실패: {error.Message}");
+    }
+
+    RefreshUi();
+  }
+
+  private async Task RefreshAvailableAppUpdateAsync()
+  {
+    try
+    {
+      _availableAppUpdate = await _autoUpdater.GetAvailableUpdateAsync(AppMetadata.CurrentVersionTag, CancellationToken.None);
+    }
+    catch (Exception error)
+    {
+      _availableAppUpdate = null;
+      AppendLog($"앱 업데이트 확인 실패: {error.Message}");
+    }
+
+    RefreshUi();
+  }
+
+  private async Task BeginAppUpdateAsync()
+  {
+    await RefreshAvailableAppUpdateAsync();
+    if (_availableAppUpdate is null)
+    {
+      AppendLog("적용 가능한 앱 업데이트가 없습니다.");
+      return;
+    }
+
+    try
+    {
+      AppendLog($"앱 업데이트를 시작합니다. target={_availableAppUpdate.Tag}");
+      await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+
+      var updateApplied = await _autoUpdater.TryApplyUpdateAsync(
+        _availableAppUpdate,
+        _paths,
+        _configuration,
+        AppendLog,
+        CancellationToken.None);
+      if (!updateApplied)
+      {
+        AppendLog("앱 업데이트를 적용하지 않았습니다.");
+        return;
+      }
+
+      _suppressRuntimeStopOnExit = true;
+      await ExitApplicationAsync();
+    }
+    catch (Exception error)
+    {
+      AppendLog($"앱 업데이트 시작 실패: {error.Message}");
+      RefreshUi();
+    }
   }
 
   private void PostToUi(Action action)
@@ -935,6 +941,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void RefreshRuntimeStateFromSystem(bool logDetection = false)
   {
+    if (_stopInProgress)
+    {
+      _lastUpdatedAt = DateTimeOffset.Now;
+      return;
+    }
+
     if (_process is not null)
     {
       try
@@ -952,7 +964,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
     }
 
-    var runtimeProcessIds = FindRuntimeProcessIds();
+    var runtimeProcessIds = FindServiceProcessIds();
     var existingProcessId = FindExistingAgentProcessId() ?? runtimeProcessIds.FirstOrDefault();
     if (existingProcessId <= 0)
     {
@@ -995,69 +1007,123 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return discoveredProcessId;
   }
 
-  private List<int> FindRuntimeProcessIds()
+  private async Task StopServiceProcessesAsync(bool includeStdioSessions, bool logWhenIdle)
   {
-    var runtimeRoot = _paths.RuntimeRoot.Replace("'", "''");
+    var allProcessIds = CollectManagedProcessIds(includeStdioSessions);
+
+    if (allProcessIds.Count == 0)
+    {
+      DeleteAgentPidFile();
+      _processId = null;
+      _runtimeState = AgentRuntimeState.Stopped;
+      _lastError = null;
+      _lastUpdatedAt = DateTimeOffset.Now;
+      if (logWhenIdle)
+      {
+        AppendLog("중지할 서비스가 없습니다.");
+      }
+      return;
+    }
+
+    AppendLog($"서비스 관련 프로세스를 종료합니다. pids={string.Join(",", allProcessIds)}");
+    ForceKillProcesses(allProcessIds);
+    await WaitForProcessGroupExitAsync(includeStdioSessions);
+    await WaitForPortsReleasedAsync(ResolveServicePorts(_configuration));
+    DeleteAgentPidFile();
+    DisposeProcess();
+    _processId = null;
+    _runtimeState = AgentRuntimeState.Stopped;
+    _lastError = null;
+    _lastUpdatedAt = DateTimeOffset.Now;
+    await Task.CompletedTask;
+    AppendLog("서비스와 보조 세션 종료가 완료되었습니다.");
+  }
+
+  private void StopServiceProcessesImmediatelyForExit(bool includeStdioSessions)
+  {
+    var allProcessIds = CollectManagedProcessIds(includeStdioSessions);
+
+    if (allProcessIds.Count > 0)
+    {
+      ForceKillProcesses(allProcessIds);
+    }
+
+    DeleteAgentPidFile();
+    DisposeProcess();
+    _processId = null;
+    _runtimeState = AgentRuntimeState.Stopped;
+    _lastError = null;
+    _lastUpdatedAt = DateTimeOffset.Now;
+  }
+
+  private static void ScheduleForcedProcessTermination()
+  {
+    var currentProcessId = Environment.ProcessId;
+    _ = Task.Run(async () =>
+    {
+      try
+      {
+        await Task.Delay(1500);
+        using var process = Process.GetProcessById(currentProcessId);
+        if (!process.HasExited)
+        {
+          process.Kill(entireProcessTree: true);
+        }
+      }
+      catch
+      {
+      }
+    });
+  }
+
+  private List<int> FindServiceProcessIds()
+  {
+    var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
+      .Select(static path => path.Replace("'", "''"))
+      .ToList();
+
+    if (runtimeRoots.Count == 0)
+    {
+      return [];
+    }
+
+    var rootConditions = string.Join(
+      " -or ",
+      runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'"));
     var command = string.Join(
       " ",
       [
-        "$runtimeRoot = '" + runtimeRoot + "';",
         "Get-CimInstance Win32_Process |",
         "Where-Object {",
         "$_.CommandLine -and",
-        "$_.CommandLine -like ('*' + $runtimeRoot + '*') -and",
+        "(" + rootConditions + ") -and",
         "(",
         "$_.CommandLine -like '*run-local-agent.mjs*' -or",
         "$_.CommandLine -like '*run-bridge.mjs*' -or",
         "$_.CommandLine -like '*services\\\\codex-adapter\\\\src\\\\index.js*' -or",
-        "$_.CommandLine -like '*codex*app-server*--listen*'",
+        "($_.CommandLine -like '*codex*app-server*--listen*ws://*')",
         ")",
         "} |",
         "Select-Object -ExpandProperty ProcessId"
       ]);
 
-    using var process = new Process
-    {
-      StartInfo = new ProcessStartInfo
-      {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8
-      }
-    };
-
-    try
-    {
-      if (!process.Start())
-      {
-        return [];
-      }
-
-      var output = process.StandardOutput.ReadToEnd();
-      process.WaitForExit(3000);
-
-      return output
-        .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .Select(static value => int.TryParse(value, out var pid) ? pid : 0)
-        .Where(static pid => pid > 0)
-        .Distinct()
-        .ToList();
-    }
-    catch
-    {
-      return [];
-    }
+    return RunPowerShellProcessQuery(command);
   }
 
-  private void KillRuntimeProcesses(IEnumerable<int> processIds)
+  private List<int> FindStdioSessionProcessIds()
   {
-    ForceKillProcesses(processIds);
-    DeleteAgentPidFile();
+    var command = string.Join(
+      " ",
+      [
+        "Get-CimInstance Win32_Process |",
+        "Where-Object {",
+        "$_.CommandLine -and",
+        "$_.CommandLine -like '*codex*app-server*--listen*stdio://*'",
+        "} |",
+        "Select-Object -ExpandProperty ProcessId"
+      ]);
+
+    return RunPowerShellProcessQuery(command);
   }
 
   private void ForceKillProcesses(IEnumerable<int> processIds)
@@ -1073,35 +1139,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         }
 
         process.Kill(entireProcessTree: true);
-        process.WaitForExit(3000);
       }
       catch
       {
       }
     }
-  }
-
-  private void TerminateProcessesHoldingConfiguredPorts()
-  {
-    var ports = ResolveManagedPorts(_configuration).ToList();
-    if (ports.Count == 0)
-    {
-      return;
-    }
-
-    var processIds = FindListeningProcessIds(ports)
-      .Where(static processId => processId > 0 && processId != Environment.ProcessId)
-      .Distinct()
-      .ToList();
-
-    if (processIds.Count == 0)
-    {
-      return;
-    }
-
-    AppendLog($"앱 실행 전에 점유 중인 포트를 강제 종료합니다. ports={string.Join(",", ports)} pids={string.Join(",", processIds)}");
-    ForceKillProcesses(processIds);
-    AppendLog($"점유 포트 정리가 완료되었습니다. ports={string.Join(",", ports)}");
   }
 
   private List<int> FindListeningProcessIds(IReadOnlyCollection<int> ports)
@@ -1170,21 +1212,219 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
-  private static IEnumerable<int> ResolveManagedPorts(RuntimeConfiguration configuration)
+  private async Task<bool> WaitForPortsReleasedAsync(IReadOnlyCollection<int> ports, int timeoutMs = 15000)
+  {
+    if (ports.Count == 0)
+    {
+      return true;
+    }
+
+    var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+      if (FindListeningProcessIds(ports).Count == 0)
+      {
+        return true;
+      }
+
+      await Task.Delay(250);
+    }
+
+    return false;
+  }
+
+  private async Task<bool> WaitForProcessGroupExitAsync(bool includeStdioSessions, int timeoutMs = 15000)
+  {
+    var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+      if (CollectManagedProcessIds(includeStdioSessions).Count == 0)
+      {
+        return true;
+      }
+
+      await Task.Delay(250);
+    }
+
+    return false;
+  }
+
+  private List<int> CollectManagedProcessIds(bool includeStdioSessions)
+  {
+    var processIds = new HashSet<int>();
+
+    foreach (var processId in FindServiceProcessIds())
+    {
+      if (processId > 0)
+      {
+        processIds.Add(processId);
+      }
+    }
+
+    if (includeStdioSessions)
+    {
+      foreach (var processId in FindStdioSessionProcessIds())
+      {
+        if (processId > 0)
+        {
+          processIds.Add(processId);
+        }
+      }
+    }
+
+    if (_processId is > 0)
+    {
+      processIds.Add(_processId.Value);
+    }
+
+    try
+    {
+      if (_process is { HasExited: false })
+      {
+        processIds.Add(_process.Id);
+      }
+    }
+    catch
+    {
+    }
+
+    if (TryReadPersistedAgentProcessId(out var persistedProcessId) && persistedProcessId > 0)
+    {
+      processIds.Add(persistedProcessId);
+    }
+
+    return processIds.ToList();
+  }
+
+  private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 15000)
+  {
+    var requiredPorts = ResolveServicePorts(_configuration);
+    var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+      try
+      {
+        if (process.HasExited)
+        {
+          return false;
+        }
+      }
+      catch
+      {
+        return false;
+      }
+
+      if (requiredPorts.Count == 0 || FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count)
+      {
+        if (await ProbeBridgeHealthAsync())
+        {
+          return true;
+        }
+      }
+
+      await Task.Delay(500);
+    }
+
+    return false;
+  }
+
+  private static IReadOnlyCollection<int> ResolveServicePorts(RuntimeConfiguration configuration)
   {
     var ports = new List<int>();
 
-    if (TryParsePort(configuration.BridgePort) is int bridgePort)
+    if (int.TryParse(configuration.BridgePort?.Trim(), out var bridgePort) && bridgePort is >= 1 and <= 65535)
     {
       ports.Add(bridgePort);
     }
 
-    if (TryParsePortFromUrl(configuration.AppServerWsUrl) is int appServerPort && !ports.Contains(appServerPort))
+    if (Uri.TryCreate(configuration.AppServerWsUrl?.Trim(), UriKind.Absolute, out var appServerUrl))
     {
-      ports.Add(appServerPort);
+      var appServerPort = appServerUrl.IsDefaultPort
+        ? appServerUrl.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80
+        : appServerUrl.Port;
+      if (appServerPort is >= 1 and <= 65535 && !ports.Contains(appServerPort))
+      {
+        ports.Add(appServerPort);
+      }
     }
 
     return ports;
+  }
+
+  private async Task<bool> ProbeBridgeHealthAsync()
+  {
+    var host = NormalizeBridgeProbeHost(_configuration.BridgeHost);
+    if (!int.TryParse(_configuration.BridgePort?.Trim(), out var bridgePort) || bridgePort is < 1 or > 65535)
+    {
+      return false;
+    }
+
+    try
+    {
+      using var response = await HealthcheckClient.GetAsync(
+        new Uri($"http://{host}:{bridgePort}/health"),
+        HttpCompletionOption.ResponseHeadersRead);
+      return response.IsSuccessStatusCode;
+    }
+    catch
+    {
+      return false;
+    }
+  }
+
+  private static string NormalizeBridgeProbeHost(string? bridgeHost)
+  {
+    var normalized = bridgeHost?.Trim();
+    if (string.IsNullOrWhiteSpace(normalized) ||
+        string.Equals(normalized, "0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(normalized, "::", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(normalized, "[::]", StringComparison.OrdinalIgnoreCase))
+    {
+      return "127.0.0.1";
+    }
+
+    return normalized;
+  }
+
+  private List<int> RunPowerShellProcessQuery(string command)
+  {
+    using var process = new Process
+    {
+      StartInfo = new ProcessStartInfo
+      {
+        FileName = "powershell.exe",
+        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8
+      }
+    };
+
+    try
+    {
+      if (!process.Start())
+      {
+        return [];
+      }
+
+      var output = process.StandardOutput.ReadToEnd();
+      process.WaitForExit(3000);
+
+      return output
+        .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(static value => int.TryParse(value, out var pid) ? pid : 0)
+        .Where(static pid => pid > 0 && pid != Environment.ProcessId)
+        .Distinct()
+        .ToList();
+    }
+    catch
+    {
+      return [];
+    }
   }
 
   private static int? TryParsePort(string? rawValue)
@@ -1285,7 +1525,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void WriteAgentPidFile(int processId)
   {
-    Directory.CreateDirectory(_paths.RuntimeRoot);
+    Directory.CreateDirectory(_paths.RuntimeStateRoot);
     File.WriteAllText(_paths.RuntimeAgentPidPath, processId.ToString(), new UTF8Encoding(false));
   }
 

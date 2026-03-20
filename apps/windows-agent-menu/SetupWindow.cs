@@ -33,7 +33,6 @@ sealed class SetupWindow : Window
   private TextBox _watchdogTextBox = null!;
   private TextBox _staleTextBox = null!;
   private MacToggleSwitch _autoStartCheckBox = null!;
-  private MacToggleSwitch _autoUpdateCheckBox = null!;
   private TextBlock _savedAtTextBlock = null!;
   private TextBlock _codexLoginStatusTextBlock = null!;
   private Button _logButton = null!;
@@ -105,7 +104,6 @@ sealed class SetupWindow : Window
     _watchdogTextBox.Text = configuration.WatchdogIntervalMs;
     _staleTextBox.Text = configuration.StaleMs;
     _autoStartCheckBox.IsChecked = configuration.AutoStartAtLogin;
-    _autoUpdateCheckBox.IsChecked = configuration.AutoUpdateEnabled;
     UpdateSavedAt(configuration.InstallRoot);
   }
 
@@ -345,7 +343,6 @@ sealed class SetupWindow : Window
     stack.Children.Add(CreateLabeledTextField("Watchdog (ms)", _watchdogTextBox = CreateTextBox()));
     stack.Children.Add(CreateLabeledTextField("Stale (ms)", _staleTextBox = CreateTextBox()));
     stack.Children.Add(CreateToggleField("로그인 시 자동 실행", _autoStartCheckBox = CreateToggleSwitch()));
-    stack.Children.Add(CreateToggleField("자동 업데이트", _autoUpdateCheckBox = CreateToggleSwitch()));
     return CreateCard("Codex 실행 정책", stack);
   }
 
@@ -377,7 +374,7 @@ sealed class SetupWindow : Window
 
     _codexLoginSecondaryTextBlock = new TextBlock
     {
-      Text = "로그인 중 문제가 생기면 재시작 후 다시 로그인 가능.",
+      Text = "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.",
       Foreground = CreateBrush(0x6B, 0x72, 0x80),
       TextWrapping = TextWrapping.Wrap,
       VerticalAlignment = VerticalAlignment.Center
@@ -472,7 +469,6 @@ sealed class SetupWindow : Window
       WatchdogIntervalMs = _watchdogTextBox.Text.Trim(),
       StaleMs = _staleTextBox.Text.Trim(),
       AutoStartAtLogin = _autoStartCheckBox.IsChecked == true,
-      AutoUpdateEnabled = _autoUpdateCheckBox.IsChecked == true,
       AuthMode = CodexAuthMode.ChatGptDeviceAuth
     };
   }
@@ -490,10 +486,14 @@ sealed class SetupWindow : Window
       await Dispatcher.Yield(DispatcherPriority.Background);
       var configuration = GatherConfiguration();
       var paths = new OctopPaths(configuration.InstallRoot);
-      _installer.SaveConfiguration(configuration, paths);
-      _installer.WriteEnvironmentFile(configuration, paths);
-      _installer.EnsureAutoStartAtLogin(configuration, new Progress<string>(ReportProgress));
-      var status = await _installer.InspectAsync(paths, CancellationToken.None);
+      var progress = new Progress<string>(ReportProgress);
+      var status = await Task.Run(async () =>
+      {
+        _installer.SaveConfiguration(configuration, paths);
+        _installer.WriteEnvironmentFile(configuration, paths);
+        _installer.EnsureAutoStartAtLogin(configuration, progress);
+        return await _installer.InspectAsync(paths, CancellationToken.None);
+      });
       UpdateStatus(status);
       UpdateSavedAt(paths.InstallRoot);
       ReportProgress("설정을 저장했습니다.");
@@ -501,7 +501,7 @@ sealed class SetupWindow : Window
         busy: false,
         installing: false,
         title: "설정 저장 완료",
-        hint: "변경된 로그인 ID와 디바이스 이름은 서비스 재시작 후 반영됩니다.");
+        hint: "변경된 로그인 ID와 디바이스 이름은 서비스 정지 후 다시 시작하면 반영됩니다.");
     }
     catch (Exception error)
     {
@@ -553,7 +553,8 @@ sealed class SetupWindow : Window
 
       await Dispatcher.Yield(DispatcherPriority.Background);
       var progress = new Progress<string>(ReportProgress);
-      var status = await _installer.InstallOrUpdateAsync(configuration, progress, CancellationToken.None);
+      var status = await Task.Run(async () =>
+        await _installer.InstallOrUpdateAsync(configuration, progress, CancellationToken.None));
       UpdateStatus(status);
       UpdateSavedAt(configuration.InstallRoot);
       ReportProgress("설치 완료");
@@ -561,7 +562,7 @@ sealed class SetupWindow : Window
         busy: false,
         installing: false,
         title: "설치 완료",
-        hint: "이제 서비스 시작 또는 재시작으로 바로 연결하실 수 있습니다.");
+        hint: "이제 서비스 시작으로 바로 연결하실 수 있습니다.");
       InstallationCompleted?.Invoke(this, status);
     }
     catch (Exception error)
@@ -607,15 +608,39 @@ sealed class SetupWindow : Window
       _codexLoginInProgress = true;
       UpdateCodexLoginButton();
       SetBusy(true, installing: false);
+      UpdateActivityState(
+        busy: true,
+        installing: false,
+        title: logoutFirst ? "브라우저를 준비하는 중입니다." : "브라우저를 준비하는 중입니다.",
+        hint: "설치된 브라우저 목록과 아이콘을 불러오고 있습니다.");
       await Dispatcher.Yield(DispatcherPriority.Background);
+
+      var browser = await BrowserSelection.SelectBrowserAsync();
+      if (browser is null)
+      {
+        UpdateActivityState(
+          busy: false,
+          installing: false,
+          title: "브라우저 선택 취소",
+          hint: "브라우저 선택이 취소되었습니다.");
+        return;
+      }
 
       var configuration = GatherConfiguration();
       var paths = new OctopPaths(configuration.InstallRoot);
-      _installer.SaveConfiguration(configuration, paths);
-      _installer.WriteEnvironmentFile(configuration, paths);
       var progress = new Progress<string>(ReportProgress);
-      await _installer.LoginWithBrowserSelectionAsync(paths, progress, CancellationToken.None, logoutFirst);
-      var status = await _installer.InspectAsync(paths, CancellationToken.None);
+      UpdateActivityState(
+        busy: true,
+        installing: false,
+        title: logoutFirst ? "계정 전환을 진행하는 중입니다." : "로그인을 진행하는 중입니다.",
+        hint: $"{browser.DisplayName} 브라우저를 열고 인증 세션을 준비합니다.");
+      await Task.Run(async () =>
+      {
+        _installer.SaveConfiguration(configuration, paths);
+        _installer.WriteEnvironmentFile(configuration, paths);
+        await _installer.LoginWithSelectedBrowserAsync(paths, browser, progress, CancellationToken.None, logoutFirst);
+      });
+      var status = await Task.Run(async () => await _installer.InspectAsync(paths, CancellationToken.None));
       UpdateStatus(status);
       UpdateSavedAt(paths.InstallRoot);
       UpdateActivityState(
@@ -683,7 +708,7 @@ sealed class SetupWindow : Window
 
     _codexLoginSecondaryTextBlock.Text = _codexLoggedIn && hasStatus
       ? status
-      : "로그인 중 문제가 생기면 재시작 후 다시 로그인 가능.";
+      : "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.";
   }
 
   private void SetBusy(bool busy, bool installing)

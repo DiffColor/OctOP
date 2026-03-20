@@ -9,6 +9,7 @@ sealed class BrowserOption
 {
   public required string DisplayName { get; init; }
   public required string ExecutablePath { get; init; }
+  public string? RegistryKeyPath { get; init; }
   public Icon? Icon { get; init; }
 }
 
@@ -35,9 +36,14 @@ static class BrowserSelection
     ])
   ];
 
-  public static BrowserOption? SelectBrowser()
+  public static async Task<BrowserOption?> SelectBrowserAsync()
   {
-    var browsers = DiscoverBrowsers();
+    var browsers = await Task.Run(DiscoverBrowsers);
+    return SelectBrowser(browsers);
+  }
+
+  public static BrowserOption? SelectBrowser(IReadOnlyList<BrowserOption> browsers)
+  {
     if (browsers.Count == 0)
     {
       return null;
@@ -183,6 +189,20 @@ static class BrowserSelection
   {
     var browsers = new List<BrowserOption>();
     var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var browser in DiscoverRegisteredBrowsers())
+    {
+      if (string.IsNullOrWhiteSpace(browser.ExecutablePath) ||
+          !File.Exists(browser.ExecutablePath) ||
+          !seenPaths.Add(browser.ExecutablePath))
+      {
+        continue;
+      }
+
+      seenNames.Add(browser.DisplayName);
+      browsers.Add(browser);
+    }
 
     foreach (var candidate in BrowserCandidates)
     {
@@ -196,11 +216,51 @@ static class BrowserSelection
       {
         DisplayName = candidate.DisplayName,
         ExecutablePath = executablePath,
+        RegistryKeyPath = null,
         Icon = TryExtractIcon(executablePath)
       });
     }
 
-    return browsers;
+    return browsers
+      .OrderBy(static browser => GetBrowserSortKey(browser.DisplayName))
+      .ThenBy(static browser => browser.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+      .ToList();
+  }
+
+  private static IEnumerable<BrowserOption> DiscoverRegisteredBrowsers()
+  {
+    foreach (var (root, relativePath) in EnumerateBrowserRegistryRoots())
+    {
+      using var baseKey = root.OpenSubKey(relativePath);
+      if (baseKey is null)
+      {
+        continue;
+      }
+
+      foreach (var subKeyName in baseKey.GetSubKeyNames())
+      {
+        using var browserKey = baseKey.OpenSubKey(subKeyName);
+        if (browserKey is null)
+        {
+          continue;
+        }
+
+        var displayName = ResolveBrowserDisplayName(browserKey, subKeyName);
+        var executablePath = ResolveRegisteredBrowserExecutable(browserKey);
+        if (string.IsNullOrWhiteSpace(displayName) || string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        {
+          continue;
+        }
+
+        yield return new BrowserOption
+        {
+          DisplayName = displayName,
+          ExecutablePath = executablePath,
+          RegistryKeyPath = $@"{root.Name}\{relativePath}\{subKeyName}",
+          Icon = ResolveRegisteredBrowserIcon(browserKey, executablePath)
+        };
+      }
+    }
   }
 
   private static string? ResolveBrowserExecutable(string executableName, IEnumerable<string> candidatePaths)
@@ -242,6 +302,13 @@ static class BrowserSelection
       {
         return value;
       }
+
+      using var wowKey = hive.OpenSubKey($@"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\{executableName}");
+      var wowValue = wowKey?.GetValue(string.Empty) as string;
+      if (!string.IsNullOrWhiteSpace(wowValue) && File.Exists(wowValue))
+      {
+        return wowValue;
+      }
     }
 
     return null;
@@ -257,5 +324,107 @@ static class BrowserSelection
     {
       return null;
     }
+  }
+
+  private static IEnumerable<(RegistryKey Root, string RelativePath)> EnumerateBrowserRegistryRoots()
+  {
+    yield return (Registry.CurrentUser, @"Software\Clients\StartMenuInternet");
+    yield return (Registry.LocalMachine, @"Software\Clients\StartMenuInternet");
+    yield return (Registry.LocalMachine, @"Software\WOW6432Node\Clients\StartMenuInternet");
+  }
+
+  private static string ResolveBrowserDisplayName(RegistryKey browserKey, string fallbackName)
+  {
+    var directName = browserKey.GetValue(string.Empty) as string;
+    if (!string.IsNullOrWhiteSpace(directName))
+    {
+      return directName.Trim();
+    }
+
+    using var capabilitiesKey = browserKey.OpenSubKey("Capabilities");
+    var applicationName = capabilitiesKey?.GetValue("ApplicationName") as string;
+    if (!string.IsNullOrWhiteSpace(applicationName))
+    {
+      return applicationName.Trim();
+    }
+
+    return fallbackName;
+  }
+
+  private static string? ResolveRegisteredBrowserExecutable(RegistryKey browserKey)
+  {
+    using var commandKey = browserKey.OpenSubKey(@"shell\open\command");
+    var commandText = commandKey?.GetValue(string.Empty) as string;
+    var executablePath = ExtractExecutablePath(commandText);
+    if (!string.IsNullOrWhiteSpace(executablePath) && File.Exists(executablePath))
+    {
+      return executablePath;
+    }
+
+    using var capabilitiesKey = browserKey.OpenSubKey("Capabilities");
+    var applicationIcon = capabilitiesKey?.GetValue("ApplicationIcon") as string;
+    executablePath = ExtractExecutablePath(applicationIcon);
+    if (!string.IsNullOrWhiteSpace(executablePath) && File.Exists(executablePath))
+    {
+      return executablePath;
+    }
+
+    return null;
+  }
+
+  private static Icon? ResolveRegisteredBrowserIcon(RegistryKey browserKey, string executablePath)
+  {
+    using var defaultIconKey = browserKey.OpenSubKey("DefaultIcon");
+    var iconValue = defaultIconKey?.GetValue(string.Empty) as string;
+    var iconPath = ExtractExecutablePath(iconValue);
+    if (!string.IsNullOrWhiteSpace(iconPath) && File.Exists(iconPath))
+    {
+      var icon = TryExtractIcon(iconPath);
+      if (icon is not null)
+      {
+        return icon;
+      }
+    }
+
+    return TryExtractIcon(executablePath);
+  }
+
+  private static string? ExtractExecutablePath(string? commandText)
+  {
+    if (string.IsNullOrWhiteSpace(commandText))
+    {
+      return null;
+    }
+
+    var trimmed = commandText.Trim();
+    if (trimmed.StartsWith('"'))
+    {
+      var closingQuoteIndex = trimmed.IndexOf('"', 1);
+      if (closingQuoteIndex > 1)
+      {
+        return trimmed[1..closingQuoteIndex];
+      }
+    }
+
+    var exeIndex = trimmed.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+    if (exeIndex >= 0)
+    {
+      return trimmed[..(exeIndex + 4)];
+    }
+
+    return null;
+  }
+
+  private static int GetBrowserSortKey(string displayName)
+  {
+    return displayName.ToLowerInvariant() switch
+    {
+      var value when value.Contains("chrome") => 0,
+      var value when value.Contains("edge") => 1,
+      var value when value.Contains("firefox") => 2,
+      var value when value.Contains("brave") => 3,
+      var value when value.Contains("vivaldi") => 4,
+      _ => 10
+    };
   }
 }

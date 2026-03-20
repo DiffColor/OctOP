@@ -48,7 +48,6 @@ sealed class RuntimeConfiguration
   public string StaleMs { get; set; } = "120000";
   public string ExtraEnvironmentText { get; set; } = string.Empty;
   public bool AutoStartAtLogin { get; set; } = true;
-  public bool AutoUpdateEnabled { get; set; } = true;
   public CodexAuthMode AuthMode { get; set; } = CodexAuthMode.ChatGptDeviceAuth;
   public IEnumerable<string> GetWorkspaceRoots()
   {
@@ -151,8 +150,7 @@ sealed class RuntimeConfiguration
     var candidates = new[]
     {
       Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim(),
-      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
-      paths.CodexHome
+      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")
     }
       .Where(static value => !string.IsNullOrWhiteSpace(value))
       .Select(static value => Path.GetFullPath(value!))
@@ -166,7 +164,12 @@ sealed class RuntimeConfiguration
     }
 
     var existing = candidates.FirstOrDefault(Directory.Exists);
-    return string.IsNullOrWhiteSpace(existing) ? paths.CodexHome : existing;
+    if (!string.IsNullOrWhiteSpace(existing))
+    {
+      return existing;
+    }
+
+    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
   }
 
   private static bool HasCodexAuthenticationData(string codexHome)

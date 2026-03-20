@@ -2,74 +2,137 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 
 sealed class WindowsAutoUpdater
 {
   private readonly GitHubTagUpdateClient _releaseClient = new();
 
-  public async Task<bool> TryApplyUpdateAsync(Action<string> log, CancellationToken cancellationToken, Func<bool>? beforeReplacement = null)
+  public Task<AppUpdateDescriptor?> GetAvailableUpdateAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
-    var currentTag = AppMetadata.CurrentVersionTag;
-    if (!SemVersion.TryParse(currentTag, out var currentVersion))
-    {
-      log($"현재 앱 버전을 해석하지 못했습니다: {currentTag}");
-      return false;
-    }
+    return _releaseClient.GetLatestWindowsReleaseAsync(currentVersionTag, cancellationToken);
+  }
 
-    ReleaseDescriptor? latestRelease;
-    try
-    {
-      latestRelease = await _releaseClient.GetLatestWindowsReleaseAsync(cancellationToken);
-    }
-    catch (Exception error)
-    {
-      log($"업데이트 확인 실패: {error.Message}");
-      return false;
-    }
-
-    if (latestRelease is null || !SemVersion.TryParse(latestRelease.Tag, out var latestVersion))
-    {
-      return false;
-    }
-
-    if (latestVersion.CompareTo(currentVersion) <= 0)
-    {
-      log($"최신 앱 버전 사용 중: {AppMetadata.CurrentVersionDisplay}");
-      return false;
-    }
-
+  public async Task<bool> TryApplyUpdateAsync(
+    AppUpdateDescriptor updateDescriptor,
+    OctopPaths paths,
+    RuntimeConfiguration configuration,
+    Action<string> log,
+    CancellationToken cancellationToken)
+  {
     if (!AppMetadata.CanSelfUpdate() || AppMetadata.CurrentExecutablePath is not { } currentExecutablePath)
     {
-      log($"새 버전 {latestRelease.Tag}를 확인했지만 현재 실행 방식에서는 앱 본체 자동 업데이트를 적용할 수 없습니다.");
+      log("현재 실행 방식에서는 앱 업데이트를 적용할 수 없습니다.");
       return false;
     }
 
-    var updateRoot = Path.Combine(Path.GetTempPath(), "OctOPAgentMenu", "updates", latestRelease.Tag);
+    var updateRoot = Path.Combine(Path.GetTempPath(), "OctOP.WindowsAgentMenu", "updates", updateDescriptor.Tag);
     Directory.CreateDirectory(updateRoot);
-    var downloadPath = Path.Combine(updateRoot, latestRelease.AssetName);
-    var scriptPath = Path.Combine(updateRoot, "apply-update.ps1");
 
-    log($"새 버전 {latestRelease.Tag}를 다운로드합니다.");
-    await DownloadAsync(latestRelease.DownloadUrl, downloadPath, cancellationToken);
-    WriteUpdateScript(scriptPath, downloadPath, currentExecutablePath, Environment.ProcessId);
-    if (beforeReplacement is not null && !beforeReplacement())
+    var downloadPath = Path.Combine(updateRoot, updateDescriptor.AssetName);
+    var scriptPath = Path.Combine(updateRoot, "apply-update.ps1");
+    var logPath = Path.Combine(updateRoot, "apply-update.log");
+
+    log($"새 앱 번들을 다운로드합니다. tag={updateDescriptor.Tag}");
+    await DownloadAsync(updateDescriptor.DownloadUrl, downloadPath, cancellationToken);
+    ValidateDownloadedExecutable(downloadPath);
+
+    var pendingState = new PendingAppUpdateState
     {
-      log("로그인 정보와 상태 데이터 백업에 실패해 앱 업데이트를 중단합니다.");
-      return false;
+      TargetTag = updateDescriptor.Tag,
+      CurrentExecutablePath = currentExecutablePath,
+      PreparedAt = DateTimeOffset.UtcNow
+    };
+
+    Directory.CreateDirectory(paths.InstallRoot);
+    WritePendingAppUpdateState(paths, pendingState);
+    if (File.Exists(paths.AppUpdateLaunchMarkerPath))
+    {
+      File.Delete(paths.AppUpdateLaunchMarkerPath);
     }
+
+    WriteUpdateScript(
+      scriptPath,
+      logPath,
+      downloadPath,
+      currentExecutablePath,
+      Environment.ProcessId,
+      ResolveServicePorts(configuration));
 
     Process.Start(new ProcessStartInfo
     {
       FileName = "powershell.exe",
-      Arguments =
-        $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
+      Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{scriptPath}\"",
       UseShellExecute = false,
       CreateNoWindow = true,
       WorkingDirectory = updateRoot
     });
 
-    log($"새 버전 {latestRelease.Tag} 적용을 시작합니다.");
+    log($"앱 업데이트 적용을 시작합니다. target={updateDescriptor.Tag}");
     return true;
+  }
+
+  public void MarkPendingAppUpdateLaunchSucceededIfNeeded(OctopPaths paths, Action<string> log)
+  {
+    var pending = LoadPendingAppUpdateState(paths);
+    if (pending is null ||
+        pending.LaunchConfirmedAt is not null ||
+        !string.Equals(
+          Path.GetFullPath(pending.CurrentExecutablePath),
+          Path.GetFullPath(AppMetadata.CurrentExecutablePath ?? string.Empty),
+          StringComparison.OrdinalIgnoreCase))
+    {
+      return;
+    }
+
+    pending.LaunchConfirmedAt = DateTimeOffset.UtcNow;
+    WritePendingAppUpdateState(paths, pending);
+    File.WriteAllText(paths.AppUpdateLaunchMarkerPath, "ok", new UTF8Encoding(false));
+    log("새 앱 기동 확인 마커를 기록했습니다.");
+  }
+
+  public void CleanupCompletedUpdateArtifactsIfNeeded(OctopPaths paths, Action<string> log)
+  {
+    var pending = LoadPendingAppUpdateState(paths);
+    if (pending is not null && pending.LaunchConfirmedAt is null)
+    {
+      return;
+    }
+
+    var currentExecutablePath = AppMetadata.CurrentExecutablePath;
+    if (!string.IsNullOrWhiteSpace(currentExecutablePath))
+    {
+      var backupExecutablePath = currentExecutablePath + ".previous-update";
+      if (File.Exists(backupExecutablePath))
+      {
+        try
+        {
+          File.Delete(backupExecutablePath);
+          log("이전 앱 실행 파일 백업을 정리했습니다.");
+        }
+        catch (Exception error)
+        {
+          log($"이전 앱 실행 파일 백업 정리 실패: {error.Message}");
+        }
+      }
+    }
+
+    try
+    {
+      if (File.Exists(paths.PendingAppUpdateStatePath))
+      {
+        File.Delete(paths.PendingAppUpdateStatePath);
+      }
+
+      if (File.Exists(paths.AppUpdateLaunchMarkerPath))
+      {
+        File.Delete(paths.AppUpdateLaunchMarkerPath);
+      }
+    }
+    catch (Exception error)
+    {
+      log($"앱 업데이트 상태 정리 실패: {error.Message}");
+    }
   }
 
   private static async Task DownloadAsync(Uri downloadUrl, string destinationPath, CancellationToken cancellationToken)
@@ -81,29 +144,91 @@ sealed class WindowsAutoUpdater
     await remoteStream.CopyToAsync(fileStream, cancellationToken);
   }
 
+  private static void WritePendingAppUpdateState(OctopPaths paths, PendingAppUpdateState state)
+  {
+    var json = JsonSerializer.Serialize(state, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+    {
+      WriteIndented = true
+    });
+    File.WriteAllText(paths.PendingAppUpdateStatePath, json, new UTF8Encoding(false));
+  }
+
+  private static PendingAppUpdateState? LoadPendingAppUpdateState(OctopPaths paths)
+  {
+    if (!File.Exists(paths.PendingAppUpdateStatePath))
+    {
+      return null;
+    }
+
+    return JsonSerializer.Deserialize<PendingAppUpdateState>(
+      File.ReadAllText(paths.PendingAppUpdateStatePath, Encoding.UTF8),
+      new JsonSerializerOptions(JsonSerializerDefaults.Web));
+  }
+
+  private static IReadOnlyList<int> ResolveServicePorts(RuntimeConfiguration configuration)
+  {
+    var ports = new List<int>();
+    if (int.TryParse(configuration.BridgePort?.Trim(), out var bridgePort) && bridgePort is >= 1 and <= 65535)
+    {
+      ports.Add(bridgePort);
+    }
+
+    if (Uri.TryCreate(configuration.AppServerWsUrl?.Trim(), UriKind.Absolute, out var appServerUrl))
+    {
+      var appServerPort = appServerUrl.IsDefaultPort
+        ? appServerUrl.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80
+        : appServerUrl.Port;
+      if (appServerPort is >= 1 and <= 65535 && !ports.Contains(appServerPort))
+      {
+        ports.Add(appServerPort);
+      }
+    }
+
+    return ports;
+  }
+
   private static void WriteUpdateScript(
     string scriptPath,
+    string logPath,
     string downloadedExecutablePath,
     string currentExecutablePath,
-    int currentProcessId)
+    int currentProcessId,
+    IReadOnlyList<int> servicePorts)
   {
+    var portsLiteral = string.Join(",", servicePorts.OrderBy(static port => port));
     var script = $$"""
     $ErrorActionPreference = "Stop"
     $source = "{{EscapePowerShellSingleQuotedString(downloadedExecutablePath)}}"
     $target = "{{EscapePowerShellSingleQuotedString(currentExecutablePath)}}"
     $currentProcessId = {{currentProcessId}}
-    $scriptPath = $MyInvocation.MyCommand.Path
-    $updateRoot = Split-Path -Parent $scriptPath
     $backup = "$target.previous-update"
-    $logPath = Join-Path $updateRoot "apply-update.log"
-    $replaced = $false
+    $updateRoot = Split-Path -Parent "{{EscapePowerShellSingleQuotedString(scriptPath)}}"
+    $launchMarker = "{{EscapePowerShellSingleQuotedString(Path.Combine(Path.GetDirectoryName(currentExecutablePath) ?? string.Empty, "app-update-launch-confirmed"))}}"
+    $ports = @({{portsLiteral}})
 
     function Write-Log {
       param([string]$Message)
       try {
-        Add-Content -Path $logPath -Value ("[" + (Get-Date).ToString("s") + "] " + $Message) -Encoding UTF8
+        Add-Content -Path "{{EscapePowerShellSingleQuotedString(logPath)}}" -Value ("[" + (Get-Date).ToString("s") + "] " + $Message) -Encoding UTF8
       } catch {
       }
+    }
+
+    function Wait-ForPortsReleased {
+      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+        $listeners = @()
+        if ($ports.Count -gt 0) {
+          $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ports -contains $_.LocalPort }
+        }
+
+        if ($listeners.Count -eq 0) {
+          return $true
+        }
+
+        Start-Sleep -Seconds 1
+      }
+
+      return $false
     }
 
     try {
@@ -111,79 +236,50 @@ sealed class WindowsAutoUpdater
         Start-Sleep -Milliseconds 500
       }
 
-      Start-Sleep -Seconds 1
-
-      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
-        try {
-          if (Test-Path $backup) {
-            Remove-Item -Path $backup -Recurse -Force -ErrorAction SilentlyContinue
-          }
-
-          if (Test-Path $target) {
-            Move-Item -Path $target -Destination $backup -Force
-          }
-
-          Copy-Item -Path $source -Destination $target -Force
-          $replaced = $true
-          break
-        } catch {
-          Write-Log("replace attempt failed: " + $_.Exception.Message)
-          try {
-            if (Test-Path $target) {
-              Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
-            }
-
-            if (Test-Path $backup) {
-              Move-Item -Path $backup -Destination $target -Force
-            }
-          } catch {
-            Write-Log("rollback failed: " + $_.Exception.Message)
-          }
-
-          if ($attempt -ge 59) {
-            break
-          }
-
-          Start-Sleep -Seconds 1
-        }
+      if (-not (Wait-ForPortsReleased)) {
+        Write-Log("service ports did not close before update")
+        exit 1
       }
 
-      if (-not $replaced) {
-        Write-Log("app replacement failed; restored existing executable if possible")
-        if (Test-Path $target) {
-          Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
-        }
-        exit 0
+      if (Test-Path $backup) {
+        Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue
       }
 
+      if (Test-Path $target) {
+        Move-Item -Path $target -Destination $backup -Force
+      }
+
+      Copy-Item -Path $source -Destination $target -Force
       Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
 
-      try {
-        if (Test-Path $backup) {
+      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+        if (Test-Path $launchMarker) {
           Remove-Item -Path $backup -Force -ErrorAction SilentlyContinue
+          $cleanupCommand = 'ping 127.0.0.1 -n 3 > nul & rmdir /s /q "' + $updateRoot + '"'
+          Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cleanupCommand) -WindowStyle Hidden | Out-Null
+          exit 0
         }
-      } catch {
+
+        Start-Sleep -Seconds 1
       }
 
-      try {
-        $cleanupCommand = 'ping 127.0.0.1 -n 3 > nul & rmdir /s /q "' + $updateRoot + '"'
-        Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $cleanupCommand) -WindowStyle Hidden | Out-Null
-      } catch {
-      }
+      throw "new app launch confirmation was not observed"
     } catch {
-      Write-Log("update script failed unexpectedly: " + $_.Exception.Message)
+      Write-Log("update failed: " + $_.Exception.Message)
       try {
+        if (Test-Path $target) {
+          Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
+        }
+
         if (Test-Path $backup) {
-          if (Test-Path $target) {
-            Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
-          }
           Move-Item -Path $backup -Destination $target -Force
         }
+
         if (Test-Path $target) {
           Start-Process -FilePath $target -WindowStyle Hidden | Out-Null
         }
       } catch {
-        Write-Log("final recovery failed: " + $_.Exception.Message)
+        Write-Log("rollback failed: " + $_.Exception.Message)
       }
     }
     """;
@@ -194,5 +290,23 @@ sealed class WindowsAutoUpdater
   private static string EscapePowerShellSingleQuotedString(string value)
   {
     return value.Replace("'", "''");
+  }
+
+  private static void ValidateDownloadedExecutable(string executablePath)
+  {
+    var fileInfo = new FileInfo(executablePath);
+    if (!fileInfo.Exists || fileInfo.Length < 2)
+    {
+      throw new InvalidOperationException("다운로드한 실행 파일이 비어 있습니다.");
+    }
+
+    using var stream = File.OpenRead(executablePath);
+    var header = new byte[2];
+    if (stream.Read(header, 0, header.Length) != header.Length ||
+        header[0] != (byte)'M' ||
+        header[1] != (byte)'Z')
+    {
+      throw new InvalidOperationException("다운로드한 파일이 유효한 Windows 실행 파일이 아닙니다.");
+    }
   }
 }

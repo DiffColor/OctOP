@@ -4,12 +4,19 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 sealed class RuntimeInstaller
 {
+  private sealed class PreparedCodexAdapterSource
+  {
+    public string SourceRoot { get; init; } = string.Empty;
+    public string? SourceRevision { get; init; }
+  }
+
   private sealed class PendingLoginState
   {
     public string LoginId { get; init; } = string.Empty;
@@ -43,6 +50,16 @@ sealed class RuntimeInstaller
   };
 
   private readonly Assembly _assembly = Assembly.GetExecutingAssembly();
+
+  private static string RuntimeRepositoryRemoteUrl =>
+    Environment.GetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_URL")?.Trim() is { Length: > 0 } value
+      ? value
+      : "https://github.com/DiffColor/OctOP.git";
+
+  private static string RuntimeRepositoryBranch =>
+    Environment.GetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_BRANCH")?.Trim() is { Length: > 0 } value
+      ? value
+      : "main";
 
   public RuntimeConfiguration LoadConfiguration(OctopPaths paths)
   {
@@ -136,26 +153,25 @@ sealed class RuntimeInstaller
     progress.Report($"설치 루트 준비: {paths.InstallRoot}");
     Directory.CreateDirectory(paths.InstallRoot);
     Directory.CreateDirectory(paths.ToolsRoot);
-    Directory.CreateDirectory(paths.RuntimeRoot);
-    Directory.CreateDirectory(paths.CodexHome);
+    Directory.CreateDirectory(paths.RuntimeReleasesRoot);
+    Directory.CreateDirectory(paths.RuntimeStateRoot);
     Directory.CreateDirectory(paths.StateHome);
 
-    await WriteRuntimeBundleAsync(paths, progress, cancellationToken);
     await EnsureNodeAsync(paths, progress, cancellationToken);
     SaveConfiguration(configuration, paths);
-    WriteEnvironmentFile(configuration, paths);
-    WriteRuntimeVersion(paths);
     EnsureAutoStartAtLogin(configuration, progress);
-    await EnsureRuntimeDependenciesAsync(paths, progress, cancellationToken);
     await EnsureCodexAsync(paths, progress, cancellationToken);
     await EnsureCodexLoginAsync(configuration, paths, progress, cancellationToken);
+
+    var preparedRelease = await PrepareRuntimeReleaseAsync(configuration, paths, progress, cancellationToken);
+    ActivateRuntimeRelease(paths, preparedRelease, progress);
 
     return await InspectAsync(paths, cancellationToken);
   }
 
-  public void WriteEnvironmentFile(RuntimeConfiguration configuration, OctopPaths paths)
+  public void WriteEnvironmentFile(RuntimeConfiguration configuration, OctopPaths paths, string runtimeRoot)
   {
-    Directory.CreateDirectory(paths.RuntimeRoot);
+    Directory.CreateDirectory(runtimeRoot);
     var env = configuration.GetEnvironmentVariables(paths);
     var builder = new StringBuilder();
 
@@ -164,13 +180,18 @@ sealed class RuntimeInstaller
       builder.Append(entry.Key).Append('=').AppendLine(entry.Value);
     }
 
-    File.WriteAllText(paths.RuntimeEnvLocalPath, builder.ToString(), new UTF8Encoding(false));
+    File.WriteAllText(Path.Combine(runtimeRoot, ".env.local"), builder.ToString(), new UTF8Encoding(false));
   }
 
-  public void WriteRuntimeVersion(OctopPaths paths)
+  public void WriteEnvironmentFile(RuntimeConfiguration configuration, OctopPaths paths)
   {
-    Directory.CreateDirectory(paths.RuntimeRoot);
-    File.WriteAllText(paths.RuntimeVersionPath, AppMetadata.CurrentVersionTag, new UTF8Encoding(false));
+    WriteEnvironmentFile(configuration, paths, paths.RuntimeRoot);
+  }
+
+  public void WriteRuntimeVersion(string runtimeRoot)
+  {
+    Directory.CreateDirectory(runtimeRoot);
+    File.WriteAllText(Path.Combine(runtimeRoot, "version.txt"), AppMetadata.CurrentVersionTag, new UTF8Encoding(false));
   }
 
   public async Task LoginWithBrowserSelectionAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken, bool logoutFirst)
@@ -181,8 +202,24 @@ sealed class RuntimeInstaller
       throw new InvalidOperationException($"Codex 실행 파일을 찾지 못했습니다: {codexCommandPath}");
     }
 
-    var browser = BrowserSelection.SelectBrowser()
+    var browser = await BrowserSelection.SelectBrowserAsync()
       ?? throw new InvalidOperationException("로그인에 사용할 브라우저 선택이 취소되었습니다.");
+
+    await LoginWithSelectedBrowserAsync(paths, browser, progress, cancellationToken, logoutFirst);
+  }
+
+  public async Task LoginWithSelectedBrowserAsync(
+    OctopPaths paths,
+    BrowserOption browser,
+    IProgress<string> progress,
+    CancellationToken cancellationToken,
+    bool logoutFirst)
+  {
+    var codexCommandPath = paths.GetCodexCommandPath();
+    if (!File.Exists(codexCommandPath))
+    {
+      throw new InvalidOperationException($"Codex 실행 파일을 찾지 못했습니다: {codexCommandPath}");
+    }
 
     progress.Report($"브라우저 선택: {browser.DisplayName}");
     progress.Report($"{browser.DisplayName} 브라우저로 로그인을 시작합니다.");
@@ -371,7 +408,7 @@ sealed class RuntimeInstaller
     }
 
     environment["PATH"] = string.Join(Path.PathSeparator, pathEntries.Where(static value => !string.IsNullOrWhiteSpace(value)));
-    environment["CODEX_HOME"] = ResolvePreferredCodexHome(paths);
+    environment["CODEX_HOME"] = ResolvePreferredCodexHome();
 
     if (extra is not null)
     {
@@ -384,13 +421,12 @@ sealed class RuntimeInstaller
     return environment;
   }
 
-  private static string ResolvePreferredCodexHome(OctopPaths paths)
+  private static string ResolvePreferredCodexHome()
   {
     var candidates = new[]
     {
       Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim(),
-      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"),
-      paths.CodexHome
+      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")
     }
       .Where(static value => !string.IsNullOrWhiteSpace(value))
       .Select(static value => Path.GetFullPath(value!))
@@ -404,7 +440,12 @@ sealed class RuntimeInstaller
     }
 
     var existing = candidates.FirstOrDefault(Directory.Exists);
-    return string.IsNullOrWhiteSpace(existing) ? paths.CodexHome : existing;
+    if (!string.IsNullOrWhiteSpace(existing))
+    {
+      return existing;
+    }
+
+    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
   }
 
   private static bool HasCodexAuthenticationData(string codexHome)
@@ -413,7 +454,203 @@ sealed class RuntimeInstaller
     return File.Exists(authPath) && new FileInfo(authPath).Length > 0;
   }
 
-  private async Task WriteRuntimeBundleAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
+  public async Task<PreparedRuntimeRelease> PrepareRuntimeReleaseAsync(
+    RuntimeConfiguration configuration,
+    OctopPaths paths,
+    IProgress<string> progress,
+    CancellationToken cancellationToken)
+  {
+    Directory.CreateDirectory(paths.RuntimeReleasesRoot);
+    Directory.CreateDirectory(paths.RuntimeSourceCacheRoot);
+
+    progress.Report("윈도우 서비스 런타임 후보를 준비합니다.");
+
+    var preparedSource = await ResolvePreparedCodexAdapterSourceAsync(paths, progress, cancellationToken);
+    var sourceHash = await ComputeEmbeddedRuntimeSourceHashAsync(cancellationToken);
+    var sourceContentRevision = ComputeCodexAdapterContentHash(preparedSource.SourceRoot);
+    var sourceRevision = preparedSource.SourceRevision;
+    var configurationHash = ComputeConfigurationHash(configuration, paths);
+    var runtimeReleaseId = BuildRuntimeReleaseId(sourceRevision, sourceContentRevision, configurationHash);
+    var releaseRoot = paths.GetRuntimeReleaseRoot(runtimeReleaseId);
+
+    if (!Directory.Exists(releaseRoot) || !File.Exists(Path.Combine(releaseRoot, "build-info.json")))
+    {
+      var stagingRoot = Path.Combine(paths.RuntimeReleasesRoot, $"{runtimeReleaseId}.staging-{Guid.NewGuid():N}");
+      if (Directory.Exists(stagingRoot))
+      {
+        Directory.Delete(stagingRoot, recursive: true);
+      }
+
+      Directory.CreateDirectory(stagingRoot);
+
+      try
+      {
+        await WriteRuntimeBundleAsync(stagingRoot, progress, cancellationToken);
+        OverlayCodexAdapterSource(preparedSource.SourceRoot, stagingRoot);
+        WriteEnvironmentFile(configuration, paths, stagingRoot);
+        WriteRuntimeVersion(stagingRoot);
+
+        var buildInfo = new RuntimeReleaseBuildInfo
+        {
+          RuntimeId = runtimeReleaseId,
+          SourceHash = sourceHash,
+          ConfigurationHash = configurationHash,
+          SourceRevision = sourceRevision,
+          SourceContentRevision = sourceContentRevision,
+          AppVersion = AppMetadata.CurrentVersionTag,
+          CreatedAt = DateTimeOffset.UtcNow
+        };
+        WriteRuntimeBuildInfo(stagingRoot, buildInfo);
+        await EnsureRuntimeDependenciesAsync(paths, stagingRoot, progress, cancellationToken);
+        ValidatePreparedRuntimeRelease(stagingRoot);
+
+        if (Directory.Exists(releaseRoot))
+        {
+          Directory.Delete(releaseRoot, recursive: true);
+        }
+
+        Directory.Move(stagingRoot, releaseRoot);
+        progress.Report($"런타임 릴리즈를 준비했습니다. id={runtimeReleaseId}");
+      }
+      catch
+      {
+        try
+        {
+          if (Directory.Exists(stagingRoot))
+          {
+            Directory.Delete(stagingRoot, recursive: true);
+          }
+        }
+        catch
+        {
+        }
+
+        throw;
+      }
+    }
+    else
+    {
+      progress.Report($"기존 런타임 릴리즈를 재사용합니다. id={runtimeReleaseId}");
+    }
+
+    return new PreparedRuntimeRelease
+    {
+      RuntimeId = runtimeReleaseId,
+      ReleaseRoot = releaseRoot,
+      BuildInfo = LoadRuntimeBuildInfo(releaseRoot) ?? new RuntimeReleaseBuildInfo
+      {
+        RuntimeId = runtimeReleaseId,
+        SourceHash = sourceHash,
+        ConfigurationHash = configurationHash,
+        SourceRevision = sourceRevision,
+        SourceContentRevision = sourceContentRevision,
+        AppVersion = AppMetadata.CurrentVersionTag,
+        CreatedAt = DateTimeOffset.UtcNow
+      },
+      ReusedExistingRelease = Directory.Exists(releaseRoot)
+    };
+  }
+
+  public void ActivateRuntimeRelease(OctopPaths paths, PreparedRuntimeRelease preparedRelease, IProgress<string>? progress = null)
+  {
+    Directory.CreateDirectory(paths.InstallRoot);
+    var currentReleaseId = paths.ReadCurrentRuntimeReleaseId();
+    if (!string.IsNullOrWhiteSpace(currentReleaseId) &&
+        !string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase))
+    {
+      File.WriteAllText(paths.RuntimePreviousPointerPath, currentReleaseId, new UTF8Encoding(false));
+    }
+
+    File.WriteAllText(paths.RuntimeCurrentPointerPath, preparedRelease.RuntimeId, new UTF8Encoding(false));
+    progress?.Report($"활성 런타임 포인터를 전환했습니다. current={preparedRelease.RuntimeId}");
+  }
+
+  public void CleanupStaleRuntimeReleases(OctopPaths paths, IProgress<string>? progress = null, int retentionLimit = 3)
+  {
+    if (!Directory.Exists(paths.RuntimeReleasesRoot))
+    {
+      return;
+    }
+
+    var protectedReleaseIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (paths.ReadCurrentRuntimeReleaseId() is { Length: > 0 } currentReleaseId)
+    {
+      protectedReleaseIds.Add(currentReleaseId);
+    }
+
+    if (paths.ReadPreviousRuntimeReleaseId() is { Length: > 0 } previousReleaseId)
+    {
+      protectedReleaseIds.Add(previousReleaseId);
+    }
+
+    var releaseDirectories = Directory.GetDirectories(paths.RuntimeReleasesRoot)
+      .Select(static path => new DirectoryInfo(path))
+      .OrderByDescending(static directory => directory.LastWriteTimeUtc)
+      .ToList();
+
+    foreach (var directory in releaseDirectories.Take(retentionLimit))
+    {
+      protectedReleaseIds.Add(directory.Name);
+    }
+
+    foreach (var directory in releaseDirectories)
+    {
+      if (protectedReleaseIds.Contains(directory.Name))
+      {
+        continue;
+      }
+
+      try
+      {
+        directory.Delete(recursive: true);
+        progress?.Report($"오래된 런타임 릴리즈를 정리했습니다. id={directory.Name}");
+      }
+      catch (Exception error)
+      {
+        progress?.Report($"오래된 런타임 릴리즈 정리 실패: id={directory.Name} message={error.Message}");
+      }
+    }
+  }
+
+  public RuntimeReleaseBuildInfo? LoadRuntimeBuildInfo(string runtimeRoot)
+  {
+    var buildInfoPath = Path.Combine(runtimeRoot, "build-info.json");
+    if (!File.Exists(buildInfoPath))
+    {
+      return null;
+    }
+
+    return JsonSerializer.Deserialize<RuntimeReleaseBuildInfo>(
+      File.ReadAllText(buildInfoPath, Encoding.UTF8),
+      new JsonSerializerOptions(JsonSerializerDefaults.Web));
+  }
+
+  public async Task<RuntimeUpdateDescriptor?> ResolveAvailableRuntimeUpdateAsync(
+    OctopPaths paths,
+    CancellationToken cancellationToken,
+    IProgress<string>? progress = null)
+  {
+    var preparedSource = await ResolvePreparedCodexAdapterSourceAsync(paths, progress, cancellationToken);
+    var remoteContentRevision = ComputeCodexAdapterContentHash(preparedSource.SourceRoot);
+    var currentRoot = paths.ResolveActiveRuntimeRoot();
+    var currentBuildInfo = currentRoot is null ? null : LoadRuntimeBuildInfo(currentRoot);
+    var currentContentRevision = currentRoot is null ? null : ComputeCurrentRuntimeCodexAdapterContentHash(currentRoot);
+
+    if (string.Equals(remoteContentRevision, currentContentRevision, StringComparison.OrdinalIgnoreCase))
+    {
+      return null;
+    }
+
+    return new RuntimeUpdateDescriptor
+    {
+      SourceRevision = preparedSource.SourceRevision ?? remoteContentRevision,
+      SourceContentRevision = remoteContentRevision,
+      CurrentSourceRevision = currentBuildInfo?.SourceRevision,
+      CurrentSourceContentRevision = currentContentRevision
+    };
+  }
+
+  private async Task WriteRuntimeBundleAsync(string runtimeRoot, IProgress<string> progress, CancellationToken cancellationToken)
   {
     progress.Report("런타임 번들을 설치 디렉터리에 복사합니다.");
 
@@ -421,7 +658,7 @@ sealed class RuntimeInstaller
     {
       cancellationToken.ThrowIfCancellationRequested();
       var relativePath = mapping.Value.Replace('/', Path.DirectorySeparatorChar);
-      var targetPath = Path.Combine(paths.RuntimeRoot, relativePath);
+      var targetPath = Path.Combine(runtimeRoot, relativePath);
       Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
 
       await using var resourceStream = _assembly.GetManifestResourceStream(mapping.Key)
@@ -430,7 +667,7 @@ sealed class RuntimeInstaller
       await resourceStream.CopyToAsync(fileStream, cancellationToken);
     }
 
-    await File.WriteAllTextAsync(paths.RuntimePackageJsonPath, RuntimePackageJson, new UTF8Encoding(false), cancellationToken);
+    await File.WriteAllTextAsync(Path.Combine(runtimeRoot, "package.json"), RuntimePackageJson, new UTF8Encoding(false), cancellationToken);
   }
 
   private async Task EnsureNodeAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
@@ -484,7 +721,7 @@ sealed class RuntimeInstaller
     progress.Report($"Node 설치 완료: {nodeVersion}");
   }
 
-  private async Task EnsureRuntimeDependenciesAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
+  private async Task EnsureRuntimeDependenciesAsync(OctopPaths paths, string runtimeRoot, IProgress<string> progress, CancellationToken cancellationToken)
   {
     progress.Report("OctOP bridge 런타임 의존성을 설치합니다.");
     var npmPath = paths.GetNpmExecutablePath() ?? throw new InvalidOperationException("Node npm 경로를 찾을 수 없습니다.");
@@ -493,7 +730,7 @@ sealed class RuntimeInstaller
       CreateCmdWrapperStartInfo(
         npmPath,
         ["install", "--omit=dev", "--no-audit", "--no-fund"],
-        paths.RuntimeRoot,
+        runtimeRoot,
         BuildToolEnvironment(paths)
       ),
       static line => { },
@@ -503,6 +740,245 @@ sealed class RuntimeInstaller
     if (result.ExitCode != 0)
     {
       throw new InvalidOperationException($"bridge 의존성 설치 실패: {result.GetSummary()}");
+    }
+  }
+
+  private async Task<PreparedCodexAdapterSource> ResolvePreparedCodexAdapterSourceAsync(
+    OctopPaths paths,
+    IProgress<string>? progress,
+    CancellationToken cancellationToken)
+  {
+    var overrideRoot = Environment.GetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_CODEX_ADAPTER_SOURCE")?.Trim();
+    if (!string.IsNullOrWhiteSpace(overrideRoot))
+    {
+      var fullOverrideRoot = Path.GetFullPath(overrideRoot);
+      if (!Directory.Exists(fullOverrideRoot))
+      {
+        throw new DirectoryNotFoundException($"codex-adapter override 경로를 찾지 못했습니다: {fullOverrideRoot}");
+      }
+
+      progress?.Report($"codex-adapter override 경로를 사용합니다. path={fullOverrideRoot}");
+      return new PreparedCodexAdapterSource
+      {
+        SourceRoot = fullOverrideRoot,
+        SourceRevision = null
+      };
+    }
+
+    await RefreshRuntimeRepositoryCacheAsync(paths, progress, cancellationToken);
+    var sourceRoot = Path.Combine(paths.RuntimeRepositoryCacheRoot, "services", "codex-adapter");
+    if (!File.Exists(Path.Combine(sourceRoot, "package.json")))
+    {
+      throw new InvalidOperationException("캐시 저장소에서 codex-adapter 소스를 찾지 못했습니다.");
+    }
+
+    return new PreparedCodexAdapterSource
+    {
+      SourceRoot = sourceRoot,
+      SourceRevision = await ReadRepositoryHeadAsync(paths.RuntimeRepositoryCacheRoot, cancellationToken)
+    };
+  }
+
+  private async Task RefreshRuntimeRepositoryCacheAsync(
+    OctopPaths paths,
+    IProgress<string>? progress,
+    CancellationToken cancellationToken)
+  {
+    Directory.CreateDirectory(paths.RuntimeSourceCacheRoot);
+
+    if (!Directory.Exists(Path.Combine(paths.RuntimeRepositoryCacheRoot, ".git")))
+    {
+      if (Directory.Exists(paths.RuntimeRepositoryCacheRoot))
+      {
+        Directory.Delete(paths.RuntimeRepositoryCacheRoot, recursive: true);
+      }
+
+      progress?.Report("윈도우 런타임 원본 저장소를 clone 합니다.");
+      await RunGitCommandAsync(
+        paths.RuntimeSourceCacheRoot,
+        ["clone", "--depth", "1", "--branch", RuntimeRepositoryBranch, RuntimeRepositoryRemoteUrl, paths.RuntimeRepositoryCacheRoot],
+        cancellationToken);
+      return;
+    }
+
+    progress?.Report("윈도우 런타임 원본 저장소를 최신으로 갱신합니다.");
+    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["fetch", "--depth", "1", "origin", RuntimeRepositoryBranch], cancellationToken);
+    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", "FETCH_HEAD"], cancellationToken);
+  }
+
+  private static async Task<string?> ReadRepositoryHeadAsync(string repositoryRoot, CancellationToken cancellationToken)
+  {
+    var result = await RunCommandAsync(
+      new ProcessStartInfo
+      {
+        FileName = "git",
+        WorkingDirectory = repositoryRoot,
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
+        Arguments = "rev-parse HEAD"
+      },
+      cancellationToken: cancellationToken);
+
+    if (result.ExitCode != 0)
+    {
+      return null;
+    }
+
+    var revision = result.StandardOutput.Trim();
+    return string.IsNullOrWhiteSpace(revision) ? null : revision;
+  }
+
+  private static async Task RunGitCommandAsync(string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+  {
+    var startInfo = new ProcessStartInfo
+    {
+      FileName = "git",
+      WorkingDirectory = workingDirectory,
+      UseShellExecute = false,
+      RedirectStandardOutput = true,
+      RedirectStandardError = true,
+      CreateNoWindow = true,
+      StandardOutputEncoding = Encoding.UTF8,
+      StandardErrorEncoding = Encoding.UTF8
+    };
+
+    foreach (var argument in arguments)
+    {
+      startInfo.ArgumentList.Add(argument);
+    }
+
+    var result = await RunCommandAsync(startInfo, cancellationToken: cancellationToken);
+    if (result.ExitCode != 0)
+    {
+      throw new InvalidOperationException($"git 명령 실패: {result.GetSummary()}");
+    }
+  }
+
+  private static string ComputeConfigurationHash(RuntimeConfiguration configuration, OctopPaths paths)
+  {
+    var env = configuration.GetEnvironmentVariables(paths);
+    var builder = new StringBuilder();
+    foreach (var entry in env.OrderBy(static entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+    {
+      builder.Append(entry.Key).Append('=').Append(entry.Value).Append('\n');
+    }
+
+    return ComputeHash(builder.ToString());
+  }
+
+  private async Task<string> ComputeEmbeddedRuntimeSourceHashAsync(CancellationToken cancellationToken)
+  {
+    var builder = new StringBuilder();
+    foreach (var mapping in RuntimeResources.OrderBy(static entry => entry.Value, StringComparer.Ordinal))
+    {
+      await using var resourceStream = _assembly.GetManifestResourceStream(mapping.Key)
+        ?? throw new InvalidOperationException($"런타임 리소스를 찾을 수 없습니다: {mapping.Key}");
+      using var reader = new StreamReader(resourceStream, Encoding.UTF8, leaveOpen: false);
+      var contents = await reader.ReadToEndAsync(cancellationToken);
+      builder.Append(mapping.Value).Append('\n').Append(contents).Append('\n');
+    }
+
+    builder.Append(RuntimePackageJson);
+    return ComputeHash(builder.ToString());
+  }
+
+  private static string ComputeCurrentRuntimeCodexAdapterContentHash(string runtimeRoot)
+  {
+    var codexAdapterRoot = Path.Combine(runtimeRoot, "services", "codex-adapter");
+    return ComputeCodexAdapterContentHash(codexAdapterRoot);
+  }
+
+  private static string ComputeCodexAdapterContentHash(string codexAdapterRoot)
+  {
+    if (!Directory.Exists(codexAdapterRoot))
+    {
+      return string.Empty;
+    }
+
+    var builder = new StringBuilder();
+    foreach (var filePath in Directory
+      .EnumerateFiles(codexAdapterRoot, "*", SearchOption.AllDirectories)
+      .Where(static path =>
+      {
+        var fileName = Path.GetFileName(path);
+        if (string.Equals(fileName, "package-lock.json", StringComparison.OrdinalIgnoreCase))
+        {
+          return false;
+        }
+
+        return !path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+          .Any(static segment => string.Equals(segment, "node_modules", StringComparison.OrdinalIgnoreCase));
+      })
+      .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+    {
+      builder.Append(Path.GetRelativePath(codexAdapterRoot, filePath).Replace('\\', '/')).Append('\n');
+      builder.Append(File.ReadAllText(filePath, Encoding.UTF8)).Append('\n');
+    }
+
+    return ComputeHash(builder.ToString());
+  }
+
+  private static void OverlayCodexAdapterSource(string sourceRoot, string runtimeRoot)
+  {
+    var targetRoot = Path.Combine(runtimeRoot, "services", "codex-adapter");
+    if (Directory.Exists(targetRoot))
+    {
+      Directory.Delete(targetRoot, recursive: true);
+    }
+
+    CopyDirectory(sourceRoot, targetRoot);
+  }
+
+  private static string BuildRuntimeReleaseId(string? sourceRevision, string sourceContentRevision, string configurationHash)
+  {
+    var sourceToken = string.IsNullOrWhiteSpace(sourceRevision) ? sourceContentRevision : sourceRevision;
+    sourceToken = sourceToken.Length > 12 ? sourceToken[..12] : sourceToken;
+    var configurationToken = configurationHash.Length > 12 ? configurationHash[..12] : configurationHash;
+    return $"runtime-{sourceToken}-{configurationToken}";
+  }
+
+  private static void WriteRuntimeBuildInfo(string runtimeRoot, RuntimeReleaseBuildInfo buildInfo)
+  {
+    var json = JsonSerializer.Serialize(buildInfo, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+    {
+      WriteIndented = true
+    });
+    File.WriteAllText(Path.Combine(runtimeRoot, "build-info.json"), json, new UTF8Encoding(false));
+  }
+
+  private static string ComputeHash(string value)
+  {
+    using var sha = SHA256.Create();
+    var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(value));
+    return Convert.ToHexString(hash).ToLowerInvariant();
+  }
+
+  private static void ValidatePreparedRuntimeRelease(string runtimeRoot)
+  {
+    var requiredPaths = new[]
+    {
+      Path.Combine(runtimeRoot, "scripts", "run-local-agent.mjs"),
+      Path.Combine(runtimeRoot, "scripts", "run-bridge.mjs"),
+      Path.Combine(runtimeRoot, "scripts", "shared-env.mjs"),
+      Path.Combine(runtimeRoot, "services", "codex-adapter", "package.json"),
+      Path.Combine(runtimeRoot, "services", "codex-adapter", "src", "index.js"),
+      Path.Combine(runtimeRoot, "services", "codex-adapter", "src", "domain.js"),
+      Path.Combine(runtimeRoot, "packages", "domain", "src", "index.js"),
+      Path.Combine(runtimeRoot, ".env.local"),
+      Path.Combine(runtimeRoot, "version.txt"),
+      Path.Combine(runtimeRoot, "build-info.json")
+    };
+
+    foreach (var requiredPath in requiredPaths)
+    {
+      if (!File.Exists(requiredPath))
+      {
+        throw new InvalidOperationException($"준비된 런타임 릴리즈 검증 실패: 필수 파일이 없습니다. path={requiredPath}");
+      }
     }
   }
 
