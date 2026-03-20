@@ -72,13 +72,19 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _setupWindow.LogsRequested += (_, _) => ShowLogs();
     _setupWindow.LogProduced += (_, message) =>
     {
-      AppendLog(message);
-      RefreshUi();
+      PostToUi(() =>
+      {
+        AppendLog(message);
+        RefreshUi();
+      });
     };
     _setupWindow.InstallationCompleted += (_, status) =>
     {
-      _runtimeStatus = status;
-      _ = HandleInstallationCompletedAsync(status);
+      PostToUi(() =>
+      {
+        _runtimeStatus = status;
+        _ = HandleInstallationCompletedSafeAsync(status);
+      });
     };
 
     _menu = new ContextMenuStrip();
@@ -307,6 +313,19 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         AppendLog("자동 설치 완료 후 원자적 런타임 전환과 서비스 시작을 이어갑니다.");
         await StartAsync(forceRestart: runtimePreparedChanged);
       }
+    }
+  }
+
+  private async Task HandleInstallationCompletedSafeAsync(RuntimeStatus status)
+  {
+    try
+    {
+      await HandleInstallationCompletedAsync(status);
+    }
+    catch (Exception error)
+    {
+      AppendLog($"설치 완료 후속 처리 실패: {error.Message}");
+      RefreshUi();
     }
   }
 
