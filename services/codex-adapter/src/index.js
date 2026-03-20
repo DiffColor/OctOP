@@ -32,6 +32,7 @@ import {
 // Runtime update verification marker 4: source-only change to trigger update detection.
 // Runtime update verification marker 5: atomic update smoke-test commit without behavior change.
 // Runtime update verification marker 6: push-only change to verify atomic update propagation.
+// Runtime update verification marker 7: follow-up push to recheck first-launch atomic update.
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
