@@ -56,6 +56,7 @@ sealed class WindowsAutoUpdater
       logPath,
       downloadPath,
       currentExecutablePath,
+      paths.AppUpdateLaunchMarkerPath,
       Environment.ProcessId,
       ResolveServicePorts(configuration));
 
@@ -192,6 +193,7 @@ sealed class WindowsAutoUpdater
     string logPath,
     string downloadedExecutablePath,
     string currentExecutablePath,
+    string launchMarkerPath,
     int currentProcessId,
     IReadOnlyList<int> servicePorts)
   {
@@ -203,7 +205,7 @@ sealed class WindowsAutoUpdater
     $currentProcessId = {{currentProcessId}}
     $backup = "$target.previous-update"
     $updateRoot = Split-Path -Parent "{{EscapePowerShellSingleQuotedString(scriptPath)}}"
-    $launchMarker = "{{EscapePowerShellSingleQuotedString(Path.Combine(Path.GetDirectoryName(currentExecutablePath) ?? string.Empty, "app-update-launch-confirmed"))}}"
+    $launchMarker = "{{EscapePowerShellSingleQuotedString(launchMarkerPath)}}"
     $ports = @({{portsLiteral}})
 
     function Write-Log {
