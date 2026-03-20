@@ -294,7 +294,7 @@ final class CodexAppServerSession: @unchecked Sendable {
       params: [
         "clientInfo": [
           "name": "octop-agent-menu",
-          "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "v0.0.0-dev"
+          "version": currentAgentMenuVersionTag()
         ],
         "capabilities": [
           "experimentalApi": true

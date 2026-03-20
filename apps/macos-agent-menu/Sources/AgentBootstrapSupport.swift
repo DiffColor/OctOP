@@ -398,14 +398,7 @@ struct AgentLaunchContext {
 }
 
 private func currentAgentMenuBundleVersionTag() -> String {
-  let rawVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
-    .trimmingCharacters(in: .whitespacesAndNewlines)
-
-  guard let rawVersion, !rawVersion.isEmpty else {
-    return "v0.0.0-dev"
-  }
-
-  return rawVersion.hasPrefix("v") ? rawVersion : "v\(rawVersion)"
+  currentAgentMenuVersionTag()
 }
 
 private struct AgentRuntimeReleaseBuildInfo: Codable {
