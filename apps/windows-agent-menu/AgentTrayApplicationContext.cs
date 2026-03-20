@@ -182,8 +182,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     var resumePendingServiceStart = ConsumePendingServiceStartRequest();
     var shouldAutoStartService =
-      _runtimeStatus?.ReadyToRun == true &&
-      _runtimeStatus.AutoStartRequested &&
+      _runtimeStatus?.AutoStartRequested == true &&
       _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting);
 
     if (!resumePendingServiceStart && !shouldAutoStartService)
@@ -195,13 +194,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       ? "업데이트 후 서비스 자동 시작을 이어갑니다."
       : "자동 시작 설정에 따라 서비스 시작을 진행합니다.");
     await RefreshRuntimeStatusAsync();
-    if (_runtimeStatus?.ReadyToRun != true)
+    if (!HasAtomicRuntimePreparationPrerequisites())
     {
       ShowSetup();
       var completedStatus = await _setupWindow.EnsureInstalledAsync(automatic: true, showMessageBoxOnFailure: true);
       _runtimeStatus = completedStatus ?? _runtimeStatus;
       await RefreshRuntimeStatusAsync();
     }
+
+    await EnsureAtomicRuntimePreparedOnStartupAsync();
+    await RefreshRuntimeStatusAsync();
 
     if (_runtimeStatus?.ReadyToRun == true &&
         _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting))
