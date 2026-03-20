@@ -969,10 +969,7 @@ struct AgentMenuContent: View {
             }
 
             _ = await bootstrap.applyAvailableAppUpdate(
-              log: model.appendInstallerLog,
-              beforeTermination: {
-                try bootstrap.preserveAppDataForUpdate(log: model.appendInstallerLog)
-              })
+              log: model.appendInstallerLog)
           }
         } label: {
           Text(bootstrap.appUpdateInProgress ? "앱 업데이트 중..." : "앱 업데이트 \(availableAppUpdate.tag)")
@@ -1092,6 +1089,7 @@ struct OctOPAgentMenuApp: App {
           }
 
           bootstrap.restorePreservedAppDataIfNeeded(log: model.appendInstallerLog)
+          bootstrap.markPendingAppUpdateLaunchSucceededIfNeeded(log: model.appendInstallerLog)
 
           model.refreshRuntimeStateFromSystem()
           await bootstrap.recoverPendingLoginAfterRestart(log: model.appendInstallerLog)

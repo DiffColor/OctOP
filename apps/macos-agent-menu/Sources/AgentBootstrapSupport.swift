@@ -400,6 +400,14 @@ private struct AgentRuntimeReleaseHealthcheck: Codable {
   let checks: [String]
 }
 
+private struct PendingAppUpdateState: Codable {
+  let targetTag: String
+  let currentAppPath: String
+  let appSupportExistedAtBackup: Bool
+  let preparedAt: Date
+  var launchConfirmedAt: Date?
+}
+
 private struct BrowserLoginHelperResult: Sendable {
   let loggedIn: Bool
   let summary: String
@@ -850,7 +858,7 @@ final class AgentBootstrapStore: ObservableObject {
     currentAppVersionTag
   }
 
-  private var appUpdateDataBackupURL: URL {
+  var appUpdateDataBackupURL: URL {
     URL(fileURLWithPath: appSupportURL.path + ".update-backup", isDirectory: true)
   }
 
@@ -860,6 +868,18 @@ final class AgentBootstrapStore: ObservableObject {
 
   private var appUpdatePreservedAppSupportURL: URL {
     appUpdateDataBackupURL.appendingPathComponent(appSupportURL.lastPathComponent, isDirectory: true)
+  }
+
+  private var appUpdateStatusURL: URL {
+    appUpdateDataBackupURL.appendingPathComponent("status.json")
+  }
+
+  private var appUpdateLaunchMarkerURL: URL {
+    appUpdateDataBackupURL.appendingPathComponent("launch-confirmed")
+  }
+
+  var appUpdateScriptLogURL: URL {
+    appUpdateDataBackupURL.appendingPathComponent("apply-update.log")
   }
 
   var runtimeUpdateCheckIntervalSeconds: TimeInterval {
@@ -901,11 +921,13 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
-  func preserveAppDataForUpdate(log: @escaping @MainActor (String) -> Void) throws {
+  func preserveAppDataForUpdate(
+    currentAppURL: URL = Bundle.main.bundleURL,
+    targetTag: String,
+    log: @escaping @MainActor (String) -> Void
+  ) throws {
     let fileManager = FileManager.default
-    guard fileManager.fileExists(atPath: appSupportURL.path) else {
-      return
-    }
+    let appSupportExists = fileManager.fileExists(atPath: appSupportURL.path)
 
     if fileManager.fileExists(atPath: appUpdateDataBackupStagingURL.path) {
       try fileManager.removeItem(at: appUpdateDataBackupStagingURL)
@@ -915,14 +937,31 @@ final class AgentBootstrapStore: ObservableObject {
     try ensureDirectory(appUpdateDataBackupStagingURL)
 
     do {
-      let backupURL = appUpdateDataBackupStagingURL.appendingPathComponent(appSupportURL.lastPathComponent, isDirectory: true)
-      try fileManager.copyItem(at: appSupportURL, to: backupURL)
+      if appSupportExists {
+        let backupURL = appUpdateDataBackupStagingURL.appendingPathComponent(appSupportURL.lastPathComponent, isDirectory: true)
+        try fileManager.copyItem(at: appSupportURL, to: backupURL)
+      }
 
       if fileManager.fileExists(atPath: appUpdateDataBackupURL.path) {
         try fileManager.removeItem(at: appUpdateDataBackupURL)
       }
 
       try fileManager.moveItem(at: appUpdateDataBackupStagingURL, to: appUpdateDataBackupURL)
+      try writePendingAppUpdateState(
+        PendingAppUpdateState(
+          targetTag: targetTag,
+          currentAppPath: currentAppURL.standardizedFileURL.path,
+          appSupportExistedAtBackup: appSupportExists,
+          preparedAt: Date(),
+          launchConfirmedAt: nil
+        )
+      )
+      if fileManager.fileExists(atPath: appUpdateLaunchMarkerURL.path) {
+        try fileManager.removeItem(at: appUpdateLaunchMarkerURL)
+      }
+      if fileManager.fileExists(atPath: appUpdateScriptLogURL.path) {
+        try fileManager.removeItem(at: appUpdateScriptLogURL)
+      }
       log("앱 업데이트에 대비해 앱 로컬 데이터 전체를 백업했습니다.")
     } catch {
       if fileManager.fileExists(atPath: appUpdateDataBackupStagingURL.path) {
@@ -933,10 +972,41 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
-  func cleanupCompletedAppUpdateArtifacts(log: @escaping @MainActor (String) -> Void) {
+  func markPendingAppUpdateLaunchSucceededIfNeeded(
+    currentAppURL: URL = Bundle.main.bundleURL,
+    log: @escaping @MainActor (String) -> Void
+  ) {
+    guard var pendingState = loadPendingAppUpdateState(),
+          pendingState.currentAppPath == currentAppURL.standardizedFileURL.path,
+          pendingState.launchConfirmedAt == nil else {
+      return
+    }
+
+    pendingState.launchConfirmedAt = Date()
+
+    do {
+      try writePendingAppUpdateState(pendingState)
+      try "ok".write(to: appUpdateLaunchMarkerURL, atomically: true, encoding: .utf8)
+      log("새 앱 번들 기동을 확인했습니다. 업데이트 정리 대기 상태로 전환합니다.")
+    } catch {
+      log("새 앱 번들 기동 확인 기록 실패: \(error.localizedDescription)")
+    }
+  }
+
+  func cleanupCompletedAppUpdateArtifacts(
+    currentAppURL: URL = Bundle.main.bundleURL,
+    log: @escaping @MainActor (String) -> Void
+  ) {
     let fileManager = FileManager.default
+    if let pendingState = loadPendingAppUpdateState(),
+       pendingState.currentAppPath == currentAppURL.standardizedFileURL.path,
+       pendingState.launchConfirmedAt == nil {
+      log("앱 업데이트 정리를 보류합니다. 새 앱 기동 확인 마커가 아직 없습니다.")
+      return
+    }
+
     let cleanupTargets = [
-      URL(fileURLWithPath: Bundle.main.bundleURL.path + ".previous-update", isDirectory: true),
+      URL(fileURLWithPath: currentAppURL.path + ".previous-update", isDirectory: true),
       appUpdateDataBackupURL,
       appUpdateDataBackupStagingURL,
       URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -962,6 +1032,25 @@ final class AgentBootstrapStore: ObservableObject {
     if !removedItems.isEmpty {
       log("업데이트 백업과 임시 파일을 정리했습니다. items=\(removedItems.joined(separator: ","))")
     }
+  }
+
+  private func loadPendingAppUpdateState() -> PendingAppUpdateState? {
+    guard let data = try? Data(contentsOf: appUpdateStatusURL) else {
+      return nil
+    }
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try? decoder.decode(PendingAppUpdateState.self, from: data)
+  }
+
+  private func writePendingAppUpdateState(_ state: PendingAppUpdateState) throws {
+    try ensureDirectory(appUpdateDataBackupURL)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(state)
+    try data.write(to: appUpdateStatusURL, options: .atomic)
   }
 
   private func ensureCodexHomeReady(log: ((String) -> Void)? = nil) {
