@@ -59,6 +59,7 @@ sealed class RuntimeConfiguration
   public Dictionary<string, string> GetEnvironmentVariables(OctopPaths paths)
   {
     var codexHome = ResolvePreferredCodexHome(paths);
+    var appServerWsUrl = AppServerWsUrl.Trim();
     var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
       ["OCTOP_NATS_URL"] = NatsUrl.Trim(),
@@ -70,7 +71,8 @@ sealed class RuntimeConfiguration
       ["OCTOP_BRIDGE_OWNER_LOGIN_ID"] = OwnerLoginId.Trim(),
       ["OCTOP_BRIDGE_OWNER_USER_ID"] = OwnerLoginId.Trim(),
       ["OCTOP_APP_SERVER_MODE"] = AppServerMode.Trim(),
-      ["OCTOP_APP_SERVER_WS_URL"] = AppServerWsUrl.Trim(),
+      ["OCTOP_APP_SERVER_WS_URL"] = appServerWsUrl,
+      ["OCTOP_APP_SERVER_COMMAND"] = BuildAppServerCommand(paths, appServerWsUrl),
       ["OCTOP_CODEX_MODEL"] = CodexModel.Trim(),
       ["OCTOP_CODEX_REASONING_EFFORT"] = CodexReasoningEffort.Trim(),
       ["OCTOP_CODEX_APPROVAL_POLICY"] = CodexApprovalPolicy.Trim(),
@@ -176,6 +178,26 @@ sealed class RuntimeConfiguration
   {
     var authPath = Path.Combine(codexHome, "auth.json");
     return File.Exists(authPath) && new FileInfo(authPath).Length > 0;
+  }
+
+  private static string BuildAppServerCommand(OctopPaths paths, string appServerWsUrl)
+  {
+    var codexCommandPath = paths.GetCodexCommandPath();
+    var command = File.Exists(codexCommandPath) ? codexCommandPath : "codex";
+    return $"{QuoteCommandToken(command)} app-server --listen {QuoteCommandToken(appServerWsUrl)}";
+  }
+
+  private static string QuoteCommandToken(string value)
+  {
+    var normalized = (value ?? string.Empty).Trim();
+    if (normalized.Length == 0)
+    {
+      return "\"\"";
+    }
+
+    return normalized.Contains('"')
+      ? $"\"{normalized.Replace("\"", "\"\"")}\""
+      : $"\"{normalized}\"";
   }
 }
 

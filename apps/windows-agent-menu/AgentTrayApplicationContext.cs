@@ -21,7 +21,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private readonly ContextMenuStrip _menu;
   private readonly ToolStripMenuItem _titleItem;
   private readonly ToolStripMenuItem _appVersionItem;
-  private readonly ToolStripMenuItem _runtimeVersionItem;
+  private readonly HighlightTextToolStripHost _runtimeVersionItem;
   private readonly ToolStripMenuItem _statusItem;
   private readonly ToolStripMenuItem _environmentItem;
   private readonly ToolStripMenuItem _pidItem;
@@ -85,7 +85,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     _titleItem = new ToolStripMenuItem(AppTitle) { Enabled = false };
     _appVersionItem = new ToolStripMenuItem() { Enabled = false };
-    _runtimeVersionItem = new ToolStripMenuItem() { Enabled = false };
+    _runtimeVersionItem = new HighlightTextToolStripHost();
     _statusItem = new ToolStripMenuItem() { Enabled = false };
     _environmentItem = new ToolStripMenuItem("환경 확인 중") { Enabled = false };
     _pidItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
@@ -178,6 +178,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
     await RefreshAvailableRuntimeUpdateAsync();
     await RefreshAvailableAppUpdateAsync();
+    await EnsureAtomicRuntimePreparedOnStartupAsync();
 
     var resumePendingServiceStart = ConsumePendingServiceStartRequest();
     var shouldAutoStartService =
@@ -207,6 +208,47 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     {
       await StartAsync();
     }
+  }
+
+  private async Task EnsureAtomicRuntimePreparedOnStartupAsync()
+  {
+    if (_runtimeStatus?.ReadyToRun != true)
+    {
+      return;
+    }
+
+    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting || _stopInProgress)
+    {
+      return;
+    }
+
+    var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
+    var shouldPrepareImmediately = currentRuntimeRoot is null || _availableRuntimeUpdate is not null;
+    if (!shouldPrepareImmediately)
+    {
+      return;
+    }
+
+    AppendLog(currentRuntimeRoot is null
+      ? "첫 시작 런타임이 없어 원자적 런타임 준비를 바로 진행합니다."
+      : "시작 직후 감지된 런타임 업데이트를 바로 반영합니다.");
+
+    var preparedRelease = await _runtimeInstaller.PrepareRuntimeReleaseAsync(
+      _configuration,
+      _paths,
+      new Progress<string>(AppendLog),
+      CancellationToken.None);
+
+    var currentReleaseId = _paths.ReadCurrentRuntimeReleaseId();
+    if (!string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase))
+    {
+      _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
+      _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
+    }
+
+    _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
+    await RefreshRuntimeStatusAsync();
+    await RefreshAvailableRuntimeUpdateAsync();
   }
 
   private async Task RefreshRuntimeStatusAsync(bool showSetupWhenIncomplete = false)
@@ -709,8 +751,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private void RefreshMenuState()
   {
     _appVersionItem.Text = $"앱 버전 {AppMetadata.CurrentVersionTag}";
-    _runtimeVersionItem.Text = ResolveRuntimeVersionDisplay();
-    _runtimeVersionItem.ForeColor = _availableRuntimeUpdate is null ? SystemColors.GrayText : Color.RoyalBlue;
+    _runtimeVersionItem.SetSegments(
+      ResolveRuntimeVersionDisplayPrefix(),
+      _availableRuntimeUpdate?.DisplayRevision);
     _statusItem.Text = GetRuntimeStateLabel(_runtimeState);
     _statusItem.ForeColor = GetRuntimeColor(_runtimeState);
 
@@ -731,7 +774,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _appUpdateItem.ForeColor = _availableAppUpdate is null ? SystemColors.ControlText : Color.RoyalBlue;
   }
 
-  private string ResolveRuntimeVersionDisplay()
+  private string ResolveRuntimeVersionDisplayPrefix()
   {
     var buildInfo = _runtimeInstaller.LoadRuntimeBuildInfo(_paths.RuntimeRoot);
     var currentToken = buildInfo?.SourceRevision;
@@ -749,7 +792,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return $"런타임 ID {currentDisplay}";
     }
 
-    return $"런타임 ID {currentDisplay} · 업데이트 {_availableRuntimeUpdate.DisplayRevision}";
+    return $"런타임 ID {currentDisplay} · 업데이트 ";
   }
 
   private void AppendLog(string message)
@@ -1362,9 +1405,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     try
     {
-      using var response = await HealthcheckClient.GetAsync(
-        new Uri($"http://{host}:{bridgePort}/health"),
-        HttpCompletionOption.ResponseHeadersRead);
+      using var request = new HttpRequestMessage(
+        HttpMethod.Get,
+        new Uri($"http://{host}:{bridgePort}/health"));
+      request.Headers.TryAddWithoutValidation("x-bridge-token", _configuration.BridgeToken?.Trim() ?? string.Empty);
+      using var cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+      using var response = await HealthcheckClient.SendAsync(
+        request,
+        HttpCompletionOption.ResponseHeadersRead,
+        cancellationSource.Token);
       return response.IsSuccessStatusCode;
     }
     catch
@@ -1543,4 +1593,111 @@ static partial class NativeMethods
   [DllImport("user32.dll", SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
   internal static extern bool DestroyIcon(nint handle);
+}
+
+sealed class HighlightTextToolStripHost : ToolStripControlHost
+{
+  private HighlightTextStripControl HighlightControl => (HighlightTextStripControl)Control;
+
+  public HighlightTextToolStripHost()
+    : base(new HighlightTextStripControl())
+  {
+    Enabled = false;
+    AutoSize = false;
+    Margin = Padding.Empty;
+    Padding = Padding.Empty;
+    HighlightControl.Size = HighlightControl.GetPreferredSize(Size.Empty);
+    Size = HighlightControl.Size;
+  }
+
+  public void SetSegments(string prefixText, string? highlightText)
+  {
+    HighlightControl.SetSegments(prefixText, highlightText);
+    HighlightControl.Size = HighlightControl.GetPreferredSize(Size.Empty);
+    Size = HighlightControl.Size;
+    Invalidate();
+  }
+}
+
+sealed class HighlightTextStripControl : Control
+{
+  private static readonly TextFormatFlags TextFlags =
+    TextFormatFlags.Left |
+    TextFormatFlags.VerticalCenter |
+    TextFormatFlags.SingleLine |
+    TextFormatFlags.NoPrefix |
+    TextFormatFlags.NoPadding;
+
+  private const int HorizontalPadding = 2;
+  private const int VerticalPadding = 3;
+
+  private string _prefixText = string.Empty;
+  private string _highlightText = string.Empty;
+
+  public HighlightTextStripControl()
+  {
+    SetStyle(
+      ControlStyles.AllPaintingInWmPaint |
+      ControlStyles.OptimizedDoubleBuffer |
+      ControlStyles.UserPaint |
+      ControlStyles.SupportsTransparentBackColor,
+      true);
+    BackColor = Color.Transparent;
+    ForeColor = SystemColors.GrayText;
+    Font = SystemFonts.MenuFont;
+    TabStop = false;
+  }
+
+  public void SetSegments(string prefixText, string? highlightText)
+  {
+    _prefixText = prefixText ?? string.Empty;
+    _highlightText = highlightText ?? string.Empty;
+    Invalidate();
+  }
+
+  public override Size GetPreferredSize(Size proposedSize)
+  {
+    var text = _prefixText + _highlightText;
+    var measured = TextRenderer.MeasureText(text.Length == 0 ? " " : text, Font, Size.Empty, TextFlags);
+    return new Size(
+      measured.Width + (HorizontalPadding * 2),
+      Math.Max(22, measured.Height + (VerticalPadding * 2)));
+  }
+
+  protected override void OnPaint(PaintEventArgs e)
+  {
+    var contentBounds = new Rectangle(
+      HorizontalPadding,
+      VerticalPadding,
+      Math.Max(0, Width - (HorizontalPadding * 2)),
+      Math.Max(0, Height - (VerticalPadding * 2)));
+
+    TextRenderer.DrawText(
+      e.Graphics,
+      _prefixText,
+      Font,
+      contentBounds,
+      ForeColor,
+      TextFlags);
+
+    if (_highlightText.Length == 0)
+    {
+      return;
+    }
+
+    var prefixWidth = TextRenderer.MeasureText(e.Graphics, _prefixText, Font, Size.Empty, TextFlags).Width;
+    var highlightBounds = new Rectangle(
+      contentBounds.Left + prefixWidth,
+      contentBounds.Top,
+      Math.Max(0, contentBounds.Width - prefixWidth),
+      contentBounds.Height);
+
+    TextRenderer.DrawText(
+      e.Graphics,
+      _highlightText,
+      Font,
+      highlightBounds,
+      Color.RoyalBlue,
+      TextFlags);
+  }
 }
