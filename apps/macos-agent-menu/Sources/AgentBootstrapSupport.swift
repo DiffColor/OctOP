@@ -1,13 +1,34 @@
 import AppKit
+import CryptoKit
 import Darwin
 import Foundation
 import SwiftUI
 
+private struct LocalCodexAuthStoreStatus {
+  let loggedIn: Bool
+  let summary: String
+}
+
+struct RuntimeUpdateDescriptor: Equatable {
+  let sourceRevision: String
+  let currentSourceRevision: String?
+
+  var displayRevision: String {
+    String(sourceRevision.prefix(12))
+  }
+
+  var currentDisplayRevision: String? {
+    guard let currentSourceRevision else {
+      return nil
+    }
+
+    return String(currentSourceRevision.prefix(12))
+  }
+}
+
 private enum AgentLoginDebugLog {
   private static var logURL: URL {
-    let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-      .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
-      ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/OctOPAgentMenu", isDirectory: true)
+    let baseURL = octopAgentMenuAppSupportURL()
     return baseURL.appendingPathComponent("login-debug.log")
   }
 
@@ -29,6 +50,89 @@ private enum AgentLoginDebugLog {
     } catch {
     }
   }
+}
+
+func octopAgentMenuAppSupportURL() -> URL {
+  if let overridePath = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_APP_SUPPORT_PATH"]?
+    .trimmingCharacters(in: .whitespacesAndNewlines),
+     !overridePath.isEmpty {
+    return URL(fileURLWithPath: overridePath, isDirectory: true).standardizedFileURL
+  }
+
+  return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+    .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
+    ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/OctOPAgentMenu", isDirectory: true)
+}
+
+private func decodeJWTClaims(_ token: String) -> [String: Any]? {
+  let segments = token.split(separator: ".")
+  guard segments.count >= 2 else {
+    return nil
+  }
+
+  var base64 = String(segments[1])
+    .replacingOccurrences(of: "-", with: "+")
+    .replacingOccurrences(of: "_", with: "/")
+
+  let remainder = base64.count % 4
+  if remainder != 0 {
+    base64 += String(repeating: "=", count: 4 - remainder)
+  }
+
+  guard let data = Data(base64Encoded: base64),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    return nil
+  }
+
+  return json
+}
+
+private func localCodexAuthStoreStatus(at codexHomeURL: URL) -> LocalCodexAuthStoreStatus? {
+  let authURL = codexHomeURL.appendingPathComponent("auth.json")
+  guard let data = try? Data(contentsOf: authURL),
+        let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    return nil
+  }
+
+  if let apiKey = raw["OPENAI_API_KEY"] as? String,
+     !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return LocalCodexAuthStoreStatus(loggedIn: true, summary: "API Key 로그인됨")
+  }
+
+  guard let tokens = raw["tokens"] as? [String: Any] else {
+    return nil
+  }
+
+  let candidateTokens = [
+    tokens["id_token"] as? String,
+    tokens["access_token"] as? String
+  ].compactMap { token in
+    let value = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return value.isEmpty ? nil : value
+  }
+
+  guard !candidateTokens.isEmpty else {
+    return nil
+  }
+
+  for token in candidateTokens {
+    guard let claims = decodeJWTClaims(token) else {
+      continue
+    }
+
+    if let email = claims["email"] as? String,
+       !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return LocalCodexAuthStoreStatus(loggedIn: true, summary: email)
+    }
+
+    if let profile = claims["https://api.openai.com/profile"] as? [String: Any],
+       let email = profile["email"] as? String,
+       !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return LocalCodexAuthStoreStatus(loggedIn: true, summary: email)
+    }
+  }
+
+  return LocalCodexAuthStoreStatus(loggedIn: true, summary: "로그인됨")
 }
 
 private struct CodexBrowserOption: Identifiable {
@@ -279,6 +383,23 @@ struct AgentLaunchContext {
   let environment: [String: String]
 }
 
+private let agentMenuDeclaredAppVersionTag = "v1.2.4"
+
+private struct AgentRuntimeReleaseBuildInfo: Codable {
+  let runtimeID: String
+  let sourceHash: String
+  let configurationHash: String
+  let sourceRevision: String?
+  let appVersion: String
+  let createdAt: Date
+}
+
+private struct AgentRuntimeReleaseHealthcheck: Codable {
+  let status: String
+  let checkedAt: Date
+  let checks: [String]
+}
+
 private struct BrowserLoginHelperResult: Sendable {
   let loggedIn: Bool
   let summary: String
@@ -287,6 +408,16 @@ private struct BrowserLoginHelperResult: Sendable {
 private struct PendingLoginState: Codable {
   let loginId: String
   let startedAt: Date
+}
+
+private struct AgentPreparedRuntimeSource {
+  let rootURL: URL
+  let sourceRevision: String?
+}
+
+private struct AgentPreparedCodexAdapterSource {
+  let sourceURL: URL
+  let sourceRevision: String?
 }
 
 struct AgentDiagnosticItem: Identifiable {
@@ -321,7 +452,6 @@ struct AgentBootstrapConfiguration: Codable {
   var watchdogIntervalMs: String
   var staleMs: String
   var autoStartAtLogin: Bool
-  var autoUpdateEnabled: Bool
   var authMode: String
 
   enum CodingKeys: String, CodingKey {
@@ -341,7 +471,6 @@ struct AgentBootstrapConfiguration: Codable {
     case watchdogIntervalMs
     case staleMs
     case autoStartAtLogin
-    case autoUpdateEnabled
     case authMode
   }
 
@@ -362,7 +491,6 @@ struct AgentBootstrapConfiguration: Codable {
     watchdogIntervalMs: String,
     staleMs: String,
     autoStartAtLogin: Bool,
-    autoUpdateEnabled: Bool,
     authMode: String
   ) {
     self.ownerLoginId = ownerLoginId
@@ -381,7 +509,6 @@ struct AgentBootstrapConfiguration: Codable {
     self.watchdogIntervalMs = watchdogIntervalMs
     self.staleMs = staleMs
     self.autoStartAtLogin = autoStartAtLogin
-    self.autoUpdateEnabled = autoUpdateEnabled
     self.authMode = authMode
   }
 
@@ -408,7 +535,6 @@ struct AgentBootstrapConfiguration: Codable {
       watchdogIntervalMs: "15000",
       staleMs: "120000",
       autoStartAtLogin: true,
-      autoUpdateEnabled: true,
       authMode: authModeDeviceAuth
     )
   }
@@ -440,7 +566,6 @@ struct AgentBootstrapConfiguration: Codable {
     watchdogIntervalMs = try container.decodeIfPresent(String.self, forKey: .watchdogIntervalMs) ?? defaults.watchdogIntervalMs
     staleMs = try container.decodeIfPresent(String.self, forKey: .staleMs) ?? defaults.staleMs
     autoStartAtLogin = try container.decodeIfPresent(Bool.self, forKey: .autoStartAtLogin) ?? defaults.autoStartAtLogin
-    autoUpdateEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoUpdateEnabled) ?? defaults.autoUpdateEnabled
     authMode = try container.decodeIfPresent(String.self, forKey: .authMode) ?? defaults.authMode
     normalize()
   }
@@ -463,7 +588,6 @@ struct AgentBootstrapConfiguration: Codable {
     try container.encode(watchdogIntervalMs, forKey: .watchdogIntervalMs)
     try container.encode(staleMs, forKey: .staleMs)
     try container.encode(autoStartAtLogin, forKey: .autoStartAtLogin)
-    try container.encode(autoUpdateEnabled, forKey: .autoUpdateEnabled)
     try container.encode(authMode, forKey: .authMode)
   }
 }
@@ -553,15 +677,24 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var bootstrapSummary = "환경설정 필요"
   @Published var codexLoginStatus = ""
   @Published var codexLoggedIn = false
+  @Published var codexLoginStatusResolved = false
   @Published var configurationSavedAt: Date? = nil
   @Published var lastBootstrapAt: Date? = nil
+  @Published var availableAppUpdate: AppUpdateDescriptor? = nil
+  @Published var availableRuntimeUpdate: RuntimeUpdateDescriptor? = nil
+  @Published var appUpdateCheckInProgress = false
+  @Published var appUpdateInProgress = false
+  @Published var lastAppUpdateCheckError: String? = nil
+  @Published var runtimeUpdateCheckInProgress = false
+  @Published var lastRuntimeUpdateCheckError: String? = nil
   private var automaticBootstrapAttempted = false
-  private var automaticUpdateAttempted = false
   private var pendingLoginRecoveryAttempted = false
   private var bootstrapTask: Task<Bool, Never>? = nil
+  var runtimeUpdateRevisionResolver: ((AgentBootstrapStore) async throws -> String?)? = nil
 
   init() {
     configuration = Self.loadConfiguration() ?? .default()
+    ensureCodexHomeReady()
     refreshDiagnostics()
   }
 
@@ -573,17 +706,66 @@ final class AgentBootstrapStore: ObservableObject {
   let authModeOptions = [AgentBootstrapConfiguration.authModeDeviceAuth]
 
   var appSupportURL: URL {
-    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-      .appendingPathComponent("OctOPAgentMenu", isDirectory: true) ?? URL(fileURLWithPath: NSHomeDirectory())
-      .appendingPathComponent("Library/Application Support/OctOPAgentMenu", isDirectory: true)
+    octopAgentMenuAppSupportURL()
   }
 
   var runtimeURL: URL {
     appSupportURL.appendingPathComponent("runtime", isDirectory: true)
   }
 
+  var runtimeReleasesURL: URL {
+    runtimeURL.appendingPathComponent("releases", isDirectory: true)
+  }
+
+  private var runtimeSourceCacheURL: URL {
+    runtimeURL.appendingPathComponent("source-cache", isDirectory: true)
+  }
+
+  private var runtimeRepositoryCacheURL: URL {
+    runtimeSourceCacheURL.appendingPathComponent("octop-repo", isDirectory: true)
+  }
+
+  private var runtimeRepositoryRemoteURL: String {
+    if let overrideValue = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_RUNTIME_REPO_URL"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !overrideValue.isEmpty {
+      return overrideValue
+    }
+
+    return "https://github.com/DiffColor/OctOP.git"
+  }
+
+  private var runtimeRepositoryBranch: String {
+    if let overrideValue = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !overrideValue.isEmpty {
+      return overrideValue
+    }
+
+    return "main"
+  }
+
+  var runtimeCurrentReleasePointerURL: URL {
+    runtimeURL.appendingPathComponent("current-release.txt")
+  }
+
+  var runtimePreviousReleasePointerURL: URL {
+    runtimeURL.appendingPathComponent("previous-release.txt")
+  }
+
+  private var legacyRuntimeWorkspaceURL: URL {
+    runtimeURL.appendingPathComponent("workspace", isDirectory: true)
+  }
+
   var codexHomeURL: URL {
-    appSupportURL.appendingPathComponent("codex-home", isDirectory: true)
+    if let overridePath = ProcessInfo.processInfo.environment["CODEX_HOME"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !overridePath.isEmpty {
+      return URL(fileURLWithPath: overridePath, isDirectory: true).standardizedFileURL
+    }
+
+    return URL(fileURLWithPath: NSString(string: "~/.codex").expandingTildeInPath, isDirectory: true)
+      .standardizedFileURL
   }
 
   var stateHomeURL: URL {
@@ -591,7 +773,11 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   var runtimeWorkspaceURL: URL {
-    runtimeURL.appendingPathComponent("workspace", isDirectory: true)
+    currentRuntimeReleaseURL() ?? legacyRuntimeWorkspaceURL
+  }
+
+  var activeRuntimeReleaseURL: URL? {
+    currentRuntimeReleaseURL()
   }
 
   var runtimeBinURL: URL {
@@ -623,7 +809,11 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   var runtimeVersionURL: URL {
-    runtimeURL.appendingPathComponent("version.txt")
+    runtimeWorkspaceURL.appendingPathComponent("version.txt")
+  }
+
+  private var runtimeReleaseRetentionLimit: Int {
+    3
   }
 
   var configurationURL: URL {
@@ -638,24 +828,22 @@ final class AgentBootstrapStore: ObservableObject {
     stateHomeURL.appendingPathComponent("bridge-id")
   }
 
-  var pendingServiceStartURL: URL {
-    appSupportURL.appendingPathComponent("pending-service-start")
-  }
-
   var pendingLoginURL: URL {
     appSupportURL.appendingPathComponent("pending-login.json")
   }
 
   var launchAgentURL: URL {
-    URL(fileURLWithPath: NSString(string: "~/Library/LaunchAgents/app.diffcolor.octop.agentmenu.launcher.plist").expandingTildeInPath)
+    if let overridePath = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_LAUNCH_AGENT_PATH"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !overridePath.isEmpty {
+      return URL(fileURLWithPath: overridePath)
+    }
+
+    return URL(fileURLWithPath: NSString(string: "~/Library/LaunchAgents/app.diffcolor.octop.agentmenu.launcher.plist").expandingTildeInPath)
   }
 
   var currentAppVersionTag: String {
-    if let rawValue = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
-      return Self.normalizeVersionTag(rawValue)
-    }
-
-    return "v0.0.0-dev"
+    agentMenuDeclaredAppVersionTag
   }
 
   var currentAppVersionDisplay: String {
@@ -670,55 +858,52 @@ final class AgentBootstrapStore: ObservableObject {
     URL(fileURLWithPath: appSupportURL.path + ".update-backup.staging", isDirectory: true)
   }
 
-  private var appUpdatePreservedItems: [(name: String, sourceURL: URL)] {
-    [
-      ("config.json", configurationURL),
-      ("bridge-id", bridgeIdURL),
-      ("pending-login.json", pendingLoginURL),
-      ("codex-home", codexHomeURL),
-      ("state", stateHomeURL)
-    ]
+  private var appUpdatePreservedAppSupportURL: URL {
+    appUpdateDataBackupURL.appendingPathComponent(appSupportURL.lastPathComponent, isDirectory: true)
+  }
+
+  var runtimeUpdateCheckIntervalSeconds: TimeInterval {
+    if let overrideValue = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_RUNTIME_UPDATE_CHECK_INTERVAL_SECONDS"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       let interval = TimeInterval(overrideValue),
+       interval >= 5 {
+      return interval
+    }
+
+    return 60
+  }
+
+  var hasAvailableRuntimeUpdate: Bool {
+    availableRuntimeUpdate != nil
+  }
+
+  var runtimeUpdateStatusDisplay: String? {
+    guard let availableRuntimeUpdate else {
+      return nil
+    }
+
+    return "업데이트 \(availableRuntimeUpdate.displayRevision)"
   }
 
   func restorePreservedAppDataIfNeeded(log: @escaping @MainActor (String) -> Void) {
     let fileManager = FileManager.default
-    guard fileManager.fileExists(atPath: appUpdateDataBackupURL.path) else {
+    guard fileManager.fileExists(atPath: appUpdatePreservedAppSupportURL.path),
+          !fileManager.fileExists(atPath: appSupportURL.path) else {
       return
     }
 
-    var restoredItems: [String] = []
-
-    for item in appUpdatePreservedItems {
-      let backupURL = appUpdateDataBackupURL.appendingPathComponent(item.name, isDirectory: false)
-      guard fileManager.fileExists(atPath: backupURL.path) else {
-        continue
-      }
-
-      guard !fileManager.fileExists(atPath: item.sourceURL.path) else {
-        continue
-      }
-
-      do {
-        try ensureDirectory(item.sourceURL.deletingLastPathComponent())
-        try fileManager.copyItem(at: backupURL, to: item.sourceURL)
-        restoredItems.append(item.name)
-      } catch {
-        log("업데이트 백업 복구 실패: \(item.name) - \(error.localizedDescription)")
-      }
-    }
-
-    if !restoredItems.isEmpty {
-      log("업데이트 백업에서 로그인 정보와 상태 데이터를 복구했습니다. items=\(restoredItems.joined(separator: ","))")
+    do {
+      try ensureDirectory(appSupportURL.deletingLastPathComponent())
+      try fileManager.copyItem(at: appUpdatePreservedAppSupportURL, to: appSupportURL)
+      log("업데이트 백업에서 앱 로컬 데이터를 복구했습니다.")
+    } catch {
+      log("업데이트 백업 복구 실패: \(error.localizedDescription)")
     }
   }
 
   func preserveAppDataForUpdate(log: @escaping @MainActor (String) -> Void) throws {
     let fileManager = FileManager.default
-    let existingItems = appUpdatePreservedItems.filter { item in
-      fileManager.fileExists(atPath: item.sourceURL.path)
-    }
-
-    guard !existingItems.isEmpty else {
+    guard fileManager.fileExists(atPath: appSupportURL.path) else {
       return
     }
 
@@ -730,17 +915,15 @@ final class AgentBootstrapStore: ObservableObject {
     try ensureDirectory(appUpdateDataBackupStagingURL)
 
     do {
-      for item in existingItems {
-        let backupURL = appUpdateDataBackupStagingURL.appendingPathComponent(item.name, isDirectory: false)
-        try fileManager.copyItem(at: item.sourceURL, to: backupURL)
-      }
+      let backupURL = appUpdateDataBackupStagingURL.appendingPathComponent(appSupportURL.lastPathComponent, isDirectory: true)
+      try fileManager.copyItem(at: appSupportURL, to: backupURL)
 
       if fileManager.fileExists(atPath: appUpdateDataBackupURL.path) {
         try fileManager.removeItem(at: appUpdateDataBackupURL)
       }
 
       try fileManager.moveItem(at: appUpdateDataBackupStagingURL, to: appUpdateDataBackupURL)
-      log("앱 업데이트에 대비해 로그인 정보와 상태 데이터를 백업했습니다.")
+      log("앱 업데이트에 대비해 앱 로컬 데이터 전체를 백업했습니다.")
     } catch {
       if fileManager.fileExists(atPath: appUpdateDataBackupStagingURL.path) {
         try? fileManager.removeItem(at: appUpdateDataBackupStagingURL)
@@ -781,86 +964,23 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
-  func terminateProcessesHoldingManagedPorts(log: @escaping @MainActor (String) -> Void) {
-    let ports = resolveManagedPorts()
-    guard !ports.isEmpty else {
-      return
+  private func ensureCodexHomeReady(log: ((String) -> Void)? = nil) {
+    do {
+      try ensureDirectory(codexHomeURL)
+    } catch {
+      log?("전역 Codex 저장소를 준비하지 못했습니다: \(error.localizedDescription)")
     }
-
-    let currentProcessId = ProcessInfo.processInfo.processIdentifier
-    var matchedProcessIds = Set<Int32>()
-
-    for port in ports {
-      for processId in listeningProcessIds(on: port) where processId > 0 && processId != currentProcessId {
-        matchedProcessIds.insert(processId)
-      }
-    }
-
-    guard !matchedProcessIds.isEmpty else {
-      return
-    }
-
-    let portText = ports.map(String.init).joined(separator: ",")
-    let processText = matchedProcessIds.sorted().map(String.init).joined(separator: ",")
-    log("앱 실행 전에 점유 중인 포트를 강제 종료합니다. ports=\(portText) pids=\(processText)")
-
-    for processId in matchedProcessIds {
-      kill(processId, SIGKILL)
-    }
-
-    let deadline = Date().addingTimeInterval(3)
-    while Date() < deadline {
-      if !matchedProcessIds.contains(where: isProcessAlive(_:)) {
-        break
-      }
-
-      usleep(100_000)
-    }
-
-    let aliveProcessIds = matchedProcessIds.filter(isProcessAlive(_:)).sorted()
-    if aliveProcessIds.isEmpty {
-      log("점유 포트 정리가 완료되었습니다. ports=\(portText)")
-      return
-    }
-
-    log("일부 점유 포트 프로세스가 종료되지 않았습니다. pids=\(aliveProcessIds.map(String.init).joined(separator: ","))")
-  }
-
-  private var preferredCodexHomeURL: URL {
-    let candidates = [
-      ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-      NSString(string: "~/.codex").expandingTildeInPath,
-      codexHomeURL.path
-    ]
-      .compactMap { value -> URL? in
-        guard let value, !value.isEmpty else {
-          return nil
-        }
-
-        return URL(fileURLWithPath: value, isDirectory: true)
-      }
-
-    if let authenticated = candidates.first(where: hasCodexAuthenticationData(at:)) {
-      return authenticated
-    }
-
-    if let existing = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-      return existing
-    }
-
-    return codexHomeURL
-  }
-
-  private func hasCodexAuthenticationData(at url: URL) -> Bool {
-    let authURL = url.appendingPathComponent("auth.json")
-    guard let data = try? Data(contentsOf: authURL), !data.isEmpty else {
-      return false
-    }
-
-    return true
   }
 
   var runtimeVersionDisplay: String {
+    if let activeRuntimeURL = currentRuntimeReleaseURL(),
+       let buildInfo = loadRuntimeBuildInfo(at: activeRuntimeURL),
+       let sourceRevision = buildInfo.sourceRevision?
+         .trimmingCharacters(in: .whitespacesAndNewlines),
+       !sourceRevision.isEmpty {
+      return String(sourceRevision.prefix(12))
+    }
+
     guard FileManager.default.fileExists(atPath: runtimeVersionURL.path),
           let value = try? String(contentsOf: runtimeVersionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
           !value.isEmpty else {
@@ -873,8 +993,6 @@ final class AgentBootstrapStore: ObservableObject {
   func saveConfiguration() {
     do {
       try persistConfiguration()
-      try ensureDirectory(runtimeURL)
-      try writeRuntimeEnvironmentFile()
       try installLaunchAgent(enabled: configuration.autoStartAtLogin, log: { _ in })
       configurationSavedAt = Date()
       bootstrapSummary = "설정을 저장했습니다."
@@ -899,9 +1017,38 @@ final class AgentBootstrapStore: ObservableObject {
       return
     }
 
+    ensureCodexHomeReady()
+    codexLoginStatusResolved = false
     let status = await currentCodexLoginStatus()
     codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
+    codexLoginStatusResolved = true
+  }
+
+  func refreshAvailableRuntimeUpdate(
+    log: @escaping @MainActor (String) -> Void
+  ) async {
+    guard !runtimeUpdateCheckInProgress else {
+      return
+    }
+
+    runtimeUpdateCheckInProgress = true
+    defer { runtimeUpdateCheckInProgress = false }
+
+    do {
+      let nextAvailableUpdate = try await resolveAvailableRuntimeUpdate()
+      let previousAvailableUpdate = availableRuntimeUpdate
+      availableRuntimeUpdate = nextAvailableUpdate
+      lastRuntimeUpdateCheckError = nil
+
+      if let nextAvailableUpdate,
+         previousAvailableUpdate?.sourceRevision != nextAvailableUpdate.sourceRevision {
+        log("런타임 업데이트 가능: \(nextAvailableUpdate.displayRevision)")
+      }
+    } catch {
+      lastRuntimeUpdateCheckError = error.localizedDescription
+      log("런타임 업데이트 확인 실패: \(error.localizedDescription)")
+    }
   }
 
   func recoverPendingLoginAfterRestart(log: @escaping @MainActor (String) -> Void) async {
@@ -910,6 +1057,7 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     pendingLoginRecoveryAttempted = true
+    ensureCodexHomeReady(log: log)
 
     guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path),
           let pendingLogin = loadPendingLogin(),
@@ -941,31 +1089,6 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
-  func ensureAppUpdatedIfNeeded(
-    log: @escaping @MainActor (String) -> Void,
-    force: Bool = false,
-    startServiceAfterUpdate: Bool = false
-  ) async -> Bool {
-    guard force || !automaticUpdateAttempted else {
-      return false
-    }
-
-    automaticUpdateAttempted = true
-    guard configuration.autoUpdateEnabled else {
-      log("자동 업데이트가 비활성화되어 앱 업데이트 확인을 건너뜁니다.")
-      return false
-    }
-
-    return await applyAppUpdateIfNeeded(
-      log: log,
-      beforeTermination: {
-        try self.preserveAppDataForUpdate(log: log)
-        if startServiceAfterUpdate {
-          try self.markPendingServiceStartAfterUpdate()
-        }
-      })
-  }
-
   func selectWorkspaceRoot() {
     let panel = NSOpenPanel()
     panel.allowsMultipleSelection = false
@@ -986,7 +1109,8 @@ final class AgentBootstrapStore: ObservableObject {
     let searchPaths = executableSearchPaths()
     let managedNodeExists = FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path)
     let managedCodexExists = FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path)
-    let managedWorkspaceExists = FileManager.default.fileExists(atPath: runtimeWorkspaceURL.path)
+    let activeRuntimeReleaseURL = currentRuntimeReleaseURL()
+    let managedWorkspaceExists = activeRuntimeReleaseURL != nil
     let launchAgentExists = FileManager.default.fileExists(atPath: launchAgentURL.path)
     let bundleBootstrapExists = bundleBootstrapURL != nil
 
@@ -994,7 +1118,7 @@ final class AgentBootstrapStore: ObservableObject {
       buildDiagnostic(
         title: "앱 런타임 워크스페이스",
         exists: managedWorkspaceExists,
-        okDetail: runtimeWorkspaceURL.path,
+        okDetail: activeRuntimeReleaseURL?.path ?? "",
         missingDetail: "아직 bootstrap 런타임이 스테이징되지 않았습니다."
       ),
       buildDiagnostic(
@@ -1037,7 +1161,7 @@ final class AgentBootstrapStore: ObservableObject {
       return true
     }
 
-    if !FileManager.default.fileExists(atPath: runtimeWorkspaceURL.path) {
+    guard let activeRuntimeURL = currentRuntimeReleaseURL() else {
       return true
     }
 
@@ -1049,14 +1173,17 @@ final class AgentBootstrapStore: ObservableObject {
       return true
     }
 
-    for requiredPath in requiredRuntimeWorkspacePaths() {
+    for requiredPath in requiredRuntimeWorkspacePaths(in: activeRuntimeURL) {
       if !FileManager.default.fileExists(atPath: requiredPath.path) {
         return true
       }
     }
 
-    let runtimeVersion = (try? String(contentsOf: runtimeVersionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
-    if Self.normalizeVersionTag(runtimeVersion) != currentAppVersionTag {
+    guard let buildInfo = loadRuntimeBuildInfo(at: activeRuntimeURL) else {
+      return true
+    }
+
+    if buildInfo.appVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return true
     }
 
@@ -1076,13 +1203,16 @@ final class AgentBootstrapStore: ObservableObject {
       throw AgentBootstrapError.codexUnavailable
     }
 
-    guard FileManager.default.fileExists(atPath: runtimeWorkspaceURL.path) else {
+    guard let activeRuntimeURL = currentRuntimeReleaseURL(),
+          FileManager.default.fileExists(atPath: activeRuntimeURL.path) else {
       throw AgentBootstrapError.bundleBootstrapUnavailable
     }
 
+    ensureCodexHomeReady()
+
     return AgentLaunchContext(
       nodeExecutableURL: runtimeNodeURL,
-      workspaceURL: runtimeWorkspaceURL,
+      workspaceURL: activeRuntimeURL,
       environment: buildLaunchEnvironment()
     )
   }
@@ -1092,12 +1222,14 @@ final class AgentBootstrapStore: ObservableObject {
       return await bootstrapTask.value
     }
 
+    ensureCodexHomeReady(log: log)
     await recoverPendingLoginAfterRestart(log: log)
 
     if !requiresBootstrap {
       let status = await currentCodexLoginStatus()
       codexLoggedIn = status.loggedIn
       codexLoginStatus = status.summary
+      codexLoginStatusResolved = true
       if status.loggedIn {
         bootstrapSummary = "실행 준비됨"
         refreshDiagnostics()
@@ -1124,6 +1256,7 @@ final class AgentBootstrapStore: ObservableObject {
       let status = await self.currentCodexLoginStatus()
       self.codexLoggedIn = status.loggedIn
       self.codexLoginStatus = status.summary
+      self.codexLoginStatusResolved = true
       self.bootstrapSummary = "환경 자동 설치 완료"
       self.lastBootstrapAt = Date()
       return true
@@ -1148,16 +1281,125 @@ final class AgentBootstrapStore: ObservableObject {
     NSWorkspace.shared.open(runtimeURL)
   }
 
-  private func performBootstrap(log: @escaping @MainActor (String) -> Void) async throws {
+  func prepareRuntimeReleaseForServiceStart(log: @escaping @MainActor (String) -> Void) async throws -> URL {
+    try await ensureBaseEnvironmentReady(log: log)
+    return try await prepareRuntimeCandidate(log: log)
+  }
+
+  @discardableResult
+  func activateRuntimeRelease(_ releaseURL: URL, log: @escaping @MainActor (String) -> Void) throws -> URL? {
+    let normalizedReleaseURL = releaseURL.standardizedFileURL
+    let currentReleaseURL = currentRuntimeReleaseURL()?.standardizedFileURL
+
+    guard currentReleaseURL != normalizedReleaseURL else {
+      return currentReleaseURL
+    }
+
+    if let currentReleaseURL {
+      try currentReleaseURL.path.write(
+        to: runtimePreviousReleasePointerURL,
+        atomically: true,
+        encoding: .utf8)
+    }
+
+    try normalizedReleaseURL.path.write(
+      to: runtimeCurrentReleasePointerURL,
+      atomically: true,
+      encoding: .utf8)
+
+    log("활성 서비스 런타임을 전환했습니다. release=\(normalizedReleaseURL.lastPathComponent)")
+    refreshDiagnostics()
+    return currentReleaseURL
+  }
+
+  func rollbackRuntimeRelease(to releaseURL: URL, log: @escaping @MainActor (String) -> Void) throws {
+    try releaseURL.standardizedFileURL.path.write(
+      to: runtimeCurrentReleasePointerURL,
+      atomically: true,
+      encoding: .utf8)
+    log("이전 서비스 런타임으로 롤백했습니다. release=\(releaseURL.lastPathComponent)")
+    refreshDiagnostics()
+  }
+
+  func recordRuntimeHealthcheck(
+    for releaseURL: URL,
+    status: String,
+    checks: [String],
+    log: @escaping @MainActor (String) -> Void
+  ) throws {
+    let normalizedReleaseURL = releaseURL.standardizedFileURL
+    let healthcheck = AgentRuntimeReleaseHealthcheck(
+      status: status,
+      checkedAt: Date(),
+      checks: checks
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(healthcheck)
+    try data.write(to: runtimeHealthcheckURL(for: normalizedReleaseURL), options: .atomic)
+    log("서비스 런타임 상태를 기록했습니다. release=\(normalizedReleaseURL.lastPathComponent) status=\(status)")
+  }
+
+  func cleanupStaleRuntimeReleases(log: @escaping @MainActor (String) -> Void) throws {
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: runtimeReleasesURL.path) else {
+      return
+    }
+
+    let currentReleaseURL = currentRuntimeReleaseURL()?.standardizedFileURL
+    let previousReleaseURL = previousRuntimeReleaseURL()?.standardizedFileURL
+    let releaseURLs = try fileManager.contentsOfDirectory(
+      at: runtimeReleasesURL,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options: [.skipsHiddenFiles]
+    ).filter {
+      let name = $0.lastPathComponent
+      return !name.hasPrefix(".staging-")
+    }
+
+    let sortedReleaseURLs = releaseURLs.sorted { left, right in
+      let leftDate = (try? left.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+      let rightDate = (try? right.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+      return leftDate > rightDate
+    }
+
+    var preservedPaths = Set<String>()
+    if let currentReleaseURL {
+      preservedPaths.insert(currentReleaseURL.path)
+    }
+    if let previousReleaseURL {
+      preservedPaths.insert(previousReleaseURL.path)
+    }
+
+    for releaseURL in sortedReleaseURLs.prefix(runtimeReleaseRetentionLimit) {
+      preservedPaths.insert(releaseURL.standardizedFileURL.path)
+    }
+
+    var removedReleaseIDs: [String] = []
+    for releaseURL in sortedReleaseURLs {
+      guard !preservedPaths.contains(releaseURL.standardizedFileURL.path) else {
+        continue
+      }
+
+      try fileManager.removeItem(at: releaseURL)
+      removedReleaseIDs.append(releaseURL.lastPathComponent)
+    }
+
+    if !removedReleaseIDs.isEmpty {
+      log("오래된 서비스 런타임 릴리즈를 정리했습니다. releases=\(removedReleaseIDs.joined(separator: ","))")
+    }
+  }
+
+  private func ensureBaseEnvironmentReady(log: @escaping @MainActor (String) -> Void) async throws {
     try persistConfiguration()
     try ensureDirectory(appSupportURL)
     try ensureDirectory(runtimeURL)
+    try ensureDirectory(runtimeReleasesURL)
     try ensureDirectory(runtimeBinURL)
     try ensureDirectory(codexHomeURL)
     try ensureDirectory(stateHomeURL)
-
-    log("bootstrap 런타임을 스테이징합니다.")
-    try stageBundledRuntime()
+    ensureCodexHomeReady(log: log)
 
     log("관리형 node를 준비합니다.")
     try await ensureManagedNode(log: log)
@@ -1165,13 +1407,11 @@ final class AgentBootstrapStore: ObservableObject {
     log("codex 실행 파일을 준비합니다.")
     try await ensureManagedCodex(log: log)
 
-    log("npm 의존성을 설치합니다.")
-    try await installRuntimeDependencies(log: log)
-
-    log("환경 설정 파일을 생성합니다.")
-    try writeRuntimeEnvironmentFile()
-
-    try writeRuntimeVersion()
+    if currentRuntimeReleaseURL() == nil {
+      let initialReleaseURL = try await prepareRuntimeCandidate(log: log)
+      try activateRuntimeRelease(initialReleaseURL, log: log)
+      try cleanupStaleRuntimeReleases(log: log)
+    }
 
     log("Codex 로그인 상태를 확인합니다.")
     try await ensureCodexLogin(log: log)
@@ -1180,16 +1420,447 @@ final class AgentBootstrapStore: ObservableObject {
     try installLaunchAgent(enabled: configuration.autoStartAtLogin, log: log)
   }
 
-  private func stageBundledRuntime() throws {
+  private func prepareRuntimeCandidate(log: @escaping @MainActor (String) -> Void) async throws -> URL {
+    try ensureDirectory(runtimeReleasesURL)
+    let preparedSource = try await prepareRuntimeSource(log: log)
+    defer {
+      try? FileManager.default.removeItem(at: preparedSource.rootURL)
+    }
+
+    let sourceHash = try computeRuntimeSourceHash(from: preparedSource.rootURL)
+    let configurationHash = try computeRuntimeConfigurationHash()
+    let runtimeRevisionLabel = preparedSource.sourceRevision?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .prefix(12)
+    let runtimeID = "runtime-\(runtimeRevisionLabel.map(String.init) ?? String(sourceHash.prefix(12)))-\(String(configurationHash.prefix(12)))"
+    let candidateReleaseURL = runtimeReleasesURL.appendingPathComponent(runtimeID, isDirectory: true)
+
+    if let activeReleaseURL = currentRuntimeReleaseURL(),
+       let buildInfo = loadRuntimeBuildInfo(at: activeReleaseURL),
+       buildInfo.sourceHash == sourceHash,
+       buildInfo.configurationHash == configurationHash {
+      return activeReleaseURL
+    }
+
+    if isPreparedRuntimeRelease(at: candidateReleaseURL, sourceHash: sourceHash, configurationHash: configurationHash) {
+      return candidateReleaseURL
+    }
+
+    let stagingURL = runtimeReleasesURL.appendingPathComponent(".staging-\(UUID().uuidString.lowercased())", isDirectory: true)
+    if FileManager.default.fileExists(atPath: stagingURL.path) {
+      try FileManager.default.removeItem(at: stagingURL)
+    }
+
+    log("새 서비스 런타임 후보를 준비합니다. release=\(runtimeID)")
+
+    do {
+      try copyDirectoryContents(from: preparedSource.rootURL, to: stagingURL)
+      try writeRuntimeEnvironmentFile(to: stagingURL)
+      try writeRuntimeVersion(to: stagingURL)
+      try writeRuntimeBuildInfo(
+        AgentRuntimeReleaseBuildInfo(
+          runtimeID: runtimeID,
+          sourceHash: sourceHash,
+          configurationHash: configurationHash,
+          sourceRevision: preparedSource.sourceRevision,
+          appVersion: currentAppVersionTag,
+          createdAt: Date()
+        ),
+        to: stagingURL
+      )
+
+      log("서비스 런타임 의존성을 설치합니다. release=\(runtimeID)")
+      try await installRuntimeDependencies(in: stagingURL, log: log)
+      try validatePreparedRuntimeRelease(
+        at: stagingURL,
+        sourceHash: sourceHash,
+        configurationHash: configurationHash,
+        log: log
+      )
+
+      if FileManager.default.fileExists(atPath: candidateReleaseURL.path) {
+        try FileManager.default.removeItem(at: candidateReleaseURL)
+      }
+
+      try FileManager.default.moveItem(at: stagingURL, to: candidateReleaseURL)
+      log("서비스 런타임 후보 준비가 완료되었습니다. release=\(runtimeID)")
+      return candidateReleaseURL
+    } catch {
+      try? FileManager.default.removeItem(at: stagingURL)
+      throw error
+    }
+  }
+
+  private func prepareRuntimeSource(log: @escaping @MainActor (String) -> Void) async throws -> AgentPreparedRuntimeSource {
     guard let sourceURL = bundleBootstrapURL else {
       throw AgentBootstrapError.bundleBootstrapUnavailable
     }
 
-    if FileManager.default.fileExists(atPath: runtimeWorkspaceURL.path) {
-      try FileManager.default.removeItem(at: runtimeWorkspaceURL)
+    try ensureDirectory(runtimeSourceCacheURL)
+
+    let stagingSourceURL = runtimeSourceCacheURL.appendingPathComponent(
+      ".source-\(UUID().uuidString.lowercased())",
+      isDirectory: true
+    )
+
+    if FileManager.default.fileExists(atPath: stagingSourceURL.path) {
+      try FileManager.default.removeItem(at: stagingSourceURL)
     }
 
-    try copyDirectoryContents(from: sourceURL, to: runtimeWorkspaceURL)
+    try copyDirectoryContents(from: sourceURL, to: stagingSourceURL)
+
+    if let preparedCodexAdapter = try await prepareLatestCodexAdapterSource(log: log) {
+      let targetURL = stagingSourceURL.appendingPathComponent("services/codex-adapter", isDirectory: true)
+      if FileManager.default.fileExists(atPath: targetURL.path) {
+        try FileManager.default.removeItem(at: targetURL)
+      }
+      try copyDirectoryContents(from: preparedCodexAdapter.sourceURL, to: targetURL)
+
+      if let sourceRevision = preparedCodexAdapter.sourceRevision,
+         !sourceRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        log("최신 codex-adapter 소스를 반영합니다. revision=\(sourceRevision)")
+      } else {
+        log("최신 codex-adapter 소스를 반영합니다.")
+      }
+
+      return AgentPreparedRuntimeSource(
+        rootURL: stagingSourceURL,
+        sourceRevision: preparedCodexAdapter.sourceRevision
+      )
+    }
+
+    log("원격 codex-adapter 소스를 가져오지 못해 앱 번들 런타임을 사용합니다.")
+    return AgentPreparedRuntimeSource(rootURL: stagingSourceURL, sourceRevision: nil)
+  }
+
+  private func prepareLatestCodexAdapterSource(
+    log: @escaping @MainActor (String) -> Void
+  ) async throws -> AgentPreparedCodexAdapterSource? {
+    if let overrideURL = codexAdapterSourceOverrideURL() {
+      return AgentPreparedCodexAdapterSource(
+        sourceURL: overrideURL,
+        sourceRevision: gitRepositoryURL(containing: overrideURL).flatMap { gitRevisionIfAvailable(at: $0) }
+      )
+    }
+
+    try ensureDirectory(runtimeSourceCacheURL)
+    let repositoryURL = runtimeRepositoryCacheURL
+    let branch = runtimeRepositoryBranch
+
+    if FileManager.default.fileExists(atPath: repositoryURL.appendingPathComponent(".git").path) {
+      do {
+        log("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
+        try await runProcess(
+          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+          arguments: ["-C", repositoryURL.path, "fetch", "--depth", "1", "origin", branch],
+          environment: buildProcessEnvironment(),
+          currentDirectoryURL: nil,
+          log: log
+        )
+        try await runProcess(
+          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+          arguments: ["-C", repositoryURL.path, "reset", "--hard", "FETCH_HEAD"],
+          environment: buildProcessEnvironment(),
+          currentDirectoryURL: nil,
+          log: log
+        )
+      } catch {
+        log("codex-adapter 최신화에 실패해 마지막 캐시를 사용합니다: \(error.localizedDescription)")
+      }
+    } else {
+      do {
+        log("codex-adapter 소스 저장소를 초기화합니다.")
+        try await runProcess(
+          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+          arguments: [
+            "clone", "--depth", "1",
+            "--branch", branch,
+            runtimeRepositoryRemoteURL,
+            repositoryURL.path
+          ],
+          environment: buildProcessEnvironment(),
+          currentDirectoryURL: nil,
+          log: log
+        )
+      } catch {
+        log("codex-adapter 저장소 초기화에 실패했습니다: \(error.localizedDescription)")
+        return nil
+      }
+    }
+
+    let codexAdapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+
+    guard FileManager.default.fileExists(atPath: codexAdapterURL.appendingPathComponent("package.json").path) else {
+      log("가져온 저장소에 codex-adapter가 없어 앱 번들 런타임을 사용합니다.")
+      return nil
+    }
+
+    return AgentPreparedCodexAdapterSource(
+      sourceURL: codexAdapterURL,
+      sourceRevision: gitRevisionIfAvailable(at: repositoryURL)
+    )
+  }
+
+  private func resolveAvailableRuntimeUpdate() async throws -> RuntimeUpdateDescriptor? {
+    guard let latestRevision = try await resolveLatestRuntimeSourceRevision()?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !latestRevision.isEmpty else {
+      return nil
+    }
+
+    let currentRevision = currentRuntimeSourceRevision()?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if let currentRevision, !currentRevision.isEmpty, currentRevision == latestRevision {
+      return nil
+    }
+
+    return RuntimeUpdateDescriptor(
+      sourceRevision: latestRevision,
+      currentSourceRevision: currentRevision
+    )
+  }
+
+  private func resolveLatestRuntimeSourceRevision() async throws -> String? {
+    if let runtimeUpdateRevisionResolver {
+      return try await runtimeUpdateRevisionResolver(self)
+    }
+
+    if let overrideURL = codexAdapterSourceOverrideURL(),
+       let repositoryURL = gitRepositoryURL(containing: overrideURL),
+       let revision = gitRevisionIfAvailable(at: repositoryURL) {
+      return revision
+    }
+
+    let process = Process()
+    let output = Pipe()
+    let error = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = [
+      "ls-remote",
+      runtimeRepositoryRemoteURL,
+      "refs/heads/\(runtimeRepositoryBranch)"
+    ]
+    process.standardOutput = output
+    process.standardError = error
+    process.environment = buildProcessEnvironment()
+
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+      let detail = String(
+        decoding: error.fileHandleForReading.readDataToEndOfFile(),
+        as: UTF8.self
+      ).trimmingCharacters(in: .whitespacesAndNewlines)
+      throw NSError(domain: "OctOPAgentMenu.RuntimeUpdate", code: Int(process.terminationStatus), userInfo: [
+        NSLocalizedDescriptionKey: detail.isEmpty ? "원격 codex-adapter 리비전을 조회하지 못했습니다." : detail
+      ])
+    }
+
+    let text = String(
+      decoding: output.fileHandleForReading.readDataToEndOfFile(),
+      as: UTF8.self
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    let revision = text.split(separator: "\t").first.map(String.init) ?? ""
+    return revision.isEmpty ? nil : revision
+  }
+
+  private func currentRuntimeSourceRevision() -> String? {
+    guard let activeRuntimeURL = currentRuntimeReleaseURL(),
+          let buildInfo = loadRuntimeBuildInfo(at: activeRuntimeURL),
+          let sourceRevision = buildInfo.sourceRevision?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+          !sourceRevision.isEmpty else {
+      return nil
+    }
+
+    return sourceRevision
+  }
+
+  private func codexAdapterSourceOverrideURL() -> URL? {
+    guard let overridePath = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !overridePath.isEmpty else {
+      return nil
+    }
+
+    let baseURL = URL(fileURLWithPath: overridePath, isDirectory: true).standardizedFileURL
+    let directPackageURL = baseURL.appendingPathComponent("package.json")
+    if FileManager.default.fileExists(atPath: directPackageURL.path) {
+      return baseURL
+    }
+
+    let nestedURL = baseURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+
+    guard FileManager.default.fileExists(atPath: nestedURL.appendingPathComponent("package.json").path) else {
+      return nil
+    }
+
+    return nestedURL
+  }
+
+  private func gitRevisionIfAvailable(at repositoryURL: URL) -> String? {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["-C", repositoryURL.path, "rev-parse", "HEAD"]
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+      return nil
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+  }
+
+  private func gitRepositoryURL(containing url: URL) -> URL? {
+    var candidate = url.standardizedFileURL
+
+    while candidate.path != "/" {
+      if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
+        return candidate
+      }
+
+      let parent = candidate.deletingLastPathComponent()
+      if parent.path == candidate.path {
+        break
+      }
+      candidate = parent
+    }
+
+    return nil
+  }
+
+  private func currentRuntimeReleaseURL() -> URL? {
+    guard FileManager.default.fileExists(atPath: runtimeCurrentReleasePointerURL.path),
+          let rawValue = try? String(contentsOf: runtimeCurrentReleasePointerURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+          !rawValue.isEmpty else {
+      return nil
+    }
+
+    let url = URL(fileURLWithPath: rawValue, isDirectory: true).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      return nil
+    }
+
+    return url
+  }
+
+  private func previousRuntimeReleaseURL() -> URL? {
+    guard FileManager.default.fileExists(atPath: runtimePreviousReleasePointerURL.path),
+          let rawValue = try? String(contentsOf: runtimePreviousReleasePointerURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+          !rawValue.isEmpty else {
+      return nil
+    }
+
+    let url = URL(fileURLWithPath: rawValue, isDirectory: true).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      return nil
+    }
+
+    return url
+  }
+
+  private func runtimeBuildInfoURL(for releaseURL: URL) -> URL {
+    releaseURL.appendingPathComponent("build-info.json")
+  }
+
+  private func runtimeHealthcheckURL(for releaseURL: URL) -> URL {
+    releaseURL.appendingPathComponent("healthcheck.json")
+  }
+
+  private func writeRuntimeBuildInfo(_ buildInfo: AgentRuntimeReleaseBuildInfo, to releaseURL: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(buildInfo)
+    try data.write(to: runtimeBuildInfoURL(for: releaseURL), options: .atomic)
+  }
+
+  private func loadRuntimeBuildInfo(at releaseURL: URL) -> AgentRuntimeReleaseBuildInfo? {
+    guard let data = try? Data(contentsOf: runtimeBuildInfoURL(for: releaseURL)) else {
+      return nil
+    }
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try? decoder.decode(AgentRuntimeReleaseBuildInfo.self, from: data)
+  }
+
+  private func isPreparedRuntimeRelease(at releaseURL: URL, sourceHash: String, configurationHash: String) -> Bool {
+    guard FileManager.default.fileExists(atPath: releaseURL.path),
+          let buildInfo = loadRuntimeBuildInfo(at: releaseURL),
+          buildInfo.sourceHash == sourceHash,
+          buildInfo.configurationHash == configurationHash else {
+      return false
+    }
+
+    return requiredRuntimeValidationPaths(in: releaseURL).allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+  }
+
+  private func computeRuntimeSourceHash(from sourceURL: URL) throws -> String {
+    var fileURLs: [URL] = []
+    try collectRuntimeSourceFiles(at: sourceURL, into: &fileURLs)
+
+    let digest = SHA256.hash(data: fileURLs.reduce(into: Data()) { data, fileURL in
+      let relativePath = fileURL.path.replacingOccurrences(of: sourceURL.path + "/", with: "")
+      data.append(Data(relativePath.utf8))
+      data.append(0)
+      if let fileData = try? Data(contentsOf: fileURL) {
+        data.append(fileData)
+      }
+      data.append(0)
+    })
+
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func collectRuntimeSourceFiles(at rootURL: URL, into results: inout [URL]) throws {
+    let entries = try FileManager.default.contentsOfDirectory(
+      at: rootURL,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ).sorted { $0.path < $1.path }
+
+    for entry in entries {
+      let isDirectory = (try entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+      if isDirectory {
+        try collectRuntimeSourceFiles(at: entry, into: &results)
+      } else {
+        results.append(entry)
+      }
+    }
+  }
+
+  private func computeRuntimeConfigurationHash() throws -> String {
+    let envText = renderRuntimeEnvironmentText()
+    let digest = SHA256.hash(data: Data(envText.utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func performBootstrap(log: @escaping @MainActor (String) -> Void) async throws {
+    try await ensureBaseEnvironmentReady(log: log)
+
+    let latestReleaseURL = try await prepareRuntimeCandidate(log: log)
+    try activateRuntimeRelease(latestReleaseURL, log: log)
+    try cleanupStaleRuntimeReleases(log: log)
   }
 
   private func ensureManagedNode(log: @escaping @MainActor (String) -> Void) async throws {
@@ -1250,12 +1921,12 @@ final class AgentBootstrapStore: ObservableObject {
     try importCodexBinary(from: installedCodex)
   }
 
-  private func installRuntimeDependencies(log: @escaping @MainActor (String) -> Void) async throws {
+  private func installRuntimeDependencies(in runtimeReleaseURL: URL, log: @escaping @MainActor (String) -> Void) async throws {
     guard FileManager.default.fileExists(atPath: runtimeNpmCliURL.path) else {
       throw AgentBootstrapError.npmUnavailable
     }
 
-    let packageURL = runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/package.json")
+    let packageURL = runtimeReleaseURL.appendingPathComponent("services/codex-adapter/package.json")
     guard FileManager.default.fileExists(atPath: packageURL.path) else {
       throw AgentBootstrapError.bundleBootstrapUnavailable
     }
@@ -1264,15 +1935,24 @@ final class AgentBootstrapStore: ObservableObject {
       executableURL: runtimeNodeURL,
       arguments: [runtimeNpmCliURL.path, "install", "--omit=dev"],
       environment: buildProcessEnvironment(),
-      currentDirectoryURL: runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter", isDirectory: true),
+      currentDirectoryURL: runtimeReleaseURL.appendingPathComponent("services/codex-adapter", isDirectory: true),
       log: log
     )
   }
 
   private func ensureCodexLogin(log: @escaping @MainActor (String) -> Void) async throws {
+    if ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_SKIP_LOGIN_CHECKS"] == "1" {
+      codexLoggedIn = true
+      codexLoginStatus = "테스트 로그인 확인 건너뜀"
+      codexLoginStatusResolved = true
+      log("테스트 환경에서 Codex 로그인 확인을 건너뜁니다.")
+      return
+    }
+
     let status = await currentCodexLoginStatus()
     codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
+    codexLoginStatusResolved = true
     if status.loggedIn {
       log("Codex 로그인 상태를 재사용합니다.")
       return
@@ -1285,6 +1965,7 @@ final class AgentBootstrapStore: ObservableObject {
   func reloginCodex(log: @escaping @MainActor (String) -> Void) async {
     bootstrapInProgress = true
     codexLoginInProgress = true
+    codexLoginStatusResolved = false
     bootstrapSummary = "Codex 계정 전환 중"
 
     do {
@@ -1297,12 +1978,14 @@ final class AgentBootstrapStore: ObservableObject {
 
     bootstrapInProgress = false
     codexLoginInProgress = false
+    codexLoginStatusResolved = true
     refreshDiagnostics()
   }
 
   func loginCodex(log: @escaping @MainActor (String) -> Void) async {
     bootstrapInProgress = true
     codexLoginInProgress = true
+    codexLoginStatusResolved = false
     bootstrapSummary = "Codex 로그인 진행 중"
 
     do {
@@ -1315,17 +1998,27 @@ final class AgentBootstrapStore: ObservableObject {
 
     bootstrapInProgress = false
     codexLoginInProgress = false
+    codexLoginStatusResolved = true
     refreshDiagnostics()
   }
 
-  private func writeRuntimeEnvironmentFile() throws {
+  func handleCodexLoginAction(log: @escaping @MainActor (String) -> Void) async {
+    await refreshCodexLoginStatus()
+    if codexLoggedIn {
+      await reloginCodex(log: log)
+    } else {
+      await loginCodex(log: log)
+    }
+  }
+
+  private func renderRuntimeEnvironmentText() -> String {
     let workspaceRoots = configuration.workspaceRoots
       .split(separator: ",")
       .map { NSString(string: String($0)).expandingTildeInPath.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
       .joined(separator: ",")
 
-    let envText = [
+    return [
       "OCTOP_BRIDGE_OWNER_LOGIN_ID=\(configuration.ownerLoginId)",
       "OCTOP_BRIDGE_ID=\(resolveOrCreateBridgeId())",
       "OCTOP_BRIDGE_DEVICE_NAME=\(configuration.deviceName)",
@@ -1341,17 +2034,27 @@ final class AgentBootstrapStore: ObservableObject {
       "OCTOP_CODEX_REASONING_EFFORT=\(configuration.reasoningEffort)",
       "OCTOP_CODEX_APPROVAL_POLICY=\(configuration.approvalPolicy)",
       "OCTOP_CODEX_SANDBOX=\(configuration.sandboxMode)",
-      "CODEX_HOME=\(preferredCodexHomeURL.path)",
+      "CODEX_HOME=\(codexHomeURL.path)",
       "OCTOP_STATE_HOME=\(stateHomeURL.path)",
       "OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS=\(configuration.watchdogIntervalMs)",
       "OCTOP_RUNNING_ISSUE_STALE_MS=\(configuration.staleMs)"
     ].joined(separator: "\n") + "\n"
-
-    try envText.write(to: runtimeEnvURL, atomically: true, encoding: .utf8)
   }
 
-  private func writeRuntimeVersion() throws {
-    try currentAppVersionTag.write(to: runtimeVersionURL, atomically: true, encoding: .utf8)
+  private func writeRuntimeEnvironmentFile(to runtimeReleaseURL: URL) throws {
+    try renderRuntimeEnvironmentText().write(
+      to: runtimeReleaseURL.appendingPathComponent(".env.local"),
+      atomically: true,
+      encoding: .utf8
+    )
+  }
+
+  private func writeRuntimeVersion(to runtimeReleaseURL: URL) throws {
+    try currentAppVersionTag.write(
+      to: runtimeReleaseURL.appendingPathComponent("version.txt"),
+      atomically: true,
+      encoding: .utf8
+    )
   }
 
   private func installLaunchAgent(enabled: Bool, log: @escaping @MainActor (String) -> Void) throws {
@@ -1589,20 +2292,6 @@ final class AgentBootstrapStore: ObservableObject {
     try bridgeId.write(to: legacyBridgeIdURL, atomically: true, encoding: .utf8)
   }
 
-  func markPendingServiceStartAfterUpdate() throws {
-    try ensureDirectory(appSupportURL)
-    try "1".write(to: pendingServiceStartURL, atomically: true, encoding: .utf8)
-  }
-
-  func consumePendingServiceStartAfterUpdate() -> Bool {
-    guard FileManager.default.fileExists(atPath: pendingServiceStartURL.path) else {
-      return false
-    }
-
-    try? FileManager.default.removeItem(at: pendingServiceStartURL)
-    return true
-  }
-
   private func persistConfiguration() throws {
     try ensureDirectory(appSupportURL)
     let encoder = JSONEncoder()
@@ -1641,7 +2330,7 @@ final class AgentBootstrapStore: ObservableObject {
       "OCTOP_CODEX_REASONING_EFFORT": configuration.reasoningEffort,
       "OCTOP_CODEX_APPROVAL_POLICY": configuration.approvalPolicy,
       "OCTOP_CODEX_SANDBOX": configuration.sandboxMode,
-      "CODEX_HOME": preferredCodexHomeURL.path,
+      "CODEX_HOME": codexHomeURL.path,
       "OCTOP_STATE_HOME": stateHomeURL.path,
       "OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS": configuration.watchdogIntervalMs,
       "OCTOP_RUNNING_ISSUE_STALE_MS": configuration.staleMs
@@ -1662,81 +2351,6 @@ final class AgentBootstrapStore: ObservableObject {
     "\(shellEscape(runtimeCodexURL.path)) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
   }
 
-  private func resolveManagedPorts() -> [Int] {
-    var ports: [Int] = []
-
-    if let bridgePort = resolveNumericPort(configuration.bridgePort) {
-      ports.append(bridgePort)
-    }
-
-    if let appServerPort = resolvePortFromWebSocketURL(configuration.appServerWsUrl), !ports.contains(appServerPort) {
-      ports.append(appServerPort)
-    }
-
-    return ports
-  }
-
-  private func resolveNumericPort(_ rawValue: String) -> Int? {
-    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let port = Int(trimmed), (1...65535).contains(port) else {
-      return nil
-    }
-
-    return port
-  }
-
-  private func resolvePortFromWebSocketURL(_ rawValue: String) -> Int? {
-    guard let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-      return nil
-    }
-
-    if let port = url.port {
-      return (1...65535).contains(port) ? port : nil
-    }
-
-    switch url.scheme?.lowercased() {
-    case "ws":
-      return 80
-    case "wss":
-      return 443
-    default:
-      return nil
-    }
-  }
-
-  private func listeningProcessIds(on port: Int) -> [Int32] {
-    let process = Process()
-    let output = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-    process.arguments = ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"]
-    process.standardOutput = output
-    process.standardError = Pipe()
-
-    do {
-      try process.run()
-      process.waitUntilExit()
-    } catch {
-      return []
-    }
-
-    guard process.terminationStatus == 0 else {
-      return []
-    }
-
-    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-    return text
-      .split(whereSeparator: \.isNewline)
-      .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-  }
-
-  private func isProcessAlive(_ pid: Int32) -> Bool {
-    if kill(pid, 0) == 0 {
-      return true
-    }
-
-    return errno == EPERM
-  }
-
   private func withCodexAppServerSession<T: Sendable>(
     log: (@MainActor (String) -> Void)? = nil,
     operation: @escaping (CodexAppServerSession) async throws -> T
@@ -1744,7 +2358,7 @@ final class AgentBootstrapStore: ObservableObject {
     let session = try CodexAppServerSession(
       executableURL: runtimeCodexURL,
       environment: buildLaunchEnvironment(),
-      currentDirectoryURL: runtimeWorkspaceURL,
+      currentDirectoryURL: currentRuntimeReleaseURL() ?? appSupportURL,
       log: { line in
         guard let log else { return }
         Task { @MainActor in
@@ -1774,6 +2388,10 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func currentCodexLoginStatus() async -> (loggedIn: Bool, summary: String) {
+    if let localStatus = localCodexAuthStoreStatus(at: codexHomeURL) {
+      return (localStatus.loggedIn, localStatus.summary)
+    }
+
     guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
       return (false, "Codex 미설치")
     }
@@ -1808,6 +2426,7 @@ final class AgentBootstrapStore: ObservableObject {
     AgentLoginDebugLog.write("account read after login: summary=\(accountStatus.summary)")
     codexLoggedIn = accountStatus.loggedIn
     codexLoginStatus = accountStatus.summary
+    codexLoginStatusResolved = true
   }
 
   private func logoutCodex(log: @escaping @MainActor (String) -> Void) async throws {
@@ -2017,7 +2636,13 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private var bundleBootstrapURL: URL? {
-    Bundle.module.resourceURL?.appendingPathComponent("bootstrap", isDirectory: true)
+    if let overridePath = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_BOOTSTRAP_PATH"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !overridePath.isEmpty {
+      return URL(fileURLWithPath: overridePath, isDirectory: true).standardizedFileURL
+    }
+
+    return Bundle.module.resourceURL?.appendingPathComponent("bootstrap", isDirectory: true)
   }
 
   private func detectCodexSource() -> URL? {
@@ -2035,16 +2660,62 @@ final class AgentBootstrapStore: ObservableObject {
     return resolveExecutable(named: "codex", searchPaths: executableSearchPaths())
   }
 
-  private func requiredRuntimeWorkspacePaths() -> [URL] {
+  private func requiredRuntimeWorkspacePaths(in runtimeReleaseURL: URL) -> [URL] {
     [
-      runtimeWorkspaceURL.appendingPathComponent("scripts/run-local-agent.mjs"),
-      runtimeWorkspaceURL.appendingPathComponent("scripts/run-bridge.mjs"),
-      runtimeWorkspaceURL.appendingPathComponent("scripts/shared-env.mjs"),
-      runtimeWorkspaceURL.appendingPathComponent("scripts/login-via-app-server.mjs"),
-      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/package.json"),
-      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/index.js"),
-      runtimeWorkspaceURL.appendingPathComponent("services/codex-adapter/src/domain.js")
+      runtimeReleaseURL.appendingPathComponent("scripts/run-local-agent.mjs"),
+      runtimeReleaseURL.appendingPathComponent("scripts/run-bridge.mjs"),
+      runtimeReleaseURL.appendingPathComponent("scripts/shared-env.mjs"),
+      runtimeReleaseURL.appendingPathComponent("scripts/login-via-app-server.mjs"),
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/package.json"),
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/index.js"),
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/domain.js")
     ]
+  }
+
+  private func requiredRuntimeValidationPaths(in runtimeReleaseURL: URL) -> [URL] {
+    requiredRuntimeWorkspacePaths(in: runtimeReleaseURL) + [
+      runtimeReleaseURL.appendingPathComponent(".env.local"),
+      runtimeReleaseURL.appendingPathComponent("version.txt"),
+      runtimeReleaseURL.appendingPathComponent("build-info.json"),
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/package-lock.json")
+    ]
+  }
+
+  private func validatePreparedRuntimeRelease(
+    at releaseURL: URL,
+    sourceHash: String,
+    configurationHash: String,
+    log: @escaping @MainActor (String) -> Void
+  ) throws {
+    let requiredPaths = requiredRuntimeValidationPaths(in: releaseURL)
+    let missingPaths = requiredPaths.filter { !FileManager.default.fileExists(atPath: $0.path) }
+
+    guard missingPaths.isEmpty else {
+      let labels = missingPaths.map(\.lastPathComponent).joined(separator: ", ")
+      throw NSError(
+        domain: "OctOPAgentMenu.Runtime",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "서비스 런타임 검증 실패: 필수 파일 누락 (\(labels))"]
+      )
+    }
+
+    guard let buildInfo = loadRuntimeBuildInfo(at: releaseURL),
+          buildInfo.sourceHash == sourceHash,
+          buildInfo.configurationHash == configurationHash else {
+      throw NSError(
+        domain: "OctOPAgentMenu.Runtime",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "서비스 런타임 검증 실패: build-info.json 내용이 예상과 다릅니다."]
+      )
+    }
+
+    let checks = [
+      "필수 엔트리 확인 완료",
+      "codex-adapter 의존성 설치 확인 완료",
+      "런타임 환경 파일 생성 확인 완료",
+      "버전 메타데이터 생성 확인 완료"
+    ]
+    try recordRuntimeHealthcheck(for: releaseURL, status: "prepared", checks: checks, log: log)
   }
 
   private func executableSearchPaths() -> [String] {
@@ -2200,7 +2871,6 @@ struct AgentSetupWindow: View {
           settingField("Watchdog (ms)", text: $bootstrap.configuration.watchdogIntervalMs)
           settingField("Stale (ms)", text: $bootstrap.configuration.staleMs)
           toggleField("로그인 시 자동 실행", isOn: $bootstrap.configuration.autoStartAtLogin)
-          toggleField("자동 업데이트", isOn: $bootstrap.configuration.autoUpdateEnabled)
         }
 
         HStack {
@@ -2357,7 +3027,11 @@ struct AgentSetupWindow: View {
 
       HStack(alignment: .center, spacing: 14) {
         Group {
-          if bootstrap.codexLoggedIn,
+          if !bootstrap.codexLoginStatusResolved {
+            Text("로그인 상태 확인 중...")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          } else if bootstrap.codexLoggedIn,
              !bootstrap.codexLoginStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Text(bootstrap.codexLoginStatus)
               .font(.footnote)
@@ -2376,7 +3050,14 @@ struct AgentSetupWindow: View {
         Spacer(minLength: 0)
 
         Group {
-          if bootstrap.codexLoggedIn {
+          if !bootstrap.codexLoginStatusResolved {
+            Button {
+            } label: {
+              Text("확인 중")
+                .frame(minWidth: 112)
+            }
+            .buttonStyle(.bordered)
+          } else if bootstrap.codexLoggedIn {
             Button {
               onCodexLogin()
             } label: {
@@ -2394,7 +3075,7 @@ struct AgentSetupWindow: View {
             .buttonStyle(.borderedProminent)
           }
         }
-        .disabled(bootstrap.codexLoginInProgress)
+        .disabled(bootstrap.codexLoginInProgress || !bootstrap.codexLoginStatusResolved)
       }
     }
   }

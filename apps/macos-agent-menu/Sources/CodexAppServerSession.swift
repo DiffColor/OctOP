@@ -257,7 +257,7 @@ final class CodexAppServerSession: @unchecked Sendable {
 
     try process.run()
 
-    stdoutTask = Task { [weak self] in
+    stdoutTask = Task.detached { [weak self] in
       guard let self else { return }
       do {
         for try await line in self.standardOutput.bytes.lines {
@@ -268,7 +268,7 @@ final class CodexAppServerSession: @unchecked Sendable {
       }
     }
 
-    stderrTask = Task {
+    stderrTask = Task.detached {
       do {
         for try await line in self.standardError.bytes.lines {
           let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)

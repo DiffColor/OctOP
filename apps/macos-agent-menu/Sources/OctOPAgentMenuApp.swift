@@ -52,28 +52,41 @@ final class AgentMenuModel: ObservableObject {
     }
   }
 
-  func start(using bootstrap: AgentBootstrapStore) {
-    let runtimeProcesses = findRuntimeProcesses()
-
-    if !runtimeProcesses.isEmpty {
-      processId = runtimeProcesses.first?.pid
-      runtimeState = .running
-      lastUpdatedAt = Date()
-      appendLog("기존 local-agent 런타임 프로세스를 재사용합니다.")
-      return
-    }
-
-    guard process == nil else {
-      appendLog("local-agent가 이미 실행 중입니다.")
-      return
-    }
-
+  func start(using bootstrap: AgentBootstrapStore) async {
     runtimeState = .starting
     lastError = nil
     appendLog("서비스 시작을 요청합니다.")
 
-    let launchContext: AgentLaunchContext
+    let preparedReleaseURL: URL
     do {
+      preparedReleaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: appendInstallerLog)
+    } catch {
+      runtimeState = .failed
+      lastError = error.localizedDescription
+      lastUpdatedAt = Date()
+      appendLog("local-agent 시작 실패: \(error.localizedDescription)")
+      return
+    }
+
+    let lingeringProcesses = findManagedProcesses()
+    if !lingeringProcesses.isEmpty {
+      appendLog("기존 서비스 프로세스를 먼저 정리합니다.")
+      terminateManagedProcesses(lingeringProcesses)
+    }
+
+    let stopValidated = await validateManagedProcessShutdown(using: bootstrap)
+    guard stopValidated else {
+      runtimeState = .failed
+      lastError = "기존 서비스 종료 검증에 실패했습니다."
+      lastUpdatedAt = Date()
+      appendLog("기존 서비스 종료 검증에 실패해 새 런타임 전환을 중단합니다.")
+      return
+    }
+
+    let launchContext: AgentLaunchContext
+    let previousReleaseURL: URL?
+    do {
+      previousReleaseURL = try bootstrap.activateRuntimeRelease(preparedReleaseURL, log: appendInstallerLog)
       launchContext = try bootstrap.makeLaunchContext()
     } catch {
       runtimeState = .failed
@@ -82,6 +95,126 @@ final class AgentMenuModel: ObservableObject {
       appendLog("local-agent 시작 실패: \(error.localizedDescription)")
       return
     }
+
+    do {
+      try launchService(with: launchContext)
+      let launchValidated = await validateServiceLaunch(using: bootstrap)
+
+      if !launchValidated,
+         let previousReleaseURL,
+         previousReleaseURL.standardizedFileURL != preparedReleaseURL.standardizedFileURL {
+        appendLog("새 서비스 런타임 기동 확인에 실패해 이전 런타임으로 롤백합니다.")
+        terminateManagedProcesses(findManagedProcesses())
+        cleanupPipes()
+        process = nil
+        processId = nil
+
+        try bootstrap.rollbackRuntimeRelease(to: previousReleaseURL, log: appendInstallerLog)
+        let rollbackLaunchContext = try bootstrap.makeLaunchContext()
+        try launchService(with: rollbackLaunchContext)
+        _ = await validateServiceLaunch(using: bootstrap)
+      }
+
+      if runtimeState == .running {
+        try? bootstrap.cleanupStaleRuntimeReleases(log: appendInstallerLog)
+      }
+    } catch {
+      runtimeState = .failed
+      lastError = error.localizedDescription
+      lastUpdatedAt = Date()
+      appendLog("local-agent 시작 실패: \(error.localizedDescription)")
+      cleanupPipes()
+      process = nil
+      processId = nil
+    }
+  }
+
+  func stop() {
+    let managedProcesses = findManagedProcesses()
+
+    guard !managedProcesses.isEmpty || process != nil else {
+      runtimeState = .stopped
+      appendLog("중지할 서비스가 없습니다.")
+      return
+    }
+
+    runtimeState = .stopping
+    processId = managedProcesses.first?.pid ?? process?.processIdentifier
+    lastUpdatedAt = Date()
+    appendLog("서비스 정지를 요청합니다.")
+
+    terminateManagedProcesses(managedProcesses)
+    cleanupPipes()
+    process = nil
+    processId = nil
+    runtimeState = .stopped
+    lastUpdatedAt = Date()
+    appendLog("서비스 프로세스 정리가 완료되었습니다.")
+  }
+
+  func waitUntilStopped(timeoutNanoseconds: UInt64 = 5_000_000_000) async {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      refreshRuntimeStateFromSystem()
+      if !isRunning {
+        return
+      }
+
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    refreshRuntimeStateFromSystem()
+  }
+
+  func handleApplicationWillTerminate() {
+    let managedProcesses = findManagedProcesses()
+    if !managedProcesses.isEmpty {
+      appendLog("앱 종료에 맞춰 서비스와 보조 세션을 정리합니다.")
+      terminateManagedProcesses(managedProcesses)
+    }
+  }
+
+  func refreshRuntimeStateFromSystem(logDetection: Bool = false) {
+    if let managedProcess = process, managedProcess.isRunning {
+      processId = managedProcess.processIdentifier
+      runtimeState = .running
+      lastUpdatedAt = Date()
+      return
+    }
+
+    let serviceProcesses = findServiceProcesses()
+
+    guard let existingProcessId = serviceProcesses.first(where: { $0.command.contains("run-local-agent.mjs") })?.pid ?? serviceProcesses.first?.pid else {
+      processId = nil
+      if runtimeState != .failed {
+        runtimeState = .stopped
+      }
+      lastUpdatedAt = Date()
+      return
+    }
+
+    let shouldLog = logDetection && processId != existingProcessId
+    processId = existingProcessId
+    runtimeState = .running
+    lastUpdatedAt = Date()
+
+    if shouldLog {
+      appendLog("기존 서비스 프로세스를 감지했습니다. pid=\(existingProcessId)")
+    }
+  }
+
+  func clearLogs() {
+    lines.removeAll(keepingCapacity: true)
+    appendLog("로그를 초기화했습니다.")
+  }
+
+  func appendInstallerLog(_ message: String) {
+    appendLog(message)
+  }
+
+  private func launchService(with launchContext: AgentLaunchContext) throws {
+    cleanupPipes()
 
     let nextProcess = Process()
     let stdout = Pipe()
@@ -117,148 +250,74 @@ final class AgentMenuModel: ObservableObject {
       }
     }
 
-    do {
-      try nextProcess.run()
-      process = nextProcess
-      stdoutPipe = stdout
-      stderrPipe = stderr
-      processId = nextProcess.processIdentifier
-      runtimeState = .running
-      lastUpdatedAt = Date()
-      appendLog("서비스가 시작되었습니다. pid=\(nextProcess.processIdentifier)")
-    } catch {
-      runtimeState = .failed
-      lastError = error.localizedDescription
-      lastUpdatedAt = Date()
-      appendLog("local-agent 시작 실패: \(error.localizedDescription)")
-      cleanupPipes()
-      process = nil
-      processId = nil
-    }
-  }
-
-  func stop() {
-    if process == nil, let existingProcessId = findExistingAgentProcessId() {
-      runtimeState = .stopping
-      processId = existingProcessId
-      lastUpdatedAt = Date()
-      appendLog("기존 local-agent 프로세스 중지를 요청합니다. pid=\(existingProcessId)")
-      terminateProcess(existingProcessId)
-      return
-    }
-
-    if process == nil {
-      let staleProcesses = findLingeringRuntimeProcesses()
-
-      if !staleProcesses.isEmpty {
-        runtimeState = .stopping
-        processId = staleProcesses.first?.pid
-        lastUpdatedAt = Date()
-        appendLog("잔여 local-agent 런타임 프로세스를 정리합니다.")
-        terminateRuntimeProcesses(staleProcesses)
-        runtimeState = .stopped
-        processId = nil
-        lastUpdatedAt = Date()
-        appendLog("잔여 local-agent 런타임 프로세스 정리가 완료되었습니다.")
-        return
-      }
-
-      runtimeState = .stopped
-      appendLog("중지할 서비스가 없습니다.")
-      return
-    }
-
-    guard let process else {
-      return
-    }
-
-    runtimeState = .stopping
-    lastUpdatedAt = Date()
-    appendLog("서비스 정지를 요청합니다.")
-
-    if process.isRunning {
-      terminateProcess(process.processIdentifier)
-    } else {
-      handleTermination(process)
-    }
-  }
-
-  func waitUntilStopped(timeoutNanoseconds: UInt64 = 5_000_000_000) async {
-    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
-
-    while DispatchTime.now().uptimeNanoseconds < deadline {
-      refreshRuntimeStateFromSystem()
-      if !isRunning {
-        return
-      }
-
-      try? await Task.sleep(nanoseconds: 100_000_000)
-    }
-
-    refreshRuntimeStateFromSystem()
-  }
-
-  func handleApplicationWillTerminate() {
-    if let managedProcess = process, managedProcess.isRunning {
-      appendLog("앱 종료에 맞춰 local-agent를 중지합니다.")
-      terminateProcess(managedProcess.processIdentifier)
-      return
-    }
-
-    if let existingProcessId = findExistingAgentProcessId() {
-      appendLog("앱 종료에 맞춰 기존 local-agent를 중지합니다. pid=\(existingProcessId)")
-      terminateProcess(existingProcessId)
-      return
-    }
-
-    let staleProcesses = findLingeringRuntimeProcesses()
-
-    if !staleProcesses.isEmpty {
-      appendLog("앱 종료에 맞춰 잔여 local-agent 런타임 프로세스를 정리합니다.")
-      terminateRuntimeProcesses(staleProcesses)
-    }
-  }
-
-  func refreshRuntimeStateFromSystem(logDetection: Bool = false) {
-    if let managedProcess = process, managedProcess.isRunning {
-      processId = managedProcess.processIdentifier
-      runtimeState = .running
-      lastUpdatedAt = Date()
-      return
-    }
-
-    let runtimeProcesses = findRuntimeProcesses()
-
-    guard let existingProcessId = findExistingAgentProcessId() ?? runtimeProcesses.first?.pid else {
-      processId = nil
-      if runtimeState != .failed {
-        runtimeState = .stopped
-      }
-      lastUpdatedAt = Date()
-      return
-    }
-
-    let shouldLog = logDetection && processId != existingProcessId
-    processId = existingProcessId
+    try nextProcess.run()
+    process = nextProcess
+    stdoutPipe = stdout
+    stderrPipe = stderr
+    processId = nextProcess.processIdentifier
     runtimeState = .running
     lastUpdatedAt = Date()
+    appendLog("서비스가 시작되었습니다. pid=\(nextProcess.processIdentifier)")
+  }
 
-    if shouldLog {
-      if runtimeProcesses.contains(where: { $0.pid == existingProcessId && !$0.command.contains("run-local-agent.mjs") }) {
-        appendLog("기존 local-agent 런타임 프로세스를 감지했습니다. pid=\(existingProcessId)")
-      } else {
-        appendLog("기존 local-agent 프로세스를 감지했습니다. pid=\(existingProcessId)")
+  private func validateServiceLaunch(using bootstrap: AgentBootstrapStore) async -> Bool {
+    let deadline = Date().addingTimeInterval(10)
+
+    while Date() < deadline {
+      refreshRuntimeStateFromSystem()
+      let checks = await serviceLaunchChecks(using: bootstrap)
+      if checks.allSatisfy(\.passed) {
+        try? bootstrap.recordRuntimeHealthcheck(
+          for: bootstrap.activeRuntimeReleaseURL ?? bootstrap.runtimeWorkspaceURL,
+          status: "running",
+          checks: checks.map(\.message),
+          log: appendInstallerLog
+        )
+        return true
       }
+
+      try? await Task.sleep(nanoseconds: 250_000_000)
     }
+
+    let failedChecks = await serviceLaunchChecks(using: bootstrap)
+    let checkMessages = failedChecks.map { check in
+      check.passed ? check.message : "\(check.message) 실패"
+    }
+    try? bootstrap.recordRuntimeHealthcheck(
+      for: bootstrap.activeRuntimeReleaseURL ?? bootstrap.runtimeWorkspaceURL,
+      status: "failed",
+      checks: checkMessages,
+      log: appendInstallerLog
+    )
+    if let firstFailedCheck = failedChecks.first(where: { !$0.passed }) {
+      appendLog("서비스 헬스체크 실패: \(firstFailedCheck.message)")
+    }
+    return false
   }
 
-  func clearLogs() {
-    lines.removeAll(keepingCapacity: true)
-    appendLog("로그를 초기화했습니다.")
-  }
+  private func validateManagedProcessShutdown(using bootstrap: AgentBootstrapStore) async -> Bool {
+    let deadline = Date().addingTimeInterval(5)
 
-  func appendInstallerLog(_ message: String) {
-    appendLog(message)
+    while Date() < deadline {
+      let remainingManagedProcesses = findManagedProcesses()
+      let bridgePortsReleased = configuredPortListenersReleased(
+        host: bootstrap.configuration.bridgeHost,
+        portText: bootstrap.configuration.bridgePort
+      )
+      let appServerPortReleased = configuredPortListenersReleased(
+        host: nil,
+        portText: bootstrap.configuration.appServerWsUrl,
+        isURL: true
+      )
+
+      if remainingManagedProcesses.isEmpty && bridgePortsReleased && appServerPortReleased {
+        return true
+      }
+
+      try? await Task.sleep(nanoseconds: 250_000_000)
+    }
+
+    return false
   }
 
   private func appendStreamText(_ data: Data) {
@@ -304,38 +363,6 @@ final class AgentMenuModel: ObservableObject {
     stderrPipe = nil
   }
 
-  private func terminateProcess(_ pid: Int32) {
-    let runtimeProcesses = findRuntimeProcesses()
-    let relatedProcesses = runtimeProcesses.filter { $0.pid == pid || $0.pgid == getpgid(pid) }
-
-    if relatedProcesses.isEmpty {
-      kill(pid, SIGTERM)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-        guard let self else { return }
-        guard self.isProcessAlive(pid) else {
-          self.runtimeState = .stopped
-          self.processId = nil
-          self.lastUpdatedAt = Date()
-          self.appendLog("local-agent 종료됨. pid=\(pid)")
-          return
-        }
-
-        self.appendLog("SIGTERM 응답이 없어 강제 종료합니다. pid=\(pid)")
-        kill(pid, SIGKILL)
-        self.runtimeState = .stopped
-        self.processId = nil
-        self.lastUpdatedAt = Date()
-      }
-      return
-    }
-
-    terminateRuntimeProcesses(relatedProcesses)
-    runtimeState = .stopped
-    processId = nil
-    lastUpdatedAt = Date()
-    appendLog("local-agent 런타임 프로세스가 종료되었습니다. pid=\(pid)")
-  }
-
   private func isProcessAlive(_ pid: Int32) -> Bool {
     if kill(pid, 0) == 0 {
       return true
@@ -344,15 +371,15 @@ final class AgentMenuModel: ObservableObject {
     return errno == EPERM
   }
 
-  private func findExistingAgentProcessId() -> Int32? {
-    findRuntimeProcesses().first(where: { $0.command.contains("run-local-agent.mjs") })?.pid
+  private func findManagedProcesses() -> [AgentProcessDescriptor] {
+    findRuntimeProcesses(includeAuxiliarySessions: true)
   }
 
-  private func findLingeringRuntimeProcesses() -> [AgentProcessDescriptor] {
-    findRuntimeProcesses().filter { !$0.command.contains("run-local-agent.mjs") }
+  private func findServiceProcesses() -> [AgentProcessDescriptor] {
+    findRuntimeProcesses(includeAuxiliarySessions: false)
   }
 
-  private func findRuntimeProcesses() -> [AgentProcessDescriptor] {
+  private func findRuntimeProcesses(includeAuxiliarySessions: Bool) -> [AgentProcessDescriptor] {
     let runtimePath = runtimeRootPath()
     let process = Process()
     let output = Pipe()
@@ -385,7 +412,11 @@ final class AgentMenuModel: ObservableObject {
 
       let command = String(columns[1])
       guard !command.contains("/usr/bin/pgrep"),
-            isRuntimeProcessCommand(command, runtimePath: runtimePath) else {
+            isRuntimeProcessCommand(
+              command,
+              runtimePath: runtimePath,
+              includeAuxiliarySessions: includeAuxiliarySessions
+            ) else {
         continue
       }
 
@@ -396,7 +427,190 @@ final class AgentMenuModel: ObservableObject {
     return results
   }
 
-  private func terminateRuntimeProcesses(_ processes: [AgentProcessDescriptor]) {
+  private func serviceLaunchChecks(using bootstrap: AgentBootstrapStore) async -> [AgentLaunchCheck] {
+    let serviceProcesses = findServiceProcesses()
+    let currentRuntimePath = bootstrap.runtimeWorkspaceURL.path
+    let localAgentProcess = serviceProcesses.first(where: { $0.command.contains("run-local-agent.mjs") })
+    let bridgeLauncherProcess = serviceProcesses.first(where: { $0.command.contains("run-bridge.mjs") })
+    let adapterProcess = serviceProcesses.first(where: { $0.command.contains("services/codex-adapter/src/index.js") })
+    let wsProcess = serviceProcesses.first(where: { $0.command.contains("/runtime/bin/codex app-server --listen ws://") })
+    let adapterPorts = adapterProcess.map(listeningTCPPorts(for:)) ?? []
+    let wsPorts = wsProcess.map(listeningTCPPorts(for:)) ?? []
+    let bridgeHealth = await fetchBridgeHealthStatus(
+      host: bootstrap.configuration.bridgeHost,
+      port: adapterPorts.first,
+      bridgeToken: bootstrap.configuration.bridgeToken,
+      ownerLoginId: bootstrap.configuration.ownerLoginId
+    )
+
+    return [
+      AgentLaunchCheck(
+        passed: localAgentProcess != nil,
+        message: "run-local-agent 기동 확인"
+      ),
+      AgentLaunchCheck(
+        passed: bridgeLauncherProcess != nil,
+        message: "run-bridge 기동 확인"
+      ),
+      AgentLaunchCheck(
+        passed: adapterProcess != nil,
+        message: "codex-adapter 기동 확인"
+      ),
+      AgentLaunchCheck(
+        passed: wsProcess != nil,
+        message: "WS app-server 기동 확인"
+      ),
+      AgentLaunchCheck(
+        passed: localAgentProcess?.command.contains(currentRuntimePath) == true &&
+          adapterProcess?.command.contains(currentRuntimePath) == true,
+        message: "활성 런타임 경로 기준 서비스 기동 확인"
+      ),
+      AgentLaunchCheck(
+        passed: !adapterPorts.isEmpty,
+        message: "브릿지 포트 바인딩 확인"
+      ),
+      AgentLaunchCheck(
+        passed: !wsPorts.isEmpty,
+        message: "WS app-server 포트 바인딩 확인"
+      ),
+      AgentLaunchCheck(
+        passed: bridgeHealth?.appServerConnected == true && bridgeHealth?.appServerInitialized == true,
+        message: "WS 연결 확인"
+      ),
+      AgentLaunchCheck(
+        passed: bridgeHealth?.ok == true && runtimeState == .running && processId != nil,
+        message: "기본 상태 진단 확인"
+      )
+    ]
+  }
+
+  private func listeningTCPPorts(for process: AgentProcessDescriptor) -> [Int] {
+    let lsofProcess = Process()
+    let output = Pipe()
+    lsofProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    lsofProcess.arguments = ["-nP", "-a", "-p", String(process.pid), "-iTCP", "-sTCP:LISTEN", "-Fn"]
+    lsofProcess.standardOutput = output
+    lsofProcess.standardError = Pipe()
+
+    do {
+      try lsofProcess.run()
+      lsofProcess.waitUntilExit()
+    } catch {
+      return []
+    }
+
+    guard lsofProcess.terminationStatus == 0 else {
+      return []
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let text = String(decoding: data, as: UTF8.self)
+    return text
+      .split(whereSeparator: \.isNewline)
+      .compactMap { line -> Int? in
+        guard line.hasPrefix("n"),
+              let portComponent = line.split(separator: ":").last,
+              let port = Int(portComponent) else {
+          return nil
+        }
+        return port
+      }
+  }
+
+  private func fetchBridgeHealthStatus(
+    host: String,
+    port: Int?,
+    bridgeToken: String,
+    ownerLoginId: String
+  ) async -> AgentBridgeHealthStatus? {
+    guard let port else {
+      return nil
+    }
+
+    var components = URLComponents()
+    components.scheme = "http"
+    components.host = normalizedBridgeProbeHost(host)
+    components.port = port
+    components.path = "/health"
+    components.queryItems = [
+      URLQueryItem(name: "user_id", value: ownerLoginId)
+    ]
+
+    guard let url = components.url else {
+      return nil
+    }
+
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 1
+    request.setValue(bridgeToken, forHTTPHeaderField: "x-bridge-token")
+
+    do {
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard let httpResponse = response as? HTTPURLResponse,
+            (200..<300).contains(httpResponse.statusCode) else {
+        return nil
+      }
+
+      return try JSONDecoder().decode(AgentBridgeHealthStatus.self, from: data)
+    } catch {
+      return nil
+    }
+  }
+
+  func normalizedBridgeProbeHost(_ host: String) -> String {
+    let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch trimmedHost {
+    case "", "0.0.0.0", "::", "[::]":
+      return "127.0.0.1"
+    default:
+      return trimmedHost
+    }
+  }
+
+  private func configuredPortListenersReleased(host: String?, portText: String, isURL: Bool = false) -> Bool {
+    let portValue: Int?
+    if isURL {
+      portValue = URLComponents(string: portText.trimmingCharacters(in: .whitespacesAndNewlines))?.port
+    } else {
+      portValue = Int(portText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    guard let portValue else {
+      return true
+    }
+
+    let lsofProcess = Process()
+    let output = Pipe()
+    lsofProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    lsofProcess.arguments = ["-nP", "-iTCP:\(portValue)", "-sTCP:LISTEN", "-t"]
+    lsofProcess.standardOutput = output
+    lsofProcess.standardError = Pipe()
+
+    do {
+      try lsofProcess.run()
+      lsofProcess.waitUntilExit()
+    } catch {
+      return false
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if text.isEmpty {
+      return true
+    }
+
+    if let host,
+       !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+       host != "127.0.0.1",
+       host != "localhost" {
+      return false
+    }
+
+    return false
+  }
+
+  private func terminateManagedProcesses(_ processes: [AgentProcessDescriptor]) {
     let processIds = Set(processes.map(\.pid))
     let processGroupIds = Set(processes.map(\.pgid).filter { $0 > 0 })
 
@@ -434,28 +648,63 @@ final class AgentMenuModel: ObservableObject {
   }
 
   private func runtimeRootPath() -> String {
-    let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-      .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
-      .appendingPathComponent("runtime", isDirectory: true)
-
-    return applicationSupport?.path ?? NSString(string: "~/Library/Application Support/OctOPAgentMenu/runtime").expandingTildeInPath
+    octopAgentMenuAppSupportURL().appendingPathComponent("runtime", isDirectory: true).path
   }
 
-  private func isRuntimeProcessCommand(_ command: String, runtimePath: String) -> Bool {
+  private func isRuntimeProcessCommand(_ command: String, runtimePath: String, includeAuxiliarySessions: Bool) -> Bool {
     guard command.contains(runtimePath) else {
       return false
+    }
+
+    if includeAuxiliarySessions, command.contains("/runtime/bin/codex app-server --listen stdio://") {
+      return true
+    }
+
+    if includeAuxiliarySessions, command.contains("scripts/login-via-app-server.mjs") {
+      return true
     }
 
     return command.contains("run-local-agent.mjs") ||
       command.contains("run-bridge.mjs") ||
       command.contains("services/codex-adapter/src/index.js") ||
-      command.contains("/runtime/bin/codex app-server --listen")
+      command.contains("/runtime/bin/codex app-server --listen ws://")
   }
 
   private struct AgentProcessDescriptor {
     let pid: Int32
     let pgid: Int32
     let command: String
+  }
+
+  private struct AgentLaunchCheck {
+    let passed: Bool
+    let message: String
+  }
+
+  private struct AgentBridgeHealthStatus: Decodable {
+    let ok: Bool
+    let status: Status
+
+    struct Status: Decodable {
+      let appServer: AppServerStatus
+
+      enum CodingKeys: String, CodingKey {
+        case appServer = "app_server"
+      }
+    }
+
+    struct AppServerStatus: Decodable {
+      let connected: Bool
+      let initialized: Bool
+    }
+
+    var appServerConnected: Bool {
+      status.appServer.connected
+    }
+
+    var appServerInitialized: Bool {
+      status.appServer.initialized
+    }
   }
 
   private static func makeMenuBarImage(grayscale: Bool) -> NSImage? {
@@ -674,9 +923,15 @@ struct AgentMenuContent: View {
         .font(.caption)
         .foregroundStyle(.secondary)
 
-      Text("런타임 버전 \(bootstrap.runtimeVersionDisplay)")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      if let runtimeUpdateStatusDisplay = bootstrap.runtimeUpdateStatusDisplay {
+        Text("런타임 ID \(bootstrap.runtimeVersionDisplay) · \(runtimeUpdateStatusDisplay)")
+          .font(.caption)
+          .foregroundStyle(.blue)
+      } else {
+        Text("런타임 ID \(bootstrap.runtimeVersionDisplay)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
 
       Text(model.runtimeState.rawValue)
         .font(.subheadline)
@@ -688,39 +943,42 @@ struct AgentMenuContent: View {
         model.refreshRuntimeStateFromSystem()
         if model.isRunning {
           model.stop()
+          Task {
+            await bootstrap.refreshAvailableRuntimeUpdate(
+              log: model.appendInstallerLog
+            )
+          }
         } else {
-          model.start(using: bootstrap)
+          Task {
+            await model.start(using: bootstrap)
+            await bootstrap.refreshAvailableRuntimeUpdate(
+              log: model.appendInstallerLog
+            )
+          }
         }
       }
       .disabled(bootstrap.bootstrapInProgress)
 
-      Button("재시작") {
-        Task { @MainActor in
-          model.refreshRuntimeStateFromSystem()
-          model.stop()
-          await model.waitUntilStopped()
+      if let availableAppUpdate = bootstrap.availableAppUpdate {
+        Button {
+          Task { @MainActor in
+            model.refreshRuntimeStateFromSystem()
+            if model.isRunning {
+              model.stop()
+              await model.waitUntilStopped()
+            }
 
-          if await bootstrap.ensureAppUpdatedIfNeeded(
-            log: model.appendInstallerLog,
-            force: true,
-            startServiceAfterUpdate: true) {
-            return
+            _ = await bootstrap.applyAvailableAppUpdate(
+              log: model.appendInstallerLog,
+              beforeTermination: {
+                try bootstrap.preserveAppDataForUpdate(log: model.appendInstallerLog)
+              })
           }
-
-          model.refreshRuntimeStateFromSystem()
-          if model.isRunning {
-            return
-          }
-
-          model.appendInstallerLog("재시작 전에 설치/설정을 마무리합니다.")
-          let ready = await bootstrap.ensureReadyForLaunch(log: model.appendInstallerLog)
-          model.refreshRuntimeStateFromSystem()
-          if ready && !model.isRunning {
-            model.start(using: bootstrap)
-          } else if !ready {
-            model.appendInstallerLog("설치/설정이 완료되지 않아 서비스를 시작하지 않습니다.")
-          }
+        } label: {
+          Text(bootstrap.appUpdateInProgress ? "앱 업데이트 중..." : "앱 업데이트 \(availableAppUpdate.tag)")
+            .foregroundStyle(.orange)
         }
+        .disabled(bootstrap.appUpdateInProgress || bootstrap.bootstrapInProgress)
       }
 
       Button("환경 설정") {
@@ -808,6 +1066,7 @@ struct OctOPAgentMenuApp: App {
   @NSApplicationDelegateAdaptor(OctOPAgentMenuAppDelegate.self) private var appDelegate
   @StateObject private var model = AgentMenuModel()
   @StateObject private var bootstrap = AgentBootstrapStore()
+  @State private var runtimeUpdateMonitorTask: Task<Void, Never>? = nil
 
   init() {
     NSApplication.shared.setActivationPolicy(.accessory)
@@ -825,28 +1084,36 @@ struct OctOPAgentMenuApp: App {
           }
 
           appDelegate.onWillTerminate = {
+            runtimeUpdateMonitorTask?.cancel()
+            runtimeUpdateMonitorTask = nil
             Task { @MainActor in
               model.handleApplicationWillTerminate()
             }
           }
 
           bootstrap.restorePreservedAppDataIfNeeded(log: model.appendInstallerLog)
-          bootstrap.terminateProcessesHoldingManagedPorts(log: model.appendInstallerLog)
-
-          if await bootstrap.ensureAppUpdatedIfNeeded(log: model.appendInstallerLog) {
-            return
-          }
 
           model.refreshRuntimeStateFromSystem()
           await bootstrap.recoverPendingLoginAfterRestart(log: model.appendInstallerLog)
           await bootstrap.ensureInstalledIfNeeded(log: model.appendInstallerLog)
+          await bootstrap.refreshCodexLoginStatus()
+          await bootstrap.refreshAvailableAppUpdate(log: model.appendInstallerLog)
+          await bootstrap.refreshAvailableRuntimeUpdate(
+            log: model.appendInstallerLog
+          )
 
-          if bootstrap.consumePendingServiceStartAfterUpdate() {
-            model.appendInstallerLog("업데이트 후 서비스 자동 시작을 이어갑니다.")
-            let ready = await bootstrap.ensureReadyForLaunch(log: model.appendInstallerLog)
-            model.refreshRuntimeStateFromSystem()
-            if ready && !model.isRunning {
-              model.start(using: bootstrap)
+          if runtimeUpdateMonitorTask == nil {
+            runtimeUpdateMonitorTask = Task {
+              while !Task.isCancelled {
+                await bootstrap.refreshAvailableRuntimeUpdate(
+                  log: model.appendInstallerLog
+                )
+
+                let sleepNanoseconds = UInt64(
+                  max(bootstrap.runtimeUpdateCheckIntervalSeconds, 5) * 1_000_000_000
+                )
+                try? await Task.sleep(nanoseconds: sleepNanoseconds)
+              }
             }
           }
 
@@ -865,11 +1132,7 @@ struct OctOPAgentMenuApp: App {
         onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) },
         onCodexLogin: {
           Task {
-            if bootstrap.codexLoggedIn {
-              await bootstrap.reloginCodex(log: model.appendInstallerLog)
-            } else {
-              await bootstrap.loginCodex(log: model.appendInstallerLog)
-            }
+            await bootstrap.handleCodexLoginAction(log: model.appendInstallerLog)
           }
         }
       )

@@ -2,52 +2,97 @@ import AppKit
 import Darwin
 import Foundation
 
+struct AppUpdateDescriptor: Equatable {
+  let tag: String
+  let assetName: String
+  let downloadURL: URL
+}
+
 @MainActor
 extension AgentBootstrapStore {
-  func applyAppUpdateIfNeeded(
+  var canApplyAppUpdate: Bool {
+    Bundle.main.bundleURL.pathExtension == "app"
+  }
+
+  var hasAvailableAppUpdate: Bool {
+    canApplyAppUpdate && availableAppUpdate != nil
+  }
+
+  func refreshAvailableAppUpdate(
+    log: @escaping @MainActor (String) -> Void
+  ) async {
+    guard !appUpdateCheckInProgress else {
+      return
+    }
+
+    guard canApplyAppUpdate else {
+      availableAppUpdate = nil
+      lastAppUpdateCheckError = nil
+      return
+    }
+
+    appUpdateCheckInProgress = true
+    defer { appUpdateCheckInProgress = false }
+
+    do {
+      let nextAvailableUpdate = try await resolveAvailableAppUpdate()
+      availableAppUpdate = nextAvailableUpdate
+      lastAppUpdateCheckError = nil
+
+      if let nextAvailableUpdate {
+        log("앱 업데이트 가능: \(nextAvailableUpdate.tag)")
+      }
+    } catch {
+      availableAppUpdate = nil
+      lastAppUpdateCheckError = error.localizedDescription
+      log("앱 업데이트 확인 실패: \(error.localizedDescription)")
+    }
+  }
+
+  func applyAvailableAppUpdate(
     log: @escaping @MainActor (String) -> Void,
     beforeTermination: (() throws -> Void)? = nil
   ) async -> Bool {
-    let currentTag = currentAppVersionTag
-    guard let currentVersion = MacSemVersion.parse(currentTag) else {
-      log("현재 앱 버전을 해석하지 못했습니다: \(currentTag)")
+    guard !appUpdateInProgress else {
       return false
     }
 
-    let latestRelease: MacReleaseDescriptor
+    appUpdateInProgress = true
+    defer { appUpdateInProgress = false }
+
+    let nextAvailableUpdate: AppUpdateDescriptor
     do {
-      guard let resolvedRelease = try await fetchLatestAvailableRelease() else {
+      guard let resolvedRelease = try await resolveAvailableAppUpdate() else {
+        availableAppUpdate = nil
+        lastAppUpdateCheckError = nil
+        log("적용할 앱 업데이트가 없습니다.")
         return false
       }
-      latestRelease = resolvedRelease
+      nextAvailableUpdate = resolvedRelease
     } catch {
       log("업데이트 확인 실패: \(error.localizedDescription)")
-      return false
-    }
-
-    guard let latestVersion = MacSemVersion.parse(latestRelease.tag), latestVersion > currentVersion else {
-      log("최신 앱 버전 사용 중: \(currentTag.replacingOccurrences(of: "v", with: ""))")
+      lastAppUpdateCheckError = error.localizedDescription
       return false
     }
 
     let bundleURL = Bundle.main.bundleURL
-    guard bundleURL.pathExtension == "app" else {
-      log("새 버전 \(latestRelease.tag)를 확인했지만 현재 실행 방식에서는 앱 본체 자동 업데이트를 적용할 수 없습니다.")
+    guard canApplyAppUpdate else {
+      log("현재 실행 방식에서는 앱 업데이트를 적용할 수 없습니다.")
       return false
     }
 
     let updateRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("OctOPAgentMenu", isDirectory: true)
       .appendingPathComponent("updates", isDirectory: true)
-      .appendingPathComponent(latestRelease.tag, isDirectory: true)
+      .appendingPathComponent(nextAvailableUpdate.tag, isDirectory: true)
 
     do {
       try FileManager.default.createDirectory(at: updateRoot, withIntermediateDirectories: true)
-      let archiveURL = updateRoot.appendingPathComponent(latestRelease.assetName)
+      let archiveURL = updateRoot.appendingPathComponent(nextAvailableUpdate.assetName)
       let extractedRoot = updateRoot.appendingPathComponent("extracted", isDirectory: true)
 
-      log("새 버전 \(latestRelease.tag)를 다운로드합니다.")
-      try await download(from: latestRelease.downloadURL, to: archiveURL)
+      log("새 버전 \(nextAvailableUpdate.tag)를 다운로드합니다.")
+      try await download(from: nextAvailableUpdate.downloadURL, to: archiveURL)
 
       if FileManager.default.fileExists(atPath: extractedRoot.path) {
         try FileManager.default.removeItem(at: extractedRoot)
@@ -66,7 +111,7 @@ extension AgentBootstrapStore {
       try beforeTermination?()
       try launchReplacementScript(scriptURL: scriptURL)
 
-      log("새 버전 \(latestRelease.tag) 적용을 시작합니다.")
+      log("새 버전 \(nextAvailableUpdate.tag) 적용을 시작합니다.")
       NSApp.terminate(nil)
       return true
     } catch {
@@ -75,9 +120,28 @@ extension AgentBootstrapStore {
     }
   }
 
-  private func fetchLatestAvailableRelease() async throws -> MacReleaseDescriptor? {
+  private func resolveAvailableAppUpdate() async throws -> AppUpdateDescriptor? {
+    let currentTag = currentAppVersionTag
+    guard let currentVersion = MacSemVersion.parse(currentTag) else {
+      throw NSError(domain: "OctOPAgentMenu.Update", code: 1, userInfo: [
+        NSLocalizedDescriptionKey: "현재 앱 버전을 해석하지 못했습니다: \(currentTag)"
+      ])
+    }
+
+    guard let latestRelease = try await fetchLatestRelease() else {
+      return nil
+    }
+
+    guard let latestVersion = MacSemVersion.parse(latestRelease.tag), latestVersion > currentVersion else {
+      return nil
+    }
+
+    return latestRelease
+  }
+
+  private func fetchLatestRelease() async throws -> AppUpdateDescriptor? {
     let arch = currentArchitecture()
-    let requestURL = URL(string: "https://api.github.com/repos/DiffColor/OctOP/releases?per_page=30")!
+    let requestURL = URL(string: "https://api.github.com/repos/DiffColor/OctOP/tags?per_page=30")!
     var request = URLRequest(url: requestURL)
     request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
     request.setValue("OctOPAgentMenu/1.0", forHTTPHeaderField: "User-Agent")
@@ -90,26 +154,42 @@ extension AgentBootstrapStore {
     }
 
     let payload = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
-    let releases = payload.compactMap { item -> (MacSemVersion, MacReleaseDescriptor)? in
-      guard let tagName = item["tag_name"] as? String,
-            let version = MacSemVersion.parse(tagName),
-            let assets = item["assets"] as? [[String: Any]] else {
-        return nil
+    var releases: [(MacSemVersion, AppUpdateDescriptor)] = []
+
+    for item in payload {
+      guard let tagName = item["name"] as? String,
+            let version = MacSemVersion.parse(tagName) else {
+        continue
       }
 
       let normalizedTag = Self.normalizeVersionTag(tagName)
       let expectedAssetName = "OctOPAgentMenu-macos-\(arch)-\(normalizedTag).zip"
-      guard let asset = assets.first(where: { ($0["name"] as? String) == expectedAssetName }),
-            let assetName = asset["name"] as? String,
-            let downloadURLString = asset["browser_download_url"] as? String,
-            let downloadURL = URL(string: downloadURLString) else {
-        return nil
+      let downloadURL = URL(string: "https://github.com/DiffColor/OctOP/releases/download/\(normalizedTag)/\(expectedAssetName)")!
+
+      guard let assetExists = try? await remoteAssetExists(at: downloadURL), assetExists else {
+        continue
       }
 
-      return (version, MacReleaseDescriptor(tag: normalizedTag, assetName: assetName, downloadURL: downloadURL))
+      releases.append((
+        version,
+        AppUpdateDescriptor(tag: normalizedTag, assetName: expectedAssetName, downloadURL: downloadURL)
+      ))
     }
 
     return releases.sorted(by: { $0.0 > $1.0 }).first?.1
+  }
+
+  private func remoteAssetExists(at url: URL) async throws -> Bool {
+    var request = URLRequest(url: url)
+    request.httpMethod = "HEAD"
+    request.setValue("OctOPAgentMenu/1.0", forHTTPHeaderField: "User-Agent")
+
+    let (_, response) = try await URLSession.shared.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+      return false
+    }
+
+    return (200..<400).contains(httpResponse.statusCode)
   }
 
   private func download(from sourceURL: URL, to destinationURL: URL) async throws {
@@ -138,6 +218,9 @@ extension AgentBootstrapStore {
   }
 
   private func writeReplacementScript(scriptURL: URL, updatedAppURL: URL, currentAppURL: URL) throws {
+    let bridgePort = configuration.bridgePort.trimmingCharacters(in: .whitespacesAndNewlines)
+    let appServerPort = resolveAppServerPort()
+    let runtimePath = runtimeURL.path
     let script = """
     #!/bin/bash
     set -euo pipefail
@@ -146,19 +229,103 @@ extension AgentBootstrapStore {
     UPDATED_APP="\(updatedAppURL.path)"
     UPDATE_ROOT="\(scriptURL.deletingLastPathComponent().path)"
     BACKUP_APP="${CURRENT_APP}.previous-update"
-    while kill -0 "$APP_PID" 2>/dev/null; do
-      sleep 1
-    done
-    rm -rf "$BACKUP_APP"
-    if [ -d "$CURRENT_APP" ]; then
-      mv "$CURRENT_APP" "$BACKUP_APP"
-    fi
-    if ! ditto "$UPDATED_APP" "$CURRENT_APP"; then
+    RUNTIME_PATH="\(runtimePath)"
+    BRIDGE_PORT="\(bridgePort)"
+    APP_SERVER_PORT="\(appServerPort)"
+
+    wait_for_pid_exit() {
+      local pid="$1"
+      local attempts=0
+      while kill -0 "$pid" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 30 ]; then
+          return 1
+        fi
+        sleep 1
+      done
+      return 0
+    }
+
+    runtime_process_count() {
+      (pgrep -fal "$RUNTIME_PATH" 2>/dev/null || true) | grep -v "/usr/bin/pgrep" | wc -l | tr -d ' '
+    }
+
+    wait_for_runtime_processes_exit() {
+      local attempts=0
+      while true; do
+        local count
+        count="$(runtime_process_count)"
+        if [ "$count" = "0" ]; then
+          return 0
+        fi
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 30 ]; then
+          return 1
+        fi
+        sleep 1
+      done
+    }
+
+    port_listener_count() {
+      local port="$1"
+      if [ -z "$port" ]; then
+        echo "0"
+        return 0
+      fi
+      (lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true) | wc -l | tr -d ' '
+    }
+
+    wait_for_port_release() {
+      local port="$1"
+      local attempts=0
+      while true; do
+        local count
+        count="$(port_listener_count "$port")"
+        if [ "$count" = "0" ]; then
+          return 0
+        fi
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 30 ]; then
+          return 1
+        fi
+        sleep 1
+      done
+    }
+
+    restore_previous_bundle() {
       rm -rf "$CURRENT_APP"
       if [ -d "$BACKUP_APP" ]; then
         mv "$BACKUP_APP" "$CURRENT_APP"
         open "$CURRENT_APP" || true
       fi
+    }
+
+    if ! wait_for_pid_exit "$APP_PID"; then
+      open "$CURRENT_APP" || true
+      exit 1
+    fi
+
+    if ! wait_for_runtime_processes_exit; then
+      open "$CURRENT_APP" || true
+      exit 1
+    fi
+
+    if ! wait_for_port_release "$BRIDGE_PORT"; then
+      open "$CURRENT_APP" || true
+      exit 1
+    fi
+
+    if ! wait_for_port_release "$APP_SERVER_PORT"; then
+      open "$CURRENT_APP" || true
+      exit 1
+    fi
+
+    rm -rf "$BACKUP_APP"
+    if [ -d "$CURRENT_APP" ]; then
+      mv "$CURRENT_APP" "$BACKUP_APP"
+    fi
+    if ! ditto "$UPDATED_APP" "$CURRENT_APP"; then
+      restore_previous_bundle
       exit 0
     fi
     rm -rf "$BACKUP_APP"
@@ -211,12 +378,16 @@ extension AgentBootstrapStore {
 
     return machine == "x86_64" ? "x86_64" : "arm64"
   }
-}
 
-private struct MacReleaseDescriptor {
-  let tag: String
-  let assetName: String
-  let downloadURL: URL
+  private func resolveAppServerPort() -> String {
+    let rawValue = configuration.appServerWsUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let components = URLComponents(string: rawValue),
+          let port = components.port else {
+      return ""
+    }
+
+    return String(port)
+  }
 }
 
 private struct MacSemVersion: Comparable {

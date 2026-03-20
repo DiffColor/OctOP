@@ -17,6 +17,11 @@ let package = Package(
         .process("Resources/icon.png"),
         .copy("Resources/bootstrap")
       ]
+    ),
+    .testTarget(
+      name: "OctOPAgentMenuTests",
+      dependencies: ["OctOPAgentMenu"],
+      path: "Tests"
     )
   ]
 )
