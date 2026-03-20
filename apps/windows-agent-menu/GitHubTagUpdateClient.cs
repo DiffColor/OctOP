@@ -5,7 +5,7 @@ sealed class GitHubTagUpdateClient
 {
   private const string Owner = "DiffColor";
   private const string Repo = "OctOP";
-  private const string TagsApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/tags?per_page=30";
+  private const string ReleasesApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=20";
 
   private static readonly HttpClient HttpClient = CreateHttpClient();
 
@@ -21,16 +21,29 @@ sealed class GitHubTagUpdateClient
       return null;
     }
 
-    using var response = await HttpClient.GetAsync(TagsApiUrl, cancellationToken);
+    using var response = await HttpClient.GetAsync(ReleasesApiUrl, cancellationToken);
     response.EnsureSuccessStatusCode();
 
     await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
     using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     var candidates = new List<(SemVersion version, AppUpdateDescriptor release)>();
+    var includePrerelease = !string.IsNullOrWhiteSpace(currentVersion.Suffix);
 
     foreach (var item in document.RootElement.EnumerateArray())
     {
-      if (!item.TryGetProperty("name", out var tagProperty))
+      if (item.TryGetProperty("draft", out var draftProperty) && draftProperty.ValueKind == JsonValueKind.True)
+      {
+        continue;
+      }
+
+      if (!includePrerelease &&
+          item.TryGetProperty("prerelease", out var prereleaseProperty) &&
+          prereleaseProperty.ValueKind == JsonValueKind.True)
+      {
+        continue;
+      }
+
+      if (!item.TryGetProperty("tag_name", out var tagProperty))
       {
         continue;
       }
@@ -53,8 +66,7 @@ sealed class GitHubTagUpdateClient
       }
 
       var expectedAssetName = $"OctOP.WindowsAgentMenu-win-x64-{normalizedTag}.exe";
-      var downloadUrl = new Uri($"https://github.com/{Owner}/{Repo}/releases/download/{normalizedTag}/{expectedAssetName}");
-      if (!await AssetExistsAsync(downloadUrl, cancellationToken))
+      if (!TryResolveReleaseAsset(item, expectedAssetName, out var assetName, out var downloadUrl))
       {
         continue;
       }
@@ -62,7 +74,7 @@ sealed class GitHubTagUpdateClient
       candidates.Add((version, new AppUpdateDescriptor
       {
         Tag = normalizedTag,
-        AssetName = expectedAssetName,
+        AssetName = assetName,
         DownloadUrl = downloadUrl
       }));
     }
@@ -73,11 +85,78 @@ sealed class GitHubTagUpdateClient
       .FirstOrDefault();
   }
 
-  private static async Task<bool> AssetExistsAsync(Uri downloadUrl, CancellationToken cancellationToken)
+  private static bool TryResolveReleaseAsset(
+    JsonElement release,
+    string expectedAssetName,
+    out string assetName,
+    out Uri downloadUrl)
   {
-    using var request = new HttpRequestMessage(HttpMethod.Head, downloadUrl);
-    using var response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-    return response.IsSuccessStatusCode;
+    assetName = string.Empty;
+    downloadUrl = new Uri("https://example.com");
+
+    if (!release.TryGetProperty("assets", out var assetsProperty) || assetsProperty.ValueKind != JsonValueKind.Array)
+    {
+      return false;
+    }
+
+    JsonElement? fallbackAsset = null;
+
+    foreach (var asset in assetsProperty.EnumerateArray())
+    {
+      if (!asset.TryGetProperty("name", out var assetNameProperty))
+      {
+        continue;
+      }
+
+      var candidateName = assetNameProperty.GetString();
+      if (string.IsNullOrWhiteSpace(candidateName))
+      {
+        continue;
+      }
+
+      if (string.Equals(candidateName, expectedAssetName, StringComparison.Ordinal))
+      {
+        return TryBuildDescriptor(asset, candidateName, out assetName, out downloadUrl);
+      }
+
+      if (fallbackAsset is null &&
+          candidateName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+          candidateName.Contains("OctOP.WindowsAgentMenu-win-x64", StringComparison.OrdinalIgnoreCase))
+      {
+        fallbackAsset = asset;
+      }
+    }
+
+    return fallbackAsset is JsonElement fallback &&
+      fallback.TryGetProperty("name", out var fallbackNameProperty) &&
+      !string.IsNullOrWhiteSpace(fallbackNameProperty.GetString()) &&
+      TryBuildDescriptor(fallback, fallbackNameProperty.GetString()!, out assetName, out downloadUrl);
+  }
+
+  private static bool TryBuildDescriptor(
+    JsonElement asset,
+    string resolvedAssetName,
+    out string assetName,
+    out Uri downloadUrl)
+  {
+    assetName = string.Empty;
+    downloadUrl = new Uri("https://example.com");
+
+    if (!asset.TryGetProperty("browser_download_url", out var downloadUrlProperty))
+    {
+      return false;
+    }
+
+    var rawDownloadUrl = downloadUrlProperty.GetString();
+    if (string.IsNullOrWhiteSpace(rawDownloadUrl) ||
+        !Uri.TryCreate(rawDownloadUrl, UriKind.Absolute, out var resolvedDownloadUrl))
+    {
+      return false;
+    }
+
+    downloadUrl = resolvedDownloadUrl;
+    assetName = resolvedAssetName;
+    return true;
   }
 
   private static HttpClient CreateHttpClient()

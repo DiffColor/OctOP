@@ -184,7 +184,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
     await RefreshAvailableRuntimeUpdateAsync();
-    await RefreshAvailableAppUpdateAsync();
+    await RefreshAvailableAppUpdateAsync(force: true);
     var runtimePreparedChanged = await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
 
     var resumePendingServiceStart = ConsumePendingServiceStartRequest();
@@ -942,11 +942,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     RefreshUi();
   }
 
-  private async Task RefreshAvailableAppUpdateAsync()
+  private async Task RefreshAvailableAppUpdateAsync(bool force = false)
   {
     try
     {
-      _availableAppUpdate = await _autoUpdater.GetAvailableUpdateAsync(AppMetadata.CurrentVersionTag, CancellationToken.None);
+      _availableAppUpdate = await _autoUpdater.GetAvailableUpdateAsync(
+        AppMetadata.CurrentVersionTag,
+        CancellationToken.None,
+        force);
     }
     catch (Exception error)
     {
@@ -959,7 +962,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task BeginAppUpdateAsync()
   {
-    await RefreshAvailableAppUpdateAsync();
+    await RefreshAvailableAppUpdateAsync(force: true);
     if (_availableAppUpdate is null)
     {
       AppendLog("적용 가능한 앱 업데이트가 없습니다.");

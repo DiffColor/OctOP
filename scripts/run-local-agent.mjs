@@ -77,7 +77,6 @@ async function prepareLocalAgentEnv(env) {
   const desiredBridgePort = normalizePort(nextEnv.OCTOP_BRIDGE_PORT);
   const desiredAppServerUrl = parseUrl(nextEnv.OCTOP_APP_SERVER_WS_URL);
   const desiredAppServerPort = desiredAppServerUrl ? normalizePort(desiredAppServerUrl.port) : null;
-  const desiredAppServerUrlText = desiredAppServerUrl ? formatUrlWithoutTrailingSlash(desiredAppServerUrl) : null;
 
   if (desiredBridgePort !== null) {
     const bridgePort = await resolveAvailablePort({
@@ -90,21 +89,10 @@ async function prepareLocalAgentEnv(env) {
   }
 
   if (desiredAppServerUrl && desiredAppServerPort !== null) {
-    const appServerPort = await resolveAvailablePort({
-      host: desiredAppServerUrl.hostname,
-      preferredPort: desiredAppServerPort,
-      label: "app-server"
-    });
-
-    if (appServerPort !== desiredAppServerPort) {
-      const nextAppServerUrl = new URL(desiredAppServerUrl.toString());
-      nextAppServerUrl.port = String(appServerPort);
-      nextEnv.OCTOP_APP_SERVER_WS_URL = formatUrlWithoutTrailingSlash(nextAppServerUrl);
-      nextEnv.OCTOP_APP_SERVER_COMMAND = rewriteAppServerCommand({
-        command: nextEnv.OCTOP_APP_SERVER_COMMAND,
-        previousUrl: desiredAppServerUrlText,
-        nextUrl: nextEnv.OCTOP_APP_SERVER_WS_URL
-      });
+    if (!(await isPortAvailable(desiredAppServerUrl.hostname, desiredAppServerPort))) {
+      throw new Error(
+        `[OctOP] app-server port ${desiredAppServerPort} is busy. OCTOP_APP_SERVER_WS_URL must remain fixed as ${formatUrlWithoutTrailingSlash(desiredAppServerUrl)}.`
+      );
     }
   }
 
@@ -143,21 +131,6 @@ function formatUrlWithoutTrailingSlash(url) {
   const nextUrl = new URL(url.toString());
   const pathname = nextUrl.pathname === "/" ? "" : nextUrl.pathname;
   return `${nextUrl.protocol}//${nextUrl.host}${pathname}${nextUrl.search}${nextUrl.hash}`;
-}
-
-function rewriteAppServerCommand({ command, previousUrl, nextUrl }) {
-  const normalizedCommand = String(command ?? "").trim();
-  const defaultCommand = `codex app-server --listen ${previousUrl}`;
-
-  if (!normalizedCommand || normalizedCommand === defaultCommand) {
-    return `codex app-server --listen ${nextUrl}`;
-  }
-
-  if (normalizedCommand.includes(previousUrl)) {
-    return normalizedCommand.split(previousUrl).join(nextUrl);
-  }
-
-  return normalizedCommand;
 }
 
 async function isPortAvailable(host, port) {

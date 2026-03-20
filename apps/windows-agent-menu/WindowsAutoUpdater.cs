@@ -6,11 +6,51 @@ using System.Text.Json;
 
 sealed class WindowsAutoUpdater
 {
-  private readonly GitHubTagUpdateClient _releaseClient = new();
+  private const int DownloadBufferSize = 1024 * 128;
+  private const long DiskSafetyMarginBytes = 64L * 1024 * 1024;
+  private static readonly TimeSpan UpdateCheckCacheDuration = TimeSpan.FromHours(6);
+  private static readonly TimeSpan DownloadProgressLogInterval = TimeSpan.FromSeconds(2);
+  private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromMinutes(2);
 
-  public Task<AppUpdateDescriptor?> GetAvailableUpdateAsync(string currentVersionTag, CancellationToken cancellationToken)
+  private readonly GitHubTagUpdateClient _releaseClient = new();
+  private string? _cachedVersionTag;
+  private DateTimeOffset? _cachedCheckedAt;
+  private AppUpdateDescriptor? _cachedUpdate;
+
+  public async Task<AppUpdateDescriptor?> GetAvailableUpdateAsync(
+    string currentVersionTag,
+    CancellationToken cancellationToken,
+    bool force = false)
   {
-    return _releaseClient.GetLatestWindowsReleaseAsync(currentVersionTag, cancellationToken);
+    var normalizedVersionTag = AppMetadata.NormalizeVersionTag(currentVersionTag);
+    var now = DateTimeOffset.UtcNow;
+
+    if (!force &&
+        _cachedCheckedAt is not null &&
+        string.Equals(_cachedVersionTag, normalizedVersionTag, StringComparison.OrdinalIgnoreCase) &&
+        now - _cachedCheckedAt.Value < UpdateCheckCacheDuration)
+    {
+      return _cachedUpdate;
+    }
+
+    try
+    {
+      var availableUpdate = await _releaseClient.GetLatestWindowsReleaseAsync(normalizedVersionTag, cancellationToken);
+      _cachedVersionTag = normalizedVersionTag;
+      _cachedCheckedAt = now;
+      _cachedUpdate = availableUpdate;
+      return availableUpdate;
+    }
+    catch
+    {
+      if (_cachedCheckedAt is not null &&
+          string.Equals(_cachedVersionTag, normalizedVersionTag, StringComparison.OrdinalIgnoreCase))
+      {
+        return _cachedUpdate;
+      }
+
+      throw;
+    }
   }
 
   public async Task<bool> TryApplyUpdateAsync(
@@ -34,7 +74,7 @@ sealed class WindowsAutoUpdater
     var logPath = Path.Combine(updateRoot, "apply-update.log");
 
     log($"새 앱 번들을 다운로드합니다. tag={updateDescriptor.Tag}");
-    await DownloadAsync(updateDescriptor.DownloadUrl, downloadPath, cancellationToken);
+    await DownloadAsync(updateDescriptor.DownloadUrl, downloadPath, currentExecutablePath, log, cancellationToken);
     ValidateDownloadedExecutable(downloadPath);
 
     var pendingState = new PendingAppUpdateState
@@ -136,13 +176,236 @@ sealed class WindowsAutoUpdater
     }
   }
 
-  private static async Task DownloadAsync(Uri downloadUrl, string destinationPath, CancellationToken cancellationToken)
+  private static async Task DownloadAsync(
+    Uri downloadUrl,
+    string destinationPath,
+    string currentExecutablePath,
+    Action<string> log,
+    CancellationToken cancellationToken)
   {
-    using var client = new HttpClient();
+    Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? Path.GetTempPath());
+
+    using var client = CreateDownloadHttpClient();
+    using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    response.EnsureSuccessStatusCode();
+
+    var packageSizeBytes = response.Content.Headers.ContentLength;
+    if (packageSizeBytes is not > 0)
+    {
+      throw new InvalidOperationException("다운로드 크기를 확인하지 못해 디스크 여유 공간을 검사할 수 없습니다.");
+    }
+
+    LogDiskSpaceCheck(destinationPath, currentExecutablePath, packageSizeBytes.Value, log);
+    EnsureSufficientDiskSpace(destinationPath, currentExecutablePath, packageSizeBytes.Value);
+    log($"앱 업데이트 다운로드를 시작합니다. 크기={FormatBytes(packageSizeBytes.Value)}");
+
+    try
+    {
+      await using var remoteStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+      await using var fileStream = new FileStream(
+        destinationPath,
+        FileMode.Create,
+        FileAccess.Write,
+        FileShare.None,
+        DownloadBufferSize,
+        useAsync: true);
+
+      var buffer = new byte[DownloadBufferSize];
+      var stopwatch = Stopwatch.StartNew();
+      var totalRead = 0L;
+      var nextLogAt = DownloadProgressLogInterval;
+      var nextLogPercent = 5d;
+
+      using var stalledDownloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+      while (true)
+      {
+        stalledDownloadCts.CancelAfter(DownloadStallTimeout);
+
+        int bytesRead;
+        try
+        {
+          bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, buffer.Length), stalledDownloadCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+          throw new TimeoutException($"다운로드가 {DownloadStallTimeout.TotalMinutes:0}분 이상 진행되지 않아 중단했습니다.");
+        }
+        finally
+        {
+          stalledDownloadCts.CancelAfter(Timeout.InfiniteTimeSpan);
+        }
+
+        if (bytesRead == 0)
+        {
+          break;
+        }
+
+        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+        totalRead += bytesRead;
+
+        var progressPercent = totalRead * 100d / packageSizeBytes.Value;
+        if (stopwatch.Elapsed >= nextLogAt || progressPercent >= nextLogPercent)
+        {
+          log(BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed));
+          while (nextLogAt <= stopwatch.Elapsed)
+          {
+            nextLogAt += DownloadProgressLogInterval;
+          }
+
+          while (nextLogPercent <= progressPercent)
+          {
+            nextLogPercent += 5d;
+          }
+        }
+      }
+
+      await fileStream.FlushAsync(cancellationToken);
+      log(BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed, completed: true));
+    }
+    catch
+    {
+      try
+      {
+        if (File.Exists(destinationPath))
+        {
+          File.Delete(destinationPath);
+        }
+      }
+      catch
+      {
+      }
+
+      throw;
+    }
+  }
+
+  private static HttpClient CreateDownloadHttpClient()
+  {
+    var client = new HttpClient
+    {
+      Timeout = Timeout.InfiniteTimeSpan
+    };
     client.DefaultRequestHeaders.UserAgent.ParseAdd("OctOPAgentMenu/1.0");
-    await using var remoteStream = await client.GetStreamAsync(downloadUrl, cancellationToken);
-    await using var fileStream = File.Create(destinationPath);
-    await remoteStream.CopyToAsync(fileStream, cancellationToken);
+    return client;
+  }
+
+  private static void LogDiskSpaceCheck(string downloadPath, string currentExecutablePath, long packageSizeBytes, Action<string> log)
+  {
+    var downloadDrive = ResolveDriveInfo(downloadPath);
+    var targetDrive = ResolveDriveInfo(currentExecutablePath);
+    var requiredBytesByDrive = ResolveRequiredBytesByDrive(downloadDrive, targetDrive, packageSizeBytes);
+
+    foreach (var requirement in requiredBytesByDrive.OrderBy(static item => item.Key.Name, StringComparer.OrdinalIgnoreCase))
+    {
+      log(
+        $"디스크 여유 공간 확인: 드라이브={requirement.Key.Name}, 필요={FormatBytes(requirement.Value)}, 사용 가능={FormatBytes(requirement.Key.AvailableFreeSpace)}");
+    }
+  }
+
+  private static void EnsureSufficientDiskSpace(string downloadPath, string currentExecutablePath, long packageSizeBytes)
+  {
+    var downloadDrive = ResolveDriveInfo(downloadPath);
+    var targetDrive = ResolveDriveInfo(currentExecutablePath);
+    var requiredBytesByDrive = ResolveRequiredBytesByDrive(downloadDrive, targetDrive, packageSizeBytes);
+
+    foreach (var requirement in requiredBytesByDrive)
+    {
+      if (requirement.Key.AvailableFreeSpace < requirement.Value)
+      {
+        throw new InvalidOperationException(
+          $"앱 업데이트를 위한 디스크 여유 공간이 부족합니다. 드라이브={requirement.Key.Name}, 필요={FormatBytes(requirement.Value)}, 사용 가능={FormatBytes(requirement.Key.AvailableFreeSpace)}");
+      }
+    }
+  }
+
+  private static Dictionary<DriveInfo, long> ResolveRequiredBytesByDrive(
+    DriveInfo downloadDrive,
+    DriveInfo targetDrive,
+    long packageSizeBytes)
+  {
+    var requirements = new Dictionary<DriveInfo, long>(DriveInfoNameComparer.Instance);
+    var downloadRequirement = packageSizeBytes + DiskSafetyMarginBytes;
+    var targetRequirement = packageSizeBytes + DiskSafetyMarginBytes;
+
+    AddRequiredBytes(requirements, downloadDrive, downloadRequirement);
+    AddRequiredBytes(requirements, targetDrive, targetRequirement);
+
+    return requirements;
+  }
+
+  private static void AddRequiredBytes(Dictionary<DriveInfo, long> requirements, DriveInfo drive, long bytes)
+  {
+    if (requirements.TryGetValue(drive, out var existingBytes))
+    {
+      requirements[drive] = existingBytes + bytes;
+      return;
+    }
+
+    requirements[drive] = bytes;
+  }
+
+  private static DriveInfo ResolveDriveInfo(string path)
+  {
+    var fullPath = Path.GetFullPath(path);
+    var rootPath = Path.GetPathRoot(fullPath);
+    if (string.IsNullOrWhiteSpace(rootPath))
+    {
+      throw new InvalidOperationException($"드라이브 경로를 확인하지 못했습니다: {path}");
+    }
+
+    return new DriveInfo(rootPath);
+  }
+
+  private static string BuildDownloadProgressMessage(long downloadedBytes, long totalBytes, TimeSpan elapsed, bool completed = false)
+  {
+    var progressPercent = totalBytes <= 0 ? 0d : downloadedBytes * 100d / totalBytes;
+    var bytesPerSecond = elapsed.TotalSeconds > 0
+      ? downloadedBytes / elapsed.TotalSeconds
+      : 0d;
+
+    if (completed)
+    {
+      return $"앱 업데이트 다운로드 완료: 100.0% ({FormatBytes(downloadedBytes)} / {FormatBytes(totalBytes)}, 평균 속도 {FormatBytes(bytesPerSecond)}/s)";
+    }
+
+    var remainingBytes = Math.Max(0, totalBytes - downloadedBytes);
+    var eta = bytesPerSecond > 0
+      ? TimeSpan.FromSeconds(remainingBytes / bytesPerSecond)
+      : (TimeSpan?)null;
+
+    return eta is TimeSpan remaining
+      ? $"앱 업데이트 다운로드 진행률: {progressPercent:0.0}% ({FormatBytes(downloadedBytes)} / {FormatBytes(totalBytes)}, {FormatBytes(bytesPerSecond)}/s, 남은 {FormatDuration(remaining)})"
+      : $"앱 업데이트 다운로드 진행률: {progressPercent:0.0}% ({FormatBytes(downloadedBytes)} / {FormatBytes(totalBytes)}, {FormatBytes(bytesPerSecond)}/s)";
+  }
+
+  private static string FormatBytes(double bytes)
+  {
+    string[] units = ["B", "KB", "MB", "GB", "TB"];
+    var value = Math.Max(0d, bytes);
+    var unitIndex = 0;
+    while (value >= 1024d && unitIndex < units.Length - 1)
+    {
+      value /= 1024d;
+      unitIndex += 1;
+    }
+
+    return $"{value:0.0} {units[unitIndex]}";
+  }
+
+  private static string FormatDuration(TimeSpan duration)
+  {
+    if (duration.TotalHours >= 1)
+    {
+      return $"{(int)duration.TotalHours}시간 {duration.Minutes}분";
+    }
+
+    if (duration.TotalMinutes >= 1)
+    {
+      return $"{duration.Minutes}분 {duration.Seconds}초";
+    }
+
+    return $"{Math.Max(1, duration.Seconds)}초";
   }
 
   private static void WritePendingAppUpdateState(OctopPaths paths, PendingAppUpdateState state)
@@ -310,5 +573,20 @@ sealed class WindowsAutoUpdater
     {
       throw new InvalidOperationException("다운로드한 파일이 유효한 Windows 실행 파일이 아닙니다.");
     }
+  }
+}
+
+sealed class DriveInfoNameComparer : IEqualityComparer<DriveInfo>
+{
+  public static DriveInfoNameComparer Instance { get; } = new();
+
+  public bool Equals(DriveInfo? x, DriveInfo? y)
+  {
+    return string.Equals(x?.Name, y?.Name, StringComparison.OrdinalIgnoreCase);
+  }
+
+  public int GetHashCode(DriveInfo obj)
+  {
+    return StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Name);
   }
 }
