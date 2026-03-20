@@ -86,7 +86,8 @@ const CLOSED_PHYSICAL_THREAD_TOMBSTONE_TTL_MS = Number(
 const DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS = Number(
   process.env.OCTOP_DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS ?? 1800000
 );
-const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
+const HOST_NAME = os.hostname();
+const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? HOST_NAME);
 const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
   process.env.OCTOP_BRIDGE_OWNER_LOGIN_ID ?? process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user"
@@ -5956,6 +5957,7 @@ async function publishEvent(loginId, type, payload) {
     user_id: loginId,
     login_id: loginId,
     bridge_id: BRIDGE_ID,
+    host_name: HOST_NAME,
     device_name: DEVICE_NAME,
     type,
     payload,
@@ -8385,6 +8387,7 @@ function collectBridgeStatus(userId) {
   return {
     bridge_mode: BRIDGE_MODE,
     bridge_id: BRIDGE_ID,
+    host_name: HOST_NAME,
     bridge_revision: BRIDGE_REVISION,
     device_name: DEVICE_NAME,
     app_server: {
