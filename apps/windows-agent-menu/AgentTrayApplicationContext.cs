@@ -640,16 +640,17 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     try
     {
+      var servicePorts = ResolveServicePorts(_configuration);
       var stopResult = await Task.Run(() =>
       {
-        var managedProcessIds = CollectManagedProcessIds(includeStdioSessions: true);
-        if (managedProcessIds.Count == 0)
+        var targetProcessIds = CollectStopTargetProcessIds(includeStdioSessions: true, servicePorts);
+        if (targetProcessIds.Count == 0)
         {
-          return managedProcessIds;
+          return targetProcessIds;
         }
 
-        ForceKillProcesses(managedProcessIds);
-        return managedProcessIds;
+        ForceKillProcesses(targetProcessIds);
+        return targetProcessIds;
       });
 
       if (stopResult.Count == 0)
@@ -665,6 +666,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       }
 
       AppendLog($"서비스 관련 프로세스를 강제 종료합니다. pids={string.Join(",", stopResult)}");
+      await ForceKillListeningProcessesUntilReleasedAsync(servicePorts);
       DeleteAgentPidFile();
       DisposeProcess();
       _processId = null;
@@ -1164,7 +1166,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task StopServiceProcessesAsync(bool includeStdioSessions, bool logWhenIdle)
   {
-    var allProcessIds = CollectManagedProcessIds(includeStdioSessions);
+    var servicePorts = ResolveServicePorts(_configuration);
+    var allProcessIds = CollectStopTargetProcessIds(includeStdioSessions, servicePorts);
 
     if (allProcessIds.Count == 0)
     {
@@ -1183,7 +1186,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     AppendLog($"서비스 관련 프로세스를 종료합니다. pids={string.Join(",", allProcessIds)}");
     ForceKillProcesses(allProcessIds);
     await WaitForProcessGroupExitAsync(includeStdioSessions);
-    await WaitForPortsReleasedAsync(ResolveServicePorts(_configuration));
+    await ForceKillListeningProcessesUntilReleasedAsync(servicePorts);
     DeleteAgentPidFile();
     DisposeProcess();
     _processId = null;
@@ -1196,11 +1199,18 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void StopServiceProcessesImmediatelyForExit(bool includeStdioSessions)
   {
-    var allProcessIds = CollectManagedProcessIds(includeStdioSessions);
+    var servicePorts = ResolveServicePorts(_configuration);
+    var allProcessIds = CollectStopTargetProcessIds(includeStdioSessions, servicePorts);
 
     if (allProcessIds.Count > 0)
     {
       ForceKillProcesses(allProcessIds);
+    }
+
+    var listeningProcessIds = FindListeningProcessIds(servicePorts);
+    if (listeningProcessIds.Count > 0)
+    {
+      ForceKillProcesses(listeningProcessIds);
     }
 
     DeleteAgentPidFile();
@@ -1388,6 +1398,33 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return false;
   }
 
+  private async Task ForceKillListeningProcessesUntilReleasedAsync(IReadOnlyCollection<int> ports, int timeoutMs = 15000)
+  {
+    if (ports.Count == 0)
+    {
+      return;
+    }
+
+    var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+    while (DateTimeOffset.UtcNow < deadline)
+    {
+      var listeningProcessIds = FindListeningProcessIds(ports);
+      if (listeningProcessIds.Count == 0)
+      {
+        return;
+      }
+
+      ForceKillProcesses(listeningProcessIds);
+      await Task.Delay(200);
+    }
+
+    var remainingProcessIds = FindListeningProcessIds(ports);
+    if (remainingProcessIds.Count > 0)
+    {
+      AppendLog($"서비스 포트를 점유한 프로세스가 남아 있어 재강제 종료를 시도했지만 완전히 내려가지 않았습니다. pids={string.Join(",", remainingProcessIds)}");
+    }
+  }
+
   private async Task<bool> WaitForProcessGroupExitAsync(bool includeStdioSessions, int timeoutMs = 15000)
   {
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
@@ -1446,6 +1483,21 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     if (TryReadPersistedAgentProcessId(out var persistedProcessId) && persistedProcessId > 0)
     {
       processIds.Add(persistedProcessId);
+    }
+
+    return processIds.ToList();
+  }
+
+  private List<int> CollectStopTargetProcessIds(bool includeStdioSessions, IReadOnlyCollection<int> servicePorts)
+  {
+    var processIds = new HashSet<int>(CollectManagedProcessIds(includeStdioSessions));
+
+    foreach (var processId in FindListeningProcessIds(servicePorts))
+    {
+      if (processId > 0)
+      {
+        processIds.Add(processId);
+      }
     }
 
     return processIds.ToList();
