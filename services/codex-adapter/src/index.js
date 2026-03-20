@@ -26,6 +26,7 @@ import {
   sanitizeUserId
 } from "./domain.js";
 
+// Runtime update verification marker: non-functional comment for atomic update validation.
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
