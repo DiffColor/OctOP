@@ -79,13 +79,11 @@ async function prepareLocalAgentEnv(env) {
   const desiredAppServerPort = desiredAppServerUrl ? normalizePort(desiredAppServerUrl.port) : null;
 
   if (desiredBridgePort !== null) {
-    const bridgePort = await resolveAvailablePort({
-      host: nextEnv.OCTOP_BRIDGE_HOST,
-      preferredPort: desiredBridgePort,
-      label: "bridge"
-    });
-
-    nextEnv.OCTOP_BRIDGE_PORT = String(bridgePort);
+    if (!(await isPortAvailable(nextEnv.OCTOP_BRIDGE_HOST, desiredBridgePort))) {
+      throw new Error(
+        `[OctOP] bridge port ${desiredBridgePort} is busy. OCTOP_BRIDGE_PORT must remain fixed as ${desiredBridgePort}.`
+      );
+    }
   }
 
   if (desiredAppServerUrl && desiredAppServerPort !== null) {
@@ -97,16 +95,6 @@ async function prepareLocalAgentEnv(env) {
   }
 
   return nextEnv;
-}
-
-async function resolveAvailablePort({ host, preferredPort, label }) {
-  if (await isPortAvailable(host, preferredPort)) {
-    return preferredPort;
-  }
-
-  const fallbackPort = await getFreePort(host);
-  console.warn(`[OctOP] ${label} port ${preferredPort} is busy, using ${fallbackPort} instead.`);
-  return fallbackPort;
 }
 
 function normalizePort(value) {
@@ -140,32 +128,6 @@ async function isPortAvailable(host, port) {
     server.once("error", () => resolve(false));
     server.listen(port, host, () => {
       server.close(() => resolve(true));
-    });
-  });
-}
-
-async function getFreePort(host) {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, host, () => {
-      const address = server.address();
-
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("failed to resolve free port")));
-        return;
-      }
-
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(port);
-      });
     });
   });
 }
