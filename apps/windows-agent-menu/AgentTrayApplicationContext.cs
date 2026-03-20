@@ -77,7 +77,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _setupWindow.InstallationCompleted += (_, status) =>
     {
       _runtimeStatus = status;
-      _ = RefreshRuntimeStatusAsync();
+      _ = HandleInstallationCompletedAsync(status);
     };
 
     _menu = new ContextMenuStrip();
@@ -204,10 +204,13 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     await EnsureAtomicRuntimePreparedOnStartupAsync();
     await RefreshRuntimeStatusAsync();
+    await RefreshAvailableRuntimeUpdateAsync();
 
-    if (_runtimeStatus?.ReadyToRun == true &&
-        _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting))
+    if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition())
     {
+      AppendLog(_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting
+        ? "자동 시작 시 실행 중인 서비스를 재전환해 런타임 업데이트를 반영합니다."
+        : "자동 시작 시 서비스 시작 전 원자적 런타임 전환을 진행합니다.");
       await StartAsync();
     }
   }
@@ -273,6 +276,34 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _runtimeStatus.CodexInstalled &&
       _runtimeStatus.CodexLoggedIn &&
       (!_runtimeStatus.AutoStartRequested || _runtimeStatus.AutoStartConfigured);
+  }
+
+  private bool ShouldRunStartupRuntimeTransition()
+  {
+    var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
+    return currentRuntimeRoot is null ||
+      _availableRuntimeUpdate is not null ||
+      _runtimeStatus?.RuntimeVersionMatches != true ||
+      _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting);
+  }
+
+  private async Task HandleInstallationCompletedAsync(RuntimeStatus status)
+  {
+    await RefreshRuntimeStatusAsync();
+    if (status.AutoStartRequested &&
+        _runtimeState is not AgentRuntimeState.Starting &&
+        _runtimeState is not AgentRuntimeState.Stopping)
+    {
+      await EnsureAtomicRuntimePreparedOnStartupAsync();
+      await RefreshAvailableRuntimeUpdateAsync();
+      await RefreshRuntimeStatusAsync();
+
+      if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition())
+      {
+        AppendLog("자동 설치 완료 후 원자적 런타임 전환과 서비스 시작을 이어갑니다.");
+        await StartAsync();
+      }
+    }
   }
 
   private async Task RefreshRuntimeStatusAsync(bool showSetupWhenIncomplete = false)
