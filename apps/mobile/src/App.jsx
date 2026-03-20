@@ -23,10 +23,36 @@ const createDefaultStatus = () => ({
     connected: false,
     initialized: false,
     account: null,
-    last_error: null
+    last_error: null,
+    last_socket_activity_at: null
+  },
+  counts: {
+    projects: 0,
+    threads: 0
   },
   updated_at: null
 });
+const normalizeBridgeStatus = (nextStatus) => {
+  const base = createDefaultStatus();
+  const resolved = nextStatus && typeof nextStatus === "object" ? nextStatus : {};
+
+  return {
+    ...base,
+    ...resolved,
+    app_server: {
+      ...base.app_server,
+      ...(resolved.app_server ?? {})
+    },
+    counts: {
+      projects: Number.isFinite(Number(resolved.counts?.projects))
+        ? Number(resolved.counts.projects)
+        : base.counts.projects,
+      threads: Number.isFinite(Number(resolved.counts?.threads))
+        ? Number(resolved.counts.threads)
+        : base.counts.threads
+    }
+  };
+};
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const DEFAULT_API_BASE_URL =
@@ -5714,7 +5740,7 @@ export default function App() {
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
-  const [status, setStatus] = useState(() => createDefaultStatus());
+  const [bridgeStatusById, setBridgeStatusById] = useState({});
   const [projects, setProjects] = useState([]);
   const [threads, setThreads] = useState([]);
   const [threadListsByProjectId, setThreadListsByProjectId] = useState({});
@@ -5781,6 +5807,10 @@ export default function App() {
   const bridgeDisconnectOverridden = Boolean(
     selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]
   );
+  const status = useMemo(
+    () => normalizeBridgeStatus(selectedBridgeId ? bridgeStatusById[selectedBridgeId] : null),
+    [bridgeStatusById, selectedBridgeId]
+  );
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
@@ -5834,6 +5864,23 @@ export default function App() {
       const next = { ...current };
       delete next[normalized];
       return next;
+    });
+  }, []);
+  const setBridgeStatus = useCallback((bridgeId, updater) => {
+    const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+    if (!normalizedBridgeId) {
+      return;
+    }
+
+    setBridgeStatusById((current) => {
+      const currentStatus = normalizeBridgeStatus(current[normalizedBridgeId]);
+      const nextStatus = typeof updater === "function" ? updater(currentStatus) : updater;
+
+      return {
+        ...current,
+        [normalizedBridgeId]: normalizeBridgeStatus(nextStatus)
+      };
     });
   }, []);
   const clearThreadTransientState = useCallback((threadIds) => {
@@ -5982,12 +6029,12 @@ export default function App() {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
 
-  const handleAppForegroundResume = useCallback((reason = "foreground_resume") => {
+  const handleAppForegroundResume = useCallback(async (reason = "foreground_resume") => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       return;
     }
 
-    if (!session?.loginId || !selectedBridgeId || !selectedBridgeKnown) {
+    if (!session?.loginId) {
       return;
     }
 
@@ -6000,17 +6047,32 @@ export default function App() {
     lastForegroundResumeAtRef.current = now;
     setEventStreamReconnectToken((current) => current + 1);
 
-    if (selectedThreadId) {
-      threadLiveProgressAtByIdRef.current.delete(selectedThreadId);
+    const nextBridges = await loadBridges(session);
+    const activeBridgeId =
+      (selectedBridgeIdRef.current && nextBridges.some((bridge) => bridge.bridge_id === selectedBridgeIdRef.current))
+        ? selectedBridgeIdRef.current
+        : pickDefaultBridgeId(nextBridges);
+
+    if (!activeBridgeId) {
+      return;
     }
 
-    if (activeView === "thread" && selectedThreadId) {
+    if (activeBridgeId !== selectedBridgeIdRef.current) {
+      setSelectedBridgeId(activeBridgeId);
+      return;
+    }
+
+    if (selectedThreadIdRef.current) {
+      threadLiveProgressAtByIdRef.current.delete(selectedThreadIdRef.current);
+    }
+
+    if (activeViewRef.current === "thread" && selectedThreadIdRef.current) {
       const mode =
         selectedActiveIssue && ["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
           ? "active"
           : "full";
 
-      scheduleThreadMessagesReloadRef.current?.(selectedThreadId, {
+      scheduleThreadMessagesReloadRef.current?.(selectedThreadIdRef.current, {
         force: true,
         mode,
         delay: 0,
@@ -6021,17 +6083,13 @@ export default function App() {
       return;
     }
 
-    if (selectedScope.kind === "project" && selectedProjectId) {
-      void loadProjectThreads(session, selectedBridgeId, selectedProjectId, { applyToInbox: true });
+    if (selectedScope.kind === "project" && selectedProjectIdRef.current) {
+      void loadProjectThreads(session, activeBridgeId, selectedProjectIdRef.current, { applyToInbox: true });
     }
   }, [
-    activeView,
     selectedActiveIssue,
     selectedBridgeId,
-    selectedBridgeKnown,
-    selectedProjectId,
     selectedScope.kind,
-    selectedThreadId,
     session
   ]);
 
@@ -6050,7 +6108,7 @@ export default function App() {
       const reasonLabel = [...scheduledResumeReasonsRef.current].join(",");
       scheduledResumeReasonsRef.current.clear();
       scheduledResumeTimerRef.current = null;
-      handleAppForegroundResume(reasonLabel || reason);
+      void handleAppForegroundResume(reasonLabel || reason);
     }, APP_RESUME_COALESCE_MS);
   }, [handleAppForegroundResume]);
 
@@ -6447,7 +6505,6 @@ export default function App() {
       setThreadListsByProjectId({});
       setTodoChats([]);
       setTodoChatDetails({});
-      setStatus(createDefaultStatus());
       return;
     }
 
@@ -6477,7 +6534,7 @@ export default function App() {
       } else {
         markBridgeDisconnectedOverride(bridgeId);
       }
-      setStatus(nextStatus);
+      setBridgeStatus(bridgeId, nextStatus);
       markStreamActivity();
       setProjects(nextProjects.projects ?? []);
       setTodoChats(mergeTodoChats([], nextTodoChats.chats ?? []));
@@ -6545,7 +6602,7 @@ export default function App() {
         } else {
           markBridgeDisconnectedOverride(bridgeId);
         }
-        setStatus(nextStatus);
+        setBridgeStatus(bridgeId, nextStatus);
         return true;
       } catch (error) {
         if (selectedBridgeIdRef.current !== bridgeId) {
@@ -6553,7 +6610,7 @@ export default function App() {
         }
 
         markBridgeDisconnectedOverride(bridgeId);
-        setStatus((current) => ({
+        setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
@@ -6566,7 +6623,7 @@ export default function App() {
         return false;
       }
     },
-    [selectedBridgeId, session]
+    [selectedBridgeId, session, clearBridgeDisconnectedOverride, markBridgeDisconnectedOverride, setBridgeStatus]
   );
   useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
@@ -6575,7 +6632,7 @@ export default function App() {
       }
 
       markBridgeDisconnectedOverride(event.bridgeId);
-      setStatus((current) => ({
+      setBridgeStatus(event.bridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
@@ -6586,7 +6643,7 @@ export default function App() {
         updated_at: new Date().toISOString()
       }));
     });
-  }, [markBridgeDisconnectedOverride]);
+  }, [markBridgeDisconnectedOverride, setBridgeStatus]);
 
   async function loadProjectThreads(sessionArg, bridgeId, projectId, options = {}) {
     if (!sessionArg?.loginId || !bridgeId || !projectId) {
@@ -6887,10 +6944,14 @@ export default function App() {
       try {
         markStreamActivity();
         const payload = JSON.parse(event.data);
-        if (!payload?.app_server?.connected && selectedBridgeIdRef.current) {
-          markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+        if (selectedBridgeIdRef.current) {
+          if (payload?.app_server?.connected) {
+            clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          } else {
+            markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          }
+          setBridgeStatus(selectedBridgeIdRef.current, payload);
         }
-        setStatus(payload);
       } catch {
         // ignore malformed snapshot
       }
@@ -7008,10 +7069,14 @@ export default function App() {
         }
 
         if (payload.type === "bridge.status.updated") {
-          if (!payload.payload?.app_server?.connected && selectedBridgeIdRef.current) {
-            markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          if (selectedBridgeIdRef.current) {
+            if (payload.payload?.app_server?.connected) {
+              clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            } else {
+              markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            }
+            setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
           }
-          setStatus(payload.payload);
           return;
         }
 
@@ -7189,7 +7254,7 @@ export default function App() {
     eventSource.addEventListener("error", () => {
       setStreamActivityAt(null);
       markBridgeDisconnectedOverride(selectedBridgeId);
-      setStatus((current) => ({
+      setBridgeStatus(selectedBridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
@@ -7210,6 +7275,7 @@ export default function App() {
     markBridgeDisconnectedOverride,
     markStreamActivity,
     refreshBridgeStatus,
+    setBridgeStatus,
     selectedBridgeId,
     selectedBridgeKnown,
     session?.loginId
@@ -7267,7 +7333,6 @@ export default function App() {
 
     setProjects([]);
     setThreads([]);
-    setStatus(createDefaultStatus());
     setStreamActivityAt(null);
     setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
