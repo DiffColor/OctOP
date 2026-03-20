@@ -2451,6 +2451,11 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func resolveOrCreateBridgeId() -> String {
+    if let derived = resolveStableBridgeId() {
+      try? persistBridgeId(derived)
+      return derived
+    }
+
     for candidate in [bridgeIdURL, legacyBridgeIdURL] {
       if let value = try? String(contentsOf: candidate, encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2460,9 +2465,116 @@ final class AgentBootstrapStore: ObservableObject {
       }
     }
 
-    let generated = "bridge-\(UUID().uuidString.lowercased())"
-    try? persistBridgeId(generated)
-    return generated
+    let fallbackSource = "\(ProcessInfo.processInfo.hostName)|\(ProcessInfo.processInfo.operatingSystemVersionString)"
+    let fallback = "bridge-\(computeSha256HexUpper(fallbackSource).lowercased())"
+    try? persistBridgeId(fallback)
+    return fallback
+  }
+
+  private func resolveStableBridgeId() -> String? {
+    let normalized = Array(Set(collectMacFingerprintSources().map(normalizeFingerprintValue).filter { !$0.isEmpty })).sorted()
+
+    guard !normalized.isEmpty else {
+      return nil
+    }
+
+    return "bridge-\(computeSha256HexUpper(normalized.joined(separator: "|")).lowercased())"
+  }
+
+  private func collectMacFingerprintSources() -> [String] {
+    let ioRegOutput = runCommand("/usr/sbin/ioreg", arguments: ["-rd1", "-c", "IOPlatformExpertDevice"])
+    let systemProfilerOutput = runCommand("/usr/sbin/system_profiler", arguments: ["SPHardwareDataType"])
+
+    return [
+      extractQuotedValue(ioRegOutput, key: "IOPlatformUUID"),
+      extractQuotedValue(ioRegOutput, key: "IOPlatformSerialNumber"),
+      extractColonValue(systemProfilerOutput, key: "Hardware UUID"),
+      extractColonValue(systemProfilerOutput, key: "Serial Number (system)")
+    ]
+  }
+
+  private func runCommand(_ launchPath: String, arguments: [String]) -> String {
+    let process = Process()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+
+    process.executableURL = URL(fileURLWithPath: launchPath)
+    process.arguments = arguments
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+      let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+      return String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    } catch {
+      return ""
+    }
+  }
+
+  private func extractQuotedValue(_ text: String, key: String) -> String {
+    let pattern = "\"\(NSRegularExpression.escapedPattern(for: key))\"\\s*=\\s*\"([^\"]+)\""
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let valueRange = Range(match.range(at: 1), in: text) else {
+      return ""
+    }
+
+    return String(text[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func extractColonValue(_ text: String, key: String) -> String {
+    for line in text.split(whereSeparator: \.isNewline) {
+      let rawLine = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+      guard rawLine.lowercased().hasPrefix("\(key.lowercased()):") else {
+        continue
+      }
+
+      return rawLine.split(separator: ":", maxSplits: 1).dropFirst().first?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    return ""
+  }
+
+  private func normalizeFingerprintValue(_ value: String) -> String {
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+    guard !normalized.isEmpty else {
+      return ""
+    }
+
+    let dummyValues: Set<String> = [
+      "",
+      "0",
+      "00",
+      "000",
+      "0000",
+      "00000000",
+      "unknown",
+      "none",
+      "default",
+      "n/a",
+      "android",
+      "alps",
+      "generic",
+      "goldfish",
+      "default string"
+    ]
+
+    if dummyValues.contains(normalized) || normalized.allSatisfy({ $0 == "0" }) {
+      return ""
+    }
+
+    return normalized
+  }
+
+  private func computeSha256HexUpper(_ source: String) -> String {
+    SHA256.hash(data: Data(source.utf8))
+      .map { String(format: "%02X", $0) }
+      .joined()
   }
 
   private func persistBridgeId(_ bridgeId: String) throws {

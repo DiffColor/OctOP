@@ -1064,6 +1064,7 @@ struct OctOPAgentMenuApp: App {
   @StateObject private var model = AgentMenuModel()
   @StateObject private var bootstrap = AgentBootstrapStore()
   @State private var runtimeUpdateMonitorTask: Task<Void, Never>? = nil
+  @State private var automaticServiceStartAttempted = false
 
   init() {
     NSApplication.shared.setActivationPolicy(.accessory)
@@ -1093,7 +1094,23 @@ struct OctOPAgentMenuApp: App {
 
           model.refreshRuntimeStateFromSystem()
           await bootstrap.recoverPendingLoginAfterRestart(log: model.appendInstallerLog)
-          await bootstrap.ensureInstalledIfNeeded(log: model.appendInstallerLog)
+          let readyForLaunch = await bootstrap.ensureReadyForLaunch(log: model.appendInstallerLog)
+          model.refreshRuntimeStateFromSystem()
+
+          if
+            !automaticServiceStartAttempted &&
+            bootstrap.configuration.autoStartAtLogin &&
+            readyForLaunch &&
+            !model.isRunning
+          {
+            automaticServiceStartAttempted = true
+            model.appendInstallerLog("자동 시작 설정이 켜져 있어 서비스를 시작합니다.")
+            await model.start(using: bootstrap)
+            model.refreshRuntimeStateFromSystem()
+          } else if !automaticServiceStartAttempted {
+            automaticServiceStartAttempted = true
+          }
+
           await bootstrap.refreshCodexLoginStatus()
           await bootstrap.refreshAvailableAppUpdate(log: model.appendInstallerLog)
           await bootstrap.refreshAvailableRuntimeUpdate(

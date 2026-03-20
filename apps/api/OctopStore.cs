@@ -111,17 +111,31 @@ public sealed class OctopStore : IAsyncDisposable
 
   public async Task<JArray> ListBridgesForUserAsync(string userId)
   {
-    var connection = await GetConnectionAsync();
-    var bridges = await ReadTableRowsAsync(connection, BridgeNodeTable);
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    return new JArray(CanonicalizeBridgeRows(bridges));
+  }
 
-    return new JArray(
-      bridges
-        .Where(bridge => string.Equals(
-          bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
-          userId,
-          StringComparison.Ordinal))
-        .OrderByDescending(bridge => DateTimeOffset.TryParse(bridge.Value<string>("last_seen_at"), out var seenAt) ? seenAt : DateTimeOffset.MinValue)
-    );
+  public async Task<string?> ResolveCanonicalBridgeIdForUserAsync(string userId, string bridgeId)
+  {
+    if (string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return null;
+    }
+
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    var matched = bridges.FirstOrDefault(bridge =>
+      string.Equals(bridge.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
+
+    if (matched is null)
+    {
+      return null;
+    }
+
+    var identityKey = ResolveBridgeIdentityKey(matched);
+    var canonical = CanonicalizeBridgeRows(bridges).FirstOrDefault(bridge =>
+      string.Equals(ResolveBridgeIdentityKey(bridge), identityKey, StringComparison.Ordinal));
+
+    return canonical?.Value<string>("bridge_id") ?? matched.Value<string>("bridge_id");
   }
 
   public async Task<JArray> ListProjectsForUserAsync(string userId, string bridgeId)
@@ -212,8 +226,8 @@ public sealed class OctopStore : IAsyncDisposable
 
   public async Task<bool> UserOwnsBridgeAsync(string userId, string bridgeId)
   {
-    var bridges = await ListBridgesForUserAsync(userId);
-    return bridges.OfType<JObject>().Any(bridge => string.Equals(bridge.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    return bridges.Any(bridge => string.Equals(bridge.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
   }
 
   public async Task EnsureProjectMembershipAsync(string userId, string bridgeId, string projectId)
@@ -270,49 +284,55 @@ public sealed class OctopStore : IAsyncDisposable
   public async Task DeleteBridgeForUserAsync(string userId, string bridgeId)
   {
     var connection = await GetConnectionAsync();
-    var bridge = await _r.Db(_db)
-      .Table(BridgeNodeTable)
-      .Get(bridgeId)
-      .RunResultAsync<JObject?>(connection);
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    var matched = bridges.FirstOrDefault(bridge =>
+      string.Equals(bridge.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
 
-    if (
-      bridge is null ||
-      !string.Equals(
-        bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
-        userId,
-        StringComparison.Ordinal))
+    if (matched is null)
     {
       return;
     }
 
-    foreach (var tableName in new[]
+    var identityKey = ResolveBridgeIdentityKey(matched);
+    var bridgeIdsToDelete = bridges
+      .Where(bridge => string.Equals(ResolveBridgeIdentityKey(bridge), identityKey, StringComparison.Ordinal))
+      .Select(bridge => bridge.Value<string>("bridge_id"))
+      .Where(value => !string.IsNullOrWhiteSpace(value))
+      .Cast<string>()
+      .Distinct(StringComparer.Ordinal)
+      .ToArray();
+
+    foreach (var currentBridgeId in bridgeIdsToDelete)
     {
-      ProjectMemberTable,
-      ProjectTable,
-      ThreadTable,
-      ProjectThreadTable,
-      ThreadIssueCardTable,
-      RootThreadTable,
-      PhysicalThreadTable,
-      HandoffSummaryTable,
-      LogicalThreadTimelineTable,
-      LogicalThreadIssueBoardTable,
-      TodoChatTable,
-      TodoMessageTable,
-      PushSubscriptionTable,
-      PushNotificationReceiptTable
-    })
-    {
-      await DeleteRowsByBridgeIdAsync(connection, tableName, bridgeId);
+      foreach (var tableName in new[]
+      {
+        ProjectMemberTable,
+        ProjectTable,
+        ThreadTable,
+        ProjectThreadTable,
+        ThreadIssueCardTable,
+        RootThreadTable,
+        PhysicalThreadTable,
+        HandoffSummaryTable,
+        LogicalThreadTimelineTable,
+        LogicalThreadIssueBoardTable,
+        TodoChatTable,
+        TodoMessageTable,
+        PushSubscriptionTable,
+        PushNotificationReceiptTable
+      })
+      {
+        await DeleteRowsByBridgeIdAsync(connection, tableName, currentBridgeId);
+      }
+
+      await _r.Db(_db)
+        .Table(BridgeNodeTable)
+        .Get(currentBridgeId)
+        .Delete()
+        .RunResultAsync<object>(connection);
+
+      await RemoveBridgeArchiveStateAsync(userId, currentBridgeId);
     }
-
-    await _r.Db(_db)
-      .Table(BridgeNodeTable)
-      .Get(bridgeId)
-      .Delete()
-      .RunResultAsync<object>(connection);
-
-    await RemoveBridgeArchiveStateAsync(userId, bridgeId);
   }
 
   public async Task RemoveBridgeArchiveStateAsync(string userId, string bridgeId)
@@ -395,6 +415,86 @@ public sealed class OctopStore : IAsyncDisposable
     }
 
     return rows;
+  }
+
+  private async Task<List<JObject>> ListRawBridgesForUserAsync(string userId)
+  {
+    var connection = await GetConnectionAsync();
+    var bridges = await ReadTableRowsAsync(connection, BridgeNodeTable);
+
+    return bridges
+      .Where(bridge => string.Equals(
+        bridge.Value<string>("login_id") ?? bridge.Value<string>("user_id"),
+        userId,
+        StringComparison.Ordinal))
+      .ToList();
+  }
+
+  private static IReadOnlyList<JObject> CanonicalizeBridgeRows(IEnumerable<JObject> bridges)
+  {
+    return bridges
+      .GroupBy(ResolveBridgeIdentityKey, StringComparer.Ordinal)
+      .Select(group => group
+        .OrderByDescending(IsBridgeOnline)
+        .ThenByDescending(GetBridgeLastSeenAt)
+        .ThenByDescending(GetBridgeCreatedAt)
+        .ThenByDescending(bridge => bridge.Value<string>("bridge_id"), StringComparer.Ordinal)
+        .First())
+      .OrderByDescending(GetBridgeLastSeenAt)
+      .ThenByDescending(GetBridgeCreatedAt)
+      .ToList();
+  }
+
+  private static string ResolveBridgeIdentityKey(JObject bridge)
+  {
+    var hostName = NormalizeBridgeIdentityPart(
+      bridge.Value<string>("host_name") ??
+      bridge["runtime"]?["host_name"]?.Value<string>());
+
+    if (!string.IsNullOrWhiteSpace(hostName))
+    {
+      return $"host:{hostName}";
+    }
+
+    var deviceName = NormalizeBridgeIdentityPart(
+      bridge.Value<string>("device_name") ??
+      bridge["runtime"]?["device_name"]?.Value<string>());
+
+    if (!string.IsNullOrWhiteSpace(deviceName))
+    {
+      return $"device:{deviceName}";
+    }
+
+    return $"bridge:{bridge.Value<string>("bridge_id") ?? string.Empty}";
+  }
+
+  private static string NormalizeBridgeIdentityPart(string? value)
+  {
+    return string.IsNullOrWhiteSpace(value)
+      ? string.Empty
+      : value.Trim().ToLowerInvariant();
+  }
+
+  private static bool IsBridgeOnline(JObject bridge)
+  {
+    return string.Equals(bridge.Value<string>("status"), "online", StringComparison.OrdinalIgnoreCase);
+  }
+
+  private static DateTimeOffset GetBridgeLastSeenAt(JObject bridge)
+  {
+    return TryParseBridgeTimestamp(bridge.Value<string>("last_seen_at"));
+  }
+
+  private static DateTimeOffset GetBridgeCreatedAt(JObject bridge)
+  {
+    return TryParseBridgeTimestamp(bridge.Value<string>("created_at"));
+  }
+
+  private static DateTimeOffset TryParseBridgeTimestamp(string? value)
+  {
+    return DateTimeOffset.TryParse(value, out var timestamp)
+      ? timestamp
+      : DateTimeOffset.MinValue;
   }
 
   private async Task DeleteRowsByBridgeIdAsync(RethinkConnection connection, string tableName, string bridgeId)

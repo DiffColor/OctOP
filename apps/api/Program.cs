@@ -1982,7 +1982,7 @@ static async Task<string?> ResolveBridgeIdAsync(
 
   if (!string.IsNullOrWhiteSpace(httpContext.Request.Query["bridge_id"]))
   {
-    return requested;
+    return await octopStore.ResolveCanonicalBridgeIdForUserAsync(userId, requested) ?? requested;
   }
 
   cancellationToken.ThrowIfCancellationRequested();

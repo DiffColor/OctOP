@@ -132,13 +132,15 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   }
 
   const arch = exec("uname", ["-m"], workspaceRoot).trim();
-  const appRoot = resolve(stageRoot, "macos", "OctOPAgentMenu.app");
+  const appRoot = resolve(stageRoot, "macos", "OctOP.app");
   const contentsRoot = resolve(appRoot, "Contents");
   const macOsRoot = resolve(contentsRoot, "MacOS");
   const resourcesRoot = resolve(contentsRoot, "Resources");
-  const iconSourcePath = resolve(workspaceRoot, "apps", "macos-agent-menu", "Sources", "Resources", "icon.png");
+  const hiResIconPath = resolve(workspaceRoot, "design", "large_icon2.png");
+  const fallbackIconPath = resolve(workspaceRoot, "apps", "macos-agent-menu", "Sources", "Resources", "icon.png");
+  const iconSourcePath = existsSync(hiResIconPath) ? hiResIconPath : fallbackIconPath;
   const iconPath = resolve(resourcesRoot, "AppIcon.icns");
-  const standaloneAppName = `OctOPAgentMenu-macos-${arch}-${versionTag}.app`;
+  const standaloneAppName = `OctOP-macos-${arch}-${versionTag}.app`;
   const standaloneAppPath = resolve(outputRoot, standaloneAppName);
   rmSync(resolve(stageRoot, "macos"), { recursive: true, force: true });
   rmSync(standaloneAppPath, { recursive: true, force: true });
@@ -241,7 +243,7 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>OctOPAgentMenu</string>
+  <string>OctOP</string>
   <key>CFBundleExecutable</key>
   <string>OctOPAgentMenu</string>
   <key>CFBundleIdentifier</key>
@@ -249,7 +251,7 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
-  <string>OctOPAgentMenu</string>
+  <string>OctOP</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

@@ -1,7 +1,26 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import { delimiter, resolve } from "node:path";
+
+const DUMMY_FINGERPRINT_VALUES = new Set([
+  "",
+  "0",
+  "00",
+  "000",
+  "0000",
+  "00000000",
+  "unknown",
+  "none",
+  "default",
+  "n/a",
+  "android",
+  "alps",
+  "generic",
+  "goldfish",
+  "default string"
+]);
 
 export function loadOctopEnv(workspaceRoot) {
   const envFilePaths = [".env.local", ".env"].map((file) => resolve(workspaceRoot, file));
@@ -105,7 +124,7 @@ export async function resolveBridgeRuntimeEnv(env) {
 
 function applyBridgeIdentityDefaults(env) {
   const hostname = os.hostname();
-  const bridgeId = env.OCTOP_BRIDGE_ID?.trim() || loadOrCreateBridgeId();
+  const bridgeId = env.OCTOP_BRIDGE_ID?.trim() || loadOrCreateBridgeId(env);
 
   return {
     ...env,
@@ -161,22 +180,212 @@ function parseCliArgs(argv = []) {
   return parsed;
 }
 
-function loadOrCreateBridgeId() {
-  const configDir = resolve(os.homedir(), ".octop");
+function loadOrCreateBridgeId(env = process.env) {
+  const configDir = resolveOctopStateDir(env);
   const bridgeIdPath = resolve(configDir, "bridge-id");
+  const derived = deriveStableBridgeId(env);
 
-  if (existsSync(bridgeIdPath)) {
-    const existing = readFileSync(bridgeIdPath, "utf8").trim();
-
-    if (existing) {
-      return existing;
-    }
+  if (derived) {
+    persistBridgeId(configDir, bridgeIdPath, derived);
+    return derived;
   }
 
+  const existing = readStoredBridgeId(bridgeIdPath);
+
+  if (existing) {
+    return existing;
+  }
+
+  const fallback = `bridge-${createHash("sha256")
+    .update(`${os.hostname()}|${os.platform()}|${os.release()}`)
+    .digest("hex")}`;
+  persistBridgeId(configDir, bridgeIdPath, fallback);
+  return fallback;
+}
+
+function resolveOctopStateDir(env = process.env) {
+  const configured = String(env.OCTOP_STATE_HOME ?? "").trim();
+  return configured ? resolve(configured) : resolve(os.homedir(), ".octop");
+}
+
+function persistBridgeId(configDir, bridgeIdPath, bridgeId) {
   mkdirSync(configDir, { recursive: true });
-  const generated = `bridge-${randomUUID()}`;
-  writeFileSync(bridgeIdPath, `${generated}\n`, "utf8");
-  return generated;
+  writeFileSync(bridgeIdPath, `${bridgeId}\n`, "utf8");
+}
+
+function readStoredBridgeId(bridgeIdPath) {
+  if (!existsSync(bridgeIdPath)) {
+    return "";
+  }
+
+  return readFileSync(bridgeIdPath, "utf8").trim();
+}
+
+function deriveStableBridgeId(env = process.env) {
+  const normalized = collectFingerprintSources(env)
+    .map(normalizeFingerprintValue)
+    .filter(Boolean);
+  const distinct = [...new Set(normalized)].sort();
+
+  if (distinct.length === 0) {
+    return "";
+  }
+
+  const fingerprint = createHash("sha256")
+    .update(distinct.join("|"))
+    .digest("hex");
+
+  return `bridge-${fingerprint}`;
+}
+
+function collectFingerprintSources(env = process.env) {
+  if (process.platform === "win32") {
+    return collectWindowsFingerprintSources(env);
+  }
+
+  if (process.platform === "darwin") {
+    return collectMacFingerprintSources(env);
+  }
+
+  return collectLinuxFingerprintSources();
+}
+
+function collectWindowsFingerprintSources(env = process.env) {
+  return [
+    readWindowsRegistryMachineGuid(env),
+    readWindowsHardwareValue("Win32_Processor", "ProcessorId", env),
+    readWindowsHardwareValue("Win32_BaseBoard", "SerialNumber", env),
+    readWindowsHardwareValue("Win32_BIOS", "SerialNumber", env),
+    readWindowsHardwareValue("Win32_DiskDrive", "SerialNumber", env),
+    readWindowsHardwareValue("Win32_ComputerSystemProduct", "UUID", env)
+  ];
+}
+
+function readWindowsRegistryMachineGuid(env = process.env) {
+  return readCommandOutput(
+    "reg.exe",
+    [
+      "query",
+      "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+      "/v",
+      "MachineGuid"
+    ],
+    env,
+    (output) => output
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => /^MachineGuid\s+/iu.test(line))
+      ?.split(/\s+/u)
+      .at(-1) ?? ""
+  );
+}
+
+function readWindowsHardwareValue(className, property, env = process.env) {
+  const escapedClassName = escapePowerShellLiteral(className);
+  const escapedProperty = escapePowerShellLiteral(property);
+  const script = [
+    "$value = ''",
+    `try { $value = Get-CimInstance -ClassName '${escapedClassName}' | Select-Object -First 1 -ExpandProperty '${escapedProperty}' } catch {`,
+    `  try { $value = Get-WmiObject -Class '${escapedClassName}' | Select-Object -First 1 -ExpandProperty '${escapedProperty}' } catch { }`,
+    "}",
+    "if ($null -ne $value) { [Console]::Write($value.ToString()) }"
+  ].join(" ");
+
+  return readCommandOutput(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    env
+  );
+}
+
+function escapePowerShellLiteral(value) {
+  return String(value ?? "").replace(/'/g, "''");
+}
+
+function collectMacFingerprintSources(env = process.env) {
+  const ioRegOutput = readCommandOutput("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], env);
+  const systemProfilerOutput = readCommandOutput(
+    "/usr/sbin/system_profiler",
+    ["SPHardwareDataType"],
+    env
+  );
+
+  return [
+    extractQuotedValue(ioRegOutput, "IOPlatformUUID"),
+    extractQuotedValue(ioRegOutput, "IOPlatformSerialNumber"),
+    extractColonValue(systemProfilerOutput, "Hardware UUID"),
+    extractColonValue(systemProfilerOutput, "Serial Number (system)")
+  ];
+}
+
+function collectLinuxFingerprintSources() {
+  return [
+    readTextFile("/etc/machine-id"),
+    readTextFile("/var/lib/dbus/machine-id"),
+    readTextFile("/sys/class/dmi/id/product_uuid"),
+    readTextFile("/sys/class/dmi/id/product_serial"),
+    readTextFile("/sys/class/dmi/id/board_serial")
+  ];
+}
+
+function readTextFile(filePath) {
+  try {
+    return readFileSync(filePath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function readCommandOutput(command, args, env = process.env, transform) {
+  try {
+    const output = execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        ...env
+      }
+    });
+    const text = String(output ?? "").trim();
+    return typeof transform === "function" ? String(transform(text) ?? "").trim() : text;
+  } catch {
+    return "";
+  }
+}
+
+function extractQuotedValue(text, key) {
+  const matcher = new RegExp(`"${escapeRegExp(key)}"\\s*=\\s*"([^"]+)"`, "iu");
+  return text.match(matcher)?.[1]?.trim() ?? "";
+}
+
+function extractColonValue(text, key) {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}:`))
+    ?.split(/:\s*/u, 2)?.[1]?.trim() ?? "";
+}
+
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeFingerprintValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (!normalized || DUMMY_FINGERPRINT_VALUES.has(normalized)) {
+    return "";
+  }
+
+  if ([...normalized].every((character) => character === "0")) {
+    return "";
+  }
+
+  return normalized;
 }
 
 function buildExecutablePath(env) {

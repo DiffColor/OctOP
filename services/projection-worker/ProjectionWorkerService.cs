@@ -221,6 +221,7 @@ public sealed class ProjectionWorkerService : BackgroundService
 
     var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id") ?? "unknown-user";
     var timestamp = @event.Value<string>("timestamp") ?? DateTimeOffset.UtcNow.ToString("O");
+    var hostName = @event.Value<string>("host_name") ?? @event["payload"]?["host_name"]?.Value<string>();
     var existing = await _r.Db(_rethinkDb)
       .Table(BridgeNodeTable)
       .Get(bridgeId)
@@ -230,6 +231,7 @@ public sealed class ProjectionWorkerService : BackgroundService
         ["bridge_id"] = bridgeId,
         ["login_id"] = loginId,
         ["user_id"] = loginId,
+        ["host_name"] = hostName,
         ["device_name"] = @event.Value<string>("device_name") ?? bridgeId,
         ["status"] = "unknown",
         ["created_at"] = timestamp
@@ -237,6 +239,7 @@ public sealed class ProjectionWorkerService : BackgroundService
 
     existing["login_id"] = loginId;
     existing["user_id"] = loginId;
+    existing["host_name"] = hostName ?? existing.Value<string>("host_name");
     existing["device_name"] = @event.Value<string>("device_name") ?? existing.Value<string>("device_name") ?? bridgeId;
     existing["last_event_type"] = @event.Value<string>("type") ?? string.Empty;
     existing["last_seen_at"] = timestamp;
