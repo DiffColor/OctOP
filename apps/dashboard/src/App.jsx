@@ -37,6 +37,45 @@ const TEXT_ATTACHMENT_FILE_PATTERN =
   /\.(?:txt|md|markdown|json|jsonc|ya?ml|xml|csv|ts|tsx|js|jsx|mjs|cjs|css|scss|sass|html|htm|cs|java|kt|swift|py|rb|php|go|rs|sh|zsh|bash|ps1|sql|toml|ini|cfg|conf|env|gitignore|dockerfile)$/i;
 const bridgeRequestFailureListeners = new Set();
 
+function createEmptyBridgeStatus() {
+  return {
+    app_server: {
+      connected: false,
+      initialized: false,
+      account: null,
+      last_error: null,
+      last_socket_activity_at: null
+    },
+    counts: {
+      projects: 0,
+      threads: 0
+    },
+    updated_at: null
+  };
+}
+
+function normalizeBridgeStatus(nextStatus) {
+  const base = createEmptyBridgeStatus();
+  const resolved = nextStatus && typeof nextStatus === "object" ? nextStatus : {};
+
+  return {
+    ...base,
+    ...resolved,
+    app_server: {
+      ...base.app_server,
+      ...(resolved.app_server ?? {})
+    },
+    counts: {
+      projects: Number.isFinite(Number(resolved.counts?.projects))
+        ? Number(resolved.counts.projects)
+        : base.counts.projects,
+      threads: Number.isFinite(Number(resolved.counts?.threads))
+        ? Number(resolved.counts.threads)
+        : base.counts.threads
+    }
+  };
+}
+
 function subscribeBridgeRequestFailures(listener) {
   if (typeof listener !== "function") {
     return () => {};
@@ -5493,19 +5532,7 @@ export default function App() {
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
   const [bridgeDeleteBusy, setBridgeDeleteBusy] = useState(false);
-  const [status, setStatus] = useState({
-    app_server: {
-      connected: false,
-      initialized: false,
-      account: null,
-      last_error: null
-    },
-    counts: {
-      projects: 0,
-      threads: 0
-    },
-    updated_at: null
-  });
+  const [bridgeStatusById, setBridgeStatusById] = useState({});
   const [projects, setProjects] = useState([]);
   const [projectThreads, setProjectThreads] = useState([]);
   const [issues, setIssues] = useState([]);
@@ -5588,6 +5615,10 @@ export default function App() {
     messages: []
   });
   const copy = getCopy(language);
+  const status = useMemo(
+    () => normalizeBridgeStatus(selectedBridgeId ? bridgeStatusById[selectedBridgeId] : null),
+    [bridgeStatusById, selectedBridgeId]
+  );
   const bridgeConnected = Boolean(status.app_server?.connected) &&
     !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]);
   const bridgeAvailable = Boolean(selectedBridgeId) && bridgeConnected;
@@ -5842,15 +5873,33 @@ export default function App() {
     };
   }, [replaceArchivedIssuesForCurrentScope, replaceVisibleIssuesForCurrentScope]);
 
-  const updateStatusCounts = useCallback((nextCounts) => {
-    setStatus((current) => ({
+  const setBridgeStatus = useCallback((bridgeId, updater) => {
+    const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+    if (!normalizedBridgeId) {
+      return;
+    }
+
+    setBridgeStatusById((current) => {
+      const currentStatus = normalizeBridgeStatus(current[normalizedBridgeId]);
+      const nextStatus = typeof updater === "function" ? updater(currentStatus) : updater;
+
+      return {
+        ...current,
+        [normalizedBridgeId]: normalizeBridgeStatus(nextStatus)
+      };
+    });
+  }, []);
+
+  const updateStatusCounts = useCallback((nextCounts, bridgeId = selectedBridgeIdRef.current) => {
+    setBridgeStatus(bridgeId, (current) => ({
       ...current,
       counts: {
         projects: nextCounts.projects ?? current.counts?.projects ?? 0,
         threads: nextCounts.threads ?? current.counts?.threads ?? 0
       }
     }));
-  }, []);
+  }, [setBridgeStatus]);
 
   useEffect(() => {
     storeLanguage(language);
@@ -6005,19 +6054,6 @@ export default function App() {
       archivedIssueSnapshotsRef.current = {};
       visibleIssueSnapshotsRef.current = {};
       setArchivedIssues([]);
-      setStatus({
-        app_server: {
-          connected: false,
-          initialized: false,
-          account: null,
-          last_error: null
-        },
-        counts: {
-          projects: 0,
-          threads: 0
-        },
-        updated_at: null
-      });
       setStreamActivityAt(null);
       return;
     }
@@ -6040,7 +6076,7 @@ export default function App() {
       } else {
         markBridgeDisconnectedOverride(bridgeId);
       }
-      setStatus(nextStatus);
+      setBridgeStatus(bridgeId, nextStatus);
       markStreamActivity();
 
       if (!nextStatus?.app_server?.connected) {
@@ -6092,7 +6128,7 @@ export default function App() {
       }
 
       markBridgeDisconnectedOverride(bridgeId);
-      setStatus((current) => ({
+      setBridgeStatus(bridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
@@ -6166,6 +6202,16 @@ export default function App() {
         }
       }
       pendingProjectThreadLoadsRef.current = nextPendingProjectThreadLoads;
+
+      setBridgeStatusById((current) => {
+        if (!current[deletedBridgeId]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[deletedBridgeId];
+        return next;
+      });
 
       archivedIssueSnapshotsRef.current = removeBridgeIssueSnapshots(archivedIssueSnapshotsRef.current, deletedBridgeId);
       visibleIssueSnapshotsRef.current = removeBridgeIssueSnapshots(visibleIssueSnapshotsRef.current, deletedBridgeId);
@@ -6485,7 +6531,7 @@ export default function App() {
         } else {
           markBridgeDisconnectedOverride(bridgeId);
         }
-        setStatus(nextStatus);
+        setBridgeStatus(bridgeId, nextStatus);
         return true;
       } catch (error) {
         if (selectedBridgeIdRef.current !== bridgeId) {
@@ -6493,7 +6539,7 @@ export default function App() {
         }
 
         markBridgeDisconnectedOverride(bridgeId);
-        setStatus((current) => ({
+        setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
@@ -6506,7 +6552,7 @@ export default function App() {
         return false;
       }
     },
-    [selectedBridgeId, session]
+    [selectedBridgeId, session, clearBridgeDisconnectedOverride, markBridgeDisconnectedOverride, setBridgeStatus]
   );
   useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
@@ -6515,7 +6561,7 @@ export default function App() {
       }
 
       markBridgeDisconnectedOverride(event.bridgeId);
-      setStatus((current) => ({
+      setBridgeStatus(event.bridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
@@ -6526,7 +6572,7 @@ export default function App() {
         updated_at: new Date().toISOString()
       }));
     });
-  }, [markBridgeDisconnectedOverride]);
+  }, [markBridgeDisconnectedOverride, setBridgeStatus]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -6572,10 +6618,14 @@ export default function App() {
       try {
         markStreamActivity();
         const payload = JSON.parse(event.data);
-        if (!payload?.app_server?.connected && selectedBridgeIdRef.current) {
-          markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+        if (selectedBridgeIdRef.current) {
+          if (payload?.app_server?.connected) {
+            clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          } else {
+            markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          }
+          setBridgeStatus(selectedBridgeIdRef.current, payload);
         }
-        setStatus(payload);
       } catch {
         // ignore malformed snapshot
       }
@@ -6600,10 +6650,14 @@ export default function App() {
         appendEvent(payload.type, summary);
 
         if (payload.type === "bridge.status.updated") {
-          if (!payload.payload?.app_server?.connected && selectedBridgeIdRef.current) {
-            markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+          if (selectedBridgeIdRef.current) {
+            if (payload.payload?.app_server?.connected) {
+              clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            } else {
+              markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            }
+            setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
           }
-          setStatus(payload.payload);
           return;
         }
 
@@ -6658,7 +6712,7 @@ export default function App() {
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
           setProjects(nextProjects);
-          updateStatusCounts({ projects: nextProjects.length });
+          updateStatusCounts({ projects: nextProjects.length }, activeBridgeId);
           setSelectedProjectId((current) => {
             if (current && nextProjects.some((project) => project.id === current)) {
               return current;
@@ -6684,7 +6738,7 @@ export default function App() {
             markProjectThreadsLoaded(activeBridgeId, projectId);
           }
           if (scope === "all") {
-            updateStatusCounts({ threads: nextThreads.length });
+            updateStatusCounts({ threads: nextThreads.length }, activeBridgeId);
           }
           setProjectThreads((current) =>
             scope === "all" ? mergeProjectThreads([], nextThreads) : replaceProjectThreadsForProject(current, nextThreads, projectId)
@@ -6781,7 +6835,7 @@ export default function App() {
       appendEvent("sse.error", copy.alerts.sseReconnect);
       setStreamActivityAt(null);
       markBridgeDisconnectedOverride(selectedBridgeId);
-      setStatus((current) => ({
+      setBridgeStatus(selectedBridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
@@ -6799,10 +6853,12 @@ export default function App() {
   }, [
     copy.alerts.sseReconnect,
     eventStreamReconnectToken,
+    clearBridgeDisconnectedOverride,
     markBridgeDisconnectedOverride,
     markStreamActivity,
     refreshBridgeStatus,
     session,
+    setBridgeStatus,
     selectedBridgeId
   ]);
 
@@ -7770,11 +7826,12 @@ export default function App() {
       return;
     }
 
+    const bridgeId = selectedBridgeId;
     setProjectBusy(true);
 
     try {
       const response = await apiRequest(
-        `/api/projects?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/projects?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify(payload)
@@ -7786,7 +7843,7 @@ export default function App() {
 
       if (Array.isArray(nextProjects)) {
         setProjects(nextProjects);
-        updateStatusCounts({ projects: nextProjects.length });
+        updateStatusCounts({ projects: nextProjects.length }, bridgeId);
       } else if (createdProject?.id) {
         let didInsert = false;
         setProjects((current) => {
@@ -7795,7 +7852,13 @@ export default function App() {
           return exists ? current : [createdProject, ...current];
         });
         if (didInsert) {
-          updateStatusCounts({ projects: (status.counts?.projects ?? projects.length) + 1 });
+          setBridgeStatus(bridgeId, (current) => ({
+            ...current,
+            counts: {
+              ...current.counts,
+              projects: (current.counts?.projects ?? 0) + 1
+            }
+          }));
         }
       }
 
@@ -7825,9 +7888,10 @@ export default function App() {
       return;
     }
 
+    const bridgeId = selectedBridgeId;
     try {
       const response = await apiRequest(
-        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
         {
           method: "DELETE"
         }
@@ -7838,8 +7902,14 @@ export default function App() {
       } else {
         setProjectThreads((current) => current.filter((thread) => thread.id !== threadId));
       }
-      clearArchivedIssuesForScope(selectedBridgeId, threadId);
-      updateStatusCounts({ threads: Math.max((status.counts?.threads ?? 0) - 1, 0) });
+      clearArchivedIssuesForScope(bridgeId, threadId);
+      setBridgeStatus(bridgeId, (current) => ({
+        ...current,
+        counts: {
+          ...current.counts,
+          threads: Math.max((current.counts?.threads ?? 0) - 1, 0)
+        }
+      }));
 
       if (selectedProjectThreadId === threadId) {
         setIssues([]);
@@ -7867,9 +7937,10 @@ export default function App() {
       return;
     }
 
+    const bridgeId = selectedBridgeId;
     try {
       const response = await apiRequest(
-        `/api/projects/${encodeURIComponent(projectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/projects/${encodeURIComponent(projectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
         {
           method: "DELETE"
         }
@@ -7877,15 +7948,21 @@ export default function App() {
 
       if (Array.isArray(response?.projects)) {
         setProjects(response.projects);
-        updateStatusCounts({ projects: response.projects.length });
+        updateStatusCounts({ projects: response.projects.length }, bridgeId);
       } else {
-      setProjects((current) => current.filter((project) => project.id !== projectId));
-      updateStatusCounts({ projects: Math.max((status.counts?.projects ?? 0) - 1, 0) });
+        setProjects((current) => current.filter((project) => project.id !== projectId));
+        setBridgeStatus(bridgeId, (current) => ({
+          ...current,
+          counts: {
+            ...current.counts,
+            projects: Math.max((current.counts?.projects ?? 0) - 1, 0)
+          }
+        }));
       }
 
       if (Array.isArray(response?.threads)) {
         setProjectThreads(mergeProjectThreads([], response.threads));
-        updateStatusCounts({ threads: response.threads.length });
+        updateStatusCounts({ threads: response.threads.length }, bridgeId);
       } else {
         setProjectThreads((current) => current.filter((thread) => thread.project_id !== projectId));
       }
@@ -8058,9 +8135,10 @@ export default function App() {
       return;
     }
 
+    const bridgeId = selectedBridgeId;
     try {
       const response = await apiRequest(
-        `/api/projects/${encodeURIComponent(selectedProjectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        `/api/projects/${encodeURIComponent(selectedProjectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -8079,7 +8157,13 @@ export default function App() {
       if (response?.thread?.id) {
         setProjectThreads((current) => upsertProjectThread(current, response.thread));
         setSelectedProjectThreadId(response.thread.id);
-        updateStatusCounts({ threads: (status.counts?.threads ?? projectThreads.length) + 1 });
+        setBridgeStatus(bridgeId, (current) => ({
+          ...current,
+          counts: {
+            ...current.counts,
+            threads: (current.counts?.threads ?? 0) + 1
+          }
+        }));
       }
     } catch (error) {
       setRecentEvents((current) => [
