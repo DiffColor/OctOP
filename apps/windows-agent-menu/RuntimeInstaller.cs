@@ -472,8 +472,9 @@ sealed class RuntimeInstaller
     var configurationHash = ComputeConfigurationHash(configuration, paths);
     var runtimeReleaseId = BuildRuntimeReleaseId(sourceRevision, sourceContentRevision, configurationHash);
     var releaseRoot = paths.GetRuntimeReleaseRoot(runtimeReleaseId);
+    var canReuseExistingRelease = IsPreparedRuntimeReleaseReusable(releaseRoot, sourceHash);
 
-    if (!Directory.Exists(releaseRoot) || !File.Exists(Path.Combine(releaseRoot, "build-info.json")))
+    if (!canReuseExistingRelease)
     {
       var stagingRoot = Path.Combine(paths.RuntimeReleasesRoot, $"{runtimeReleaseId}.staging-{Guid.NewGuid():N}");
       if (Directory.Exists(stagingRoot))
@@ -547,7 +548,7 @@ sealed class RuntimeInstaller
         AppVersion = AppMetadata.CurrentVersionTag,
         CreatedAt = DateTimeOffset.UtcNow
       },
-      ReusedExistingRelease = Directory.Exists(releaseRoot)
+      ReusedExistingRelease = canReuseExistingRelease
     };
   }
 
@@ -980,6 +981,51 @@ sealed class RuntimeInstaller
         throw new InvalidOperationException($"준비된 런타임 릴리즈 검증 실패: 필수 파일이 없습니다. path={requiredPath}");
       }
     }
+  }
+
+  private static bool IsPreparedRuntimeReleaseReusable(string releaseRoot, string expectedSourceHash)
+  {
+    if (!Directory.Exists(releaseRoot))
+    {
+      return false;
+    }
+
+    var buildInfoPath = Path.Combine(releaseRoot, "build-info.json");
+    if (!File.Exists(buildInfoPath))
+    {
+      return false;
+    }
+
+    RuntimeReleaseBuildInfo? buildInfo;
+    try
+    {
+      buildInfo = JsonSerializer.Deserialize<RuntimeReleaseBuildInfo>(
+        File.ReadAllText(buildInfoPath, Encoding.UTF8),
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    }
+    catch
+    {
+      return false;
+    }
+
+    if (buildInfo is null ||
+        !string.Equals(buildInfo.SourceHash, expectedSourceHash, StringComparison.OrdinalIgnoreCase) ||
+        !string.Equals(buildInfo.AppVersion, AppMetadata.CurrentVersionTag, StringComparison.OrdinalIgnoreCase))
+    {
+      return false;
+    }
+
+    try
+    {
+      ValidatePreparedRuntimeRelease(releaseRoot);
+    }
+    catch
+    {
+      return false;
+    }
+
+    return File.Exists(Path.Combine(releaseRoot, "node_modules", "nats", "package.json")) &&
+      File.Exists(Path.Combine(releaseRoot, "node_modules", "ws", "package.json"));
   }
 
   private async Task EnsureCodexAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)

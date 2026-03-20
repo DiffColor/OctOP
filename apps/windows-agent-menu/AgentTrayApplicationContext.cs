@@ -212,7 +212,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task EnsureAtomicRuntimePreparedOnStartupAsync()
   {
-    if (_runtimeStatus?.ReadyToRun != true)
+    if (!HasAtomicRuntimePreparationPrerequisites())
     {
       return;
     }
@@ -223,15 +223,27 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
-    var shouldPrepareImmediately = currentRuntimeRoot is null || _availableRuntimeUpdate is not null;
+    var shouldPrepareImmediately =
+      currentRuntimeRoot is null ||
+      _availableRuntimeUpdate is not null ||
+      _runtimeStatus?.RuntimeVersionMatches != true;
     if (!shouldPrepareImmediately)
     {
       return;
     }
 
-    AppendLog(currentRuntimeRoot is null
-      ? "첫 시작 런타임이 없어 원자적 런타임 준비를 바로 진행합니다."
-      : "시작 직후 감지된 런타임 업데이트를 바로 반영합니다.");
+    if (currentRuntimeRoot is null)
+    {
+      AppendLog("첫 시작 런타임이 없어 원자적 런타임 준비를 바로 진행합니다.");
+    }
+    else if (_runtimeStatus?.RuntimeVersionMatches != true)
+    {
+      AppendLog("앱 시작 직후 런타임 버전 불일치를 감지해 원자적 런타임 준비를 진행합니다.");
+    }
+    else
+    {
+      AppendLog("시작 직후 감지된 런타임 업데이트를 바로 반영합니다.");
+    }
 
     var preparedRelease = await _runtimeInstaller.PrepareRuntimeReleaseAsync(
       _configuration,
@@ -249,6 +261,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
     await RefreshRuntimeStatusAsync();
     await RefreshAvailableRuntimeUpdateAsync();
+  }
+
+  private bool HasAtomicRuntimePreparationPrerequisites()
+  {
+    return _runtimeStatus is not null &&
+      _runtimeStatus.ConfigurationSaved &&
+      _runtimeStatus.NodeInstalled &&
+      _runtimeStatus.CodexInstalled &&
+      _runtimeStatus.CodexLoggedIn &&
+      (!_runtimeStatus.AutoStartRequested || _runtimeStatus.AutoStartConfigured);
   }
 
   private async Task RefreshRuntimeStatusAsync(bool showSetupWhenIncomplete = false)
