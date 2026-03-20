@@ -215,6 +215,30 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testRefreshAvailableRuntimeUpdateIgnoresRuntimeNodeModulesDifferences() async throws {
+    _ = try initializeGitRepository(at: codexAdapterSourceURL)
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    try bootstrap.activateRuntimeRelease(releaseURL, log: { _ in })
+
+    let installedOnlyFileURL = releaseURL
+      .appendingPathComponent("services/codex-adapter/node_modules/local-only/index.js")
+    try FileManager.default.createDirectory(
+      at: installedOnlyFileURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try "console.log('installed only');\n".write(
+      to: installedOnlyFileURL,
+      atomically: true,
+      encoding: .utf8
+    )
+
+    await bootstrap.refreshAvailableRuntimeUpdate(log: { _ in })
+
+    XCTAssertNil(bootstrap.availableRuntimeUpdate)
+  }
+
+  @MainActor
   func testServiceStartAndStopUseFreshRuntimeAndStopManagedProcesses() async throws {
     let bootstrap = makeBootstrap()
     let model = AgentMenuModel()

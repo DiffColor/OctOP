@@ -12,6 +12,20 @@ private struct LocalCodexAuthStoreStatus {
 struct RuntimeUpdateDescriptor: Equatable {
   let sourceRevision: String
   let currentSourceRevision: String?
+  let sourceContentRevision: String
+  let currentSourceContentRevision: String?
+
+  init(
+    sourceRevision: String,
+    currentSourceRevision: String?,
+    sourceContentRevision: String? = nil,
+    currentSourceContentRevision: String? = nil
+  ) {
+    self.sourceRevision = sourceRevision
+    self.currentSourceRevision = currentSourceRevision
+    self.sourceContentRevision = sourceContentRevision ?? sourceRevision
+    self.currentSourceContentRevision = currentSourceContentRevision ?? currentSourceRevision
+  }
 
   var displayRevision: String {
     String(sourceRevision.prefix(12))
@@ -1632,49 +1646,8 @@ final class AgentBootstrapStore: ObservableObject {
       )
     }
 
-    try ensureDirectory(runtimeSourceCacheURL)
-    let repositoryURL = runtimeRepositoryCacheURL
-    let branch = runtimeRepositoryBranch
-
-    if FileManager.default.fileExists(atPath: repositoryURL.appendingPathComponent(".git").path) {
-      do {
-        log("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
-        try await runProcess(
-          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "fetch", "--depth", "1", "origin", branch],
-          environment: buildProcessEnvironment(),
-          currentDirectoryURL: nil,
-          log: log
-        )
-        try await runProcess(
-          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "reset", "--hard", "FETCH_HEAD"],
-          environment: buildProcessEnvironment(),
-          currentDirectoryURL: nil,
-          log: log
-        )
-      } catch {
-        log("codex-adapter 최신화에 실패해 마지막 캐시를 사용합니다: \(error.localizedDescription)")
-      }
-    } else {
-      do {
-        log("codex-adapter 소스 저장소를 초기화합니다.")
-        try await runProcess(
-          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: [
-            "clone", "--depth", "1",
-            "--branch", branch,
-            runtimeRepositoryRemoteURL,
-            repositoryURL.path
-          ],
-          environment: buildProcessEnvironment(),
-          currentDirectoryURL: nil,
-          log: log
-        )
-      } catch {
-        log("codex-adapter 저장소 초기화에 실패했습니다: \(error.localizedDescription)")
-        return nil
-      }
+    guard let repositoryURL = try await ensureLatestCodexAdapterRepository(log: log) else {
+      return nil
     }
 
     let codexAdapterURL = repositoryURL
@@ -1693,68 +1666,82 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func resolveAvailableRuntimeUpdate() async throws -> RuntimeUpdateDescriptor? {
-    guard let latestRevision = try await resolveLatestRuntimeSourceRevision()?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
-      !latestRevision.isEmpty else {
+    if let runtimeUpdateRevisionResolver {
+      guard let latestRevision = try await runtimeUpdateRevisionResolver(self)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !latestRevision.isEmpty else {
+        return nil
+      }
+
+      let currentRevision = currentRuntimeSourceRevision()?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+      if let currentRevision, !currentRevision.isEmpty, currentRevision == latestRevision {
+        return nil
+      }
+
+      return RuntimeUpdateDescriptor(
+        sourceRevision: latestRevision,
+        currentSourceRevision: currentRevision
+      )
+    }
+
+    guard let latestDescriptor = try await resolveLatestRuntimeSourceDescriptor() else {
       return nil
     }
 
     let currentRevision = currentRuntimeSourceRevision()?
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    let currentContentRevision = try currentRuntimeContentRevision()?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
 
-    if let currentRevision, !currentRevision.isEmpty, currentRevision == latestRevision {
+    if let currentContentRevision,
+       !currentContentRevision.isEmpty,
+       currentContentRevision == latestDescriptor.sourceContentRevision {
       return nil
     }
 
     return RuntimeUpdateDescriptor(
-      sourceRevision: latestRevision,
-      currentSourceRevision: currentRevision
+      sourceRevision: latestDescriptor.sourceRevision,
+      currentSourceRevision: currentRevision,
+      sourceContentRevision: latestDescriptor.sourceContentRevision,
+      currentSourceContentRevision: currentContentRevision
     )
   }
 
-  private func resolveLatestRuntimeSourceRevision() async throws -> String? {
-    if let runtimeUpdateRevisionResolver {
-      return try await runtimeUpdateRevisionResolver(self)
+  private func resolveLatestRuntimeSourceDescriptor() async throws -> RuntimeUpdateDescriptor? {
+    if let overrideURL = codexAdapterSourceOverrideURL() {
+      let sourceContentRevision = try computeCodexAdapterContentRevision(from: overrideURL)
+      let sourceRevision = gitRepositoryURL(containing: overrideURL)
+        .flatMap { gitRevisionIfAvailable(at: $0) } ?? sourceContentRevision
+      return RuntimeUpdateDescriptor(
+        sourceRevision: sourceRevision,
+        currentSourceRevision: nil,
+        sourceContentRevision: sourceContentRevision,
+        currentSourceContentRevision: nil
+      )
     }
 
-    if let overrideURL = codexAdapterSourceOverrideURL(),
-       let repositoryURL = gitRepositoryURL(containing: overrideURL),
-       let revision = gitRevisionIfAvailable(at: repositoryURL) {
-      return revision
+    guard let repositoryURL = try await ensureLatestCodexAdapterRepository(log: nil) else {
+      return nil
     }
 
-    let process = Process()
-    let output = Pipe()
-    let error = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-    process.arguments = [
-      "ls-remote",
-      runtimeRepositoryRemoteURL,
-      "refs/heads/\(runtimeRepositoryBranch)"
-    ]
-    process.standardOutput = output
-    process.standardError = error
-    process.environment = buildProcessEnvironment()
+    let codexAdapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
 
-    try process.run()
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
-      let detail = String(
-        decoding: error.fileHandleForReading.readDataToEndOfFile(),
-        as: UTF8.self
-      ).trimmingCharacters(in: .whitespacesAndNewlines)
-      throw NSError(domain: "OctOPAgentMenu.RuntimeUpdate", code: Int(process.terminationStatus), userInfo: [
-        NSLocalizedDescriptionKey: detail.isEmpty ? "원격 codex-adapter 리비전을 조회하지 못했습니다." : detail
-      ])
+    guard FileManager.default.fileExists(atPath: codexAdapterURL.appendingPathComponent("package.json").path) else {
+      return nil
     }
 
-    let text = String(
-      decoding: output.fileHandleForReading.readDataToEndOfFile(),
-      as: UTF8.self
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-    let revision = text.split(separator: "\t").first.map(String.init) ?? ""
-    return revision.isEmpty ? nil : revision
+    let sourceContentRevision = try computeCodexAdapterContentRevision(from: codexAdapterURL)
+    let sourceRevision = gitRevisionIfAvailable(at: repositoryURL) ?? sourceContentRevision
+    return RuntimeUpdateDescriptor(
+      sourceRevision: sourceRevision,
+      currentSourceRevision: nil,
+      sourceContentRevision: sourceContentRevision,
+      currentSourceContentRevision: nil
+    )
   }
 
   private func currentRuntimeSourceRevision() -> String? {
@@ -1767,6 +1754,22 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     return sourceRevision
+  }
+
+  private func currentRuntimeContentRevision() throws -> String? {
+    guard let activeRuntimeURL = currentRuntimeReleaseURL() else {
+      return nil
+    }
+
+    let codexAdapterURL = activeRuntimeURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+
+    guard FileManager.default.fileExists(atPath: codexAdapterURL.appendingPathComponent("package.json").path) else {
+      return nil
+    }
+
+    return try computeCodexAdapterContentRevision(from: codexAdapterURL)
   }
 
   private func codexAdapterSourceOverrideURL() -> URL? {
@@ -1815,6 +1818,57 @@ final class AgentBootstrapStore: ObservableObject {
     let data = output.fileHandleForReading.readDataToEndOfFile()
     let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     return value.isEmpty ? nil : value
+  }
+
+  private func ensureLatestCodexAdapterRepository(
+    log: (@MainActor (String) -> Void)?
+  ) async throws -> URL? {
+    try ensureDirectory(runtimeSourceCacheURL)
+    let repositoryURL = runtimeRepositoryCacheURL
+    let branch = runtimeRepositoryBranch
+
+    if FileManager.default.fileExists(atPath: repositoryURL.appendingPathComponent(".git").path) {
+      do {
+        log?("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
+        try await runProcess(
+          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+          arguments: ["-C", repositoryURL.path, "fetch", "--depth", "1", "origin", branch],
+          environment: buildProcessEnvironment(),
+          currentDirectoryURL: nil,
+          log: log ?? { _ in }
+        )
+        try await runProcess(
+          executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+          arguments: ["-C", repositoryURL.path, "reset", "--hard", "FETCH_HEAD"],
+          environment: buildProcessEnvironment(),
+          currentDirectoryURL: nil,
+          log: log ?? { _ in }
+        )
+      } catch {
+        log?("codex-adapter 최신화에 실패해 마지막 캐시를 사용합니다: \(error.localizedDescription)")
+      }
+      return repositoryURL
+    }
+
+    do {
+      log?("codex-adapter 소스 저장소를 초기화합니다.")
+      try await runProcess(
+        executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+        arguments: [
+          "clone", "--depth", "1",
+          "--branch", branch,
+          runtimeRepositoryRemoteURL,
+          repositoryURL.path
+        ],
+        environment: buildProcessEnvironment(),
+        currentDirectoryURL: nil,
+        log: log ?? { _ in }
+      )
+      return repositoryURL
+    } catch {
+      log?("codex-adapter 저장소 초기화에 실패했습니다: \(error.localizedDescription)")
+      return nil
+    }
   }
 
   private func gitRepositoryURL(containing url: URL) -> URL? {
@@ -1905,8 +1959,29 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func computeRuntimeSourceHash(from sourceURL: URL) throws -> String {
+    try computeDirectoryContentHash(from: sourceURL)
+  }
+
+  private func computeCodexAdapterContentRevision(from sourceURL: URL) throws -> String {
+    try computeDirectoryContentHash(
+      from: sourceURL,
+      excludingDirectoryNames: ["node_modules"],
+      excludingFileNames: ["package-lock.json"]
+    )
+  }
+
+  private func computeDirectoryContentHash(
+    from sourceURL: URL,
+    excludingDirectoryNames: Set<String> = [],
+    excludingFileNames: Set<String> = []
+  ) throws -> String {
     var fileURLs: [URL] = []
-    try collectRuntimeSourceFiles(at: sourceURL, into: &fileURLs)
+    try collectRuntimeSourceFiles(
+      at: sourceURL,
+      excludingDirectoryNames: excludingDirectoryNames,
+      excludingFileNames: excludingFileNames,
+      into: &fileURLs
+    )
 
     let digest = SHA256.hash(data: fileURLs.reduce(into: Data()) { data, fileURL in
       let relativePath = fileURL.path.replacingOccurrences(of: sourceURL.path + "/", with: "")
@@ -1921,7 +1996,12 @@ final class AgentBootstrapStore: ObservableObject {
     return digest.map { String(format: "%02x", $0) }.joined()
   }
 
-  private func collectRuntimeSourceFiles(at rootURL: URL, into results: inout [URL]) throws {
+  private func collectRuntimeSourceFiles(
+    at rootURL: URL,
+    excludingDirectoryNames: Set<String> = [],
+    excludingFileNames: Set<String> = [],
+    into results: inout [URL]
+  ) throws {
     let entries = try FileManager.default.contentsOfDirectory(
       at: rootURL,
       includingPropertiesForKeys: [.isDirectoryKey],
@@ -1931,8 +2011,19 @@ final class AgentBootstrapStore: ObservableObject {
     for entry in entries {
       let isDirectory = (try entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
       if isDirectory {
-        try collectRuntimeSourceFiles(at: entry, into: &results)
+        if excludingDirectoryNames.contains(entry.lastPathComponent) {
+          continue
+        }
+        try collectRuntimeSourceFiles(
+          at: entry,
+          excludingDirectoryNames: excludingDirectoryNames,
+          excludingFileNames: excludingFileNames,
+          into: &results
+        )
       } else {
+        if excludingFileNames.contains(entry.lastPathComponent) {
+          continue
+        }
         results.append(entry)
       }
     }
