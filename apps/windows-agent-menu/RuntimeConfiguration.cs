@@ -222,8 +222,7 @@ sealed class RuntimeStatus
     NodeInstalled &&
     RuntimeDependenciesInstalled &&
     CodexInstalled &&
-    CodexLoggedIn &&
-    (!AutoStartRequested || AutoStartConfigured);
+    CodexLoggedIn;
 
   public string GetSummary()
   {

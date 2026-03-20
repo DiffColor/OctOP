@@ -147,6 +147,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       {
         PostToUi(() =>
         {
+          RefreshRuntimeStateFromSystem(logDetection: true);
+          RefreshUi();
           _ = RefreshAvailableRuntimeUpdateAsync();
           _ = RefreshAvailableAppUpdateAsync();
         });
@@ -283,8 +285,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _runtimeStatus.ConfigurationSaved &&
       _runtimeStatus.NodeInstalled &&
       _runtimeStatus.CodexInstalled &&
-      _runtimeStatus.CodexLoggedIn &&
-      (!_runtimeStatus.AutoStartRequested || _runtimeStatus.AutoStartConfigured);
+      _runtimeStatus.CodexLoggedIn;
   }
 
   private bool ShouldRunStartupRuntimeTransition(bool runtimePreparedChanged)
@@ -1260,6 +1261,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       [
         "Get-CimInstance Win32_Process |",
         "Where-Object {",
+        "($_.Name -eq 'node.exe' -or $_.Name -eq 'cmd.exe' -or $_.Name -eq 'codex.exe') -and",
         "$_.CommandLine -and",
         "(" + rootConditions + ") -and",
         "(",
@@ -1671,6 +1673,13 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return false;
       }
 
+      if (!IsLocalAgentProcessId(processId))
+      {
+        DeleteAgentPidFile();
+        processId = 0;
+        return false;
+      }
+
       return true;
     }
     catch
@@ -1688,7 +1697,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       StartInfo = new ProcessStartInfo
       {
         FileName = "powershell.exe",
-        Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-local-agent.mjs*' } | Select-Object -First 1 -ExpandProperty ProcessId\"",
+        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{BuildLocalAgentProcessQuery()}\"",
         UseShellExecute = false,
         RedirectStandardOutput = true,
         RedirectStandardError = true,
@@ -1713,6 +1722,47 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     {
       return null;
     }
+  }
+
+  private bool IsLocalAgentProcessId(int processId)
+  {
+    var command = string.Join(
+      " ",
+      [
+        BuildLocalAgentProcessQuery(),
+        $"| Where-Object {{ $_ -eq {processId} }}",
+        "| Select-Object -First 1"
+      ]);
+
+    return RunPowerShellProcessQuery(command).Contains(processId);
+  }
+
+  private string BuildLocalAgentProcessQuery()
+  {
+    var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
+      .Select(static path => path.Replace("'", "''"))
+      .ToList();
+
+    if (runtimeRoots.Count == 0)
+    {
+      return "Write-Output ''";
+    }
+
+    var rootConditions = string.Join(
+      " -or ",
+      runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'"));
+    return string.Join(
+      " ",
+      [
+        "Get-CimInstance Win32_Process",
+        "| Where-Object {",
+        "$_.Name -eq 'node.exe' -and",
+        "$_.CommandLine -and",
+        "(" + rootConditions + ") -and",
+        "$_.CommandLine -like '*run-local-agent.mjs*'",
+        "}",
+        "| Select-Object -ExpandProperty ProcessId"
+      ]);
   }
 
   private void WriteAgentPidFile(int processId)
