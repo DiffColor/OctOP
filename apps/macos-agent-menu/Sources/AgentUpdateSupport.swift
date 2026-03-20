@@ -141,8 +141,7 @@ extension AgentBootstrapStore {
     try FileManager.default.createDirectory(at: extractedRoot, withIntermediateDirectories: true)
     try await unzipAppArchive(archiveURL: archiveURL, destinationURL: extractedRoot)
 
-    let updatedAppURL = extractedRoot.appendingPathComponent("OctOPAgentMenu.app", isDirectory: true)
-    guard FileManager.default.fileExists(atPath: updatedAppURL.path) else {
+    guard let updatedAppURL = locateUpdatedAppBundle(in: extractedRoot) else {
       log("다운로드한 업데이트에서 앱 번들을 찾지 못했습니다.")
       return nil
     }
@@ -315,6 +314,30 @@ extension AgentBootstrapStore {
     process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
     process.arguments = ["-x", "-k", archiveURL.path, destinationURL.path]
     try await runDetachedProcess(process)
+  }
+
+  private func locateUpdatedAppBundle(in extractedRoot: URL) -> URL? {
+    let fileManager = FileManager.default
+    let enumerator = fileManager.enumerator(
+      at: extractedRoot,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    )
+
+    while let nextURL = enumerator?.nextObject() as? URL {
+      guard nextURL.pathExtension == "app" else {
+        continue
+      }
+
+      let bundleExecutableURL = nextURL
+        .appendingPathComponent("Contents", isDirectory: true)
+        .appendingPathComponent("MacOS", isDirectory: true)
+      if fileManager.fileExists(atPath: bundleExecutableURL.path) {
+        return nextURL
+      }
+    }
+
+    return nil
   }
 
   private func writeReplacementScript(scriptURL: URL, updatedAppURL: URL, currentAppURL: URL) throws {

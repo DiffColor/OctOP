@@ -179,6 +179,8 @@ final class AppBundleUpdateTests: XCTestCase {
   @MainActor
   func testPreparedUpdateScriptReplacesBundleAndLaunchesUpdatedApp() async throws {
     let bootstrap = AgentBootstrapStore()
+    bootstrap.configuration.bridgePort = "54100"
+    bootstrap.configuration.appServerWsUrl = "ws://127.0.0.1:54600"
     let launchSignalURL = sandboxURL.appendingPathComponent("updated-app-launched")
     let fixture = try makeLocalAppUpdateFixture(
       tag: "v1.2.5",
@@ -210,18 +212,21 @@ final class AppBundleUpdateTests: XCTestCase {
     process.arguments = [prepared!.scriptURL.path]
     try process.run()
     process.waitUntilExit()
+    let scriptLog = (try? String(contentsOf: bootstrap.appUpdateScriptLogURL, encoding: .utf8)) ?? "<missing>"
 
-    XCTAssertEqual(process.terminationStatus, 0)
-    XCTAssertTrue(FileManager.default.fileExists(atPath: launchSignalURL.path))
+    XCTAssertEqual(process.terminationStatus, 0, scriptLog)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: launchSignalURL.path), scriptLog)
     XCTAssertTrue(
       FileManager.default.fileExists(
         atPath: fakeCurrentAppURL.appendingPathComponent("Contents/Resources/updated-marker.txt").path
-      )
+      ),
+      scriptLog
     )
     XCTAssertTrue(
       FileManager.default.fileExists(
         atPath: URL(fileURLWithPath: fakeCurrentAppURL.path + ".previous-update").path
-      )
+      ),
+      scriptLog
     )
   }
 
@@ -324,13 +329,13 @@ final class AppBundleUpdateTests: XCTestCase {
     <plist version="1.0">
     <dict>
       <key>CFBundleDisplayName</key>
-      <string>OctOPAgentMenu</string>
+      <string>OctOP</string>
       <key>CFBundleExecutable</key>
       <string>OctOPAgentMenu</string>
       <key>CFBundleIdentifier</key>
       <string>app.diffcolor.octop.agentmenu.test</string>
       <key>CFBundleName</key>
-      <string>OctOPAgentMenu</string>
+      <string>OctOP</string>
       <key>CFBundlePackageType</key>
       <string>APPL</string>
       <key>CFBundleShortVersionString</key>
