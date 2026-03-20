@@ -407,6 +407,21 @@ function storeSelectedBridgeId(bridgeId) {
   }
 }
 
+function getBridgeThreadCount(bridge) {
+  const rawCount = bridge?.runtime?.counts?.threads;
+  const count = Number(rawCount);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function pickDefaultBridgeId(bridges) {
+  if (!Array.isArray(bridges) || bridges.length === 0) {
+    return "";
+  }
+
+  const bridgeWithThreads = bridges.find((bridge) => getBridgeThreadCount(bridge) > 0);
+  return bridgeWithThreads?.bridge_id ?? bridges[0]?.bridge_id ?? "";
+}
+
 function formatDateTime(value) {
   if (!value) {
     return "-";
@@ -6419,7 +6434,7 @@ export default function App() {
         return storedBridgeId;
       }
 
-      return normalizedBridges[0]?.bridge_id ?? "";
+      return pickDefaultBridgeId(normalizedBridges);
     });
 
     return normalizedBridges;
