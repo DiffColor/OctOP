@@ -52,6 +52,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private bool _suppressRuntimeStopOnExit;
   private bool _exitInProgress;
   private bool _stopInProgress;
+  private bool _startInProgress;
 
   public AgentTrayApplicationContext()
   {
@@ -178,7 +179,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
     await RefreshAvailableRuntimeUpdateAsync();
     await RefreshAvailableAppUpdateAsync();
-    await EnsureAtomicRuntimePreparedOnStartupAsync();
+    var runtimePreparedChanged = await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
 
     var resumePendingServiceStart = ConsumePendingServiceStartRequest();
     var shouldAutoStartService =
@@ -202,29 +203,29 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       await RefreshRuntimeStatusAsync();
     }
 
-    await EnsureAtomicRuntimePreparedOnStartupAsync();
+    runtimePreparedChanged |= await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
     await RefreshRuntimeStatusAsync();
     await RefreshAvailableRuntimeUpdateAsync();
 
-    if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition())
+    if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition(runtimePreparedChanged))
     {
       AppendLog(_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting
         ? "자동 시작 시 실행 중인 서비스를 재전환해 런타임 업데이트를 반영합니다."
         : "자동 시작 시 서비스 시작 전 원자적 런타임 전환을 진행합니다.");
-      await StartAsync();
+      await StartAsync(forceRestart: runtimePreparedChanged);
     }
   }
 
-  private async Task EnsureAtomicRuntimePreparedOnStartupAsync()
+  private async Task<bool> EnsureRuntimePreparedIfNeededAsync(bool allowWhileRunning)
   {
     if (!HasAtomicRuntimePreparationPrerequisites())
     {
-      return;
+      return false;
     }
 
-    if (_runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting || _stopInProgress)
+    if ((!allowWhileRunning && _runtimeState is (AgentRuntimeState.Running or AgentRuntimeState.Starting)) || _stopInProgress)
     {
-      return;
+      return false;
     }
 
     var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
@@ -234,7 +235,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       _runtimeStatus?.RuntimeVersionMatches != true;
     if (!shouldPrepareImmediately)
     {
-      return;
+      return false;
     }
 
     if (currentRuntimeRoot is null)
@@ -257,6 +258,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       CancellationToken.None);
 
     var currentReleaseId = _paths.ReadCurrentRuntimeReleaseId();
+    var runtimeChanged = !string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase);
     if (!string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase))
     {
       _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
@@ -266,6 +268,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
     await RefreshRuntimeStatusAsync();
     await RefreshAvailableRuntimeUpdateAsync();
+    return runtimeChanged;
   }
 
   private bool HasAtomicRuntimePreparationPrerequisites()
@@ -278,10 +281,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       (!_runtimeStatus.AutoStartRequested || _runtimeStatus.AutoStartConfigured);
   }
 
-  private bool ShouldRunStartupRuntimeTransition()
+  private bool ShouldRunStartupRuntimeTransition(bool runtimePreparedChanged)
   {
     var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
-    return currentRuntimeRoot is null ||
+    return runtimePreparedChanged ||
+      currentRuntimeRoot is null ||
       _availableRuntimeUpdate is not null ||
       _runtimeStatus?.RuntimeVersionMatches != true ||
       _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting);
@@ -294,14 +298,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         _runtimeState is not AgentRuntimeState.Starting &&
         _runtimeState is not AgentRuntimeState.Stopping)
     {
-      await EnsureAtomicRuntimePreparedOnStartupAsync();
+      var runtimePreparedChanged = await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
       await RefreshAvailableRuntimeUpdateAsync();
       await RefreshRuntimeStatusAsync();
 
-      if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition())
+      if (_runtimeStatus?.ReadyToRun == true && ShouldRunStartupRuntimeTransition(runtimePreparedChanged))
       {
         AppendLog("자동 설치 완료 후 원자적 런타임 전환과 서비스 시작을 이어갑니다.");
-        await StartAsync();
+        await StartAsync(forceRestart: runtimePreparedChanged);
       }
     }
   }
@@ -355,30 +359,61 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _ = StartAsync();
   }
 
-  private async Task StartAsync()
+  private async Task StartAsync(bool forceRestart = false)
   {
-    await RefreshRuntimeStatusAsync();
-    if (_runtimeStatus?.ReadyToRun != true)
+    if (_startInProgress || _stopInProgress)
     {
-      AppendLog("실행 전 설치/설정이 필요합니다.");
-      ShowSetup();
-      _setupWindow.StartAutomaticInstallIfNeeded();
       return;
     }
 
-    _runtimeState = AgentRuntimeState.Starting;
-    _lastError = null;
-    AppendLog("서비스 시작을 요청합니다.");
-    RefreshUi();
+    _startInProgress = true;
+    try
+    {
+      await RefreshRuntimeStatusAsync();
+      if (!HasAtomicRuntimePreparationPrerequisites())
+      {
+        AppendLog("실행 전 설치/설정이 필요합니다.");
+        ShowSetup();
+        _setupWindow.StartAutomaticInstallIfNeeded();
+        return;
+      }
 
-    var preparedRelease = await _runtimeInstaller.PrepareRuntimeReleaseAsync(
-      _configuration,
-      _paths,
-      new Progress<string>(AppendLog),
-      CancellationToken.None);
+      var runtimePreparedChanged = await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
+      await RefreshRuntimeStatusAsync();
+      if (_runtimeStatus?.ReadyToRun != true)
+      {
+        AppendLog("실행 전 런타임 준비가 완료되지 않았습니다.");
+        ShowSetup();
+        _setupWindow.StartAutomaticInstallIfNeeded();
+        return;
+      }
 
-    await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
-    await LaunchPreparedRuntimeReleaseAsync(preparedRelease, allowRollback: true);
+      RefreshRuntimeStateFromSystem();
+      if (!forceRestart && !runtimePreparedChanged && _runtimeState is (AgentRuntimeState.Running or AgentRuntimeState.Starting))
+      {
+        AppendLog("서비스가 이미 실행 중이라 시작 요청을 건너뜁니다.");
+        RefreshUi();
+        return;
+      }
+
+      _runtimeState = AgentRuntimeState.Starting;
+      _lastError = null;
+      AppendLog("서비스 시작을 요청합니다.");
+      RefreshUi();
+
+      var preparedRelease = await _runtimeInstaller.PrepareRuntimeReleaseAsync(
+        _configuration,
+        _paths,
+        new Progress<string>(AppendLog),
+        CancellationToken.None);
+
+      await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+      await LaunchPreparedRuntimeReleaseAsync(preparedRelease, allowRollback: true);
+    }
+    finally
+    {
+      _startInProgress = false;
+    }
   }
 
   private async Task LaunchPreparedRuntimeReleaseAsync(PreparedRuntimeRelease preparedRelease, bool allowRollback)
