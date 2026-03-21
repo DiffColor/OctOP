@@ -64,6 +64,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const BRIDGE_LIST_POLL_INTERVAL_MS = 10_000;
 const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
@@ -6921,10 +6922,24 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.loginId) {
-      return;
+      return undefined;
     }
 
     void loadBridges(session);
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      if (cancelled) {
+        return;
+      }
+
+      void loadBridges(session);
+    }, BRIDGE_LIST_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [session]);
 
   useEffect(() => {

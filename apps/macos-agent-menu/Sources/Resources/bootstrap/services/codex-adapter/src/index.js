@@ -6714,6 +6714,7 @@ class AppServerClient {
           message: error.message
         });
       });
+      this.scheduleReconnect(`process_exit:${code ?? signal ?? "unknown"}`);
     });
     this.child.on("error", (error) => {
       this.lastError = error.message;
@@ -6730,6 +6731,7 @@ class AppServerClient {
           message: publishError.message
         });
       });
+      this.scheduleReconnect("process_error");
     });
   }
 
