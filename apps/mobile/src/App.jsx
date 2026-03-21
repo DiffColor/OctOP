@@ -17,6 +17,7 @@ const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
 const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
+const MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY = "octop.mobile.workspace.layout.v1";
 const ISSUE_SOURCE_APP_ID = "mobile-web";
 const createDefaultStatus = () => ({
   app_server: {
@@ -321,6 +322,7 @@ const TODO_SCOPE_ID = "todo";
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 240; // 최대 입력창 높이(px)를 제한해 채팅 영역이 사라지는 것을 방지
 const MOBILE_SINGLE_PAGE_MAX_WIDTH_PX = 768;
 const MOBILE_BASE_PAGE_MIN_WIDTH_PX = 430;
+const DEFAULT_WIDE_THREAD_SPLIT_RATIO = 0.5;
 const MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX = Math.max(
   MOBILE_SINGLE_PAGE_MAX_WIDTH_PX + 1,
   MOBILE_BASE_PAGE_MIN_WIDTH_PX * 2
@@ -405,6 +407,112 @@ function storeSession(session, rememberDevice) {
 function clearSessionStorage() {
   window.localStorage.removeItem(LOCAL_STORAGE_KEY);
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function createDefaultMobileWorkspaceLayout() {
+  return {
+    loginId: "",
+    bridgeId: "",
+    selectedScope: { kind: "project", id: "" },
+    selectedThreadId: "",
+    selectedTodoChatId: "",
+    draftThreadProjectId: "",
+    activeView: "inbox",
+    wideThreadSplitRatio: DEFAULT_WIDE_THREAD_SPLIT_RATIO
+  };
+}
+
+function normalizeMobileWorkspaceLayoutScope(scope) {
+  if (scope?.kind === "todo") {
+    return { kind: "todo", id: TODO_SCOPE_ID };
+  }
+
+  return {
+    kind: "project",
+    id: String(scope?.id ?? "").trim()
+  };
+}
+
+function normalizeMobileWorkspaceLayout(layout, filters = {}) {
+  const base = createDefaultMobileWorkspaceLayout();
+  const source = layout && typeof layout === "object" ? layout : {};
+  const selectedScope = normalizeMobileWorkspaceLayoutScope(source.selectedScope);
+  const activeView =
+    source.activeView === "thread" || source.activeView === "todo" || source.activeView === "inbox"
+      ? source.activeView
+      : base.activeView;
+  const ratio = Number(source.wideThreadSplitRatio);
+
+  return {
+    loginId: String(filters.loginId ?? source.loginId ?? "").trim(),
+    bridgeId: String(filters.bridgeId ?? source.bridgeId ?? "").trim(),
+    selectedScope,
+    selectedThreadId: String(source.selectedThreadId ?? "").trim(),
+    selectedTodoChatId: String(source.selectedTodoChatId ?? "").trim(),
+    draftThreadProjectId: String(source.draftThreadProjectId ?? "").trim(),
+    activeView,
+    wideThreadSplitRatio:
+      Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_WIDE_THREAD_SPLIT_RATIO
+  };
+}
+
+function readStoredMobileWorkspaceLayout(filters = {}) {
+  if (typeof window === "undefined") {
+    return createDefaultMobileWorkspaceLayout();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY);
+
+    if (!raw) {
+      return createDefaultMobileWorkspaceLayout();
+    }
+
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeMobileWorkspaceLayout(parsed, filters);
+
+    if (filters.loginId && normalized.loginId !== String(filters.loginId).trim()) {
+      return createDefaultMobileWorkspaceLayout();
+    }
+
+    if (filters.bridgeId && normalized.bridgeId !== String(filters.bridgeId).trim()) {
+      return createDefaultMobileWorkspaceLayout();
+    }
+
+    return normalized;
+  } catch {
+    return createDefaultMobileWorkspaceLayout();
+  }
+}
+
+function storeMobileWorkspaceLayout(patch, filters = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const current = readStoredMobileWorkspaceLayout(filters);
+    const next = normalizeMobileWorkspaceLayout({ ...current, ...patch }, filters);
+    window.localStorage.setItem(MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function clearStoredMobileWorkspaceLayout() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function buildWorkspaceLayoutOwnerKey(loginId, bridgeId) {
+  return `${String(loginId ?? "").trim()}::${String(bridgeId ?? "").trim()}`;
 }
 
 function isPwaPromptDismissed() {
@@ -694,18 +802,41 @@ function getStableViewportMetrics() {
   };
 }
 
+function readBootstrappedStableViewportWidth() {
+  if (typeof document === "undefined") {
+    return 0;
+  }
+
+  const inlineWidth = Number.parseFloat(
+    document.documentElement.style.getPropertyValue("--app-stable-viewport-width")
+  );
+
+  if (Number.isFinite(inlineWidth) && inlineWidth > 0) {
+    return Math.max(0, Math.round(inlineWidth));
+  }
+
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return 0;
+  }
+
+  const computedWidth = Number.parseFloat(
+    window.getComputedStyle(document.documentElement).getPropertyValue("--app-stable-viewport-width")
+  );
+
+  return Number.isFinite(computedWidth) && computedWidth > 0 ? Math.max(0, Math.round(computedWidth)) : 0;
+}
+
 function getVisualViewportWidth() {
   if (typeof window === "undefined") {
     return 0;
   }
 
   const viewport = window.visualViewport;
+  const layoutWidth = Math.max(0, Math.round(window.innerWidth || 0));
+  const visualWidth = Math.max(0, Math.round(viewport?.width || 0));
+  const bootstrappedWidth = readBootstrappedStableViewportWidth();
 
-  if (!viewport) {
-    return window.innerWidth;
-  }
-
-  return Math.max(0, Math.round(viewport.width));
+  return Math.max(layoutWidth, visualWidth, bootstrappedWidth);
 }
 function getInitialStableViewportMetrics() {
   const liveMetrics = getStableViewportMetrics();
@@ -5359,7 +5490,12 @@ function MainPage({
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
   const [todoMessageEditorOpen, setTodoMessageEditorOpen] = useState(false);
   const [todoTransferOpen, setTodoTransferOpen] = useState(false);
-  const [wideThreadSplitRatio, setWideThreadSplitRatio] = useState(0.5);
+  const [wideThreadSplitRatio, setWideThreadSplitRatio] = useState(() =>
+    readStoredMobileWorkspaceLayout({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    }).wideThreadSplitRatio
+  );
   const projectLongPressTimerRef = useRef(null);
   const projectLongPressTriggeredRef = useRef(false);
   const wideThreadSplitLayoutRef = useRef(null);
@@ -5603,8 +5739,32 @@ function MainPage({
   const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
 
   useEffect(() => {
+    const storedRatio = readStoredMobileWorkspaceLayout({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    }).wideThreadSplitRatio;
+
+    setWideThreadSplitRatio(storedRatio);
+  }, [selectedBridgeId, session?.loginId]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    storeMobileWorkspaceLayout(
+      {
+        wideThreadSplitRatio
+      },
+      {
+        loginId: session.loginId,
+        bridgeId: selectedBridgeId
+      }
+    );
+  }, [selectedBridgeId, session?.loginId, wideThreadSplitRatio]);
+
+  useEffect(() => {
     if (!showWideThreadSplitLayout || !wideThreadSplitResizeEnabled) {
-      setWideThreadSplitRatio(0.5);
       return;
     }
 
@@ -6511,7 +6671,23 @@ function MainPage({
 
 export default function App() {
   useStableViewportMetrics();
-  const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
+  const initialSessionRef = useRef(undefined);
+  const initialSelectedBridgeIdRef = useRef(undefined);
+  const initialWorkspaceLayoutRef = useRef(undefined);
+
+  if (initialSessionRef.current === undefined) {
+    const initialSession = typeof window === "undefined" ? null : readStoredSession();
+    const initialSelectedBridgeId = typeof window === "undefined" ? "" : readStoredBridgeId();
+
+    initialSessionRef.current = initialSession;
+    initialSelectedBridgeIdRef.current = initialSelectedBridgeId;
+    initialWorkspaceLayoutRef.current = readStoredMobileWorkspaceLayout({
+      loginId: initialSession?.loginId ?? "",
+      bridgeId: initialSelectedBridgeId
+    });
+  }
+
+  const [session, setSession] = useState(() => initialSessionRef.current);
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
   const [bridgeStatusById, setBridgeStatusById] = useState({});
@@ -6525,14 +6701,12 @@ export default function App() {
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
   const [folderLoading, setFolderLoading] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
-  const [selectedBridgeId, setSelectedBridgeId] = useState(() =>
-    typeof window === "undefined" ? "" : readStoredBridgeId()
-  );
-  const [selectedScope, setSelectedScope] = useState({ kind: "project", id: "" });
-  const [selectedThreadId, setSelectedThreadId] = useState("");
+  const [selectedBridgeId, setSelectedBridgeId] = useState(() => initialSelectedBridgeIdRef.current);
+  const [selectedScope, setSelectedScope] = useState(() => initialWorkspaceLayoutRef.current.selectedScope);
+  const [selectedThreadId, setSelectedThreadId] = useState(() => initialWorkspaceLayoutRef.current.selectedThreadId);
   const pendingPushDeepLinkRef = useRef(readPushDeepLink());
-  const [selectedTodoChatId, setSelectedTodoChatId] = useState("");
-  const [draftThreadProjectId, setDraftThreadProjectId] = useState("");
+  const [selectedTodoChatId, setSelectedTodoChatId] = useState(() => initialWorkspaceLayoutRef.current.selectedTodoChatId);
+  const [draftThreadProjectId, setDraftThreadProjectId] = useState(() => initialWorkspaceLayoutRef.current.draftThreadProjectId);
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
   const [utilityOpen, setUtilityOpen] = useState(false);
@@ -6552,7 +6726,7 @@ export default function App() {
   const [todoRenameBusy, setTodoRenameBusy] = useState(false);
   const [todoTransferBusy, setTodoTransferBusy] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
-  const [activeView, setActiveView] = useState("inbox");
+  const [activeView, setActiveView] = useState(() => initialWorkspaceLayoutRef.current.activeView);
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
   const [streamActivityAt, setStreamActivityAt] = useState(null);
   const [streamNow, setStreamNow] = useState(() => Date.now());
@@ -6618,6 +6792,8 @@ export default function App() {
     (activeView === "thread" || wideThreadSplitEnabled);
   const threadPanelVisibleRef = useRef(threadPanelVisible);
   const threadDetailsRef = useRef(threadDetails);
+  const workspaceLayoutOwnerKey = buildWorkspaceLayoutOwnerKey(session?.loginId ?? "", selectedBridgeId);
+  const workspaceLayoutOwnerKeyRef = useRef(workspaceLayoutOwnerKey);
   const markBridgeDisconnectedOverride = useCallback((bridgeId) => {
     const normalized = String(bridgeId ?? "").trim();
 
@@ -8108,6 +8284,15 @@ export default function App() {
   }, [scheduleAppForegroundResume]);
 
   useLayoutEffect(() => {
+    const previousOwnerKey = workspaceLayoutOwnerKeyRef.current;
+    const ownerChanged = previousOwnerKey !== workspaceLayoutOwnerKey;
+    workspaceLayoutOwnerKeyRef.current = workspaceLayoutOwnerKey;
+
+    if (!ownerChanged) {
+      setLoadingState(selectedBridgeId && selectedBridgeKnown ? "loading" : "idle");
+      return;
+    }
+
     threadLoadRequestIdByIdRef.current = new Map();
     todoChatLoadRequestIdRef.current += 1;
     for (const timerId of threadReloadTimersByIdRef.current.values()) {
@@ -8116,13 +8301,18 @@ export default function App() {
     threadReloadTimersByIdRef.current.clear();
     threadReloadMetaByIdRef.current = new Map();
 
+    const restoredLayout = readStoredMobileWorkspaceLayout({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    });
+
     setProjects([]);
     setThreads([]);
     setStreamActivityAt(null);
-    setSelectedScope({ kind: "project", id: "" });
-    setSelectedThreadId("");
-    setSelectedTodoChatId("");
-    setDraftThreadProjectId("");
+    setSelectedScope(restoredLayout.selectedScope);
+    setSelectedThreadId(restoredLayout.selectedThreadId);
+    setSelectedTodoChatId(restoredLayout.selectedTodoChatId);
+    setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
     setThreadListsByProjectId({});
     setTodoChats([]);
     setTodoChatDetails({});
@@ -8130,9 +8320,37 @@ export default function App() {
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
-    setActiveView("inbox");
+    setActiveView(restoredLayout.activeView);
     setLoadingState(selectedBridgeId && selectedBridgeKnown ? "loading" : "idle");
-  }, [selectedBridgeId, selectedBridgeKnown]);
+  }, [selectedBridgeId, selectedBridgeKnown, session?.loginId, workspaceLayoutOwnerKey]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    storeMobileWorkspaceLayout(
+      {
+        selectedScope,
+        selectedThreadId,
+        selectedTodoChatId,
+        draftThreadProjectId,
+        activeView
+      },
+      {
+        loginId: session.loginId,
+        bridgeId: selectedBridgeId
+      }
+    );
+  }, [
+    activeView,
+    draftThreadProjectId,
+    selectedBridgeId,
+    selectedScope,
+    selectedThreadId,
+    selectedTodoChatId,
+    session?.loginId
+  ]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeKnown) {
@@ -8406,6 +8624,7 @@ export default function App() {
 
   const handleLogout = () => {
     clearSessionStorage();
+    clearStoredMobileWorkspaceLayout();
     setSession(null);
     setSelectedBridgeId("");
     setBridges([]);
