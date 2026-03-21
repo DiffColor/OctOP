@@ -6269,8 +6269,6 @@ function buildExecutionPrompt(prompt = "", instructionSet = {}) {
   ].join(" ");
   const sections = [instruction];
 
-  appendProjectInstructionSections(sections, instructionSet);
-
   if (!normalizedPrompt) {
     return sections.join("\n");
   }
