@@ -4191,6 +4191,15 @@ function getExecutionInstructionSet(userId, projectId, threadId = "") {
   };
 }
 
+function getAppServerInstructionOverrides(userId, projectId, threadId = "") {
+  const { baseInstructions, developerInstructions } = getExecutionInstructionSet(userId, projectId, threadId);
+
+  return {
+    baseInstructions,
+    developerInstructions
+  };
+}
+
 function getProjectInstructionOverrides(userId, projectId) {
   const { baseInstructions, developerInstructions } = getProjectInstructionSet(userId, projectId);
 
@@ -4864,7 +4873,7 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
 
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
-  const instructionOverrides = getExecutionInstructionSet(
+  const instructionOverrides = getAppServerInstructionOverrides(
     userId,
     physicalThread.project_id,
     physicalThread.root_thread_id
@@ -10621,7 +10630,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const cwd = resolveProjectWorkspace(userId, projectId);
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
-  const instructionOverrides = getExecutionInstructionSet(userId, projectId);
+  const instructionOverrides = getAppServerInstructionOverrides(userId, projectId);
   await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {
