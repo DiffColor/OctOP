@@ -465,6 +465,14 @@ function buildThreadComposerDraftKey({ threadId, projectId, isDraft = false } = 
   return "";
 }
 
+function normalizeComposerDraftValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return typeof value === "string" ? value : String(value);
+}
+
 function normalizeMobileWorkspaceLayoutScope(scope) {
   if (scope?.kind === "todo") {
     return { kind: "todo", id: TODO_SCOPE_ID };
@@ -2601,14 +2609,17 @@ function InlineIssueComposer({
   onSubmit,
   label,
   disabled = false,
+  draftKey = "",
   draftValue = undefined,
-  onDraftChange = null,
+  onDraftPersist = null,
   onStop = null,
   stopBusy = false,
   stopLabel = "중단"
 }) {
   const LONG_PRESS_THRESHOLD_MS = 650;
-  const [internalPrompt, setInternalPrompt] = useState("");
+  const normalizedDraftKey = String(draftKey ?? "").trim();
+  const normalizedDraftValue = normalizeComposerDraftValue(draftValue);
+  const [internalPrompt, setInternalPrompt] = useState(() => normalizedDraftValue);
   const textareaRef = useRef(null);
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -2623,18 +2634,46 @@ function InlineIssueComposer({
   const lastFinalTranscriptRef = useRef("");
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
-  const prompt = onDraftChange ? String(draftValue ?? "") : internalPrompt;
+  const prompt = internalPrompt;
+  const promptRef = useRef(prompt);
+  const lastHydratedDraftRef = useRef({
+    key: normalizedDraftKey,
+    value: normalizedDraftValue
+  });
 
-  const setPrompt = useCallback(
-    (nextValue) => {
-      if (onDraftChange) {
-        onDraftChange(nextValue);
+  useEffect(() => {
+    promptRef.current = prompt;
+  }, [prompt]);
+
+  useEffect(() => {
+    const lastHydratedDraft = lastHydratedDraftRef.current;
+    const keyChanged = lastHydratedDraft.key !== normalizedDraftKey;
+    const canHydrateSameKey =
+      !keyChanged &&
+      promptRef.current === lastHydratedDraft.value &&
+      normalizedDraftValue !== lastHydratedDraft.value;
+
+    if (!keyChanged && !canHydrateSameKey) {
+      return;
+    }
+
+    setInternalPrompt(normalizedDraftValue);
+    promptRef.current = normalizedDraftValue;
+    lastHydratedDraftRef.current = {
+      key: normalizedDraftKey,
+      value: normalizedDraftValue
+    };
+  }, [normalizedDraftKey, normalizedDraftValue]);
+
+  useEffect(
+    () => () => {
+      if (typeof onDraftPersist !== "function" || !normalizedDraftKey) {
         return;
       }
 
-      setInternalPrompt(nextValue);
+      onDraftPersist(normalizedDraftKey, promptRef.current);
     },
-    [onDraftChange]
+    [normalizedDraftKey, onDraftPersist]
   );
 
   const syncPromptHeight = useCallback((element) => {
@@ -2668,7 +2707,7 @@ function InlineIssueComposer({
 
   const handlePromptChange = useCallback(
     (event) => {
-      setPrompt(event.target.value);
+      setInternalPrompt(event.target.value);
       syncPromptHeight(event.target);
     },
     [syncPromptHeight]
@@ -2742,7 +2781,7 @@ function InlineIssueComposer({
         at: Date.now()
       };
 
-      setPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
+      setInternalPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
 
       if (typeof window !== "undefined") {
         window.setTimeout(() => syncPromptHeight(), 0);
@@ -2905,9 +2944,18 @@ function InlineIssueComposer({
     });
 
     if (accepted !== false) {
-      setPrompt("");
+      setInternalPrompt("");
+      promptRef.current = "";
+      lastHydratedDraftRef.current = {
+        key: normalizedDraftKey,
+        value: ""
+      };
+
+      if (typeof onDraftPersist === "function" && normalizedDraftKey) {
+        onDraftPersist(normalizedDraftKey, "");
+      }
     }
-  }, [disabled, onSubmit, prompt, selectedProject?.id]);
+  }, [disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
 
   const handleFormSubmit = useCallback(
     (event) => {
@@ -4723,8 +4771,9 @@ function ThreadDetail({
   onBack,
   messageFilter,
   onChangeMessageFilter,
+  composerDraftKey = "",
   composerDraft = "",
-  onChangeComposerDraft = null,
+  onPersistComposerDraft = null,
   isDraft = false,
   showBackButton = true,
   standalone = true,
@@ -5533,8 +5582,9 @@ function ThreadDetail({
             selectedProject={project}
             onSubmit={onSubmitPrompt}
             label={isDraft ? "첫 프롬프트" : "프롬프트"}
+            draftKey={composerDraftKey}
             draftValue={composerDraft}
-            onDraftChange={onChangeComposerDraft}
+            onDraftPersist={onPersistComposerDraft}
             disabled={isInputDisabled}
             onStop={interruptibleIssue ? handleStopCurrentExecution : null}
             stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
@@ -5727,16 +5777,6 @@ function MainPage({
   const todoChatMessages = todoChatDetail?.messages ?? [];
   const todoChatLoading = todoChatDetail?.loading ?? false;
   const todoChatError = todoChatDetail?.error ?? "";
-  const handleChangeThreadComposerDraft = useCallback(
-    (nextValue) => {
-      if (!threadComposerDraftKey) {
-        return;
-      }
-
-      onChangeThreadComposerDraft(threadComposerDraftKey, nextValue);
-    },
-    [onChangeThreadComposerDraft, threadComposerDraftKey]
-  );
   const clearPendingProjectLongPress = useCallback(() => {
     if (projectLongPressTimerRef.current) {
       clearTimeout(projectLongPressTimerRef.current);
@@ -6540,8 +6580,9 @@ function MainPage({
                   onBack={onBackToInbox}
                   messageFilter={threadMessageFilter}
                   onChangeMessageFilter={onChangeThreadMessageFilter}
+                  composerDraftKey={threadComposerDraftKey}
                   composerDraft={threadComposerDraft}
-                  onChangeComposerDraft={handleChangeThreadComposerDraft}
+                  onPersistComposerDraft={onChangeThreadComposerDraft}
                   isDraft={!selectedThread && !threadDetail?.thread}
                   showBackButton={false}
                   standalone={false}
@@ -6583,8 +6624,9 @@ function MainPage({
           onBack={onBackToInbox}
           messageFilter={threadMessageFilter}
           onChangeMessageFilter={onChangeThreadMessageFilter}
+          composerDraftKey={threadComposerDraftKey}
           composerDraft={threadComposerDraft}
-          onChangeComposerDraft={handleChangeThreadComposerDraft}
+          onPersistComposerDraft={onChangeThreadComposerDraft}
           isDraft={!selectedThread && !threadDetail?.thread}
         />
       </div>

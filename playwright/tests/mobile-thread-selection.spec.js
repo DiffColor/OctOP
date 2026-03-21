@@ -4,6 +4,7 @@ const { REPO_ROOT, StaticAppServer, buildWorkspace } = require('../helpers/stati
 
 const MOBILE_DIST_DIR = path.join(REPO_ROOT, 'apps', 'mobile', 'dist');
 const SESSION_KEY = 'octop.mobile.session';
+const WORKSPACE_LAYOUT_KEY = 'octop.mobile.workspace.layout.v1';
 
 const loginId = 'playwright-user';
 const bridgeId = 'bridge-e2e';
@@ -72,9 +73,69 @@ async function mockMobileApi(page, options = {}) {
   const threadCount = Number.isFinite(options.threadCount) ? options.threadCount : nextThreads.length;
   const requestLog = Array.isArray(options.requestLog) ? options.requestLog : null;
   let currentThreads = [...nextThreads];
-  let currentIssues = [...nextIssues];
-  let currentIssueMessages = [...nextIssueMessages];
-  let createdIssueCount = 0;
+  const threadStateById = new Map(
+    nextThreads.map((currentThread) => [
+      currentThread.id,
+      {
+        thread: currentThread,
+        issues:
+          currentThread.id === threadId
+            ? [...nextIssues]
+            : Array.isArray(options.issuesByThreadId?.[currentThread.id])
+              ? [...options.issuesByThreadId[currentThread.id]]
+              : [],
+        issueMessages:
+          currentThread.id === threadId
+            ? [...nextIssueMessages]
+            : Array.isArray(options.issueMessagesByThreadId?.[currentThread.id])
+              ? [...options.issueMessagesByThreadId[currentThread.id]]
+              : [],
+        createdIssueCount: 0
+      }
+    ])
+  );
+
+  const ensureThreadState = (requestedThreadId) => {
+    const normalizedThreadId = String(requestedThreadId ?? '').trim();
+    const existing = threadStateById.get(normalizedThreadId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const fallbackThread =
+      currentThreads.find((currentThread) => currentThread.id === normalizedThreadId) ??
+      (normalizedThreadId
+        ? {
+            ...thread,
+            id: normalizedThreadId,
+            title: normalizedThreadId,
+            name: normalizedThreadId,
+            status: 'idle'
+          }
+        : thread);
+    const nextState = {
+      thread: fallbackThread,
+      issues: [],
+      issueMessages: [],
+      createdIssueCount: 0
+    };
+
+    threadStateById.set(normalizedThreadId, nextState);
+    return nextState;
+  };
+
+  const findIssueState = (requestedIssueId) => {
+    const normalizedIssueId = String(requestedIssueId ?? '').trim();
+
+    for (const currentState of threadStateById.values()) {
+      if (currentState.issues.some((currentIssue) => currentIssue.id === normalizedIssueId)) {
+        return currentState;
+      }
+    }
+
+    return null;
+  };
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -162,23 +223,29 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
-    if (pathname === `/api/threads/${threadId}/issues` && method === 'GET') {
+    if (pathname.match(/^\/api\/threads\/[^/]+\/issues$/) && method === 'GET') {
+      const requestedThreadId = pathname.split('/')[3];
+      const currentState = ensureThreadState(requestedThreadId);
+
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          issues: currentIssues
+          issues: currentState.issues
         })
       });
       return;
     }
 
-    if (pathname === `/api/threads/${threadId}/issues` && method === 'POST') {
+    if (pathname.match(/^\/api\/threads\/[^/]+\/issues$/) && method === 'POST') {
+      const requestedThreadId = pathname.split('/')[3];
+      const currentState = ensureThreadState(requestedThreadId);
       const payload = JSON.parse(request.postData() ?? '{}');
       const now = '2026-03-18T10:20:00.000Z';
-      const createdIssueId = `issue-selection-created-${++createdIssueCount}`;
+      const createdIssueId = `issue-selection-created-${++currentState.createdIssueCount}`;
       const createdIssue = {
         ...issue,
+        thread_id: requestedThreadId,
         id: createdIssueId,
         title: payload.title ?? 'Created Issue',
         status: 'queued',
@@ -187,11 +254,11 @@ async function mockMobileApi(page, options = {}) {
         updated_at: now
       };
 
-      currentIssues = [...currentIssues, createdIssue];
-      currentIssueMessages = [
-        ...currentIssueMessages,
+      currentState.issues = [...currentState.issues, createdIssue];
+      currentState.issueMessages = [
+        ...currentState.issueMessages,
         {
-          id: `message-selection-created-${createdIssueCount}`,
+          id: `message-selection-created-${currentState.createdIssueCount}`,
           role: 'user',
           content: payload.prompt ?? '',
           timestamp: now,
@@ -204,16 +271,18 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify({
           issue: createdIssue,
-          issues: currentIssues
+          issues: currentState.issues
         })
       });
       return;
     }
 
-    if (pathname === `/api/threads/${threadId}/issues/start` && method === 'POST') {
+    if (pathname.match(/^\/api\/threads\/[^/]+\/issues\/start$/) && method === 'POST') {
+      const requestedThreadId = pathname.split('/')[3];
+      const currentState = ensureThreadState(requestedThreadId);
       const payload = JSON.parse(request.postData() ?? '{}');
       const requestedIssueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids : [];
-      currentIssues = currentIssues.map((currentIssue) => ({
+      currentState.issues = currentState.issues.map((currentIssue) => ({
         ...currentIssue,
         status:
           requestedIssueIds.includes(currentIssue.id) && ['queued', 'staged'].includes(currentIssue.status)
@@ -226,7 +295,7 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify({
           ok: true,
-          issues: currentIssues
+          issues: currentState.issues
         })
       });
       return;
@@ -235,16 +304,19 @@ async function mockMobileApi(page, options = {}) {
     if (pathname.match(/^\/api\/issues\/[^/]+\/interrupt$/) && method === 'POST') {
       const targetIssueId = pathname.split('/')[3];
       const payload = JSON.parse(request.postData() ?? '{}');
+      const currentState = findIssueState(targetIssueId);
 
-      currentIssues = currentIssues.map((currentIssue) =>
-        currentIssue.id === targetIssueId
-          ? {
-              ...currentIssue,
-              status: payload.reason === 'drag_to_prep' ? 'staged' : 'interrupted',
-              updated_at: '2026-03-18T10:21:00.000Z'
-            }
-          : currentIssue
-      );
+      if (currentState) {
+        currentState.issues = currentState.issues.map((currentIssue) =>
+          currentIssue.id === targetIssueId
+            ? {
+                ...currentIssue,
+                status: payload.reason === 'drag_to_prep' ? 'staged' : 'interrupted',
+                updated_at: '2026-03-18T10:21:00.000Z'
+              }
+            : currentIssue
+        );
+      }
 
       await route.fulfill({
         status: 200,
@@ -252,7 +324,7 @@ async function mockMobileApi(page, options = {}) {
         body: JSON.stringify({
           ok: true,
           issue_id: targetIssueId,
-          issues: currentIssues
+          issues: currentState?.issues ?? []
         })
       });
       return;
@@ -260,15 +332,17 @@ async function mockMobileApi(page, options = {}) {
 
     if (pathname.startsWith('/api/issues/') && method === 'GET') {
       const requestedIssueId = pathname.split('/').pop();
-      const requestedIssue = currentIssues.find((currentIssue) => currentIssue.id === requestedIssueId) ?? issue;
+      const currentState = findIssueState(requestedIssueId);
+      const requestedIssue =
+        currentState?.issues.find((currentIssue) => currentIssue.id === requestedIssueId) ?? issue;
 
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          thread,
+          thread: currentState?.thread ?? thread,
           issue: requestedIssue,
-          messages: currentIssueMessages
+          messages: currentState?.issueMessages ?? nextIssueMessages
         })
       });
       return;
@@ -731,5 +805,101 @@ test.describe('wide mobile split layout', () => {
     await page.getByTestId('thread-list-item-thread-awaiting-input').click();
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Awaiting Input Thread');
     await expect(promptInput).toBeEnabled();
+  });
+
+  test('loads the draft once on thread entry and persists it only when leaving the chat', async ({ page }) => {
+    const primaryThread = {
+      ...thread,
+      id: 'thread-draft-1',
+      title: 'Draft Thread One',
+      name: 'Draft Thread One',
+      updated_at: '2026-03-18T10:12:00.000Z'
+    };
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-draft-2',
+      title: 'Draft Thread Two',
+      name: 'Draft Thread Two',
+      updated_at: '2026-03-18T10:11:00.000Z'
+    };
+    const initialWorkspaceLayout = {
+      loginId,
+      bridgeId,
+      selectedScope: { kind: 'project', id: projectId },
+      selectedThreadId: primaryThread.id,
+      selectedTodoChatId: '',
+      draftThreadProjectId: '',
+      threadComposerDrafts: {
+        [`thread:${primaryThread.id}`]: '저장된 초안'
+      },
+      activeView: 'thread',
+      wideThreadSplitRatio: 0.5
+    };
+
+    await mockMobileApi(page, {
+      threads: [primaryThread, secondaryThread],
+      issues: [],
+      issueMessages: [],
+      issuesByThreadId: {
+        [primaryThread.id]: [],
+        [secondaryThread.id]: []
+      },
+      issueMessagesByThreadId: {
+        [primaryThread.id]: [],
+        [secondaryThread.id]: []
+      }
+    });
+    await page.addInitScript(
+      ({ sessionKey, sessionValue, layoutKey, layoutValue }) => {
+        window.localStorage.setItem(sessionKey, JSON.stringify(sessionValue));
+        window.localStorage.setItem(layoutKey, JSON.stringify(layoutValue));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      {
+        sessionKey: SESSION_KEY,
+        sessionValue: session,
+        layoutKey: WORKSPACE_LAYOUT_KEY,
+        layoutValue: initialWorkspaceLayout
+      }
+    );
+
+    await page.goto(baseUrl);
+
+    const promptInput = page.getByTestId('thread-prompt-input');
+    await expect(page.getByTestId('thread-detail-panel')).toContainText(primaryThread.title);
+    await expect(promptInput).toHaveValue('저장된 초안');
+
+    await promptInput.fill('저장 대기 중인 초안');
+    await expect(promptInput).toHaveValue('저장 대기 중인 초안');
+
+    const draftWhileEditing = await page.evaluate((layoutKey) => {
+      const raw = window.localStorage.getItem(layoutKey);
+      return raw ? JSON.parse(raw).threadComposerDrafts ?? {} : {};
+    }, WORKSPACE_LAYOUT_KEY);
+
+    expect(draftWhileEditing[`thread:${primaryThread.id}`]).toBe('저장된 초안');
+
+    await page.getByTestId(`thread-list-item-${secondaryThread.id}`).click();
+    await expect(page.getByTestId('thread-detail-panel')).toContainText(secondaryThread.title);
+    await expect(promptInput).toHaveValue('');
+
+    await expect.poll(
+      async () =>
+        page.evaluate(
+          ({ layoutKey, draftKey }) => {
+            const raw = window.localStorage.getItem(layoutKey);
+            return raw ? JSON.parse(raw).threadComposerDrafts?.[draftKey] ?? '' : '';
+          },
+          {
+            layoutKey: WORKSPACE_LAYOUT_KEY,
+            draftKey: `thread:${primaryThread.id}`
+          }
+        )
+    ).toBe('저장 대기 중인 초안');
+
+    await page.getByTestId(`thread-list-item-${primaryThread.id}`).click();
+    await expect(page.getByTestId('thread-detail-panel')).toContainText(primaryThread.title);
+    await expect(promptInput).toHaveValue('저장 대기 중인 초안');
   });
 });
