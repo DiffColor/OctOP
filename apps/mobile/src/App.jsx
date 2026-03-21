@@ -2630,6 +2630,7 @@ function InlineIssueComposer({
   const suppressClickRef = useRef(false);
   const isRecordingRef = useRef(false);
   const isPromptComposingRef = useRef(false);
+  const shouldSyncPromptValueRef = useRef(false);
   const shouldKeepRecordingRef = useRef(false);
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
@@ -2659,6 +2660,7 @@ function InlineIssueComposer({
       return;
     }
 
+    shouldSyncPromptValueRef.current = true;
     setInternalPrompt(normalizedDraftValue);
     promptRef.current = normalizedDraftValue;
     lastHydratedDraftRef.current = {
@@ -2710,8 +2712,19 @@ function InlineIssueComposer({
       return;
     }
 
-    if (!isPromptComposingRef.current && textarea.value !== prompt) {
+    const shouldSyncPromptValue = shouldSyncPromptValueRef.current;
+    const canSyncPromptValue = !isPromptComposingRef.current;
+
+    if (
+      shouldSyncPromptValue &&
+      canSyncPromptValue &&
+      textarea.value !== prompt
+    ) {
       textarea.value = prompt;
+    }
+
+    if (!shouldSyncPromptValue || canSyncPromptValue) {
+      shouldSyncPromptValueRef.current = false;
     }
 
     syncPromptHeight(textarea);
@@ -2796,6 +2809,7 @@ function InlineIssueComposer({
         at: Date.now()
       };
 
+      shouldSyncPromptValueRef.current = true;
       setInternalPrompt((current) => {
         const nextPrompt = current ? `${current.trim()} ${transcript}` : transcript;
         promptRef.current = nextPrompt;
@@ -2963,6 +2977,7 @@ function InlineIssueComposer({
     });
 
     if (accepted !== false) {
+      shouldSyncPromptValueRef.current = true;
       setInternalPrompt("");
       promptRef.current = "";
       lastHydratedDraftRef.current = {
