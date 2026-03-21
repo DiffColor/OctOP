@@ -1789,16 +1789,7 @@ function buildRunTimeline(thread) {
   return entries.filter((entry) => entry.timestamp);
 }
 
-function BottomSheet({
-  open,
-  title,
-  description,
-  onClose,
-  children,
-  variant = "bottom",
-  headerActions = null,
-  panelTestId = ""
-}) {
+function BottomSheet({ open, title, description, onClose, children, variant = "bottom", headerActions = null }) {
   if (!open) {
     return null;
   }
@@ -1819,7 +1810,7 @@ function BottomSheet({
 
   return (
     <div className={containerClassName} onClick={handleContainerClick}>
-      <section className={panelClassName} onClick={(event) => event.stopPropagation()} data-testid={panelTestId || undefined}>
+      <section className={panelClassName} onClick={(event) => event.stopPropagation()}>
         <div className="border-b border-white/10 bg-white/5 px-5 py-4">
           {isCenterDialog ? null : <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />}
           <div className="flex items-start justify-between gap-4">
@@ -2272,7 +2263,6 @@ function InlineIssueComposer({
   const voiceRestartTimerRef = useRef(null);
   const suppressClickRef = useRef(false);
   const isRecordingRef = useRef(false);
-  const isPromptComposingRef = useRef(false);
   const shouldKeepRecordingRef = useRef(false);
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
@@ -2315,27 +2305,6 @@ function InlineIssueComposer({
       syncPromptHeight(event.target);
     },
     [syncPromptHeight]
-  );
-
-  const handlePromptKeyDown = useCallback(
-    (event) => {
-      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-
-      if (event.nativeEvent?.isComposing || isPromptComposingRef.current) {
-        return;
-      }
-
-      event.preventDefault();
-
-      if (busy || disabled || !selectedProject) {
-        return;
-      }
-
-      void handlePromptSubmit();
-    },
-    [busy, disabled, handlePromptSubmit, selectedProject]
   );
 
   const clearLongPressTimer = useCallback(() => {
@@ -2671,24 +2640,15 @@ function InlineIssueComposer({
             <div className="mb-1 text-[11px] text-slate-500">
               {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
             </div>
-            <textarea
-              rows="1"
-              ref={textareaRef}
-              data-testid="thread-prompt-input"
-              value={prompt}
-              onChange={handlePromptChange}
-              onKeyDown={handlePromptKeyDown}
-              onCompositionStart={() => {
-                isPromptComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                isPromptComposingRef.current = false;
-              }}
-              placeholder=""
-              disabled={!selectedProject || busy || disabled}
-              enterKeyHint="send"
-              className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
-            />
+              <textarea
+                rows="1"
+                ref={textareaRef}
+                value={prompt}
+                onChange={handlePromptChange}
+                placeholder=""
+                disabled={!selectedProject || busy || disabled}
+                className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
+              />
           </div>
           {onStop ? (
             <button
@@ -3403,8 +3363,6 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDele
       open={open}
       title="메시지 작업"
       onClose={busy ? () => {} : onClose}
-      variant="center"
-      panelTestId="thread-message-action-dialog"
       headerActions={
         <>
           {onCopy ? (
@@ -4347,8 +4305,7 @@ function ThreadDetail({
   onChangeMessageFilter,
   isDraft = false,
   showBackButton = true,
-  standalone = true,
-  emptyStateMessage = ""
+  standalone = true
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
@@ -4821,16 +4778,6 @@ function ThreadDetail({
 
     return conversationTimeline.length === 0;
   })();
-  const effectiveEmptyStateMessage =
-    emptyStateMessage ||
-    (messageFilter === "runs"
-      ? "표시할 실행 기록이 없습니다."
-      : viewMode === "chat"
-        ? isDraft
-          ? "첫 프롬프트를 입력해 작업을 시작해 주세요."
-          : "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
-        : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요.");
-
   return (
     <div className={rootClassName} style={rootStyle} data-testid="thread-detail-panel">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
@@ -4919,7 +4866,6 @@ function ThreadDetail({
 
       <div
         ref={scrollRef}
-        data-testid="thread-detail-scroll"
         className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
         <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
@@ -5015,7 +4961,13 @@ function ThreadDetail({
 
           {showEmptyState ? (
             <div className="rounded-2xl border border-dashed border-white/15 px-4 py-4 text-center text-sm text-slate-300">
-              {effectiveEmptyStateMessage}
+              {messageFilter === "runs"
+                ? "표시할 실행 기록이 없습니다."
+                : viewMode === "chat"
+                  ? isDraft
+                    ? "첫 프롬프트를 입력해 작업을 시작해 주세요."
+                    : "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
+                  : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
             </div>
           ) : null}
 
@@ -5097,10 +5049,7 @@ function ThreadDetail({
         }
       />
 
-      <div
-        data-testid="thread-detail-footer"
-        className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
-      >
+      <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
         <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
             busy={submitBusy}
@@ -5217,7 +5166,6 @@ function MainPage({
   const projectLongPressTriggeredRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
-  const viewportHeight = useVisualViewportHeight();
   const viewportWidth = useVisualViewportWidth();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
@@ -5443,11 +5391,7 @@ function MainPage({
     !isTodoScope &&
     activeView !== "todo" &&
     viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
-    (selectedProjectId || draftThreadProjectId || selectedThreadId);
-  const splitThreadEmptyStateMessage =
-    !selectedThreadId && !draftProject
-      ? "채팅창이 없습니다. 좌측 쓰레드를 선택하거나 새 채팅창을 시작해 주세요."
-      : "";
+    (resolvedThread || draftProject || selectedThreadId);
   const inboxListContent = isTodoScope ? (
     filteredTodoChats.length === 0 ? (
       <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
@@ -5823,30 +5767,21 @@ function MainPage({
 
   if (showWideThreadSplitLayout) {
     return (
-      <div
-        className="telegram-shell overflow-hidden bg-slate-950 text-slate-100"
-        style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}
-        data-testid="thread-split-layout"
-      >
-        <div className="mx-auto flex h-full min-h-0 w-full max-w-[1600px] flex-col">
+      <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100" data-testid="thread-split-layout">
+        <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col">
           {appChrome}
-          <main className="flex min-h-0 flex-1 overflow-hidden gap-4 px-4 pb-4 pt-3">
+          <main className="flex min-h-0 flex-1 gap-4 px-4 pb-4 pt-3">
             <section
               data-testid="thread-list-pane"
-              className="flex h-full min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/72 shadow-2xl shadow-black/20"
+              className="flex min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/72 shadow-2xl shadow-black/20"
             >
-              <div data-testid="thread-list-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
                 <section className="mt-1">{inboxListContent}</section>
               </div>
-              <div
-                data-testid="thread-list-footer"
-                className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 py-3 backdrop-blur"
-              >
-                {actionBarContent}
-              </div>
+              <div className="shrink-0 border-t border-white/10 px-4 py-3">{actionBarContent}</div>
             </section>
 
-            <section className="flex h-full min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
+            <section className="flex min-h-0 min-w-0 basis-1/2 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
               <ThreadDetail
                 thread={resolvedThread}
                 project={threadProject}
@@ -5873,7 +5808,6 @@ function MainPage({
                 isDraft={!selectedThread && !threadDetail?.thread}
                 showBackButton={false}
                 standalone={false}
-                emptyStateMessage={splitThreadEmptyStateMessage}
               />
             </section>
           </main>
