@@ -3351,6 +3351,155 @@ test("높은 tokenUsage가 누적된 root thread에서 다음 issue 시작 전�
   }
 });
 
+test("프로젝트 일반지침과 전역/쓰레드별 개발지침이 초기 실행과 rollover handoff 프롬프트 모두에 적용된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-project-instructions-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-project-instructions-token",
+    userId: "integration-user",
+    bridgeId: `integration-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const baseInstruction = "항상 일반지침 문구를 우선 반영하십시오.";
+    const developerInstruction = "전역 개발지침 문구에 따라 테스트와 검증 결과를 반드시 포함하십시오.";
+    const threadDeveloperInstruction = "쓰레드별 개발지침 문구에 따라 이번 채팅창의 구현 세부사항을 우선 반영하십시오.";
+
+    const updateProjectPayload = await bridge.request(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        base_instructions: baseInstruction,
+        developer_instructions: developerInstruction,
+        update_base_instructions: true,
+        update_developer_instructions: true
+      })
+    });
+
+    assert.equal(updateProjectPayload.accepted, true);
+
+    const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Project Instruction Thread"
+      })
+    });
+    const rootThreadId = createThreadPayload.thread.id;
+
+    const updateThreadPayload = await bridge.request(`/api/threads/${rootThreadId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        developer_instructions: threadDeveloperInstruction,
+        update_developer_instructions: true
+      })
+    });
+
+    assert.equal(updateThreadPayload.accepted, true);
+    assert.equal(updateThreadPayload.thread?.developer_instructions, threadDeveloperInstruction);
+
+    const issueOnePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Active Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueTwoPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Second Issue",
+        prompt: PROMPT
+      })
+    });
+    const activeIssueId = issueOnePayload.issue.id;
+    const stagedIssueId = issueTwoPayload.issue.id;
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [activeIssueId]
+      })
+    });
+
+    const scenario = await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.ok(issuePayload.issue?.executed_physical_thread_id);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      return {
+        rootThreadId,
+        activeIssueId,
+        stagedIssueId,
+        sourcePhysicalThreadId: continuity.active_physical_thread.id,
+        sourceCodexThreadId: continuity.active_physical_thread.codex_thread_id
+      };
+    }, {
+      label: "thread instruction issue running"
+    });
+
+    const initialThreadStartRequest = fakeAppServer.getRequests("thread/start").at(-1);
+    assert.equal(initialThreadStartRequest?.params?.baseInstructions, baseInstruction);
+    assert.equal(String(initialThreadStartRequest?.params?.developerInstructions ?? "").includes("[프로젝트 개발지침]"), true);
+    assert.equal(String(initialThreadStartRequest?.params?.developerInstructions ?? "").includes(developerInstruction), true);
+    assert.equal(String(initialThreadStartRequest?.params?.developerInstructions ?? "").includes("[쓰레드 개발지침]"), true);
+    assert.equal(String(initialThreadStartRequest?.params?.developerInstructions ?? "").includes(threadDeveloperInstruction), true);
+
+    const initialTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
+    const initialInput = String(initialTurnStartRequest?.params?.input?.[0]?.text ?? "");
+
+    assert.match(initialInput, /\[프로젝트 일반지침\]/);
+    assert.equal(initialInput.includes(baseInstruction), true);
+    assert.match(initialInput, /\[프로젝트 개발지침\]/);
+    assert.equal(initialInput.includes(developerInstruction), true);
+    assert.match(initialInput, /\[쓰레드 개발지침\]/);
+    assert.equal(initialInput.includes(threadDeveloperInstruction), true);
+    assert.equal(initialInput.includes(PROMPT), true);
+
+    await triggerPreflightThresholdRollover(bridge, fakeAppServer, {
+      rootThreadId: scenario.rootThreadId,
+      sourceCodexThreadId: scenario.sourceCodexThreadId,
+      sourcePhysicalThreadId: scenario.sourcePhysicalThreadId,
+      nextIssueId: scenario.stagedIssueId
+    });
+
+    const rolloverThreadStartRequest = fakeAppServer.getRequests("thread/start").at(-1);
+    assert.equal(rolloverThreadStartRequest?.params?.baseInstructions, baseInstruction);
+    assert.equal(String(rolloverThreadStartRequest?.params?.developerInstructions ?? "").includes("[프로젝트 개발지침]"), true);
+    assert.equal(String(rolloverThreadStartRequest?.params?.developerInstructions ?? "").includes(developerInstruction), true);
+    assert.equal(String(rolloverThreadStartRequest?.params?.developerInstructions ?? "").includes("[쓰레드 개발지침]"), true);
+    assert.equal(String(rolloverThreadStartRequest?.params?.developerInstructions ?? "").includes(threadDeveloperInstruction), true);
+
+    const rolloverTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
+    const rolloverInput = String(rolloverTurnStartRequest?.params?.input?.[0]?.text ?? "");
+
+    assert.match(rolloverInput, /\[프로젝트 일반지침\]/);
+    assert.equal(rolloverInput.includes(baseInstruction), true);
+    assert.match(rolloverInput, /\[프로젝트 개발지침\]/);
+    assert.equal(rolloverInput.includes(developerInstruction), true);
+    assert.match(rolloverInput, /\[쓰레드 개발지침\]/);
+    assert.equal(rolloverInput.includes(threadDeveloperInstruction), true);
+    assert.match(rolloverInput, /\[handoff summary\]/);
+    assert.match(rolloverInput, /\[현재 issue 원본 프롬프트\]/);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("브리지 재시작 후 closed/deleted late event 차단 유지", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-restart-int-"));
   const fakeAppServer = new FakeAppServer();

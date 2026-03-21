@@ -1427,6 +1427,7 @@ function normalizeThread(thread, fallbackProjectId = null) {
   return {
     id: thread.id,
     title: thread.title ?? thread.name ?? "제목 없는 이슈",
+    developer_instructions: thread.developer_instructions ?? thread.developerInstructions ?? "",
     project_id: thread.project_id ?? fallbackProjectId,
     status: thread.status ?? "queued",
     progress: clampProgress(thread.progress),
@@ -3340,14 +3341,17 @@ function ProjectComposerSheet({
 
 function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
   const [title, setTitle] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
 
   useEffect(() => {
     if (!open) {
       setTitle("");
+      setDeveloperInstructions("");
       return;
     }
 
     setTitle(thread?.title ?? "");
+    setDeveloperInstructions(thread?.developer_instructions ?? "");
   }, [open, thread]);
 
   if (!open || !thread) {
@@ -3355,7 +3359,7 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
   }
 
   return (
-    <BottomSheet open={open} title="채팅창 제목 변경" onClose={onClose} variant="center">
+    <BottomSheet open={open} title="채팅창 편집" onClose={onClose} variant="center">
       <form
         className="space-y-5 px-5 py-5"
         onSubmit={async (event) => {
@@ -3365,7 +3369,10 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
             return;
           }
 
-          const accepted = await onSubmit(title.trim());
+          const accepted = await onSubmit({
+            title: title.trim(),
+            developerInstructions
+          });
 
           if (accepted !== false) {
             onClose();
@@ -3385,6 +3392,23 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
           />
         </div>
 
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-developer-instructions">
+            개발지침
+          </label>
+          <textarea
+            id="thread-developer-instructions"
+            rows="8"
+            value={developerInstructions}
+            onChange={(event) => setDeveloperInstructions(event.target.value)}
+            placeholder="이 쓰레드에서만 프로젝트 개발지침과 함께 사용할 개발 규칙을 입력해 주세요."
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            저장하면 프로젝트 개발지침과 함께 조합되어 이 쓰레드 시작과 롤오버 시 반영됩니다. 비워 두고 저장하면 쓰레드별 개발지침이 제거됩니다.
+          </p>
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
@@ -3398,7 +3422,7 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
             disabled={busy || !title.trim()}
             className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {busy ? "변경 중..." : "저장"}
+            {busy ? "저장 중..." : "저장"}
           </button>
         </div>
       </form>
@@ -4235,7 +4259,7 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
     <BottomSheet
       open={open}
       title={isDeveloperInstruction ? "개발지침" : "일반지침"}
-      description={`${project.name} 프로젝트에 저장하고 새 thread 시작 시 app-server에 주입합니다.`}
+      description={`${project.name} 프로젝트에 저장하고 새 thread 시작 옵션과 실제 실행 프롬프트에 반영합니다.`}
       onClose={onClose}
       variant="center"
     >
@@ -6274,7 +6298,7 @@ function MainPage({
         busy={renameBusy}
         thread={threadBeingEdited}
         onClose={() => setThreadBeingEdited(null)}
-        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
+        onSubmit={(payload) => onRenameThread(threadBeingEdited?.id, payload)}
       />
       <DeleteConfirmDialog
         open={threadDeleteDialog.open}
@@ -6829,7 +6853,7 @@ function MainPage({
         busy={renameBusy}
         thread={threadBeingEdited}
         onClose={() => setThreadBeingEdited(null)}
-        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
+        onSubmit={(payload) => onRenameThread(threadBeingEdited?.id, payload)}
       />
       <DeleteConfirmDialog
         open={threadDeleteDialog.open}
@@ -9968,8 +9992,15 @@ export default function App() {
     }
   };
 
-  const handleRenameThread = async (threadId, title) => {
+  const handleRenameThread = async (threadId, payload) => {
     if (!session?.loginId || !selectedBridgeId || !threadId) {
+      return false;
+    }
+
+    const title = String(payload?.title ?? "").trim();
+    const developerInstructions = String(payload?.developerInstructions ?? "");
+
+    if (!title) {
       return false;
     }
 
@@ -9980,12 +10011,24 @@ export default function App() {
         `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "PATCH",
-          body: JSON.stringify({ name: title })
+          body: JSON.stringify({
+            name: title,
+            developer_instructions: developerInstructions,
+            update_developer_instructions: true
+          })
         }
       );
 
       if (response?.thread) {
         setThreads((current) => upsertThread(current, response.thread));
+        const normalizedThread = normalizeThread(response.thread);
+
+        if (normalizedThread?.project_id) {
+          setThreadListsByProjectId((current) => ({
+            ...current,
+            [normalizedThread.project_id]: mergeThreads(current[normalizedThread.project_id] ?? [], [normalizedThread])
+          }));
+        }
         setThreadDetails((current) => ({
           ...current,
           [threadId]: {
