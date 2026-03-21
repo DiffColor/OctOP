@@ -441,17 +441,13 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Push Alerts</p>
-          <h3 className="mt-1 text-sm font-semibold text-white">이 모바일 알림 받기</h3>
-          <p className="mt-1 text-[12px] leading-5 text-slate-400">
-            선택한 워크스페이스 알림을 이 모바일에서 받습니다. 브릿지별로 따로 켜는 설정이 아닙니다.
-          </p>
         </div>
         <span
           className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-            state.deviceRegistered ? "bg-emerald-400/15 text-emerald-200" : "bg-white/5 text-slate-300"
+            state.deviceRegistered ? "bg-emerald-400/10 text-emerald-300" : "bg-white/5 text-slate-300"
           }`}
         >
-          {state.deviceRegistered ? "수신 중" : "꺼짐"}
+          {state.deviceRegistered ? "켜짐" : "꺼짐"}
         </span>
       </div>
 
@@ -475,14 +471,10 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           </span>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <span>이 모바일 등록 상태</span>
+          <span>알림 등록 상태</span>
           <span className={state.deviceRegistered ? "text-emerald-300" : "text-slate-500"}>
             {state.deviceRegistered ? "등록됨" : "등록 안 됨"}
           </span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span>등록된 모바일 수신 수</span>
-          <span className="text-slate-200">{state.subscriptionCount}</span>
         </div>
       </div>
 
@@ -500,7 +492,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
               : "bg-telegram-500 hover:bg-telegram-400"
           }`}
         >
-          {state.loading ? "처리 중..." : state.deviceRegistered ? "이 모바일 알림 끄기" : "이 모바일 알림 받기"}
+          {state.loading ? "처리 중..." : state.deviceRegistered ? "알림 끄기" : "알림 받기"}
         </button>
       </div>
 
