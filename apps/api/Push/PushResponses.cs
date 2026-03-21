@@ -4,6 +4,10 @@ public sealed class PushConfigResponse
 {
   public bool Enabled { get; set; }
 
+  public string Provider { get; set; } = PushProviderKind.WebPush;
+
+  public IReadOnlyList<string> Providers { get; set; } = [];
+
   public string PublicVapidKey { get; set; } = string.Empty;
 
   public string AppId { get; set; } = string.Empty;
@@ -18,6 +22,10 @@ public sealed class PushConfigResponse
 public sealed class PushSubscriptionSummaryResponse
 {
   public bool Enabled { get; set; }
+
+  public string Provider { get; set; } = PushProviderKind.WebPush;
+
+  public IReadOnlyList<string> Providers { get; set; } = [];
 
   public int Count { get; set; }
 
@@ -67,4 +75,8 @@ public sealed class PushTemplateSnapshot
   public string DashboardUrl { get; set; } = string.Empty;
 
   public string MobileUrl { get; set; } = string.Empty;
+
+  public string AndroidWatchUrl { get; set; } = string.Empty;
+
+  public string AppleWatchUrl { get; set; } = string.Empty;
 }

@@ -29,8 +29,14 @@ builder.Services.AddSingleton<PushServiceClient>();
 builder.Services.AddSingleton(_ => new BridgeNatsClient(natsUrl));
 builder.Services.AddSingleton<OctopStore>();
 builder.Services.AddSingleton<VapidKeyService>();
+builder.Services.AddSingleton<PushProviderConfigurationService>();
 builder.Services.AddSingleton<PushSubscriptionService>();
 builder.Services.AddSingleton<WebPushNotificationService>();
+builder.Services.AddSingleton<FcmAccessTokenService>();
+builder.Services.AddSingleton<FcmNotificationService>();
+builder.Services.AddSingleton<ApnsJwtTokenService>();
+builder.Services.AddSingleton<ApnsNotificationService>();
+builder.Services.AddSingleton<PushDeliveryService>();
 builder.Services.AddSingleton<PushNotificationTemplateService>();
 builder.Services.AddHostedService<PushNotificationEventMonitorService>();
 
@@ -1638,6 +1644,7 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
 app.MapGet("/api/push/config", async (
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
+  PushDeliveryService pushDeliveryService,
   PushNotificationTemplateService pushNotificationTemplateService,
   VapidKeyService vapidKeyService,
   OctopStore octopStore,
@@ -1646,6 +1653,7 @@ app.MapGet("/api/push/config", async (
   var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
   var appId = ResolvePushAppId(httpContext);
+  var provider = ResolvePushProvider(httpContext, appId);
 
   if (bridgeId is null)
   {
@@ -1663,14 +1671,16 @@ app.MapGet("/api/push/config", async (
       statusCode: StatusCodes.Status400BadRequest);
   }
 
-  var count = vapidKeyService.IsConfigured
+  var count = pushDeliveryService.IsProviderConfigured(provider)
     ? await pushSubscriptionService.GetCountAsync(userId, bridgeId, appId, cancellationToken)
     : 0;
 
   return Results.Json(new PushConfigResponse
   {
-    Enabled = vapidKeyService.IsConfigured,
-    PublicVapidKey = vapidKeyService.PublicKey,
+    Enabled = pushDeliveryService.IsProviderConfigured(provider),
+    Provider = provider,
+    Providers = pushDeliveryService.GetConfiguredProviders(),
+    PublicVapidKey = provider == PushProviderKind.WebPush ? vapidKeyService.PublicKey : string.Empty,
     AppId = appId,
     BridgeId = bridgeId,
     SubscriptionCount = count,
@@ -1681,13 +1691,14 @@ app.MapGet("/api/push/config", async (
 app.MapGet("/api/push/subscriptions", async (
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
-  VapidKeyService vapidKeyService,
+  PushDeliveryService pushDeliveryService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
   var appId = ResolvePushAppId(httpContext);
+  var provider = ResolvePushProvider(httpContext, appId);
 
   if (bridgeId is null)
   {
@@ -1705,13 +1716,15 @@ app.MapGet("/api/push/subscriptions", async (
       statusCode: StatusCodes.Status400BadRequest);
   }
 
-  var endpoints = vapidKeyService.IsConfigured
+  var endpoints = pushDeliveryService.IsProviderConfigured(provider)
     ? await pushSubscriptionService.GetEndpointsAsync(userId, bridgeId, appId, cancellationToken)
     : [];
 
   return Results.Json(new PushSubscriptionSummaryResponse
   {
-    Enabled = vapidKeyService.IsConfigured,
+    Enabled = pushDeliveryService.IsProviderConfigured(provider),
+    Provider = provider,
+    Providers = pushDeliveryService.GetConfiguredProviders(),
     Count = endpoints.Count,
     Endpoints = endpoints
   });
@@ -1721,18 +1734,10 @@ app.MapPost("/api/push/subscriptions", async (
   PushSubscriptionDto subscription,
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
-  VapidKeyService vapidKeyService,
+  PushDeliveryService pushDeliveryService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
 {
-  if (!vapidKeyService.IsConfigured)
-  {
-    return Results.Text(
-      "{\"ok\":false,\"error\":\"push is not configured\"}",
-      "application/json; charset=utf-8",
-      statusCode: StatusCodes.Status503ServiceUnavailable);
-  }
-
   var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
   var appId = ResolvePushAppId(httpContext);
@@ -1751,6 +1756,17 @@ app.MapPost("/api/push/subscriptions", async (
       "{\"ok\":false,\"error\":\"app_id is required\"}",
       "application/json; charset=utf-8",
       statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  var provider = ResolvePushProvider(httpContext, appId, subscription.Provider);
+  subscription.Provider = provider;
+
+  if (!pushDeliveryService.IsProviderConfigured(provider))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"push is not configured\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
   }
 
   try
@@ -1787,18 +1803,10 @@ app.MapDelete("/api/push/subscriptions", async (
   [FromBody] PushSubscriptionDeleteRequest request,
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
-  VapidKeyService vapidKeyService,
+  PushDeliveryService pushDeliveryService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
 {
-  if (!vapidKeyService.IsConfigured)
-  {
-    return Results.Text(
-      "{\"ok\":false,\"error\":\"push is not configured\"}",
-      "application/json; charset=utf-8",
-      statusCode: StatusCodes.Status503ServiceUnavailable);
-  }
-
   var userId = ResolveIdentityKey(httpContext);
   var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
   var appId = ResolvePushAppId(httpContext);
@@ -1817,6 +1825,14 @@ app.MapDelete("/api/push/subscriptions", async (
       "{\"ok\":false,\"error\":\"app_id is required\"}",
       "application/json; charset=utf-8",
       statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  if (!pushDeliveryService.IsProviderConfigured(ResolvePushProvider(httpContext, appId)))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"push is not configured\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
   }
 
   try
@@ -1851,13 +1867,12 @@ app.MapPost("/api/push/send", async (
   PushNotificationRequest request,
   HttpContext httpContext,
   PushSubscriptionService pushSubscriptionService,
-  WebPushNotificationService webPushNotificationService,
+  PushDeliveryService pushDeliveryService,
   PushNotificationTemplateService pushNotificationTemplateService,
-  VapidKeyService vapidKeyService,
   OctopStore octopStore,
   CancellationToken cancellationToken) =>
 {
-  if (!vapidKeyService.IsConfigured)
+  if (!pushDeliveryService.IsAnyProviderConfigured)
   {
     return Results.Text(
       "{\"ok\":false,\"error\":\"push is not configured\"}",
@@ -1877,7 +1892,7 @@ app.MapPost("/api/push/send", async (
   }
 
   var subscriptions = await pushSubscriptionService.GetActiveSubscriptionsAsync(userId, bridgeId, cancellationToken);
-  var response = await webPushNotificationService.SendAsync(
+  var response = await pushDeliveryService.SendAsync(
     subscriptions,
     (subscription) => pushNotificationTemplateService.BuildManualNotification(request, bridgeId, subscription.AppId),
     cancellationToken);
@@ -2018,6 +2033,18 @@ static string ResolvePushAppId(HttpContext httpContext)
     .ToArray();
 
   return new string(chars).Trim('-');
+}
+
+static string ResolvePushProvider(HttpContext httpContext, string? appId, string? fallback = null)
+{
+  var provider = httpContext.Request.Query["provider"].ToString();
+
+  if (string.IsNullOrWhiteSpace(provider))
+  {
+    provider = fallback;
+  }
+
+  return PushProviderKind.ResolveForApp(appId, provider);
 }
 
 static int ResolveBridgeNatsStatusCode(BridgeNatsRequestException exception)

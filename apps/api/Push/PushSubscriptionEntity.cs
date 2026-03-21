@@ -19,8 +19,29 @@ public sealed class PushSubscriptionEntity
   [JsonProperty("app_id")]
   public string AppId { get; set; } = string.Empty;
 
+  [JsonProperty("provider")]
+  public string Provider { get; set; } = PushProviderKind.WebPush;
+
   [JsonProperty("endpoint")]
   public string Endpoint { get; set; } = string.Empty;
+
+  [JsonProperty("device_token")]
+  public string? DeviceToken { get; set; }
+
+  [JsonProperty("device_name")]
+  public string? DeviceName { get; set; }
+
+  [JsonProperty("installation_id")]
+  public string? InstallationId { get; set; }
+
+  [JsonProperty("native_platform")]
+  public string? NativePlatform { get; set; }
+
+  [JsonProperty("package_name")]
+  public string? PackageName { get; set; }
+
+  [JsonProperty("apns_topic")]
+  public string? ApnsTopic { get; set; }
 
   [JsonProperty("origin")]
   public string Origin { get; set; } = string.Empty;

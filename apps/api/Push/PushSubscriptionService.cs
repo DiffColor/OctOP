@@ -49,9 +49,11 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     string? userAgent,
     CancellationToken cancellationToken)
   {
-    Validate(subscriptionDto);
+    var provider = PushProviderKind.Normalize(subscriptionDto.Provider);
+    Validate(subscriptionDto, provider);
     var now = DateTimeOffset.UtcNow.ToString("O");
-    var documentId = CreateSubscriptionDocumentId(userId, bridgeId, appId, subscriptionDto.Endpoint);
+    var endpoint = ResolveEndpoint(subscriptionDto, provider);
+    var documentId = CreateSubscriptionDocumentId(userId, bridgeId, appId, endpoint);
     var existing = await octopStore.GetPushSubscriptionAsync(documentId, cancellationToken);
 
     var entity = new PushSubscriptionEntity
@@ -61,12 +63,19 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
       UserId = userId,
       BridgeId = bridgeId,
       AppId = appId,
-      Endpoint = subscriptionDto.Endpoint,
+      Provider = provider,
+      Endpoint = endpoint,
+      DeviceToken = NormalizeNullableValue(subscriptionDto.DeviceToken),
+      DeviceName = NormalizeNullableValue(subscriptionDto.DeviceName),
+      InstallationId = NormalizeNullableValue(subscriptionDto.InstallationId),
+      NativePlatform = NormalizeNullableValue(subscriptionDto.NativePlatform),
+      PackageName = NormalizeNullableValue(subscriptionDto.PackageName),
+      ApnsTopic = NormalizeNullableValue(subscriptionDto.ApnsTopic),
       Origin = origin,
       UserAgent = userAgent,
       ClientMode = NormalizeClientMode(subscriptionDto.ClientMode),
-      P256dh = subscriptionDto.Keys.P256dh,
-      Auth = subscriptionDto.Keys.Auth,
+      P256dh = provider == PushProviderKind.WebPush ? subscriptionDto.Keys.P256dh : string.Empty,
+      Auth = provider == PushProviderKind.WebPush ? subscriptionDto.Keys.Auth : string.Empty,
       CreatedAt = existing?.CreatedAt ?? now,
       UpdatedAt = now,
       LastSuccessAt = existing?.LastSuccessAt,
@@ -254,14 +263,36 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
       : ClientModeBrowser;
   }
 
-  private static void Validate(PushSubscriptionDto subscriptionDto)
+  private static string ResolveEndpoint(PushSubscriptionDto subscriptionDto, string provider)
   {
-    if (
-      string.IsNullOrWhiteSpace(subscriptionDto.Endpoint) ||
-      string.IsNullOrWhiteSpace(subscriptionDto.Keys.P256dh) ||
-      string.IsNullOrWhiteSpace(subscriptionDto.Keys.Auth))
+    return provider == PushProviderKind.WebPush
+      ? subscriptionDto.Endpoint.Trim()
+      : (subscriptionDto.DeviceToken ?? string.Empty).Trim();
+  }
+
+  private static string? NormalizeNullableValue(string? value)
+  {
+    return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+  }
+
+  private static void Validate(PushSubscriptionDto subscriptionDto, string provider)
+  {
+    if (provider == PushProviderKind.WebPush)
     {
-      throw new ArgumentException("유효한 구독 객체가 필요합니다.");
+      if (
+        string.IsNullOrWhiteSpace(subscriptionDto.Endpoint) ||
+        string.IsNullOrWhiteSpace(subscriptionDto.Keys.P256dh) ||
+        string.IsNullOrWhiteSpace(subscriptionDto.Keys.Auth))
+      {
+        throw new ArgumentException("유효한 웹 푸시 구독 객체가 필요합니다.");
+      }
+
+      return;
+    }
+
+    if (string.IsNullOrWhiteSpace(subscriptionDto.DeviceToken))
+    {
+      throw new ArgumentException("유효한 네이티브 푸시 토큰이 필요합니다.");
     }
   }
 }

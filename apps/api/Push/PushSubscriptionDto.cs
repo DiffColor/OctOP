@@ -4,8 +4,29 @@ namespace OctOP.Gateway;
 
 public sealed class PushSubscriptionDto
 {
+  [JsonPropertyName("provider")]
+  public string? Provider { get; set; }
+
   [JsonPropertyName("endpoint")]
   public string Endpoint { get; set; } = string.Empty;
+
+  [JsonPropertyName("deviceToken")]
+  public string? DeviceToken { get; set; }
+
+  [JsonPropertyName("deviceName")]
+  public string? DeviceName { get; set; }
+
+  [JsonPropertyName("installationId")]
+  public string? InstallationId { get; set; }
+
+  [JsonPropertyName("nativePlatform")]
+  public string? NativePlatform { get; set; }
+
+  [JsonPropertyName("packageName")]
+  public string? PackageName { get; set; }
+
+  [JsonPropertyName("apnsTopic")]
+  public string? ApnsTopic { get; set; }
 
   [JsonPropertyName("clientMode")]
   public string? ClientMode { get; set; }

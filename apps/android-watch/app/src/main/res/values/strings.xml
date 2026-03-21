@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">OctOP Watch</string>
+  <string name="status_idle">설정 후 토큰 등록을 진행해 주세요.</string>
+  <string name="hint_gateway_url">Gateway URL</string>
+  <string name="hint_login_id">Login ID</string>
+  <string name="hint_bridge_id">Bridge ID</string>
+  <string name="action_save">설정 저장</string>
+  <string name="action_register">푸시 등록</string>
+  <string name="token_placeholder">토큰이 아직 없습니다.</string>
+  <string name="recent_notifications">최근 알림</string>
+  <string name="no_recent_notifications">최근 알림이 없습니다.</string>
+</resources>
