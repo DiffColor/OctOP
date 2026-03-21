@@ -64,7 +64,6 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL)
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
-const BRIDGE_LIST_POLL_INTERVAL_MS = 10_000;
 const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
@@ -318,6 +317,12 @@ const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
 const CHAT_COMPOSER_MAX_HEIGHT_PX = 240; // 최대 입력창 높이(px)를 제한해 채팅 영역이 사라지는 것을 방지
+const MOBILE_SINGLE_PAGE_MAX_WIDTH_PX = 768;
+const MOBILE_BASE_PAGE_MIN_WIDTH_PX = 430;
+const MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX = Math.max(
+  MOBILE_SINGLE_PAGE_MAX_WIDTH_PX + 1,
+  MOBILE_BASE_PAGE_MIN_WIDTH_PX * 2
+);
 
 function getMaxScrollTop(node) {
   if (!node) {
@@ -595,6 +600,20 @@ function getVisualViewportHeight() {
   return Math.max(0, Math.round(viewport.height));
 }
 
+function getVisualViewportWidth() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  const viewport = window.visualViewport;
+
+  if (!viewport) {
+    return window.innerWidth;
+  }
+
+  return Math.max(0, Math.round(viewport.width));
+}
+
 function useVisualViewportHeight() {
   const [viewportHeight, setViewportHeight] = useState(() => getVisualViewportHeight());
 
@@ -629,6 +648,42 @@ function useVisualViewportHeight() {
   }, []);
 
   return viewportHeight;
+}
+
+function useVisualViewportWidth() {
+  const [viewportWidth, setViewportWidth] = useState(() => getVisualViewportWidth());
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const viewport = window.visualViewport;
+    const syncViewportWidth = () => {
+      setViewportWidth(getVisualViewportWidth());
+    };
+
+    syncViewportWidth();
+
+    if (!viewport) {
+      window.addEventListener("resize", syncViewportWidth);
+      return () => {
+        window.removeEventListener("resize", syncViewportWidth);
+      };
+    }
+
+    viewport.addEventListener("resize", syncViewportWidth);
+    viewport.addEventListener("scroll", syncViewportWidth);
+    window.addEventListener("resize", syncViewportWidth);
+
+    return () => {
+      viewport.removeEventListener("resize", syncViewportWidth);
+      viewport.removeEventListener("scroll", syncViewportWidth);
+      window.removeEventListener("resize", syncViewportWidth);
+    };
+  }, []);
+
+  return viewportWidth;
 }
 
 function useTouchScrollBoundaryLock(scrollRef) {
@@ -4248,7 +4303,9 @@ function ThreadDetail({
   onBack,
   messageFilter,
   onChangeMessageFilter,
-  isDraft = false
+  isDraft = false,
+  showBackButton = true,
+  standalone = true
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
@@ -4693,6 +4750,11 @@ function ThreadDetail({
   }, [thread?.id]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
+  const rootStyle = standalone ? { height: viewportHeight ? `${viewportHeight}px` : "100dvh" } : undefined;
+  const rootClassName = standalone
+    ? "flex min-h-0 flex-col overflow-hidden"
+    : "flex h-full min-h-0 flex-col overflow-hidden";
+  const contentWidthClassName = standalone ? "max-w-3xl" : "max-w-none";
   const showEmptyState = (() => {
     if (messagesLoading || messagesError) {
       return false;
@@ -4718,18 +4780,22 @@ function ThreadDetail({
   })();
 
   return (
-    <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
+    <div className={rootClassName} style={rootStyle} data-testid="thread-detail-panel">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
+          {showBackButton ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </button>
+          ) : (
+            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
+          )}
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{threadTitle}</p>
@@ -4803,7 +4869,7 @@ function ThreadDetail({
         ref={scrollRef}
         className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
+        <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
               {formatDateTime(threadTimestamp)}
@@ -4985,7 +5051,7 @@ function ThreadDetail({
       />
 
       <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={project}
@@ -5101,6 +5167,7 @@ function MainPage({
   const projectLongPressTriggeredRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
+  const viewportWidth = useVisualViewportWidth();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -5317,6 +5384,302 @@ function MainPage({
     }
 
   }, [onDeleteThreads, selectedThreadIds]);
+  const threadProject =
+    projects.find((project) => project.id === resolvedThread?.project_id) ??
+    draftProject ??
+    selectedProject;
+  const showWideThreadSplitLayout =
+    activeView === "thread" &&
+    !isTodoScope &&
+    viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
+    (resolvedThread || draftProject || selectedThreadId);
+  const inboxListContent = isTodoScope ? (
+    filteredTodoChats.length === 0 ? (
+      <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+        {loadingState === "loading"
+          ? "데이터를 불러오고 있습니다."
+          : "조건에 맞는 ToDo 채팅이 없습니다. 새 ToDo 채팅을 만들어 아이디어를 모아 주세요."}
+      </div>
+    ) : (
+      filteredTodoChats.map((chat) => (
+        <TodoChatListItem
+          key={chat.id}
+          chat={chat}
+          active={chat.id === selectedTodoChatId}
+          onOpen={onSelectTodoChat}
+          onRename={(targetChat) => setTodoChatBeingEdited(targetChat)}
+          onDelete={(targetChat) => void onDeleteTodoChat(targetChat.id)}
+        />
+      ))
+    )
+  ) : (
+    <>
+      {!bridgeAvailable ? (
+        <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+          브리지가 연결되지 않아 채팅창 목록을 표시할 수 없습니다.
+        </div>
+      ) : filteredThreads.length === 0 ? (
+        <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
+          {loadingState === "loading"
+            ? "데이터를 불러오고 있습니다."
+            : "조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요."}
+        </div>
+      ) : (
+        filteredThreads.map((thread) => (
+          <ThreadListItem
+            key={thread.id}
+            thread={thread}
+            active={thread.id === selectedThreadId}
+            selected={selectedThreadIds.includes(thread.id)}
+            selectionMode={threadSelectionMode}
+            signalNow={signalNow}
+            onOpen={onSelectThread}
+            onRename={(targetThread) => setThreadBeingEdited(targetThread)}
+            onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
+            onToggleSelect={handleToggleThreadSelection}
+            onEnterSelectionMode={handleEnterThreadSelectionMode}
+          />
+        ))
+      )}
+    </>
+  );
+  const actionBarContent =
+    threadSelectionMode && !isTodoScope ? (
+      <div className="flex w-full items-center gap-3">
+        <button
+          type="button"
+          onClick={handleCancelThreadSelection}
+          disabled={threadBusy}
+          className="rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          취소
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleDeleteSelectedThreads()}
+          disabled={threadBusy || selectedThreadIds.length === 0}
+          aria-label="선택한 채팅창 삭제"
+          className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {threadBusy ? "삭제 중..." : `선택 ${selectedThreadIds.length}개 삭제`}
+        </button>
+      </div>
+    ) : (
+      <button
+        type="button"
+        onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
+        disabled={isTodoScope ? false : !selectedProject || !bridgeAvailable}
+        className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        {isTodoScope ? "+ ToDo 채팅" : "+ 채팅창"}
+      </button>
+    );
+  const appChrome = (
+    <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
+      <header className="border-b border-white/10 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onOpenUtility}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
+            <div className="mt-0.5">
+              <BridgeDropdown
+                bridges={bridges}
+                selectedBridgeId={selectedBridgeId}
+                bridgeSignal={bridgeSignal}
+                onSelectBridge={onSelectBridge}
+              />
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setSearchOpen((current) => !current)}
+            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+              searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
+            }`}
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+        </div>
+
+        {searchOpen ? (
+          <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
+            <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="채팅창 검색"
+              className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+            />
+          </div>
+        ) : null}
+      </header>
+
+      <InstallPromptBanner
+        visible={installPromptVisible}
+        installing={installBusy}
+        onInstall={onInstallPwa}
+        onDismiss={onDismissInstallPrompt}
+      />
+
+      <div className="border-b border-white/10 px-4 pb-3 pt-2">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <button
+            type="button"
+            onClick={() => onSelectTodoScope()}
+            className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+              isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
+            }`}
+          >
+            ToDo
+          </button>
+          {projects.map((project) => (
+            <button
+              key={project.id}
+              type="button"
+              onClick={() => handleProjectChipClick(project.id)}
+              onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
+              onPointerUp={handleProjectChipPointerCancel}
+              onPointerLeave={handleProjectChipPointerCancel}
+              onPointerCancel={handleProjectChipPointerCancel}
+              onContextMenu={(event) => event.preventDefault()}
+              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+                !isTodoScope && project.id === selectedProjectId
+                  ? "bg-white text-slate-900"
+                  : "bg-transparent text-slate-400 hover:text-white"
+              }`}
+            >
+              {project.name}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+  const mainOverlays = (
+    <>
+      <ThreadRenameDialog
+        open={Boolean(threadBeingEdited)}
+        busy={renameBusy}
+        thread={threadBeingEdited}
+        onClose={() => setThreadBeingEdited(null)}
+        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
+      />
+      <DeleteConfirmDialog
+        open={threadDeleteDialog.open}
+        busy={threadBusy}
+        title={threadDeleteDialog.title}
+        description={threadDeleteDialog.description}
+        confirmLabel={threadDeleteDialog.confirmLabel}
+        onClose={onCloseThreadDeleteDialog}
+        onConfirm={onConfirmThreadDeleteDialog}
+      />
+      <TodoChatRenameDialog
+        open={Boolean(todoChatBeingEdited)}
+        busy={todoRenameBusy}
+        chat={todoChatBeingEdited}
+        onClose={() => setTodoChatBeingEdited(null)}
+        onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
+      />
+      <TodoMessageActionSheet
+        open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
+        message={activeTodoMessage}
+        onClose={() => setActiveTodoMessage(null)}
+        onEdit={() => setTodoMessageEditorOpen(true)}
+        onDelete={async () => {
+          const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
+
+          if (accepted !== false) {
+            setActiveTodoMessage(null);
+          }
+        }}
+        onTransfer={() => setTodoTransferOpen(true)}
+      />
+      <TodoMessageEditorDialog
+        open={todoMessageEditorOpen}
+        busy={todoBusy}
+        message={activeTodoMessage}
+        onClose={() => setTodoMessageEditorOpen(false)}
+        onSubmit={async (content) => {
+          const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
+
+          if (accepted !== false) {
+            setTodoMessageEditorOpen(false);
+            setActiveTodoMessage(null);
+          }
+
+          return accepted;
+        }}
+      />
+      <TodoTransferSheet
+        open={todoTransferOpen}
+        busy={todoTransferBusy}
+        message={activeTodoMessage}
+        projects={projects}
+        threadOptionsByProjectId={threadOptionsByProjectId}
+        selectedProjectId={selectedProjectId}
+        onEnsureProjectThreads={onEnsureProjectThreads}
+        onClose={() => setTodoTransferOpen(false)}
+        onSubmit={async (payload) => {
+          const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
+
+          if (accepted !== false) {
+            setTodoTransferOpen(false);
+            setActiveTodoMessage(null);
+          }
+
+          return accepted;
+        }}
+      />
+      <UtilitySheet
+        open={utilityOpen}
+        session={session}
+        bridgeSignal={bridgeSignal}
+        selectedProject={selectedProject}
+        pushNotificationCard={pushNotificationCard}
+        onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
+        onClose={onCloseUtility}
+        onOpenProjectComposer={onOpenProjectComposer}
+        onRefresh={onRefresh}
+        onLogout={onLogout}
+      />
+      <ProjectComposerSheet
+        open={projectComposerOpen}
+        busy={projectBusy}
+        roots={workspaceRoots}
+        folderState={folderState}
+        folderLoading={folderLoading}
+        selectedWorkspacePath={selectedWorkspacePath}
+        onBrowseRoot={onBrowseWorkspaceRoot}
+        onBrowseFolder={onBrowseFolder}
+        onSelectWorkspace={onSelectWorkspace}
+        onClose={onCloseProjectComposer}
+        onSubmit={onSubmitProject}
+      />
+      <ProjectInstructionDialog
+        open={projectInstructionDialogOpen}
+        busy={projectInstructionBusy}
+        project={selectedProject}
+        instructionType={projectInstructionType}
+        onClose={onCloseProjectInstructionDialog}
+        onSubmit={onSubmitProjectInstruction}
+      />
+    </>
+  );
 
   if (activeView === "todo" && selectedTodoChatId) {
     return (
@@ -5403,12 +5766,59 @@ function MainPage({
     );
   }
 
-  if (activeView === "thread" && (resolvedThread || draftProject || selectedThreadId)) {
-    const threadProject =
-      projects.find((project) => project.id === resolvedThread?.project_id) ??
-      draftProject ??
-      selectedProject;
+  if (showWideThreadSplitLayout) {
+    return (
+      <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100" data-testid="thread-split-layout">
+        <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col">
+          {appChrome}
+          <main className="flex min-h-0 flex-1 gap-4 px-4 pb-4 pt-3">
+            <section
+              data-testid="thread-list-pane"
+              className="flex min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/72 shadow-2xl shadow-black/20"
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
+                <section className="mt-1">{inboxListContent}</section>
+              </div>
+              <div className="shrink-0 border-t border-white/10 px-4 py-3">{actionBarContent}</div>
+            </section>
 
+            <section className="flex min-h-0 min-w-0 basis-1/2 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
+              <ThreadDetail
+                thread={resolvedThread}
+                project={threadProject}
+                messages={resolvedThread ? threadDetailMessages : []}
+                issues={resolvedThread ? threadDetail?.issues ?? [] : []}
+                signalNow={signalNow}
+                messagesLoading={threadDetailLoading}
+                messagesError={threadDetailError}
+                onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
+                onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
+                onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
+                onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
+                onSubmitPrompt={(payload) => {
+                  if (resolvedThread?.id) {
+                    return onAppendThreadMessage(resolvedThread.id, payload.prompt);
+                  }
+
+                  return onCreateThread(payload, { stayOnThread: true });
+                }}
+                submitBusy={threadBusy}
+                onBack={onBackToInbox}
+                messageFilter={threadMessageFilter}
+                onChangeMessageFilter={onChangeThreadMessageFilter}
+                isDraft={!selectedThread && !threadDetail?.thread}
+                showBackButton={false}
+                standalone={false}
+              />
+            </section>
+          </main>
+        </div>
+        {mainOverlays}
+      </div>
+    );
+  }
+
+  if (activeView === "thread" && (resolvedThread || draftProject || selectedThreadId)) {
     return (
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <ThreadDetail
@@ -6922,24 +7332,10 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.loginId) {
-      return undefined;
+      return;
     }
 
     void loadBridges(session);
-
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      if (cancelled) {
-        return;
-      }
-
-      void loadBridges(session);
-    }, BRIDGE_LIST_POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
   }, [session]);
 
   useEffect(() => {

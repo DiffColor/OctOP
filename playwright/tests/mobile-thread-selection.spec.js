@@ -9,6 +9,7 @@ const loginId = 'playwright-user';
 const bridgeId = 'bridge-e2e';
 const projectId = 'project-e2e';
 const threadId = 'thread-selection-1';
+const issueId = 'issue-selection-1';
 
 const session = {
   accessToken: 'playwright-token',
@@ -35,6 +36,24 @@ const thread = {
   context_used_tokens: 1000,
   context_window_tokens: 100000
 };
+
+const issue = {
+  id: issueId,
+  thread_id: threadId,
+  title: 'Split Layout Issue',
+  status: 'completed',
+  created_at: '2026-03-18T10:05:00.000Z',
+  updated_at: '2026-03-18T10:12:00.000Z'
+};
+
+const issueMessages = [
+  {
+    id: 'message-selection-1',
+    role: 'assistant',
+    content: 'Split layout assistant message.',
+    timestamp: '2026-03-18T10:12:00.000Z'
+  }
+];
 
 test.use({
   serviceWorkers: 'block',
@@ -82,12 +101,17 @@ async function mockMobileApi(page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          status: {
-            bridge_id: bridgeId,
-            counts: {
-              projects: 1,
-              threads: 1
+          bridge_id: bridgeId,
+          app_server: {
+            connected: true,
+            initialized: true,
+            account: {
+              login_id: loginId
             }
+          },
+          counts: {
+            projects: 1,
+            threads: 1
           }
         })
       });
@@ -117,6 +141,30 @@ async function mockMobileApi(page) {
         contentType: 'application/json',
         body: JSON.stringify({
           threads: [thread]
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${threadId}/issues`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          issues: [issue]
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/issues/${issueId}`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          thread,
+          issue,
+          messages: issueMessages
         })
       });
       return;
@@ -202,5 +250,57 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
 
     expect(selectionState.text).toBe('');
     expect(selectionState.isCollapsed).toBeTruthy();
+  });
+});
+
+test.describe('wide mobile split layout', () => {
+  let server;
+  let baseUrl;
+
+  test.use({
+    serviceWorkers: 'block',
+    hasTouch: true,
+    isMobile: true,
+    viewport: {
+      width: 900,
+      height: 430
+    }
+  });
+
+  test.beforeAll(async () => {
+    await buildWorkspace('@octop/mobile');
+    server = new StaticAppServer(MOBILE_DIST_DIR);
+    const port = await server.start();
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  test.afterAll(async () => {
+    if (server) {
+      await server.stop();
+    }
+  });
+
+  test('keeps the thread list visible beside the current chat on wide landscape screens', async ({ page }) => {
+    await mockMobileApi(page);
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const card = page.getByTestId(`thread-list-item-${threadId}`);
+    await expect(card).toBeVisible();
+
+    await card.click();
+
+    await expect(page.getByTestId('thread-split-layout')).toBeVisible();
+    await expect(page.getByTestId('thread-list-pane').getByTestId(`thread-list-item-${threadId}`)).toBeVisible();
+    await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+    await expect(page.getByTestId('thread-detail-panel').getByText('Split layout assistant message.')).toBeVisible();
   });
 });
