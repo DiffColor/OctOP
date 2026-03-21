@@ -1394,6 +1394,10 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function isRetryableIssueStatus(status) {
+  return String(status ?? "").trim() === "failed";
+}
+
 function getRealtimeProgressText(entity, language) {
   const isKorean = language === "ko";
   const status = entity?.status ?? "queued";
@@ -4036,7 +4040,9 @@ function MainPage({
   onDragQueueIssue,
   onDragPrepIssues,
   onDragMovableIssue,
+  onDragRetryIssues,
   draggingMovableIssueIds,
+  draggingRetryIssueIds,
   issueMoveTargetThreadId,
   onIssueMoveTargetOver,
   onIssueMoveTargetLeave,
@@ -5075,6 +5081,10 @@ function MainPage({
                     onDrop={(event) => {
                       if (column.id === "todo") {
                         event.preventDefault();
+                        if (draggingRetryIssueIds.length > 0) {
+                          onDragRetryIssues.drop();
+                          return;
+                        }
                         onDragPrepIssues.drop();
                         return;
                       }
@@ -5249,14 +5259,18 @@ function MainPage({
                               onDelete={column.id === "review" ? onDeleteIssue : undefined}
                               onDragStart={
                                 column.id === "review"
-                                  ? onDragArchiveIssues.start
+                                  ? isRetryableIssueStatus(thread.status)
+                                    ? onDragRetryIssues.start
+                                    : onDragArchiveIssues.start
                                   : column.id === "running"
                                     ? onDragMovableIssue.start
                                     : undefined
                               }
                               onDragEnd={
                                 column.id === "review"
-                                  ? onDragArchiveIssues.clear
+                                  ? isRetryableIssueStatus(thread.status)
+                                    ? onDragRetryIssues.clear
+                                    : onDragArchiveIssues.clear
                                   : column.id === "running"
                                     ? onDragMovableIssue.clear
                                     : undefined
@@ -5557,6 +5571,7 @@ export default function App() {
   const [draggingIssueId, setDraggingIssueId] = useState("");
   const [draggingPrepIssueIds, setDraggingPrepIssueIds] = useState([]);
   const [draggingMovableIssueIds, setDraggingMovableIssueIds] = useState([]);
+  const [draggingRetryIssueIds, setDraggingRetryIssueIds] = useState([]);
   const [issueMoveTargetThreadId, setIssueMoveTargetThreadId] = useState("");
   const [draggingArchiveIssueIds, setDraggingArchiveIssueIds] = useState([]);
   const [archivedIssuesState, setArchivedIssuesState] = useState({});
@@ -7523,14 +7538,25 @@ export default function App() {
     setIssueMoveTargetThreadId("");
   }, []);
 
+  const clearRetryIssueDrag = useCallback(() => {
+    setDraggingRetryIssueIds([]);
+  }, []);
+
   const handleDragQueueIssue = {
     start: (threadId) => {
       setDraggingIssueId(threadId);
       setDraggingPrepIssueIds([]);
       clearMovableIssueDrag();
+      clearRetryIssueDrag();
+      setDraggingArchiveIssueIds([]);
     },
     over: () => {},
     drop: (targetId) => {
+      if (draggingRetryIssueIds.length > 0) {
+        void requeueFailedIssuesToTodo(draggingRetryIssueIds, targetId);
+        return;
+      }
+
       if (draggingPrepIssueIds.length > 0) {
         void movePrepIssuesToTodo(draggingPrepIssueIds, targetId);
         return;
@@ -7578,6 +7604,58 @@ export default function App() {
     }
   };
 
+  const placeTodoIssuesBeforeTarget = async (issueIds, targetId, nextThreads) => {
+    if (!targetId || nextThreads.length === 0 || !session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+      return;
+    }
+
+    const visibleTodoIds = nextThreads
+      .filter(
+        (thread) => thread.thread_id === selectedProjectThreadId && getStatusMeta(thread.status).column === "todo"
+      )
+      .sort((left, right) => {
+        const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+
+        if (leftOrder !== rightOrder) {
+          return leftOrder - rightOrder;
+        }
+
+        return Date.parse(left.updated_at) - Date.parse(right.updated_at);
+      })
+      .map((thread) => thread.id);
+
+    const insertedIds = issueIds.filter((threadId) => visibleTodoIds.includes(threadId));
+
+    if (insertedIds.length === 0 || !visibleTodoIds.includes(targetId)) {
+      return;
+    }
+
+    const reorderedIds = visibleTodoIds.filter((threadId) => !insertedIds.includes(threadId));
+    const targetIndex = reorderedIds.indexOf(targetId);
+
+    if (targetIndex < 0) {
+      return;
+    }
+
+    reorderedIds.splice(targetIndex, 0, ...insertedIds);
+    setIssueQueueOrderIds(reorderedIds);
+
+    const reorderResponse = await apiRequest(
+      `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          issue_ids: reorderedIds
+        })
+      }
+    );
+
+    if (Array.isArray(reorderResponse?.issues)) {
+      applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, reorderResponse.issues);
+    }
+  };
+
   const movePrepIssuesToTodo = async (threadIds, targetId = "") => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
       return;
@@ -7622,49 +7700,7 @@ export default function App() {
         applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, nextThreads);
       }
 
-      if (targetId && nextThreads.length > 0) {
-        const visibleTodoIds = nextThreads
-          .filter(
-            (thread) => thread.thread_id === selectedProjectThreadId && getStatusMeta(thread.status).column === "todo"
-          )
-          .sort((left, right) => {
-            const leftOrder = left.queue_position ?? Number.MAX_SAFE_INTEGER;
-            const rightOrder = right.queue_position ?? Number.MAX_SAFE_INTEGER;
-
-            if (leftOrder !== rightOrder) {
-              return leftOrder - rightOrder;
-            }
-
-            return Date.parse(left.updated_at) - Date.parse(right.updated_at);
-          })
-          .map((thread) => thread.id);
-
-        const insertedIds = normalizedQueuedThreadIds.filter((threadId) => visibleTodoIds.includes(threadId));
-
-        if (insertedIds.length > 0 && visibleTodoIds.includes(targetId)) {
-          const reorderedIds = visibleTodoIds.filter((threadId) => !insertedIds.includes(threadId));
-          const targetIndex = reorderedIds.indexOf(targetId);
-
-          if (targetIndex >= 0) {
-            reorderedIds.splice(targetIndex, 0, ...insertedIds);
-            setIssueQueueOrderIds(reorderedIds);
-
-            const reorderResponse = await apiRequest(
-              `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/reorder?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-              {
-                method: "POST",
-                body: JSON.stringify({
-                  issue_ids: reorderedIds
-                })
-              }
-            );
-
-            if (Array.isArray(reorderResponse?.issues)) {
-              applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, reorderResponse.issues);
-            }
-          }
-        }
-      }
+      await placeTodoIssuesBeforeTarget(normalizedQueuedThreadIds, targetId, nextThreads);
 
       setSelectedIssueIds((current) => current.filter((threadId) => !normalizedQueuedThreadIds.includes(threadId)));
     } catch (error) {
@@ -7681,6 +7717,77 @@ export default function App() {
       setStartBusy(false);
       setDraggingPrepIssueIds([]);
       clearMovableIssueDrag();
+    }
+  };
+
+  const requeueFailedIssuesToTodo = async (threadIds, targetId = "") => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+      return;
+    }
+
+    const retryableIssueIds = threadIds.filter((threadId) => {
+      const issue = issues.find((item) => item.id === threadId);
+      return (
+        issue &&
+        issue.thread_id === selectedProjectThreadId &&
+        getStatusMeta(issue.status).column === "review" &&
+        isRetryableIssueStatus(issue.status)
+      );
+    });
+
+    if (retryableIssueIds.length === 0) {
+      clearRetryIssueDrag();
+      setDraggingArchiveIssueIds([]);
+      return;
+    }
+
+    setStartBusy(true);
+
+    try {
+      for (const issueId of retryableIssueIds) {
+        await apiRequest(
+          `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              reason: "drag_to_prep"
+            })
+          }
+        );
+      }
+
+      const response = await apiRequest(
+        `/api/threads/${encodeURIComponent(selectedProjectThreadId)}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            issue_ids: retryableIssueIds
+          })
+        }
+      );
+
+      const nextThreads = Array.isArray(response?.issues) ? mergeIssues([], response.issues) : [];
+
+      if (nextThreads.length > 0) {
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, nextThreads);
+      }
+
+      await placeTodoIssuesBeforeTarget(retryableIssueIds, targetId, nextThreads);
+      setSelectedIssueIds((current) => current.filter((threadId) => !retryableIssueIds.includes(threadId)));
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issues.retry.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setStartBusy(false);
+      clearRetryIssueDrag();
+      setDraggingArchiveIssueIds([]);
     }
   };
 
@@ -7701,6 +7808,7 @@ export default function App() {
       const draggedIds = currentPrepIds.includes(threadId) ? normalizeIds(currentPrepIds) : normalizeIds([threadId]);
       setDraggingIssueId("");
       setDraggingPrepIssueIds(draggedIds);
+      clearRetryIssueDrag();
       setDraggingArchiveIssueIds([]);
       setDraggingMovableIssueIds(draggedIds);
       setIssueMoveTargetThreadId("");
@@ -7780,11 +7888,40 @@ export default function App() {
       const draggedIds = selectedIdsInRunning.includes(threadId) ? selectedIdsInRunning : [threadId];
       setDraggingIssueId("");
       setDraggingPrepIssueIds([]);
+      clearRetryIssueDrag();
       setDraggingArchiveIssueIds([]);
       setDraggingMovableIssueIds(draggedIds);
       setIssueMoveTargetThreadId("");
     },
     clear: clearMovableIssueDrag
+  };
+
+  const handleDragRetryIssues = {
+    start: (threadId) => {
+      const selectedRetryIds = selectedIssueIds.filter((selectedId) => {
+        const issue = issues.find((item) => item.id === selectedId);
+        return (
+          issue &&
+          issue.thread_id === selectedProjectThreadId &&
+          getStatusMeta(issue.status).column === "review" &&
+          isRetryableIssueStatus(issue.status)
+        );
+      });
+      const draggedIds = selectedRetryIds.includes(threadId) ? selectedRetryIds : [threadId];
+      setDraggingIssueId("");
+      setDraggingPrepIssueIds([]);
+      clearMovableIssueDrag();
+      setDraggingArchiveIssueIds(draggedIds);
+      setDraggingRetryIssueIds(draggedIds);
+      setIssueMoveTargetThreadId("");
+    },
+    clear: () => {
+      setDraggingArchiveIssueIds([]);
+      clearRetryIssueDrag();
+    },
+    drop: (targetId = "") => {
+      void requeueFailedIssuesToTodo(draggingRetryIssueIds, targetId);
+    }
   };
 
   const handleDragArchiveIssues = {
@@ -7796,6 +7933,7 @@ export default function App() {
       const draggedIds = selectedIdsInColumn.includes(threadId) ? selectedIdsInColumn : [threadId];
       setDraggingIssueId("");
       setDraggingPrepIssueIds([]);
+      clearRetryIssueDrag();
       clearMovableIssueDrag();
       setSelectedIssueIds(draggedIds);
       setSelectedIssueId(threadId);
@@ -8538,7 +8676,9 @@ export default function App() {
       onDragQueueIssue={handleDragQueueIssue}
       onDragPrepIssues={handleDragPrepIssues}
       onDragMovableIssue={handleDragMovableIssue}
+      onDragRetryIssues={handleDragRetryIssues}
       draggingMovableIssueIds={draggingMovableIssueIds}
+      draggingRetryIssueIds={draggingRetryIssueIds}
       issueMoveTargetThreadId={issueMoveTargetThreadId}
       onIssueMoveTargetOver={handleIssueMoveTargetOver}
       onIssueMoveTargetLeave={handleIssueMoveTargetLeave}

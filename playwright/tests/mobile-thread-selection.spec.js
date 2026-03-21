@@ -211,9 +211,14 @@ async function mockMobileApi(page, options = {}) {
     }
 
     if (pathname === `/api/threads/${threadId}/issues/start` && method === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}');
+      const requestedIssueIds = Array.isArray(payload.issue_ids) ? payload.issue_ids : [];
       currentIssues = currentIssues.map((currentIssue) => ({
         ...currentIssue,
-        status: currentIssue.status === 'queued' ? 'running' : currentIssue.status
+        status:
+          requestedIssueIds.includes(currentIssue.id) && ['queued', 'staged'].includes(currentIssue.status)
+            ? 'running'
+            : currentIssue.status
       }));
 
       await route.fulfill({
@@ -221,6 +226,32 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify({
           ok: true,
+          issues: currentIssues
+        })
+      });
+      return;
+    }
+
+    if (pathname.match(/^\/api\/issues\/[^/]+\/interrupt$/) && method === 'POST') {
+      const targetIssueId = pathname.split('/')[3];
+      const payload = JSON.parse(request.postData() ?? '{}');
+
+      currentIssues = currentIssues.map((currentIssue) =>
+        currentIssue.id === targetIssueId
+          ? {
+              ...currentIssue,
+              status: payload.reason === 'drag_to_prep' ? 'staged' : 'interrupted',
+              updated_at: '2026-03-18T10:21:00.000Z'
+            }
+          : currentIssue
+      );
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          issue_id: targetIssueId,
           issues: currentIssues
         })
       });
@@ -414,6 +445,70 @@ test.describe('wide mobile split layout', () => {
     expect(viewport).not.toBeNull();
     expect(Math.abs(dialogBox.x + dialogBox.width / 2 - viewport.width / 2)).toBeLessThanOrEqual(40);
     expect(Math.abs(dialogBox.y + dialogBox.height / 2 - viewport.height / 2)).toBeLessThanOrEqual(40);
+  });
+
+  test('실패한 이슈 메시지에서 다시 진행 버튼으로 재대기열에 넣을 수 있다', async ({ page }) => {
+    const requestLog = [];
+
+    await mockMobileApi(page, {
+      issues: [
+        {
+          ...issue,
+          status: 'failed',
+          last_message: 'Retry me'
+        }
+      ],
+      requestLog
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const message = page.getByTestId('message-bubble-light').getByText('Split layout assistant message.').first();
+    await message.dispatchEvent('pointerdown', {
+      pointerId: 1,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 640,
+      clientY: 200
+    });
+    await page.waitForTimeout(700);
+    await message.dispatchEvent('pointerup', {
+      pointerId: 1,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 640,
+      clientY: 200
+    });
+
+    const dialog = page.getByTestId('thread-message-action-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '다시 진행' })).toBeVisible();
+
+    await dialog.getByRole('button', { name: '다시 진행' }).click();
+
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole('button', { name: '중단' })).toBeVisible();
+
+    expect(
+      requestLog.some(
+        ({ method, pathname }) => method === 'POST' && pathname === `/api/issues/${issueId}/interrupt`
+      )
+    ).toBeTruthy();
+    expect(
+      requestLog.some(
+        ({ method, pathname }) => method === 'POST' && pathname === `/api/threads/${threadId}/issues/start`
+      )
+    ).toBeTruthy();
   });
 
   test('shows an empty chat panel beside the thread list when no threads exist', async ({ page }) => {

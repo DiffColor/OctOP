@@ -698,6 +698,10 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function isRetryableIssueStatus(status) {
+  return String(status ?? "").trim() === "failed";
+}
+
 function createId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -3670,7 +3674,7 @@ function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTr
   );
 }
 
-function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDelete }) {
+function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onRetry, onDelete }) {
   if (!open || !message) {
     return null;
   }
@@ -3692,6 +3696,16 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onDele
               className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
             >
               텍스트 복사
+            </button>
+          ) : null}
+          {onRetry ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={busy}
+              className="shrink-0 rounded-full bg-telegram-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              다시 진행
             </button>
           ) : null}
           {onDelete ? (
@@ -4615,6 +4629,7 @@ function ThreadDetail({
   onRefreshMessages,
   onStopThreadExecution,
   onInterruptIssue,
+  onRetryIssue,
   onDeleteIssue,
   onSubmitPrompt,
   submitBusy,
@@ -4637,6 +4652,7 @@ function ThreadDetail({
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [refreshPending, setRefreshPending] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
+  const [retryingIssueId, setRetryingIssueId] = useState("");
   const [deletingIssueId, setDeletingIssueId] = useState("");
   const [activeMessageAction, setActiveMessageAction] = useState(null);
   useTouchScrollBoundaryLock(scrollRef);
@@ -4994,6 +5010,21 @@ function ThreadDetail({
     }
   };
 
+  const handleRetryIssue = async (issueId) => {
+    if (!issueId || !onRetryIssue || retryingIssueId) {
+      return false;
+    }
+
+    setRetryingIssueId(issueId);
+
+    try {
+      const accepted = await onRetryIssue(issueId);
+      return accepted !== false;
+    } finally {
+      setRetryingIssueId((current) => (current === issueId ? "" : current));
+    }
+  };
+
   const handleInterruptIssue = async (issueId, options = {}) => {
     if (!issueId || !onInterruptIssue || interruptingIssueId) {
       return false;
@@ -5043,6 +5074,18 @@ function ThreadDetail({
     [activePhysicalThreadId, issueById]
   );
 
+  const canRetryIssueFromBubble = useCallback(
+    (issueId) => {
+      if (!issueId) {
+        return false;
+      }
+
+      const issue = issueById.get(issueId);
+      return Boolean(issue && isRetryableIssueStatus(issue.status));
+    },
+    [issueById]
+  );
+
   const handleCopyMessage = useCallback(async (content) => {
     try {
       await copyTextToClipboard(content);
@@ -5064,6 +5107,7 @@ function ThreadDetail({
   useEffect(() => {
     setActiveMessageAction(null);
     setInterruptingIssueId("");
+    setRetryingIssueId("");
     setDeletingIssueId("");
   }, [thread?.id]);
 
@@ -5213,7 +5257,8 @@ function ThreadDetail({
             visibleChatTimeline.map((message) => {
               const canCopy = Boolean(String(message.content ?? "").trim());
               const canDelete = canDeleteIssueFromBubble(message.issueId);
-              const canOpenActionSheet = canCopy || canDelete;
+              const canRetry = canRetryIssueFromBubble(message.issueId);
+              const canOpenActionSheet = canCopy || canDelete || canRetry;
 
               return (
                 <MessageBubble
@@ -5232,6 +5277,7 @@ function ThreadDetail({
                             meta: formatRelativeTime(message.timestamp),
                             issueId: message.issueId,
                             canCopy,
+                            canRetry,
                             canDelete
                           })
                       : null
@@ -5342,11 +5388,15 @@ function ThreadDetail({
         busy={
           Boolean(
             activeMessageAction?.issueId &&
-              (interruptingIssueId === activeMessageAction.issueId || deletingIssueId === activeMessageAction.issueId)
+              (
+                interruptingIssueId === activeMessageAction.issueId ||
+                retryingIssueId === activeMessageAction.issueId ||
+                deletingIssueId === activeMessageAction.issueId
+              )
           )
         }
         onClose={() => {
-          if (!interruptingIssueId && !deletingIssueId) {
+          if (!interruptingIssueId && !retryingIssueId && !deletingIssueId) {
             setActiveMessageAction(null);
           }
         }}
@@ -5356,6 +5406,17 @@ function ThreadDetail({
                 const copied = await handleCopyMessage(activeMessageAction.content);
 
                 if (copied) {
+                  setActiveMessageAction(null);
+                }
+              }
+            : null
+        }
+        onRetry={
+          activeMessageAction?.canRetry
+            ? async () => {
+                const retried = await handleRetryIssue(activeMessageAction.issueId);
+
+                if (retried) {
                   setActiveMessageAction(null);
                 }
               }
@@ -5477,6 +5538,7 @@ function MainPage({
   onRefreshThreadDetail,
   onStopThreadExecution,
   onInterruptThreadIssue,
+  onRetryThreadIssue,
   onDeleteThreadIssue,
   onRefresh,
   onLogout,
@@ -6315,6 +6377,7 @@ function MainPage({
                 onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
                 onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
                 onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
+                onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
                 onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
                 onSubmitPrompt={(payload) => {
                   if (resolvedThread?.id) {
@@ -6354,6 +6417,7 @@ function MainPage({
           onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
           onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
           onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
+          onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
           onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
@@ -9099,6 +9163,77 @@ export default function App() {
     }
   }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
 
+  const handleRetryThreadIssue = useCallback(async (issueId) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
+      return false;
+    }
+
+    const targetIssue = (currentThreadDetail?.issues ?? [])
+      .map((issue) => normalizeIssue(issue, selectedThreadId))
+      .find((issue) => issue?.id === issueId);
+
+    if (!targetIssue) {
+      return false;
+    }
+
+    if (!isRetryableIssueStatus(targetIssue.status)) {
+      if (typeof window !== "undefined") {
+        window.alert("실패한 이슈만 다시 진행할 수 있습니다.");
+      }
+      return false;
+    }
+
+    try {
+      const interruptResponse = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason: "drag_to_prep"
+          })
+        }
+      );
+
+      if (Array.isArray(interruptResponse?.issues)) {
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            issues: interruptResponse.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+          }
+        }));
+      }
+
+      const startResponse = await apiRequest(
+        `/api/threads/${encodeURIComponent(selectedThreadId)}/issues/start?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            issue_ids: [issueId]
+          })
+        }
+      );
+
+      if (Array.isArray(startResponse?.issues)) {
+        setThreadDetails((current) => ({
+          ...current,
+          [selectedThreadId]: {
+            ...(current[selectedThreadId] ?? {}),
+            issues: startResponse.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+          }
+        }));
+      }
+
+      await loadThreadMessages(selectedThreadId, { force: true });
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    }
+  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, session]);
+
   const handleInterruptThreadIssue = useCallback(async (issueId, options = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
       return false;
@@ -10081,6 +10216,7 @@ export default function App() {
         onRefreshThreadDetail={handleRefreshThreadDetail}
         onStopThreadExecution={handleStopThreadExecution}
         onInterruptThreadIssue={handleInterruptThreadIssue}
+        onRetryThreadIssue={handleRetryThreadIssue}
         onDeleteThreadIssue={handleDeleteThreadIssue}
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
