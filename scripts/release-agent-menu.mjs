@@ -159,6 +159,18 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
 
   cpSync(appRoot, standaloneAppPath, { recursive: true });
 
+  const standaloneArchiveName = `OctOP-macos-${arch}-${versionTag}.app.zip`;
+  const standaloneArchivePath = resolve(outputRoot, standaloneArchiveName);
+  rmSync(standaloneArchivePath, { force: true });
+  run("ditto", [
+    "-c",
+    "-k",
+    "--sequesterRsrc",
+    "--keepParent",
+    standaloneAppPath,
+    standaloneArchivePath
+  ], outputRoot);
+
   const archiveName = `OctOPAgentMenu-macos-${arch}-${versionTag}.zip`;
   const archivePath = resolve(outputRoot, archiveName);
   rmSync(archivePath, { force: true });
@@ -177,6 +189,11 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
       platform: "macos",
       path: standaloneAppPath,
       kind: "app-bundle"
+    },
+    {
+      platform: "macos",
+      path: standaloneArchivePath,
+      kind: "zip-standalone-app-bundle"
     },
     {
       platform: "macos",

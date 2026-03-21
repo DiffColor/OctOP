@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -15,22 +18,22 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
       - name: Build Windows release artifact
         run: node ./scripts/release-agent-menu.mjs --platform windows --version "${{ env.RELEASE_VERSION }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows-agent-menu-${{ env.RELEASE_TAG }}
           path: dist/releases/${{ env.RELEASE_TAG }}/*.exe
@@ -42,11 +45,11 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -54,13 +57,14 @@ jobs:
         with:
           swift-version: "6.1"
 
-      - name: Build macOS release artifact
+      - name: Build macOS release artifacts
         run: node ./scripts/release-agent-menu.mjs --platform macos --version "${{ env.RELEASE_VERSION }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: macos-agent-menu-${{ env.RELEASE_TAG }}
-          path: dist/releases/${{ env.RELEASE_TAG }}/*.zip
+          path: |
+            dist/releases/${{ env.RELEASE_TAG }}/*.zip
           if-no-files-found: error
 
   publish-release:
@@ -69,12 +73,12 @@ jobs:
       - build-macos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: windows-agent-menu-${{ github.ref_name }}
           path: release-assets/windows
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: macos-agent-menu-${{ github.ref_name }}
           path: release-assets/macos
