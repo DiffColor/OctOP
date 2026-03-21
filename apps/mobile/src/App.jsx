@@ -2636,7 +2636,6 @@ function InlineIssueComposer({
   const lastFinalTranscriptRef = useRef("");
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
-  const initialPromptValueRef = useRef(normalizedDraftValue);
   const promptRef = useRef(normalizedDraftValue);
   const lastHydratedDraftRef = useRef({
     key: normalizedDraftKey,
@@ -2747,15 +2746,6 @@ function InlineIssueComposer({
   const handlePromptChange = useCallback(
     (event) => {
       const nextPrompt = event.target.value;
-      const inputType = String(event.nativeEvent?.inputType ?? "");
-
-      if (
-        event.nativeEvent?.isComposing ||
-        inputType.startsWith("insertComposition") ||
-        inputType === "deleteCompositionText"
-      ) {
-        isPromptComposingRef.current = true;
-      }
 
       promptRef.current = nextPrompt;
       syncPromptHeight(event.target);
@@ -3018,8 +3008,7 @@ function InlineIssueComposer({
         return;
       }
 
-      if (event.nativeEvent?.isComposing || isPromptComposingRef.current || event.which === 229) {
-        isPromptComposingRef.current = true;
+      if (event.nativeEvent?.isComposing || isPromptComposingRef.current) {
         return;
       }
 
@@ -3128,18 +3117,7 @@ function InlineIssueComposer({
               rows="1"
               ref={textareaRef}
               data-testid="thread-prompt-input"
-              defaultValue={initialPromptValueRef.current}
-              onBeforeInput={(event) => {
-                const inputType = String(event.nativeEvent?.inputType ?? "");
-
-                if (
-                  event.nativeEvent?.isComposing ||
-                  inputType.startsWith("insertComposition") ||
-                  inputType === "deleteCompositionText"
-                ) {
-                  isPromptComposingRef.current = true;
-                }
-              }}
+              defaultValue={promptRef.current}
               onChange={handlePromptChange}
               onKeyDown={handlePromptKeyDown}
               onCompositionStart={(event) => {

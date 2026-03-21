@@ -6,8 +6,6 @@ public sealed partial class PushNotificationTemplateService
 {
   public const string DashboardAppId = "dashboard-web";
   public const string MobileAppId = "mobile-web";
-  public const string AndroidWatchAppId = "android-watch";
-  public const string AppleWatchAppId = "apple-watch";
   private const string DefaultTitleTemplate = "OctOP Push";
   private const string DefaultBodyTemplate = "테스트 푸시입니다.";
   private const string DefaultCompletedTitleTemplate = "{projectPrefix}이슈 완료";
@@ -31,8 +29,6 @@ public sealed partial class PushNotificationTemplateService
     UrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_URL", DefaultUrlTemplate);
     DashboardUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_DASHBOARD_URL", UrlTemplate);
     MobileUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_MOBILE_URL", UrlTemplate);
-    AndroidWatchUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_ANDROID_WATCH_URL", MobileUrlTemplate);
-    AppleWatchUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_APPLE_WATCH_URL", MobileUrlTemplate);
   }
 
   public string CompletedTitleTemplate { get; }
@@ -56,10 +52,6 @@ public sealed partial class PushNotificationTemplateService
   public string DashboardUrlTemplate { get; }
 
   public string MobileUrlTemplate { get; }
-
-  public string AndroidWatchUrlTemplate { get; }
-
-  public string AppleWatchUrlTemplate { get; }
 
   public PushNotificationRequest BuildIssueTerminalNotification(
     string bridgeId,
@@ -191,9 +183,7 @@ public sealed partial class PushNotificationTemplateService
       CompletedTag = CompletedTagTemplate,
       FailedTag = FailedTagTemplate,
       DashboardUrl = DashboardUrlTemplate,
-      MobileUrl = MobileUrlTemplate,
-      AndroidWatchUrl = AndroidWatchUrlTemplate,
-      AppleWatchUrl = AppleWatchUrlTemplate
+      MobileUrl = MobileUrlTemplate
     };
   }
 
@@ -207,12 +197,9 @@ public sealed partial class PushNotificationTemplateService
       return false;
     }
 
-    if (
-      string.Equals(normalizedSourceAppId, MobileAppId, StringComparison.Ordinal) ||
-      IsWatchAppId(normalizedSourceAppId))
+    if (string.Equals(normalizedSourceAppId, MobileAppId, StringComparison.Ordinal))
     {
-      return string.Equals(normalizedTargetAppId, MobileAppId, StringComparison.Ordinal) ||
-        IsWatchAppId(normalizedTargetAppId);
+      return string.Equals(normalizedTargetAppId, MobileAppId, StringComparison.Ordinal);
     }
 
     return true;
@@ -226,8 +213,6 @@ public sealed partial class PushNotificationTemplateService
     {
       DashboardAppId => DashboardAppId,
       MobileAppId => MobileAppId,
-      AndroidWatchAppId => AndroidWatchAppId,
-      AppleWatchAppId => AppleWatchAppId,
       _ => normalized
     };
   }
@@ -244,16 +229,8 @@ public sealed partial class PushNotificationTemplateService
     {
       DashboardAppId => DashboardUrlTemplate,
       MobileAppId => MobileUrlTemplate,
-      AndroidWatchAppId => AndroidWatchUrlTemplate,
-      AppleWatchAppId => AppleWatchUrlTemplate,
       _ => UrlTemplate
     };
-  }
-
-  private static bool IsWatchAppId(string? appId)
-  {
-    return string.Equals(appId, AndroidWatchAppId, StringComparison.Ordinal) ||
-      string.Equals(appId, AppleWatchAppId, StringComparison.Ordinal);
   }
 
   private static string RenderTemplate(string template, IReadOnlyDictionary<string, string> values)

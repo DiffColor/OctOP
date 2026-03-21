@@ -8,8 +8,9 @@ namespace OctOP.Gateway;
 public sealed class PushNotificationEventMonitorService(
   BridgeNatsClient bridgeNatsClient,
   PushSubscriptionService pushSubscriptionService,
-  PushDeliveryService pushDeliveryService,
+  WebPushNotificationService webPushNotificationService,
   PushNotificationTemplateService pushNotificationTemplateService,
+  VapidKeyService vapidKeyService,
   ILogger<PushNotificationEventMonitorService> logger) : BackgroundService
 {
   private const string UntitledIssueTitle = "Untitled issue";
@@ -17,9 +18,9 @@ public sealed class PushNotificationEventMonitorService(
 
   protected override async Task ExecuteAsync(CancellationToken stoppingToken)
   {
-    if (!pushDeliveryService.IsAnyProviderConfigured)
+    if (!vapidKeyService.IsConfigured)
     {
-      logger.LogInformation("Push notification worker is disabled because no push provider is configured.");
+      logger.LogInformation("Push notification worker is disabled because VAPID keys are not configured.");
 
       try
       {
@@ -147,7 +148,7 @@ public sealed class PushNotificationEventMonitorService(
 
       var issueTitle = ResolveIssueTitle(issueSnapshot, sourceIssueSnapshot);
       var projectName = projectSnapshot?.Value<string>("name");
-      var response = await pushDeliveryService.SendAsync(
+      var response = await webPushNotificationService.SendAsync(
         targetSubscriptions,
         (subscription) => pushNotificationTemplateService.BuildIssueTerminalNotification(
           bridgeId,
