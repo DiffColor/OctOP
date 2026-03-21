@@ -19,7 +19,7 @@ function createInitialState() {
   return {
     configured: false,
     loading: false,
-    bridgeRegistered: false,
+    deviceRegistered: false,
     browserSubscriptionReady: false,
     permission: typeof Notification === "undefined" ? "default" : Notification.permission,
     subscriptionCount: 0,
@@ -159,7 +159,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         ...current,
         configured: false,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         browserSubscriptionReady: false,
         permission: typeof Notification === "undefined" ? "default" : Notification.permission,
         subscriptionCount: 0,
@@ -173,7 +173,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       setState((current) => ({
         ...current,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         browserSubscriptionReady: false,
         subscriptionCount: 0,
         notice: "",
@@ -206,7 +206,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
             ...current,
             configured: false,
             loading: false,
-            bridgeRegistered: false,
+            deviceRegistered: false,
             browserSubscriptionReady: false,
             permission: Notification.permission,
             subscriptionCount: 0,
@@ -241,7 +241,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           ...current,
           configured: true,
           loading: false,
-          bridgeRegistered: currentEndpointRegistered,
+          deviceRegistered: currentEndpointRegistered,
           browserSubscriptionReady: Boolean(subscription),
           permission: Notification.permission,
           subscriptionCount: Number(summary?.count ?? endpoints.length ?? 0),
@@ -294,7 +294,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     };
   }, []);
 
-  const enablePushForBridge = async () => {
+  const enablePushOnThisDevice = async () => {
     if (!supportsPush() || !configPath || !subscriptionsPath || state.loading) {
       return;
     }
@@ -355,7 +355,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         ...current,
         configured: true,
         loading: false,
-        bridgeRegistered: true,
+        deviceRegistered: true,
         browserSubscriptionReady: true,
         permission,
         subscriptionCount: Number(summary?.count ?? 1),
@@ -373,7 +373,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     }
   };
 
-  const disablePushForBridge = async () => {
+  const disablePushOnThisDevice = async () => {
     if (!supportsPush() || !subscriptionsPath || state.loading) {
       return;
     }
@@ -383,7 +383,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     if (!endpoint) {
       setState((current) => ({
         ...current,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         loading: false
       }));
       return;
@@ -406,7 +406,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       setState((current) => ({
         ...current,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         subscriptionCount: Number(summary?.count ?? 0),
         notice: "",
         error: ""
@@ -421,19 +421,37 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     }
   };
 
+  const togglePushOnThisDevice = async () => {
+    if (state.deviceRegistered) {
+      await disablePushOnThisDevice();
+      return;
+    }
+
+    await enablePushOnThisDevice();
+  };
+
+  const canTogglePush =
+    Boolean(selectedBridgeId) &&
+    !state.loading &&
+    supportsPush() &&
+    (state.configured || state.deviceRegistered);
+
   return (
     <section className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 shadow-telegram-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Push Alerts</p>
-          <h3 className="mt-1 text-sm font-semibold text-white">현재 브릿지 종료 알림</h3>
+          <h3 className="mt-1 text-sm font-semibold text-white">이 모바일 알림 받기</h3>
+          <p className="mt-1 text-[12px] leading-5 text-slate-400">
+            선택한 워크스페이스 알림을 이 모바일에서 받습니다. 브릿지별로 따로 켜는 설정이 아닙니다.
+          </p>
         </div>
         <span
           className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-            state.bridgeRegistered ? "bg-emerald-400/15 text-emerald-200" : "bg-white/5 text-slate-300"
+            state.deviceRegistered ? "bg-emerald-400/15 text-emerald-200" : "bg-white/5 text-slate-300"
           }`}
         >
-          {state.bridgeRegistered ? "켜짐" : "꺼짐"}
+          {state.deviceRegistered ? "수신 중" : "꺼짐"}
         </span>
       </div>
 
@@ -457,7 +475,13 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           </span>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <span>현재 브릿지 등록 수</span>
+          <span>이 모바일 등록 상태</span>
+          <span className={state.deviceRegistered ? "text-emerald-300" : "text-slate-500"}>
+            {state.deviceRegistered ? "등록됨" : "등록 안 됨"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span>등록된 모바일 수신 수</span>
           <span className="text-slate-200">{state.subscriptionCount}</span>
         </div>
       </div>
@@ -465,22 +489,18 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       {state.notice ? <p className="mt-3 text-[12px] leading-5 text-slate-400">{state.notice}</p> : null}
       {state.error ? <p className="mt-3 text-[12px] leading-5 text-rose-300">{state.error}</p> : null}
 
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3">
         <button
           type="button"
-          onClick={() => void enablePushForBridge()}
-          disabled={!selectedBridgeId || state.loading || !supportsPush() || !state.configured}
-          className="flex-1 rounded-2xl bg-telegram-500 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => void togglePushOnThisDevice()}
+          disabled={!canTogglePush}
+          className={`w-full rounded-2xl px-3 py-2 text-[12px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            state.deviceRegistered
+              ? "border border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10"
+              : "bg-telegram-500 hover:bg-telegram-400"
+          }`}
         >
-          {state.loading ? "처리 중..." : "현재 브릿지 켜기"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void disablePushForBridge()}
-          disabled={!selectedBridgeId || state.loading || !state.bridgeRegistered}
-          className="rounded-2xl border border-white/10 px-3 py-2 text-[12px] font-medium text-slate-200 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          끄기
+          {state.loading ? "처리 중..." : state.deviceRegistered ? "이 모바일 알림 끄기" : "이 모바일 알림 받기"}
         </button>
       </div>
 

@@ -73,6 +73,8 @@ const APP_RESUME_COALESCE_MS = 400;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
+const VIEWPORT_METRICS_STORAGE_KEY = "octop.mobile.viewport.metrics.v1";
+const VIEWPORT_STORAGE_REUSE_TOLERANCE_PX = 96;
 const bridgeRequestFailureListeners = new Set();
 
 function subscribeBridgeRequestFailures(listener) {
@@ -596,18 +598,100 @@ function createId() {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function getVisualViewportHeight() {
+function getViewportOrientation(width, height) {
+  return width > height ? "landscape" : "portrait";
+}
+
+function isTextInputElement(element) {
+  if (!element || typeof element !== "object") {
+    return false;
+  }
+
+  const tagName = String(element.tagName ?? "").toLowerCase();
+
+  if (tagName === "textarea" || tagName === "select") {
+    return true;
+  }
+
+  if (tagName === "input") {
+    const type = String(element.type ?? "text").toLowerCase();
+
+    return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(type);
+  }
+
+  return Boolean(element.isContentEditable);
+}
+
+function readStoredViewportMetrics() {
   if (typeof window === "undefined") {
-    return 0;
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_METRICS_STORAGE_KEY);
+
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function storeViewportMetrics(metrics) {
+  if (
+    typeof window === "undefined" ||
+    !metrics ||
+    !Number.isFinite(metrics.width) ||
+    metrics.width <= 0 ||
+    !Number.isFinite(metrics.height) ||
+    metrics.height <= 0
+  ) {
+    return;
+  }
+
+  try {
+    const current = readStoredViewportMetrics();
+    const orientation = getViewportOrientation(metrics.width, metrics.height);
+    window.localStorage.setItem(
+      VIEWPORT_METRICS_STORAGE_KEY,
+      JSON.stringify({
+        ...current,
+        [orientation]: {
+          width: Math.round(metrics.width),
+          height: Math.round(metrics.height)
+        }
+      })
+    );
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function getStableViewportMetrics() {
+  if (typeof window === "undefined") {
+    return {
+      width: 0,
+      height: 0
+    };
   }
 
   const viewport = window.visualViewport;
+  const layoutWidth = Math.max(0, Math.round(window.innerWidth || viewport?.width || 0));
+  const layoutHeight = Math.max(0, Math.round(window.innerHeight || viewport?.height || 0));
+  const visualWidth = Math.max(0, Math.round(viewport?.width || layoutWidth));
+  const visualHeight = Math.max(0, Math.round(viewport?.height || layoutHeight));
+  const inputFocused = isTextInputElement(document?.activeElement);
+  const width = inputFocused ? Math.min(layoutWidth, visualWidth || layoutWidth) : Math.max(layoutWidth, visualWidth);
+  const height = inputFocused ? Math.min(layoutHeight, visualHeight || layoutHeight) : Math.max(layoutHeight, visualHeight);
 
-  if (!viewport) {
-    return window.innerHeight;
-  }
-
-  return Math.max(0, Math.round(viewport.height));
+  return {
+    width,
+    height
+  };
 }
 
 function getVisualViewportWidth() {
@@ -623,9 +707,43 @@ function getVisualViewportWidth() {
 
   return Math.max(0, Math.round(viewport.width));
 }
+function getInitialStableViewportMetrics() {
+  const liveMetrics = getStableViewportMetrics();
+  const storedMetrics = readStoredViewportMetrics();
+  const orientation = getViewportOrientation(liveMetrics.width, liveMetrics.height);
+  const cachedMetrics = storedMetrics?.[orientation];
+  const reusableCachedHeight =
+    cachedMetrics &&
+    Number.isFinite(Number(cachedMetrics.width)) &&
+    Number.isFinite(Number(cachedMetrics.height)) &&
+    Number(cachedMetrics.width) > 0 &&
+    Number(cachedMetrics.height) > 0 &&
+    Math.abs(Number(cachedMetrics.width) - liveMetrics.width) <= VIEWPORT_STORAGE_REUSE_TOLERANCE_PX
+      ? Number(cachedMetrics.height)
+      : 0;
 
-function useVisualViewportHeight() {
-  const [viewportHeight, setViewportHeight] = useState(() => getVisualViewportHeight());
+  return {
+    width: liveMetrics.width,
+    height: reusableCachedHeight > 0 ? Math.max(liveMetrics.height, reusableCachedHeight) : liveMetrics.height
+  };
+}
+
+function applyViewportMetricsToDocument(metrics) {
+  if (typeof document === "undefined" || !metrics) {
+    return;
+  }
+
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--app-stable-viewport-width", `${Math.max(0, Math.round(metrics.width || 0))}px`);
+  rootStyle.setProperty("--app-stable-viewport-height", `${Math.max(0, Math.round(metrics.height || 0))}px`);
+}
+
+function useStableViewportMetrics() {
+  const [viewportMetrics, setViewportMetrics] = useState(() => getInitialStableViewportMetrics());
+
+  useLayoutEffect(() => {
+    applyViewportMetricsToDocument(viewportMetrics);
+  }, [viewportMetrics]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -633,31 +751,45 @@ function useVisualViewportHeight() {
     }
 
     const viewport = window.visualViewport;
-    const syncViewportHeight = () => {
-      setViewportHeight(getVisualViewportHeight());
+    const syncViewportMetrics = () => {
+      setViewportMetrics((current) => {
+        const next = getStableViewportMetrics();
+
+        if (current.width === next.width && current.height === next.height) {
+          return current;
+        }
+
+        return next;
+      });
     };
 
-    syncViewportHeight();
+    syncViewportMetrics();
 
     if (!viewport) {
-      window.addEventListener("resize", syncViewportHeight);
+      window.addEventListener("resize", syncViewportMetrics);
+      window.addEventListener("orientationchange", syncViewportMetrics);
       return () => {
-        window.removeEventListener("resize", syncViewportHeight);
+        window.removeEventListener("resize", syncViewportMetrics);
+        window.removeEventListener("orientationchange", syncViewportMetrics);
       };
     }
 
-    viewport.addEventListener("resize", syncViewportHeight);
-    viewport.addEventListener("scroll", syncViewportHeight);
-    window.addEventListener("resize", syncViewportHeight);
+    viewport.addEventListener("resize", syncViewportMetrics);
+    window.addEventListener("resize", syncViewportMetrics);
+    window.addEventListener("orientationchange", syncViewportMetrics);
 
     return () => {
-      viewport.removeEventListener("resize", syncViewportHeight);
-      viewport.removeEventListener("scroll", syncViewportHeight);
-      window.removeEventListener("resize", syncViewportHeight);
+      viewport.removeEventListener("resize", syncViewportMetrics);
+      window.removeEventListener("resize", syncViewportMetrics);
+      window.removeEventListener("orientationchange", syncViewportMetrics);
     };
   }, []);
 
-  return viewportHeight;
+  useEffect(() => {
+    storeViewportMetrics(viewportMetrics);
+  }, [viewportMetrics]);
+
+  return viewportMetrics;
 }
 
 function useVisualViewportWidth() {
@@ -3666,12 +3798,11 @@ function TodoChatDetail({
 }) {
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
-  const viewportHeight = useVisualViewportHeight();
   const scrollRef = useRef(null);
   useTouchScrollBoundaryLock(scrollRef);
 
   return (
-    <div className="flex min-h-0 flex-col overflow-hidden" style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}>
+    <div className="telegram-screen flex min-h-0 flex-col overflow-hidden">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
           <button
@@ -3767,7 +3898,7 @@ function TodoChatDetail({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+      <div className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl">
           <InlineIssueComposer
             busy={submitBusy}
@@ -4366,7 +4497,6 @@ function ThreadDetail({
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
-  const viewportHeight = useVisualViewportHeight();
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
@@ -4807,7 +4937,7 @@ function ThreadDetail({
   }, [thread?.id]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
-  const rootStyle = standalone ? { height: viewportHeight ? `${viewportHeight}px` : "100dvh" } : undefined;
+  const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
   const rootClassName = standalone
     ? "flex min-h-0 flex-col overflow-hidden"
     : "flex h-full min-h-0 flex-col overflow-hidden";
@@ -5115,7 +5245,7 @@ function ThreadDetail({
 
       <div
         data-testid="thread-detail-footer"
-        className="shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur"
+        className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur"
       >
         <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
@@ -5239,7 +5369,6 @@ function MainPage({
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
-  const viewportHeight = useVisualViewportHeight();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -5960,7 +6089,7 @@ function MainPage({
     return (
       <div
         className="telegram-shell overflow-hidden bg-slate-950 text-slate-100"
-        style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}
+        style={{ height: "var(--app-stable-viewport-height)" }}
         data-testid="thread-split-layout"
       >
         <div className="mx-auto flex h-full min-h-0 w-full flex-col">
@@ -6236,7 +6365,7 @@ function MainPage({
           </section>
         </main>
 
-        <div className="fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-2 backdrop-blur">
+        <div className="telegram-safe-bottom-panel fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur">
           {threadSelectionMode && !isTodoScope ? (
             <div className="flex w-full items-center gap-3">
               <button
@@ -6381,6 +6510,7 @@ function MainPage({
 }
 
 export default function App() {
+  useStableViewportMetrics();
   const [session, setSession] = useState(() => (typeof window === "undefined" ? null : readStoredSession()));
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);

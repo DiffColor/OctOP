@@ -3,6 +3,14 @@
 }
 
 :root {
+  --app-stable-viewport-width: 100vw;
+  --app-stable-viewport-height: 100dvh;
+  --app-safe-area-top: env(safe-area-inset-top, 0px);
+  --app-safe-area-right: env(safe-area-inset-right, 0px);
+  --app-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-area-left: env(safe-area-inset-left, 0px);
+  --app-footer-safe-area-bottom: var(--app-safe-area-bottom);
+  --app-footer-bottom-gap: 0.75rem;
   font-family: "IBM Plex Sans KR", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #eff6ff;
   background:
@@ -13,6 +21,13 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (min-width: 768px) and (pointer: coarse) {
+  :root {
+    --app-footer-safe-area-bottom: min(var(--app-safe-area-bottom), 10px);
+    --app-footer-bottom-gap: 0.5rem;
+  }
 }
 
 html,
@@ -48,11 +63,18 @@ svg {
 }
 
 .telegram-shell {
-  min-height: 100dvh;
-  padding-top: env(safe-area-inset-top, 0);
-  padding-right: env(safe-area-inset-right, 0);
-  padding-bottom: env(safe-area-inset-bottom, 0);
-  padding-left: env(safe-area-inset-left, 0);
+  min-height: var(--app-stable-viewport-height);
+  padding-top: var(--app-safe-area-top);
+  padding-right: var(--app-safe-area-right);
+  padding-left: var(--app-safe-area-left);
+}
+
+.telegram-screen {
+  height: calc(var(--app-stable-viewport-height) - var(--app-safe-area-top));
+}
+
+.telegram-safe-bottom-panel {
+  padding-bottom: calc(var(--app-footer-safe-area-bottom) + var(--app-footer-bottom-gap));
 }
 
 .telegram-grid {
