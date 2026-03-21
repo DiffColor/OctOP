@@ -2621,6 +2621,7 @@ function InlineIssueComposer({
   const LONG_PRESS_THRESHOLD_MS = 650;
   const normalizedDraftKey = String(draftKey ?? "").trim();
   const normalizedDraftValue = normalizeComposerDraftValue(draftValue);
+  const [internalPrompt, setInternalPrompt] = useState(() => normalizedDraftValue);
   const textareaRef = useRef(null);
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -2629,18 +2630,44 @@ function InlineIssueComposer({
   const suppressClickRef = useRef(false);
   const isRecordingRef = useRef(false);
   const isPromptComposingRef = useRef(false);
-  const pendingPromptValueRef = useRef(null);
+  const shouldSyncPromptValueRef = useRef(false);
   const shouldKeepRecordingRef = useRef(false);
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
   const lastFinalTranscriptRef = useRef("");
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
-  const promptRef = useRef(normalizedDraftValue);
+  const prompt = internalPrompt;
+  const promptRef = useRef(prompt);
   const lastHydratedDraftRef = useRef({
     key: normalizedDraftKey,
     value: normalizedDraftValue
   });
+
+  useEffect(() => {
+    promptRef.current = prompt;
+  }, [prompt]);
+
+  useEffect(() => {
+    const lastHydratedDraft = lastHydratedDraftRef.current;
+    const keyChanged = lastHydratedDraft.key !== normalizedDraftKey;
+    const canHydrateSameKey =
+      !keyChanged &&
+      promptRef.current === lastHydratedDraft.value &&
+      normalizedDraftValue !== lastHydratedDraft.value;
+
+    if (!keyChanged && !canHydrateSameKey) {
+      return;
+    }
+
+    shouldSyncPromptValueRef.current = true;
+    setInternalPrompt(normalizedDraftValue);
+    promptRef.current = normalizedDraftValue;
+    lastHydratedDraftRef.current = {
+      key: normalizedDraftKey,
+      value: normalizedDraftValue
+    };
+  }, [normalizedDraftKey, normalizedDraftValue]);
 
   useEffect(
     () => () => {
@@ -2678,52 +2705,6 @@ function InlineIssueComposer({
     }
   }, []);
 
-  const applyPromptValue = useCallback(
-    (nextPrompt, { deferDuringComposition = true } = {}) => {
-      const normalizedPrompt = normalizeComposerDraftValue(nextPrompt);
-      promptRef.current = normalizedPrompt;
-
-      const textarea = textareaRef.current;
-
-      if (!textarea) {
-        return;
-      }
-
-      if (deferDuringComposition && isPromptComposingRef.current) {
-        pendingPromptValueRef.current = normalizedPrompt;
-        return;
-      }
-
-      pendingPromptValueRef.current = null;
-
-      if (textarea.value !== normalizedPrompt) {
-        textarea.value = normalizedPrompt;
-      }
-
-      syncPromptHeight(textarea);
-    },
-    [syncPromptHeight]
-  );
-
-  useEffect(() => {
-    const lastHydratedDraft = lastHydratedDraftRef.current;
-    const keyChanged = lastHydratedDraft.key !== normalizedDraftKey;
-    const canHydrateSameKey =
-      !keyChanged &&
-      promptRef.current === lastHydratedDraft.value &&
-      normalizedDraftValue !== lastHydratedDraft.value;
-
-    if (!keyChanged && !canHydrateSameKey) {
-      return;
-    }
-
-    applyPromptValue(normalizedDraftValue);
-    lastHydratedDraftRef.current = {
-      key: normalizedDraftKey,
-      value: normalizedDraftValue
-    };
-  }, [applyPromptValue, normalizedDraftKey, normalizedDraftValue]);
-
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
 
@@ -2731,23 +2712,30 @@ function InlineIssueComposer({
       return;
     }
 
-    if (pendingPromptValueRef.current !== null && !isPromptComposingRef.current) {
-      const pendingPromptValue = pendingPromptValueRef.current;
-      pendingPromptValueRef.current = null;
+    const shouldSyncPromptValue = shouldSyncPromptValueRef.current;
+    const canSyncPromptValue = !isPromptComposingRef.current;
 
-      if (textarea.value !== pendingPromptValue) {
-        textarea.value = pendingPromptValue;
-      }
+    if (
+      shouldSyncPromptValue &&
+      canSyncPromptValue &&
+      textarea.value !== prompt
+    ) {
+      textarea.value = prompt;
+    }
+
+    if (!shouldSyncPromptValue || canSyncPromptValue) {
+      shouldSyncPromptValueRef.current = false;
     }
 
     syncPromptHeight(textarea);
-  }, [selectedProject, syncPromptHeight]);
+  }, [prompt, selectedProject, syncPromptHeight]);
 
   const handlePromptChange = useCallback(
     (event) => {
       const nextPrompt = event.target.value;
 
       promptRef.current = nextPrompt;
+      setInternalPrompt(nextPrompt);
       syncPromptHeight(event.target);
     },
     [syncPromptHeight]
@@ -2821,11 +2809,18 @@ function InlineIssueComposer({
         at: Date.now()
       };
 
-      const currentPrompt = promptRef.current;
-      const nextPrompt = currentPrompt ? `${currentPrompt.trim()} ${transcript}` : transcript;
-      applyPromptValue(nextPrompt);
+      shouldSyncPromptValueRef.current = true;
+      setInternalPrompt((current) => {
+        const nextPrompt = current ? `${current.trim()} ${transcript}` : transcript;
+        promptRef.current = nextPrompt;
+        return nextPrompt;
+      });
+
+      if (typeof window !== "undefined") {
+        window.setTimeout(() => syncPromptHeight(), 0);
+      }
     },
-    [applyPromptValue]
+    [syncPromptHeight]
   );
 
   const startVoiceCapture = useCallback(() => {
@@ -2968,7 +2963,7 @@ function InlineIssueComposer({
   useEffect(() => () => clearVoiceRestartTimer(), [clearVoiceRestartTimer]);
 
   const handlePromptSubmit = useCallback(async () => {
-    const normalizedPrompt = normalizeComposerDraftValue(textareaRef.current?.value ?? promptRef.current).trim();
+    const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
 
     if (!normalizedPrompt || !selectedProject?.id || disabled) {
@@ -2982,7 +2977,9 @@ function InlineIssueComposer({
     });
 
     if (accepted !== false) {
-      applyPromptValue("", { deferDuringComposition: false });
+      shouldSyncPromptValueRef.current = true;
+      setInternalPrompt("");
+      promptRef.current = "";
       lastHydratedDraftRef.current = {
         key: normalizedDraftKey,
         value: ""
@@ -2992,7 +2989,7 @@ function InlineIssueComposer({
         onDraftPersist(normalizedDraftKey, "");
       }
     }
-  }, [applyPromptValue, disabled, normalizedDraftKey, onDraftPersist, onSubmit, selectedProject?.id]);
+  }, [disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
 
   const handleFormSubmit = useCallback(
     (event) => {
@@ -3117,7 +3114,7 @@ function InlineIssueComposer({
               rows="1"
               ref={textareaRef}
               data-testid="thread-prompt-input"
-              defaultValue={promptRef.current}
+              defaultValue={prompt}
               onChange={handlePromptChange}
               onKeyDown={handlePromptKeyDown}
               onCompositionStart={(event) => {
@@ -3128,12 +3125,7 @@ function InlineIssueComposer({
                 isPromptComposingRef.current = false;
                 const nextPrompt = event.currentTarget.value;
                 promptRef.current = nextPrompt;
-
-                if (pendingPromptValueRef.current !== null) {
-                  applyPromptValue(pendingPromptValueRef.current, { deferDuringComposition: false });
-                  return;
-                }
-
+                setInternalPrompt(nextPrompt);
                 syncPromptHeight(event.currentTarget);
               }}
               placeholder=""
