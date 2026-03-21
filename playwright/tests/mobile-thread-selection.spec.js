@@ -293,11 +293,6 @@ test.describe('wide mobile split layout', () => {
 
     await page.goto(baseUrl);
 
-    const card = page.getByTestId(`thread-list-item-${threadId}`);
-    await expect(card).toBeVisible();
-
-    await card.click();
-
     await expect(page.getByTestId('thread-split-layout')).toBeVisible();
     await expect(page.getByTestId('thread-list-pane').getByTestId(`thread-list-item-${threadId}`)).toBeVisible();
     await expect(page.getByTestId('thread-detail-panel')).toBeVisible();

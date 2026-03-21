@@ -5389,8 +5389,8 @@ function MainPage({
     draftProject ??
     selectedProject;
   const showWideThreadSplitLayout =
-    activeView === "thread" &&
     !isTodoScope &&
+    activeView !== "todo" &&
     viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
     (resolvedThread || draftProject || selectedThreadId);
   const inboxListContent = isTodoScope ? (
@@ -6200,6 +6200,7 @@ export default function App() {
   const [pwaUpdateVisible, setPwaUpdateVisible] = useState(false);
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
   const [bridgeDisconnectOverrideById, setBridgeDisconnectOverrideById] = useState({});
+  const viewportWidth = useVisualViewportWidth();
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
   const threadLoadRequestIdByIdRef = useRef(new Map());
@@ -6247,6 +6248,12 @@ export default function App() {
   );
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
+  const wideThreadSplitEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX;
+  const threadPanelVisible =
+    Boolean(selectedThreadId) &&
+    selectedScope.kind === "project" &&
+    (activeView === "thread" || wideThreadSplitEnabled);
+  const threadPanelVisibleRef = useRef(threadPanelVisible);
   const threadDetailsRef = useRef(threadDetails);
   const markBridgeDisconnectedOverride = useCallback((bridgeId) => {
     const normalized = String(bridgeId ?? "").trim();
@@ -6424,6 +6431,10 @@ export default function App() {
   }, [activeView]);
 
   useEffect(() => {
+    threadPanelVisibleRef.current = threadPanelVisible;
+  }, [threadPanelVisible]);
+
+  useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
@@ -6477,7 +6488,7 @@ export default function App() {
       threadLiveProgressAtByIdRef.current.delete(selectedThreadIdRef.current);
     }
 
-    if (activeViewRef.current === "thread" && selectedThreadIdRef.current) {
+    if (threadPanelVisibleRef.current && selectedThreadIdRef.current) {
       const mode =
         selectedActiveIssue && ["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
           ? "active"
@@ -7816,7 +7827,7 @@ export default function App() {
       !session?.loginId ||
       !selectedBridgeId ||
       !selectedThreadId ||
-      activeView !== "thread"
+      !threadPanelVisible
     ) {
       return;
     }
@@ -7838,12 +7849,12 @@ export default function App() {
       });
     }
   }, [
-    activeView,
     currentThreadDetailLoading,
     currentThreadDetailVersion,
     hasCurrentThreadDetail,
     scheduleThreadMessagesReload,
     selectedBridgeId,
+    threadPanelVisible,
     selectedThreadId,
     selectedThreadStatus,
     selectedThreadUpdatedAt,
@@ -7854,7 +7865,7 @@ export default function App() {
     if (
       !session?.loginId ||
       !selectedBridgeId ||
-      activeView !== "thread" ||
+      !threadPanelVisible ||
       !selectedThreadId ||
       !selectedActiveIssue ||
       !["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
@@ -7883,11 +7894,11 @@ export default function App() {
       window.clearInterval(intervalId);
     };
   }, [
-    activeView,
     scheduleThreadMessagesReload,
     selectedActiveIssue,
     selectedBridgeId,
     selectedThreadId,
+    threadPanelVisible,
     session?.loginId
   ]);
 
@@ -7926,12 +7937,12 @@ export default function App() {
 
     if (pending.threadId && scopedThreads.some((thread) => thread.id === pending.threadId) && selectedThreadId !== pending.threadId) {
       setSelectedThreadId(pending.threadId);
-      setActiveView("thread");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
       return;
     }
 
     if (!pending.threadId || selectedThreadId === pending.threadId) {
-      setActiveView("thread");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
       pendingPushDeepLinkRef.current = null;
       clearPushDeepLink();
     }
@@ -7943,7 +7954,8 @@ export default function App() {
     selectedProjectId,
     selectedThreadId,
     session?.loginId,
-    threads
+    threads,
+    wideThreadSplitEnabled
   ]);
 
   useEffect(() => {
@@ -8785,7 +8797,7 @@ export default function App() {
       }
 
       if (stayOnThread && threadId) {
-        setActiveView("thread");
+        setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
         scheduleThreadMessagesReload(threadId, {
           force: true,
           mode: "active",
@@ -8904,7 +8916,7 @@ export default function App() {
         };
       });
       setThreadMessageFilter("all");
-      setActiveView("thread");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
 
       if (issueId) {
         const startIssuePath =
@@ -9325,7 +9337,7 @@ export default function App() {
       setDraftThreadProjectId("");
       setSelectedThreadId(threadId);
       setThreadMessageFilter("all");
-      setActiveView("thread");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
     });
   };
 
@@ -9341,7 +9353,7 @@ export default function App() {
     setSelectedTodoChatId("");
     setDraftThreadProjectId(nextProjectId);
     setThreadMessageFilter("all");
-    setActiveView("thread");
+    setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
   };
 
   const handleDismissInstallPrompt = () => {
