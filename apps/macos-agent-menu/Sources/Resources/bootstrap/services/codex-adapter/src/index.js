@@ -1419,6 +1419,9 @@ function normalizeProjectThread(loginId, thread = {}) {
     project_id: String(thread.project_id ?? "").trim(),
     name: String(thread.name ?? thread.title ?? "Main").trim() || "Main",
     description: String(thread.description ?? "").trim(),
+    developer_instructions: normalizeInstructionText(
+      thread.developer_instructions ?? thread.developerInstructions
+    ),
     bridge_id: BRIDGE_ID,
     login_id: sanitizeUserId(loginId),
     codex_thread_id: thread.codex_thread_id ? String(thread.codex_thread_id).trim() : null,
@@ -3801,23 +3804,88 @@ async function transferTodoMessage(userId, payload = {}) {
   };
 }
 
-function getProjectInstructionOverrides(userId, projectId) {
+function getProjectInstructionSet(userId, projectId) {
   if (!projectId) {
-    return {};
+    return {
+      baseInstructions: "",
+      developerInstructions: ""
+    };
   }
 
   const project = ensureUserState(userId).projects.find((item) => item.id === projectId);
 
   if (!project) {
-    return {};
+    return {
+      baseInstructions: "",
+      developerInstructions: ""
+    };
   }
 
-  const baseInstructions = normalizeInstructionText(project.base_instructions);
-  const developerInstructions = normalizeInstructionText(project.developer_instructions);
+  return {
+    baseInstructions: normalizeInstructionText(project.base_instructions),
+    developerInstructions: normalizeInstructionText(project.developer_instructions)
+  };
+}
+
+function getProjectInstructionOverrides(userId, projectId) {
+  const { baseInstructions, developerInstructions } = getProjectInstructionSet(userId, projectId);
 
   return {
     ...(baseInstructions ? { baseInstructions } : {}),
     ...(developerInstructions ? { developerInstructions } : {})
+  };
+}
+
+function getThreadInstructionSet(userId, threadId) {
+  const normalizedThreadId = String(threadId ?? "").trim();
+
+  if (!normalizedThreadId) {
+    return {
+      developerInstructions: ""
+    };
+  }
+
+  const thread = threadStateById.get(normalizedThreadId);
+
+  if (!thread || threadOwners.get(normalizedThreadId) !== sanitizeUserId(userId)) {
+    return {
+      developerInstructions: ""
+    };
+  }
+
+  return {
+    developerInstructions: normalizeInstructionText(thread.developer_instructions)
+  };
+}
+
+function combineDeveloperInstructions(globalInstructions = "", threadInstructions = "") {
+  const normalizedGlobalInstructions = normalizeInstructionText(globalInstructions);
+  const normalizedThreadInstructions = normalizeInstructionText(threadInstructions);
+  const sections = [];
+
+  if (normalizedGlobalInstructions) {
+    sections.push("[프로젝트 개발지침]", normalizedGlobalInstructions);
+  }
+
+  if (normalizedThreadInstructions) {
+    sections.push("[쓰레드 개발지침]", normalizedThreadInstructions);
+  }
+
+  return sections.join("\n\n");
+}
+
+function getExecutionInstructionSet(userId, projectId, threadId = "") {
+  const projectInstructionSet = getProjectInstructionSet(userId, projectId);
+  const threadInstructionSet = getThreadInstructionSet(userId, threadId);
+
+  return {
+    baseInstructions: projectInstructionSet.baseInstructions,
+    projectDeveloperInstructions: projectInstructionSet.developerInstructions,
+    threadDeveloperInstructions: threadInstructionSet.developerInstructions,
+    developerInstructions: combineDeveloperInstructions(
+      projectInstructionSet.developerInstructions,
+      threadInstructionSet.developerInstructions
+    )
   };
 }
 
@@ -3877,13 +3945,19 @@ async function createProjectThread(userId, payload = {}) {
 async function updateProjectThread(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const name = String(payload.name ?? "").trim();
+  const hasDeveloperInstructionsUpdate =
+    Object.prototype.hasOwnProperty.call(payload, "update_developer_instructions") &&
+    Boolean(payload.update_developer_instructions);
+  const developerInstructions = hasDeveloperInstructionsUpdate
+    ? normalizeInstructionText(payload.developer_instructions ?? payload.developerInstructions)
+    : null;
 
   if (!threadId) {
     throw new Error("변경할 thread id가 필요합니다.");
   }
 
-  if (!name) {
-    throw new Error("thread 이름이 필요합니다.");
+  if (!name && !hasDeveloperInstructionsUpdate) {
+    throw new Error("thread 변경 내용이 필요합니다.");
   }
 
   const current = threadStateById.get(threadId);
@@ -3894,7 +3968,8 @@ async function updateProjectThread(userId, payload = {}) {
 
   const next = {
     ...current,
-    name,
+    ...(name ? { name } : {}),
+    ...(hasDeveloperInstructionsUpdate ? { developer_instructions: developerInstructions } : {}),
     updated_at: now()
   };
 
@@ -4461,7 +4536,11 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
 
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
-  const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
+  const instructionOverrides = getExecutionInstructionSet(
+    userId,
+    physicalThread.project_id,
+    physicalThread.root_thread_id
+  );
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
@@ -4807,7 +4886,10 @@ async function startIssueTurn(userId, threadId, issueId) {
     threadId,
     activePhysicalThread.id,
     issueId,
-    buildExecutionPrompt(issue.prompt)
+    buildExecutionPrompt(
+      issue.prompt,
+      getExecutionInstructionSet(userId, threadStateById.get(threadId)?.project_id, threadId)
+    )
   );
 }
 
@@ -6150,7 +6232,25 @@ function listThreadMessages(threadId) {
   return [...(threadMessagesById.get(threadId) ?? [])];
 }
 
-function buildExecutionPrompt(prompt = "") {
+function appendProjectInstructionSections(sections, instructionSet = {}) {
+  const baseInstructions = normalizeInstructionText(instructionSet.baseInstructions);
+  const projectDeveloperInstructions = normalizeInstructionText(instructionSet.projectDeveloperInstructions);
+  const threadDeveloperInstructions = normalizeInstructionText(instructionSet.threadDeveloperInstructions);
+
+  if (baseInstructions) {
+    sections.push("", "[프로젝트 일반지침]", baseInstructions);
+  }
+
+  if (projectDeveloperInstructions) {
+    sections.push("", "[프로젝트 개발지침]", projectDeveloperInstructions);
+  }
+
+  if (threadDeveloperInstructions) {
+    sections.push("", "[쓰레드 개발지침]", threadDeveloperInstructions);
+  }
+}
+
+function buildExecutionPrompt(prompt = "", instructionSet = {}) {
   const normalizedPrompt = String(prompt ?? "").trim();
   const instruction = [
     "아래 프롬프트를 최우선 지시로 따르십시오.",
@@ -6158,15 +6258,19 @@ function buildExecutionPrompt(prompt = "") {
     "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
     "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
   ].join(" ");
+  const sections = [instruction];
+
+  appendProjectInstructionSections(sections, instructionSet);
 
   if (!normalizedPrompt) {
-    return instruction;
+    return sections.join("\n");
   }
 
-  return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
+  sections.push("", "[사용자 프롬프트]", normalizedPrompt);
+  return sections.join("\n");
 }
 
-function buildHandoffPrompt(summary, issuePrompt = "") {
+function buildHandoffPrompt(summary, issuePrompt = "", instructionSet = {}) {
   const sections = [
     "이전 thread에서 컨텍스트 사용량 한계로 rollover되었습니다.",
     "아래 handoff summary를 최우선 문맥으로 사용해 같은 작업을 이어가십시오.",
@@ -6178,7 +6282,7 @@ function buildHandoffPrompt(summary, issuePrompt = "") {
     String(issuePrompt ?? "").trim()
   ];
 
-  return buildExecutionPrompt(sections.join("\n"));
+  return buildExecutionPrompt(sections.join("\n"), instructionSet);
 }
 
 function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, issueId = null) {
@@ -6411,7 +6515,15 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       rootThreadId,
       updatedTargetPhysicalThread.id,
       activeIssueId,
-      buildHandoffPrompt(nextSummary, activeIssue?.prompt ?? ""),
+      buildHandoffPrompt(
+        nextSummary,
+        activeIssue?.prompt ?? "",
+        getExecutionInstructionSet(
+          userId,
+          rootThread?.project_id ?? updatedTargetPhysicalThread.project_id,
+          rootThreadId
+        )
+      ),
       isPreflight ? "rootThread.rollover.preflight.starting" : "rootThread.rollover.continuation.starting"
     );
 
@@ -9979,7 +10091,8 @@ async function startThreadTurn(userId, threadId) {
         {
           type: "text",
           text: buildExecutionPrompt(
-            current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
+            current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.',
+            getExecutionInstructionSet(userId, current.project_id, threadId)
           )
         }
       ]
