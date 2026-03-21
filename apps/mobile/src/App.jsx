@@ -4774,7 +4774,8 @@ function ThreadDetail({
     return activeIssue;
   }, [activePhysicalThreadId, safeIssues]);
   const hasRunningIssue = safeIssues.some((issue) => issue?.status === "running");
-  const isInputDisabled = thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
+  const isInputDisabled =
+    !isDraft && thread?.status === "running" && (messagesLoading || safeIssues.length === 0 || hasRunningIssue);
   const chatTimeline = useMemo(() => {
     const normalized = [];
     let lastPrompt = null;
