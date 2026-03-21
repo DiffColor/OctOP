@@ -689,4 +689,47 @@ test.describe('wide mobile split layout', () => {
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Line 1');
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Line 2');
   });
+
+  test('disables the composer only when the selected thread is running', async ({ page }) => {
+    await mockMobileApi(page, {
+      threads: [
+        {
+          ...thread,
+          id: 'thread-running',
+          status: 'running',
+          title: 'Running Thread',
+          name: 'Running Thread'
+        },
+        {
+          ...thread,
+          id: 'thread-awaiting-input',
+          status: 'awaiting_input',
+          title: 'Awaiting Input Thread',
+          name: 'Awaiting Input Thread',
+          updated_at: '2026-03-18T10:09:00.000Z'
+        }
+      ],
+      issues: [],
+      issueMessages: []
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    await expect(page.getByTestId('thread-detail-panel')).toContainText('Running Thread');
+
+    const promptInput = page.getByTestId('thread-prompt-input');
+    await expect(promptInput).toBeDisabled();
+
+    await page.getByTestId('thread-list-item-thread-awaiting-input').click();
+    await expect(page.getByTestId('thread-detail-panel')).toContainText('Awaiting Input Thread');
+    await expect(promptInput).toBeEnabled();
+  });
 });
