@@ -2704,25 +2704,12 @@ function InlineIssueComposer({
   }, []);
 
   useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-
-    if (!textarea) {
-      return;
-    }
-
-    if (!isPromptComposingRef.current && textarea.value !== prompt) {
-      textarea.value = prompt;
-    }
-
-    syncPromptHeight(textarea);
+    syncPromptHeight();
   }, [prompt, selectedProject, syncPromptHeight]);
 
   const handlePromptChange = useCallback(
     (event) => {
-      const nextPrompt = event.target.value;
-
-      promptRef.current = nextPrompt;
-      setInternalPrompt(nextPrompt);
+      setInternalPrompt(event.target.value);
       syncPromptHeight(event.target);
     },
     [syncPromptHeight]
@@ -2796,11 +2783,7 @@ function InlineIssueComposer({
         at: Date.now()
       };
 
-      setInternalPrompt((current) => {
-        const nextPrompt = current ? `${current.trim()} ${transcript}` : transcript;
-        promptRef.current = nextPrompt;
-        return nextPrompt;
-      });
+      setInternalPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
 
       if (typeof window !== "undefined") {
         window.setTimeout(() => syncPromptHeight(), 0);
@@ -3099,19 +3082,14 @@ function InlineIssueComposer({
               rows="1"
               ref={textareaRef}
               data-testid="thread-prompt-input"
-              defaultValue={prompt}
+              value={prompt}
               onChange={handlePromptChange}
               onKeyDown={handlePromptKeyDown}
-              onCompositionStart={(event) => {
+              onCompositionStart={() => {
                 isPromptComposingRef.current = true;
-                promptRef.current = event.currentTarget.value;
               }}
-              onCompositionEnd={(event) => {
+              onCompositionEnd={() => {
                 isPromptComposingRef.current = false;
-                const nextPrompt = event.currentTarget.value;
-                promptRef.current = nextPrompt;
-                setInternalPrompt(nextPrompt);
-                syncPromptHeight(event.currentTarget);
               }}
               placeholder=""
               disabled={!selectedProject || busy || disabled}

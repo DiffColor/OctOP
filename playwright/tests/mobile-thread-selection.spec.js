@@ -764,49 +764,6 @@ test.describe('wide mobile split layout', () => {
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Line 2');
   });
 
-  test('keeps the final composed text stable during IME composition', async ({ page }) => {
-    await mockMobileApi(page, {
-      issues: [],
-      issueMessages: []
-    });
-    await page.addInitScript(
-      ({ key, value }) => {
-        window.localStorage.setItem(key, JSON.stringify(value));
-        HTMLElement.prototype.setPointerCapture = () => {};
-        HTMLElement.prototype.releasePointerCapture = () => {};
-      },
-      { key: SESSION_KEY, value: session }
-    );
-
-    await page.goto(baseUrl);
-
-    const promptInput = page.getByTestId('thread-prompt-input');
-    await promptInput.click();
-
-    await page.evaluate(() => {
-      const textarea = document.querySelector('[data-testid="thread-prompt-input"]');
-
-      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: 'g' }));
-      textarea.value = 'g';
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-      textarea.value = '하';
-      textarea.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: '하' }));
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-
-    await expect(promptInput).toHaveValue('하');
-
-    await page.evaluate(() => {
-      const textarea = document.querySelector('[data-testid="thread-prompt-input"]');
-
-      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '하' }));
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-
-    await expect(promptInput).toHaveValue('하');
-  });
-
   test('disables the composer only when the selected thread is running', async ({ page }) => {
     await mockMobileApi(page, {
       threads: [
