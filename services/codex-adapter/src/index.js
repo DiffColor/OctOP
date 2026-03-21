@@ -1445,9 +1445,6 @@ function normalizeProjectThread(loginId, thread = {}) {
     project_id: String(thread.project_id ?? "").trim(),
     name: String(thread.name ?? thread.title ?? "Main").trim() || "Main",
     description: String(thread.description ?? "").trim(),
-    developer_instructions: normalizeInstructionText(
-      thread.developer_instructions ?? thread.developerInstructions
-    ),
     bridge_id: BRIDGE_ID,
     login_id: sanitizeUserId(loginId),
     codex_thread_id: thread.codex_thread_id ? String(thread.codex_thread_id).trim() : null,
@@ -4115,104 +4112,24 @@ async function transferTodoMessage(userId, payload = {}) {
   };
 }
 
-function getProjectInstructionSet(userId, projectId) {
+function getProjectInstructionOverrides(userId, projectId) {
   if (!projectId) {
-    return {
-      baseInstructions: "",
-      developerInstructions: ""
-    };
+    return {};
   }
 
   const project = ensureUserState(userId).projects.find((item) => item.id === projectId);
 
   if (!project) {
-    return {
-      baseInstructions: "",
-      developerInstructions: ""
-    };
+    return {};
   }
 
-  return {
-    baseInstructions: normalizeInstructionText(project.base_instructions),
-    developerInstructions: normalizeInstructionText(project.developer_instructions)
-  };
-}
-
-function getThreadInstructionSet(userId, threadId) {
-  const normalizedThreadId = String(threadId ?? "").trim();
-
-  if (!normalizedThreadId) {
-    return {
-      developerInstructions: ""
-    };
-  }
-
-  const thread = threadStateById.get(normalizedThreadId);
-
-  if (!thread || threadOwners.get(normalizedThreadId) !== sanitizeUserId(userId)) {
-    return {
-      developerInstructions: ""
-    };
-  }
-
-  return {
-    developerInstructions: normalizeInstructionText(thread.developer_instructions)
-  };
-}
-
-function combineDeveloperInstructions(globalInstructions = "", threadInstructions = "") {
-  const normalizedGlobalInstructions = normalizeInstructionText(globalInstructions);
-  const normalizedThreadInstructions = normalizeInstructionText(threadInstructions);
-  const sections = [];
-
-  if (normalizedGlobalInstructions) {
-    sections.push("[프로젝트 개발지침]", normalizedGlobalInstructions);
-  }
-
-  if (normalizedThreadInstructions) {
-    sections.push("[쓰레드 개발지침]", normalizedThreadInstructions);
-  }
-
-  return sections.join("\n\n");
-}
-
-function getExecutionInstructionSet(userId, projectId, threadId = "") {
-  const projectInstructionSet = getProjectInstructionSet(userId, projectId);
-  const threadInstructionSet = getThreadInstructionSet(userId, threadId);
-
-  return {
-    baseInstructions: projectInstructionSet.baseInstructions,
-    projectDeveloperInstructions: projectInstructionSet.developerInstructions,
-    threadDeveloperInstructions: threadInstructionSet.developerInstructions,
-    developerInstructions: combineDeveloperInstructions(
-      projectInstructionSet.developerInstructions,
-      threadInstructionSet.developerInstructions
-    )
-  };
-}
-
-function getAppServerInstructionOverrides(userId, projectId, threadId = "") {
-  const { baseInstructions, developerInstructions } = getExecutionInstructionSet(userId, projectId, threadId);
-
-  return {
-    baseInstructions,
-    developerInstructions
-  };
-}
-
-function getProjectInstructionOverrides(userId, projectId) {
-  const { baseInstructions, developerInstructions } = getProjectInstructionSet(userId, projectId);
+  const baseInstructions = normalizeInstructionText(project.base_instructions);
+  const developerInstructions = normalizeInstructionText(project.developer_instructions);
 
   return {
     ...(baseInstructions ? { baseInstructions } : {}),
     ...(developerInstructions ? { developerInstructions } : {})
   };
-}
-
-function getProjectInstructionSetForIssue(issue = null) {
-  const rootThreadId = String(issue?.root_thread_id ?? issue?.thread_id ?? "").trim();
-  const userId = rootThreadId ? threadOwners.get(rootThreadId) ?? null : null;
-  return getExecutionInstructionSet(userId, issue?.project_id, rootThreadId);
 }
 
 async function createProjectThread(userId, payload = {}) {
@@ -4271,19 +4188,13 @@ async function createProjectThread(userId, payload = {}) {
 async function updateProjectThread(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const name = String(payload.name ?? "").trim();
-  const hasDeveloperInstructionsUpdate =
-    Object.prototype.hasOwnProperty.call(payload, "update_developer_instructions") &&
-    Boolean(payload.update_developer_instructions);
-  const developerInstructions = hasDeveloperInstructionsUpdate
-    ? normalizeInstructionText(payload.developer_instructions ?? payload.developerInstructions)
-    : null;
 
   if (!threadId) {
     throw new Error("변경할 thread id가 필요합니다.");
   }
 
-  if (!name && !hasDeveloperInstructionsUpdate) {
-    throw new Error("thread 변경 내용이 필요합니다.");
+  if (!name) {
+    throw new Error("thread 이름이 필요합니다.");
   }
 
   const current = threadStateById.get(threadId);
@@ -4294,8 +4205,7 @@ async function updateProjectThread(userId, payload = {}) {
 
   const next = {
     ...current,
-    ...(name ? { name } : {}),
-    ...(hasDeveloperInstructionsUpdate ? { developer_instructions: developerInstructions } : {}),
+    name,
     updated_at: now()
   };
 
@@ -4873,11 +4783,7 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
 
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
-  const instructionOverrides = getAppServerInstructionOverrides(
-    userId,
-    physicalThread.project_id,
-    physicalThread.root_thread_id
-  );
+  const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
@@ -6598,25 +6504,7 @@ function listThreadMessages(threadId) {
   return [...(threadMessagesById.get(threadId) ?? [])];
 }
 
-function appendProjectInstructionSections(sections, instructionSet = {}) {
-  const baseInstructions = normalizeInstructionText(instructionSet.baseInstructions);
-  const projectDeveloperInstructions = normalizeInstructionText(instructionSet.projectDeveloperInstructions);
-  const threadDeveloperInstructions = normalizeInstructionText(instructionSet.threadDeveloperInstructions);
-
-  if (baseInstructions) {
-    sections.push("", "[프로젝트 일반지침]", baseInstructions);
-  }
-
-  if (projectDeveloperInstructions) {
-    sections.push("", "[프로젝트 개발지침]", projectDeveloperInstructions);
-  }
-
-  if (threadDeveloperInstructions) {
-    sections.push("", "[쓰레드 개발지침]", threadDeveloperInstructions);
-  }
-}
-
-function buildExecutionPrompt(prompt = "", instructionSet = {}) {
+function buildExecutionPrompt(prompt = "") {
   const normalizedPrompt = String(prompt ?? "").trim();
   const instruction = [
     "아래 프롬프트를 최우선 지시로 따르십시오.",
@@ -6624,14 +6512,12 @@ function buildExecutionPrompt(prompt = "", instructionSet = {}) {
     "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
     "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
   ].join(" ");
-  const sections = [instruction];
 
   if (!normalizedPrompt) {
-    return sections.join("\n");
+    return instruction;
   }
 
-  sections.push("", "[사용자 프롬프트]", normalizedPrompt);
-  return sections.join("\n");
+  return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
 }
 
 function formatIssueAttachmentSize(sizeBytes) {
@@ -6706,10 +6592,7 @@ function buildExecutionInputPrompt(issue = null) {
     sections.push(attachmentSection);
   }
 
-  return buildExecutionPrompt(
-    sections.filter(Boolean).join("\n\n"),
-    getProjectInstructionSetForIssue(issue)
-  );
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"));
 }
 
 function buildHandoffPrompt(summary, issue = null) {
@@ -6730,10 +6613,7 @@ function buildHandoffPrompt(summary, issue = null) {
     sections.push("", attachmentSection);
   }
 
-  return buildExecutionPrompt(
-    sections.join("\n"),
-    getProjectInstructionSetForIssue(issue)
-  );
+  return buildExecutionPrompt(sections.join("\n"));
 }
 
 function buildIssueTurnInput(issue = null, inputPrompt = "") {
@@ -10558,8 +10438,7 @@ async function startThreadTurn(userId, threadId) {
         {
           type: "text",
           text: buildExecutionPrompt(
-            current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.',
-            getExecutionInstructionSet(userId, current.project_id, threadId)
+            current.prompt ?? '연결 상태 점검입니다. "pong" 또는 현재 상태를 짧게 답해 주세요.'
           )
         }
       ]
@@ -10628,7 +10507,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const cwd = resolveProjectWorkspace(userId, projectId);
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
-  const instructionOverrides = getAppServerInstructionOverrides(userId, projectId);
+  const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
   await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {

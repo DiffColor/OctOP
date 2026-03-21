@@ -945,9 +945,7 @@ app.MapPatch("/api/threads/{threadId}", async (
       user_id = userId,
       bridge_id = bridgeId,
       thread_id = threadId,
-      name = body?["name"]?.GetValue<string>(),
-      developer_instructions = body?["developer_instructions"]?.GetValue<string>(),
-      update_developer_instructions = body?["update_developer_instructions"]?.GetValue<bool?>() ?? false
+      name = body?["name"]?.GetValue<string>()
     },
     cancellationToken
   );
