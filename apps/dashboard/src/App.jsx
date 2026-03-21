@@ -3703,6 +3703,7 @@ function TodoThreadCard({
   multiSelected,
   columnId = "todo",
   onSelect,
+  onOpen,
   onDelete,
   onSelectionGesture,
   onDragStart,
@@ -3738,7 +3739,7 @@ function TodoThreadCard({
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <button type="button" onClick={handleCardClick} className="min-w-0 flex-1 text-left">
+        <button type="button" onClick={handleCardClick} onDoubleClick={() => onOpen?.(thread.id)} className="min-w-0 flex-1 text-left">
           <OverflowRevealText value={getIssueTitle(thread, language)} className="text-sm font-medium text-slate-100" />
           <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
         </button>
@@ -3818,6 +3819,7 @@ function ThreadCard({
   multiSelected,
   columnId,
   onSelect,
+  onOpen,
   onSelectionGesture,
   onDelete,
   onDragStart,
@@ -3848,7 +3850,7 @@ function ThreadCard({
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <button type="button" onClick={handleClick} className="min-w-0 flex-1 text-left">
+        <button type="button" onClick={handleClick} onDoubleClick={() => onOpen?.(thread.id)} className="min-w-0 flex-1 text-left">
           <div className="flex items-center justify-between gap-3">
         <span
           className={`inline-flex items-center gap-2 rounded-full border px-2 py-1 text-[11px] ${
@@ -4022,7 +4024,7 @@ function MainPage({
   onArchiveIssues,
   onRestoreArchivedIssues,
   onStartSelectedIssues,
-  onOpenCompletedIssue,
+  onOpenIssueDetail,
   onDeleteIssue,
   onDeleteProject,
   onRenameProject,
@@ -5204,6 +5206,7 @@ function MainPage({
                                 multiSelected={selectedIssueIds.includes(thread.id)}
                                 columnId={column.id}
                                 onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
+                                onOpen={onOpenIssueDetail}
                                 onDelete={onDeleteIssue}
                                 onSelectionGesture={handleIssueSelectionGesture}
                                 onDragStart={onDragQueueIssue.start}
@@ -5223,7 +5226,7 @@ function MainPage({
                                 multiSelected={selectedIssueIds.includes(thread.id)}
                                 columnId={column.id}
                                 onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
-                                onOpen={onOpenCompletedIssue}
+                                onOpen={onOpenIssueDetail}
                                 onSelectionGesture={handleIssueSelectionGesture}
                                 onDragStart={onDragArchiveIssues.start}
                                 onDragEnd={onDragArchiveIssues.clear}
@@ -5241,6 +5244,7 @@ function MainPage({
                               multiSelected={selectedIssueIds.includes(thread.id)}
                               columnId={column.id}
                               onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
+                              onOpen={onOpenIssueDetail}
                               onSelectionGesture={handleIssueSelectionGesture}
                               onDelete={column.id === "review" ? onDeleteIssue : undefined}
                               onDragStart={
@@ -7411,35 +7415,36 @@ export default function App() {
     await movePrepIssuesToTodo(selectedIssueIds);
   };
 
-  const handleOpenCompletedIssue = async (threadId) => {
-    if (!session?.loginId || !selectedBridgeId || !threadId) {
+  const handleOpenIssueDetail = async (issueId) => {
+    if (!session?.loginId || !selectedBridgeId || !issueId) {
       return;
     }
 
-    const thread = issues.find((item) => item.id === threadId) ?? null;
-    setSelectedIssueId(threadId);
+    const issue = issues.find((item) => item.id === issueId) ?? null;
+    const fallbackThreadId = issue?.thread_id ?? selectedProjectThreadId;
+    setSelectedIssueId(issueId);
     setDetailState({
       open: true,
       loading: true,
-      thread,
+      thread: issue,
       messages: []
     });
 
     try {
       const payload = await apiRequest(
-        `/api/issues/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+        `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
       );
       setDetailState({
         open: true,
         loading: false,
-        thread: payload.issue ?? thread,
-        messages: payload.messages ?? []
+        thread: normalizeIssue(payload?.issue, fallbackThreadId) ?? issue,
+        messages: payload?.messages ?? []
       });
     } catch (error) {
       setDetailState({
         open: true,
         loading: false,
-        thread,
+        thread: issue,
         messages: [
           {
             id: createId(),
@@ -8506,7 +8511,7 @@ export default function App() {
       onArchiveIssues={handleArchiveIssues}
       onRestoreArchivedIssues={handleRestoreArchivedIssues}
       onStartSelectedIssues={() => void handleStartSelectedIssues()}
-      onOpenCompletedIssue={(threadId) => void handleOpenCompletedIssue(threadId)}
+      onOpenIssueDetail={(threadId) => void handleOpenIssueDetail(threadId)}
       onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
