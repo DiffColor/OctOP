@@ -437,6 +437,8 @@ const COPY = {
       eyebrow: "Issue History",
       emptyTitle: "Completed issue",
       close: "Close",
+      interrupt: "Interrupt",
+      interrupting: "Interrupting...",
       loading: "Loading thread history.",
       empty: "No conversation history to display.",
       request: "Request",
@@ -474,6 +476,8 @@ const COPY = {
       drag: "Drag",
       prep: "Preparation",
       queue: "Queue",
+      interrupt: "Interrupt",
+      interrupting: "Interrupting...",
       delete: "Delete",
       rename: "Rename",
       thread: "Thread",
@@ -604,6 +608,8 @@ const COPY = {
       eyebrow: "이슈 기록",
       emptyTitle: "완료된 이슈",
       close: "닫기",
+      interrupt: "중단",
+      interrupting: "중단 중...",
       loading: "작업 기록을 불러오는 중입니다.",
       empty: "표시할 대화 기록이 없습니다.",
       request: "요청",
@@ -641,6 +647,8 @@ const COPY = {
       drag: "드래그",
       prep: "준비",
       queue: "대기열",
+      interrupt: "중단",
+      interrupting: "중단 중...",
       delete: "삭제",
       rename: "이름 변경",
       thread: "쓰레드",
@@ -3473,11 +3481,12 @@ function SidebarThreadItem({
   );
 }
 
-function ThreadDetailModal({ language, open, loading, thread, messages, signalNow, onClose }) {
+function ThreadDetailModal({ language, open, loading, thread, messages, signalNow, onInterrupt, interruptBusy = false, onClose }) {
   const copy = getCopy(language);
   const contextUsageLabel = formatThreadContextUsage(thread, language);
   const contextUsage = getThreadContextUsage(thread);
   const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
+  const interruptible = ["running", "awaiting_input"].includes(String(thread?.status ?? "").trim());
   if (!open) {
     return null;
   }
@@ -3511,13 +3520,25 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
               </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
-          >
-            {copy.detail.close}
-          </button>
+          <div className="flex items-center gap-2">
+            {interruptible && typeof onInterrupt === "function" ? (
+              <button
+                type="button"
+                disabled={interruptBusy}
+                onClick={() => onInterrupt(thread.id)}
+                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-sm text-amber-200 transition hover:border-amber-400/40 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {interruptBusy ? copy.detail.interrupting : copy.detail.interrupt}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              {copy.detail.close}
+            </button>
+          </div>
         </div>
 
         <div className="custom-scrollbar flex-1 overflow-y-scroll px-6 py-5">
@@ -3825,6 +3846,8 @@ function ThreadCard({
   onSelect,
   onOpen,
   onSelectionGesture,
+  onInterrupt,
+  interruptBusy = false,
   onDelete,
   onDragStart,
   onDragEnd
@@ -3874,15 +3897,31 @@ function ThreadCard({
           <OverflowRevealText value={getIssueTitle(thread, language)} className="mt-3 text-sm font-medium text-slate-100" />
           <OverflowRevealText value={buildMessagePreview(thread, language)} className="mt-1 text-xs text-slate-500" />
         </button>
-        {typeof onDelete === "function" ? (
-          <button
-            type="button"
-            onClick={() => onDelete(thread.id)}
-            className="shrink-0 rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
-          >
-            {copy.board.delete}
-          </button>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-2">
+          {typeof onInterrupt === "function" ? (
+            <button
+              type="button"
+              disabled={interruptBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onInterrupt(thread.id);
+              }}
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-200 transition hover:border-amber-400/40 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {interruptBusy ? copy.board.interrupting : copy.board.interrupt}
+            </button>
+          ) : null}
+          {typeof onDelete === "function" ? (
+            <button
+              type="button"
+              onClick={() => onDelete(thread.id)}
+              className="rounded-md border border-slate-700 px-1.5 py-1 text-[10px] text-slate-400 transition hover:border-rose-400/40 hover:text-rose-300"
+            >
+              {copy.board.delete}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="mt-3 h-1 rounded-full bg-slate-900">
         <div
@@ -4010,6 +4049,7 @@ function MainPage({
   projectBusy,
   projectInstructionBusy,
   issueBusy,
+  interruptingIssueId,
   startBusy,
   projectComposerOpen,
   composerOpen,
@@ -4029,6 +4069,7 @@ function MainPage({
   onRestoreArchivedIssues,
   onStartSelectedIssues,
   onOpenIssueDetail,
+  onInterruptIssue,
   onDeleteIssue,
   onDeleteProject,
   onRenameProject,
@@ -5255,6 +5296,8 @@ function MainPage({
                               columnId={column.id}
                               onSelect={(threadId) => handleExclusiveIssueSelection(threadId, column.id)}
                               onOpen={onOpenIssueDetail}
+                              onInterrupt={column.id === "running" ? onInterruptIssue : undefined}
+                              interruptBusy={interruptingIssueId === thread.id}
                               onSelectionGesture={handleIssueSelectionGesture}
                               onDelete={column.id === "review" ? onDeleteIssue : undefined}
                               onDragStart={
@@ -5521,6 +5564,8 @@ function MainPage({
         thread={detailState.thread}
         messages={detailState.messages}
         signalNow={signalNow}
+        onInterrupt={onInterruptIssue}
+        interruptBusy={interruptingIssueId === detailState.thread?.id}
         onClose={onCloseDetail}
       />
       <ThreadContextMenu
@@ -5603,6 +5648,7 @@ export default function App() {
   const [projectInstructionType, setProjectInstructionType] = useState("base");
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
+  const [interruptingIssueId, setInterruptingIssueId] = useState("");
   const [startBusy, setStartBusy] = useState(false);
   const [issueEditorOpen, setIssueEditorOpen] = useState(false);
   const [issueEditorBusy, setIssueEditorBusy] = useState(false);
@@ -8409,6 +8455,65 @@ export default function App() {
     }
   };
 
+  const handleInterruptIssue = useCallback(async (issueId, reason = "manual_interrupt") => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId || !issueId) {
+      return;
+    }
+
+    setInterruptingIssueId(issueId);
+
+    try {
+      const response = await apiRequest(
+        `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason
+          })
+        }
+      );
+
+      if (Array.isArray(response?.issues)) {
+        applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, response.issues);
+        const nextIssue = response.issues
+          .map((issue) => normalizeIssue(issue, selectedProjectThreadId))
+          .find((issue) => issue?.id === issueId) ?? null;
+
+        if (nextIssue && detailStateRef.current.open && detailStateRef.current.thread?.id === issueId) {
+          setDetailState((current) => ({
+            ...current,
+            loading: false,
+            thread: nextIssue
+          }));
+        }
+      } else {
+        await loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
+      }
+
+      if (response?.thread?.id) {
+        setProjectThreads((current) => upsertProjectThread(current, response.thread));
+      }
+    } catch (error) {
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "issue.interrupt.failed",
+          timestamp: new Date().toISOString(),
+          summary: error.message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setInterruptingIssueId((current) => (current === issueId ? "" : current));
+    }
+  }, [
+    applyIssueStateForScope,
+    loadThreadIssues,
+    selectedBridgeId,
+    selectedProjectThreadId,
+    session
+  ]);
+
   const handleMoveIssuesToThread = useCallback(async (targetThreadId) => {
     const issueIds = draggingMovableIssueIds.filter(Boolean);
     clearMovableIssueDrag();
@@ -8625,6 +8730,7 @@ export default function App() {
       projectBusy={projectBusy}
       projectInstructionBusy={projectInstructionBusy}
       issueBusy={issueBusy}
+      interruptingIssueId={interruptingIssueId}
       startBusy={startBusy}
       projectComposerOpen={projectComposerOpen}
       projectInstructionDialogOpen={projectInstructionDialogOpen}
@@ -8650,6 +8756,7 @@ export default function App() {
       onRestoreArchivedIssues={handleRestoreArchivedIssues}
       onStartSelectedIssues={() => void handleStartSelectedIssues()}
       onOpenIssueDetail={(threadId) => void handleOpenIssueDetail(threadId)}
+      onInterruptIssue={(threadId) => void handleInterruptIssue(threadId)}
       onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
