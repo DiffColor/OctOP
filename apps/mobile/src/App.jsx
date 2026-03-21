@@ -5169,7 +5169,7 @@ function ThreadDetail({
                 />
               ) : null}
               <span>{status ? status.label : "새 채팅창"}</span>
-              {contextUsage?.percent !== null ? (
+              {contextUsage?.percent != null ? (
                 <>
                   <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
                   <span>{formatThreadContextUsage(thread)}</span>
@@ -5367,10 +5367,10 @@ function ThreadDetail({
 	                <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
 	                  {getRealtimeProgressText(thread)}
 	                </div>
-	                {contextUsage?.percent !== null ? (
+	                {contextUsage?.percent != null ? (
 	                  <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
 	                    {formatThreadContextUsage(thread)}
-	                    {contextUsage.usedTokens !== null && contextUsage.windowTokens !== null
+	                    {contextUsage?.usedTokens !== null && contextUsage?.windowTokens !== null
 	                      ? ` · ${contextUsage.usedTokens.toLocaleString("ko-KR")} / ${contextUsage.windowTokens.toLocaleString("ko-KR")}`
 	                      : ""}
 	                  </div>
