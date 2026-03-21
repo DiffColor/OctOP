@@ -201,12 +201,7 @@ public sealed class WebPushNotificationService(
       ["sentAt"] = sentAt.ToString("O")
     };
 
-    // iOS/standalone PWA notifications may surface URL-like payload fields as noisy system text.
-    // Mobile web can reconstruct its deep link from the issue metadata, so omit the raw URL there.
-    if (!string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
-    {
-      payload["launchUrl"] = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url;
-    }
+    payload["launchUrl"] = string.IsNullOrWhiteSpace(request.Url) ? "/" : request.Url;
 
     return payload;
   }

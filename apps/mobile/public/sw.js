@@ -4,13 +4,21 @@ const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-ic
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 
 const buildLaunchUrl = (payload) => {
+  const explicitUrl = [payload?.launchUrl, payload?.url]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find(Boolean);
+
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
   const bridgeId = String(payload?.bridgeId ?? "").trim();
   const projectId = String(payload?.projectId ?? "").trim();
   const threadId = String(payload?.threadId ?? "").trim();
   const issueId = String(payload?.issueId ?? "").trim();
 
   if (!bridgeId && !projectId && !threadId && !issueId) {
-    return payload?.launchUrl || payload?.url || "/";
+    return "/";
   }
 
   const url = new URL("/", self.location.origin);
