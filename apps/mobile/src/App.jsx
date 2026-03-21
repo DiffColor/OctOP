@@ -417,9 +417,52 @@ function createDefaultMobileWorkspaceLayout() {
     selectedThreadId: "",
     selectedTodoChatId: "",
     draftThreadProjectId: "",
+    threadComposerDrafts: {},
     activeView: "inbox",
     wideThreadSplitRatio: DEFAULT_WIDE_THREAD_SPLIT_RATIO
   };
+}
+
+function normalizeThreadComposerDrafts(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+
+  const next = {};
+
+  Object.entries(source).forEach(([rawKey, rawValue]) => {
+    const key = String(rawKey ?? "").trim();
+
+    if (!key) {
+      return;
+    }
+
+    const value = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+
+    if (!value) {
+      return;
+    }
+
+    next[key] = value.slice(0, 20000);
+  });
+
+  return next;
+}
+
+function buildThreadComposerDraftKey({ threadId, projectId, isDraft = false } = {}) {
+  const normalizedThreadId = String(threadId ?? "").trim();
+
+  if (normalizedThreadId) {
+    return `thread:${normalizedThreadId}`;
+  }
+
+  const normalizedProjectId = String(projectId ?? "").trim();
+
+  if (isDraft && normalizedProjectId) {
+    return `project-draft:${normalizedProjectId}`;
+  }
+
+  return "";
 }
 
 function normalizeMobileWorkspaceLayoutScope(scope) {
@@ -450,6 +493,7 @@ function normalizeMobileWorkspaceLayout(layout, filters = {}) {
     selectedThreadId: String(source.selectedThreadId ?? "").trim(),
     selectedTodoChatId: String(source.selectedTodoChatId ?? "").trim(),
     draftThreadProjectId: String(source.draftThreadProjectId ?? "").trim(),
+    threadComposerDrafts: normalizeThreadComposerDrafts(source.threadComposerDrafts),
     activeView,
     wideThreadSplitRatio:
       Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_WIDE_THREAD_SPLIT_RATIO
@@ -2424,7 +2468,14 @@ function UtilitySheet({
   );
 }
 
-function BridgeDropdown({ bridges, selectedBridgeId, bridgeSignal, onSelectBridge }) {
+function BridgeDropdown({
+  bridges,
+  selectedBridgeId,
+  bridgeSignal,
+  onSelectBridge,
+  onOpen = null,
+  syncing = false
+}) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
   const selectedBridge = useMemo(
@@ -2432,6 +2483,14 @@ function BridgeDropdown({ bridges, selectedBridgeId, bridgeSignal, onSelectBridg
     [bridges, selectedBridgeId]
   );
   const statusLabel = bridgeSignal.label;
+
+  useEffect(() => {
+    if (!open || typeof onOpen !== "function") {
+      return;
+    }
+
+    onOpen();
+  }, [onOpen, open]);
 
   useEffect(() => {
     if (!open) {
@@ -2492,7 +2551,9 @@ function BridgeDropdown({ bridges, selectedBridgeId, bridgeSignal, onSelectBridg
         <div className="absolute left-0 z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 shadow-2xl shadow-black/40 backdrop-blur">
           <div className="border-b border-white/5 px-4 py-3">
             <p className="text-xs font-semibold text-white">브릿지 선택</p>
-            <p className="mt-0.5 text-[11px] text-slate-400">연결할 브릿지를 선택하세요.</p>
+            <p className="mt-0.5 text-[11px] text-slate-400">
+              {syncing ? "브릿지 목록을 동기화하는 중입니다." : "연결할 브릿지를 선택하세요."}
+            </p>
           </div>
           <div className="max-h-64 overflow-y-auto">
             {bridges.length === 0 ? (
@@ -2540,12 +2601,14 @@ function InlineIssueComposer({
   onSubmit,
   label,
   disabled = false,
+  draftValue = undefined,
+  onDraftChange = null,
   onStop = null,
   stopBusy = false,
   stopLabel = "중단"
 }) {
   const LONG_PRESS_THRESHOLD_MS = 650;
-  const [prompt, setPrompt] = useState("");
+  const [internalPrompt, setInternalPrompt] = useState("");
   const textareaRef = useRef(null);
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -2560,6 +2623,19 @@ function InlineIssueComposer({
   const lastFinalTranscriptRef = useRef("");
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
+  const prompt = onDraftChange ? String(draftValue ?? "") : internalPrompt;
+
+  const setPrompt = useCallback(
+    (nextValue) => {
+      if (onDraftChange) {
+        onDraftChange(nextValue);
+        return;
+      }
+
+      setInternalPrompt(nextValue);
+    },
+    [onDraftChange]
+  );
 
   const syncPromptHeight = useCallback((element) => {
     const textarea = element ?? textareaRef.current;
@@ -3643,7 +3719,7 @@ function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTr
   }
 
   return (
-    <BottomSheet open={open} title="메모 작업" onClose={onClose}>
+    <BottomSheet open={open} title="메모 작업" onClose={onClose} variant="center">
       <div className="space-y-3 px-5 py-5">
         <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
           {message.content}
@@ -3939,26 +4015,37 @@ function TodoChatDetail({
   onRename,
   onDelete,
   onSelectMessage,
-  onSubmitMessage
+  onSubmitMessage,
+  showBackButton = true,
+  standalone = true
 }) {
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
   const scrollRef = useRef(null);
   useTouchScrollBoundaryLock(scrollRef);
+  const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
+  const rootClassName = standalone
+    ? "telegram-screen flex min-h-0 flex-col overflow-hidden"
+    : "telegram-screen flex h-full min-h-0 flex-col overflow-hidden";
+  const contentWidthClassName = standalone ? "max-w-3xl" : "max-w-none";
 
   return (
-    <div className="telegram-screen flex min-h-0 flex-col overflow-hidden">
+    <div className={rootClassName} style={rootStyle}>
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
+          {showBackButton ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </button>
+          ) : (
+            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
+          )}
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{chat?.title ?? "새 ToDo 채팅"}</p>
@@ -4009,7 +4096,7 @@ function TodoChatDetail({
         ref={scrollRef}
         className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
+        <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           {error ? (
             <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
               {error}
@@ -4044,7 +4131,7 @@ function TodoChatDetail({
       </div>
 
       <div className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
             busy={submitBusy}
             selectedProject={fakeProject}
@@ -4636,6 +4723,8 @@ function ThreadDetail({
   onBack,
   messageFilter,
   onChangeMessageFilter,
+  composerDraft = "",
+  onChangeComposerDraft = null,
   isDraft = false,
   showBackButton = true,
   standalone = true,
@@ -5445,6 +5534,8 @@ function ThreadDetail({
             selectedProject={project}
             onSubmit={onSubmitPrompt}
             label={isDraft ? "첫 프롬프트" : "프롬프트"}
+            draftValue={composerDraft}
+            onDraftChange={onChangeComposerDraft}
             disabled={isInputDisabled}
             onStop={interruptibleIssue ? handleStopCurrentExecution : null}
             stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
@@ -5479,6 +5570,7 @@ function MainPage({
   selectedThreadId,
   selectedTodoChatId,
   draftThreadProjectId,
+  threadComposerDrafts,
   search,
   loadingState,
   projectBusy,
@@ -5498,6 +5590,7 @@ function MainPage({
   onSearchChange,
   onChangeThreadMessageFilter,
   onSelectBridge,
+  onOpenBridgeDropdown,
   onSelectProject,
   onSelectTodoScope,
   onSelectThread,
@@ -5521,6 +5614,7 @@ function MainPage({
   onSubmitProjectInstruction,
   onCreateThread,
   onAppendThreadMessage,
+  onChangeThreadComposerDraft,
   onSubmitTodoMessage,
   onRenameThread,
   onRenameTodoChat,
@@ -5541,6 +5635,7 @@ function MainPage({
   onRetryThreadIssue,
   onDeleteThreadIssue,
   onRefresh,
+  bridgeListSyncing,
   onLogout,
   onBackToInbox
 }) {
@@ -5591,6 +5686,12 @@ function MainPage({
           turn_id: null
         }
       : null);
+  const threadComposerDraftKey = buildThreadComposerDraftKey({
+    threadId: resolvedThread?.id ?? selectedThreadId,
+    projectId: draftProject?.id ?? selectedProjectId,
+    isDraft: !selectedThread && !threadDetail?.thread
+  });
+  const threadComposerDraft = threadComposerDraftKey ? threadComposerDrafts[threadComposerDraftKey] ?? "" : "";
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
       const matchesSearch =
@@ -5627,6 +5728,16 @@ function MainPage({
   const todoChatMessages = todoChatDetail?.messages ?? [];
   const todoChatLoading = todoChatDetail?.loading ?? false;
   const todoChatError = todoChatDetail?.error ?? "";
+  const handleChangeThreadComposerDraft = useCallback(
+    (nextValue) => {
+      if (!threadComposerDraftKey) {
+        return;
+      }
+
+      onChangeThreadComposerDraft(threadComposerDraftKey, nextValue);
+    },
+    [onChangeThreadComposerDraft, threadComposerDraftKey]
+  );
   const clearPendingProjectLongPress = useCallback(() => {
     if (projectLongPressTimerRef.current) {
       clearTimeout(projectLongPressTimerRef.current);
@@ -5787,11 +5898,13 @@ function MainPage({
     projects.find((project) => project.id === resolvedThread?.project_id) ??
     draftProject ??
     selectedProject;
+  const showWideTodoSplitLayout = isTodoScope && viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX;
   const showWideThreadSplitLayout =
     !isTodoScope &&
     activeView !== "todo" &&
     viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
     (selectedProjectId || draftThreadProjectId || selectedThreadId);
+  const showWideSplitLayout = showWideTodoSplitLayout || showWideThreadSplitLayout;
   const wideThreadSplitResizeEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX;
   const splitThreadEmptyStateMessage =
     !selectedThreadId && !draftProject
@@ -5826,13 +5939,13 @@ function MainPage({
   }, [selectedBridgeId, session?.loginId, wideThreadSplitRatio]);
 
   useEffect(() => {
-    if (!showWideThreadSplitLayout || !wideThreadSplitResizeEnabled) {
+    if (!showWideSplitLayout || !wideThreadSplitResizeEnabled) {
       return;
     }
 
     const containerWidth = wideThreadSplitLayoutRef.current?.clientWidth ?? viewportWidth ?? 0;
     setWideThreadSplitRatio((current) => clampWideThreadSplitRatio(current, containerWidth));
-  }, [showWideThreadSplitLayout, viewportWidth, wideThreadSplitResizeEnabled]);
+  }, [showWideSplitLayout, viewportWidth, wideThreadSplitResizeEnabled]);
 
   const updateWideThreadSplitRatioFromClientX = useCallback((clientX) => {
     const container = wideThreadSplitLayoutRef.current;
@@ -6037,6 +6150,8 @@ function MainPage({
                 selectedBridgeId={selectedBridgeId}
                 bridgeSignal={bridgeSignal}
                 onSelectBridge={onSelectBridge}
+                onOpen={onOpenBridgeDropdown}
+                syncing={bridgeListSyncing}
               />
             </div>
           </div>
@@ -6222,7 +6337,7 @@ function MainPage({
     </>
   );
 
-  if (activeView === "todo" && selectedTodoChatId) {
+  if (!showWideTodoSplitLayout && activeView === "todo" && selectedTodoChatId) {
     return (
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <TodoChatDetail
@@ -6307,7 +6422,7 @@ function MainPage({
     );
   }
 
-  if (showWideThreadSplitLayout) {
+  if (showWideSplitLayout) {
     return (
       <div
         className="telegram-shell overflow-hidden bg-slate-950 text-slate-100"
@@ -6366,35 +6481,74 @@ function MainPage({
             ) : null}
 
             <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
-              <ThreadDetail
-                thread={resolvedThread}
-                project={threadProject}
-                messages={resolvedThread ? threadDetailMessages : []}
-                issues={resolvedThread ? threadDetail?.issues ?? [] : []}
-                signalNow={signalNow}
-                messagesLoading={threadDetailLoading}
-                messagesError={threadDetailError}
-                onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
-                onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
-                onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
-                onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
-                onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
-                onSubmitPrompt={(payload) => {
-                  if (resolvedThread?.id) {
-                    return onAppendThreadMessage(resolvedThread.id, payload.prompt);
-                  }
+              {isTodoScope ? (
+                selectedTodoChatId ? (
+                  <TodoChatDetail
+                    chat={selectedTodoChat ?? todoChatDetail?.chat ?? null}
+                    messages={todoChatMessages}
+                    loading={todoChatLoading}
+                    error={todoChatError}
+                    submitBusy={todoBusy}
+                    onBack={onBackToInbox}
+                    onRefresh={onRefreshTodoChat}
+                    onRename={() => setTodoChatBeingEdited(selectedTodoChat ?? todoChatDetail?.chat ?? null)}
+                    onDelete={() => {
+                      const targetChat = selectedTodoChat ?? todoChatDetail?.chat ?? null;
 
-                  return onCreateThread(payload, { stayOnThread: true });
-                }}
-                submitBusy={threadBusy}
-                onBack={onBackToInbox}
-                messageFilter={threadMessageFilter}
-                onChangeMessageFilter={onChangeThreadMessageFilter}
-                isDraft={!selectedThread && !threadDetail?.thread}
-                showBackButton={false}
-                standalone={false}
-                emptyStateMessage={splitThreadEmptyStateMessage}
-              />
+                      if (!targetChat) {
+                        return;
+                      }
+
+                      void onDeleteTodoChat(targetChat.id);
+                    }}
+                    onSelectMessage={(message) => setActiveTodoMessage(message)}
+                    onSubmitMessage={onSubmitTodoMessage}
+                    showBackButton={false}
+                    standalone={false}
+                  />
+                ) : (
+                  <div className="flex h-full min-h-0 flex-col items-center justify-center px-8 text-center">
+                    <div className="max-w-md rounded-[2rem] border border-dashed border-white/15 bg-white/[0.03] px-6 py-8">
+                      <p className="text-base font-semibold text-white">ToDo 채팅을 선택해 주세요.</p>
+                      <p className="mt-3 text-sm leading-6 text-slate-300">
+                        좌측 목록에서 기존 ToDo를 열거나 새 ToDo 채팅을 만들어 분할 화면에서 바로 이어서 작업할 수 있습니다.
+                      </p>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <ThreadDetail
+                  thread={resolvedThread}
+                  project={threadProject}
+                  messages={resolvedThread ? threadDetailMessages : []}
+                  issues={resolvedThread ? threadDetail?.issues ?? [] : []}
+                  signalNow={signalNow}
+                  messagesLoading={threadDetailLoading}
+                  messagesError={threadDetailError}
+                  onRefreshMessages={resolvedThread?.id ? onRefreshThreadDetail : null}
+                  onStopThreadExecution={resolvedThread?.id ? onStopThreadExecution : null}
+                  onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
+                  onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
+                  onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
+                  onSubmitPrompt={(payload) => {
+                    if (resolvedThread?.id) {
+                      return onAppendThreadMessage(resolvedThread.id, payload.prompt);
+                    }
+
+                    return onCreateThread(payload, { stayOnThread: true });
+                  }}
+                  submitBusy={threadBusy}
+                  onBack={onBackToInbox}
+                  messageFilter={threadMessageFilter}
+                  onChangeMessageFilter={onChangeThreadMessageFilter}
+                  composerDraft={threadComposerDraft}
+                  onChangeComposerDraft={handleChangeThreadComposerDraft}
+                  isDraft={!selectedThread && !threadDetail?.thread}
+                  showBackButton={false}
+                  standalone={false}
+                  emptyStateMessage={splitThreadEmptyStateMessage}
+                />
+              )}
             </section>
           </main>
         </div>
@@ -6430,6 +6584,8 @@ function MainPage({
           onBack={onBackToInbox}
           messageFilter={threadMessageFilter}
           onChangeMessageFilter={onChangeThreadMessageFilter}
+          composerDraft={threadComposerDraft}
+          onChangeComposerDraft={handleChangeThreadComposerDraft}
           isDraft={!selectedThread && !threadDetail?.thread}
         />
       </div>
@@ -6460,6 +6616,8 @@ function MainPage({
                     selectedBridgeId={selectedBridgeId}
                     bridgeSignal={bridgeSignal}
                     onSelectBridge={onSelectBridge}
+                    onOpen={onOpenBridgeDropdown}
+                    syncing={bridgeListSyncing}
                   />
                 </div>
               </div>
@@ -6771,6 +6929,9 @@ export default function App() {
   const pendingPushDeepLinkRef = useRef(readPushDeepLink());
   const [selectedTodoChatId, setSelectedTodoChatId] = useState(() => initialWorkspaceLayoutRef.current.selectedTodoChatId);
   const [draftThreadProjectId, setDraftThreadProjectId] = useState(() => initialWorkspaceLayoutRef.current.draftThreadProjectId);
+  const [threadComposerDrafts, setThreadComposerDrafts] = useState(
+    () => initialWorkspaceLayoutRef.current.threadComposerDrafts
+  );
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
   const [utilityOpen, setUtilityOpen] = useState(false);
@@ -6792,6 +6953,7 @@ export default function App() {
   const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState(() => initialWorkspaceLayoutRef.current.activeView);
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
+  const [bridgeListSyncing, setBridgeListSyncing] = useState(false);
   const [streamActivityAt, setStreamActivityAt] = useState(null);
   const [streamNow, setStreamNow] = useState(() => Date.now());
   const [eventStreamReconnectToken, setEventStreamReconnectToken] = useState(0);
@@ -6816,6 +6978,7 @@ export default function App() {
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
+  const bridgeListSyncPromiseRef = useRef(null);
   const selectedBridgeKnown = !selectedBridgeId || bridges.some((bridge) => bridge.bridge_id === selectedBridgeId);
   const bridgeDisconnectOverridden = Boolean(
     selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]
@@ -6920,6 +7083,59 @@ export default function App() {
       threadLiveProgressAtByIdRef.current.delete(threadId);
     }
   }, []);
+  const updateThreadComposerDraft = useCallback((draftKey, nextValue) => {
+    const normalizedDraftKey = String(draftKey ?? "").trim();
+
+    if (!normalizedDraftKey) {
+      return;
+    }
+
+    setThreadComposerDrafts((current) => {
+      const currentValue = current[normalizedDraftKey] ?? "";
+      const resolvedValue = typeof nextValue === "function" ? nextValue(currentValue) : nextValue;
+      const normalizedValue = typeof resolvedValue === "string" ? resolvedValue : String(resolvedValue ?? "");
+
+      if (!normalizedValue) {
+        if (!Object.prototype.hasOwnProperty.call(current, normalizedDraftKey)) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[normalizedDraftKey];
+        return next;
+      }
+
+      if (currentValue === normalizedValue) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [normalizedDraftKey]: normalizedValue
+      };
+    });
+  }, []);
+  const removeThreadComposerDrafts = useCallback((draftKeys) => {
+    const normalizedDraftKeys = [...new Set(draftKeys.map((draftKey) => String(draftKey ?? "").trim()).filter(Boolean))];
+
+    if (normalizedDraftKeys.length === 0) {
+      return;
+    }
+
+    setThreadComposerDrafts((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      normalizedDraftKeys.forEach((draftKey) => {
+        if (Object.prototype.hasOwnProperty.call(next, draftKey)) {
+          delete next[draftKey];
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, []);
   const removeDeletedThreadsFromState = useCallback((threadIds) => {
     const normalizedThreadIds = [...new Set(threadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
 
@@ -6928,6 +7144,7 @@ export default function App() {
     }
 
     clearThreadTransientState(normalizedThreadIds);
+    removeThreadComposerDrafts(normalizedThreadIds.map((threadId) => buildThreadComposerDraftKey({ threadId })));
     setThreads((current) => removeThreadsByIds(current, normalizedThreadIds));
     setThreadListsByProjectId((current) => removeThreadIdsFromProjectCache(current, normalizedThreadIds));
     setThreadDetails((current) => {
@@ -6948,7 +7165,7 @@ export default function App() {
       setSelectedThreadId("");
       setActiveView("inbox");
     }
-  }, [clearThreadTransientState]);
+  }, [clearThreadTransientState, removeThreadComposerDrafts]);
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
@@ -7522,6 +7739,35 @@ export default function App() {
 
     return normalizedBridges;
   }
+
+  const syncBridgeList = useCallback((sessionArg = session) => {
+    if (!sessionArg?.loginId) {
+      return Promise.resolve([]);
+    }
+
+    if (bridgeListSyncPromiseRef.current) {
+      return bridgeListSyncPromiseRef.current;
+    }
+
+    setBridgeListSyncing(true);
+    const request = loadBridges(sessionArg)
+      .finally(() => {
+        if (bridgeListSyncPromiseRef.current === request) {
+          bridgeListSyncPromiseRef.current = null;
+          setBridgeListSyncing(false);
+        }
+      });
+    bridgeListSyncPromiseRef.current = request;
+    return request;
+  }, [loadBridges, session]);
+
+  const handleOpenBridgeDropdown = useCallback(() => {
+    void syncBridgeList().catch((error) => {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+    });
+  }, [syncBridgeList]);
 
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
@@ -8377,6 +8623,7 @@ export default function App() {
     setSelectedThreadId(restoredLayout.selectedThreadId);
     setSelectedTodoChatId(restoredLayout.selectedTodoChatId);
     setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
+    setThreadComposerDrafts(restoredLayout.threadComposerDrafts);
     setThreadListsByProjectId({});
     setTodoChats([]);
     setTodoChatDetails({});
@@ -8399,6 +8646,7 @@ export default function App() {
         selectedThreadId,
         selectedTodoChatId,
         draftThreadProjectId,
+        threadComposerDrafts,
         activeView
       },
       {
@@ -8413,6 +8661,7 @@ export default function App() {
     selectedScope,
     selectedThreadId,
     selectedTodoChatId,
+    threadComposerDrafts,
     session?.loginId
   ]);
 
@@ -8705,6 +8954,7 @@ export default function App() {
     setSelectedThreadId("");
     setSelectedTodoChatId("");
     setDraftThreadProjectId("");
+    setThreadComposerDrafts({});
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
@@ -9889,6 +10139,12 @@ export default function App() {
       }
 
       setDraftThreadProjectId((current) => (current === projectId ? "" : current));
+      removeThreadComposerDrafts([
+        buildThreadComposerDraftKey({ projectId, isDraft: true }),
+        ...threads
+          .filter((thread) => thread.project_id === projectId)
+          .map((thread) => buildThreadComposerDraftKey({ threadId: thread.id }))
+      ]);
 
       return true;
     } catch (error) {
@@ -10009,11 +10265,17 @@ export default function App() {
       return;
     }
 
-    const nextBridges = await loadBridges(session);
-    const targetBridgeId = selectedBridgeId || nextBridges[0]?.bridge_id;
+    try {
+      const nextBridges = await syncBridgeList(session);
+      const targetBridgeId = selectedBridgeId || nextBridges[0]?.bridge_id;
 
-    if (targetBridgeId) {
-      await loadBridgeWorkspace(session, targetBridgeId);
+      if (targetBridgeId) {
+        await loadBridgeWorkspace(session, targetBridgeId);
+      }
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
     }
   };
 
@@ -10156,6 +10418,7 @@ export default function App() {
         selectedThreadId={selectedThreadId}
         selectedTodoChatId={selectedTodoChatId}
         draftThreadProjectId={draftThreadProjectId}
+        threadComposerDrafts={threadComposerDrafts}
         search={search}
         loadingState={loadingState}
         utilityOpen={utilityOpen}
@@ -10178,6 +10441,7 @@ export default function App() {
         onSearchChange={setSearch}
         onChangeThreadMessageFilter={setThreadMessageFilter}
         onSelectBridge={setSelectedBridgeId}
+        onOpenBridgeDropdown={handleOpenBridgeDropdown}
         onSelectProject={handleSelectProject}
         onSelectTodoScope={handleSelectTodoScope}
         onSelectThread={handleSelectThread}
@@ -10199,6 +10463,7 @@ export default function App() {
         onSubmitProjectInstruction={handleSubmitProjectInstruction}
         onCreateThread={handleCreateThread}
         onAppendThreadMessage={handleAppendThreadMessage}
+        onChangeThreadComposerDraft={updateThreadComposerDraft}
         onSubmitTodoMessage={handleSubmitTodoMessage}
         onRenameThread={handleRenameThread}
         onRenameTodoChat={handleRenameTodoChat}
@@ -10219,6 +10484,7 @@ export default function App() {
         onRetryThreadIssue={handleRetryThreadIssue}
         onDeleteThreadIssue={handleDeleteThreadIssue}
         onRefresh={() => void handleRefresh()}
+        bridgeListSyncing={bridgeListSyncing}
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}
       />
