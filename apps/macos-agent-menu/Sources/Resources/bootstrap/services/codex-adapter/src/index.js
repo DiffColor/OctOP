@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { connect, StringCodec } from "nats";
 import WebSocket from "ws";
@@ -31,6 +32,24 @@ const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
 const NATS_URL = process.env.OCTOP_NATS_URL ?? "nats://ilysrv.ddns.net:4222";
 const NATS_CONNECT_TIMEOUT_MS = Number(process.env.OCTOP_NATS_CONNECT_TIMEOUT_MS ?? 5000);
 const NATS_RETRY_DELAY_MS = Number(process.env.OCTOP_NATS_RETRY_DELAY_MS ?? 2000);
+const SYSTEM_NETWORK_EVENT_DEBOUNCE_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_EVENT_DEBOUNCE_MS ?? 1500
+);
+const SYSTEM_NETWORK_MONITOR_RESTART_DELAY_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_MONITOR_RESTART_DELAY_MS ?? 3000
+);
+const SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS ?? 120000
+);
+const SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS ?? 2000
+);
+const SYSTEM_NETWORK_PROBE_TIMEOUT_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_PROBE_TIMEOUT_MS ?? 3000
+);
+const SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS = Number(
+  process.env.OCTOP_SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS ?? 3000
+);
 const BRIDGE_MODE = process.env.OCTOP_BRIDGE_MODE ?? "app-server";
 const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
@@ -100,6 +119,12 @@ dns.setDefaultResultOrder("ipv4first");
 
 const sc = StringCodec();
 const nc = await connectToNats();
+let natsProjectionReplayPromise = null;
+let systemNetworkConnected = null;
+let systemNetworkReplayPromise = null;
+let systemNetworkEventMonitor = null;
+let systemNetworkEventTimer = null;
+let pendingSystemNetworkEvent = null;
 
 const users = new Map();
 const threadOwners = new Map();
@@ -341,6 +366,354 @@ function observeBridgeDurationMetric(name, durationMs) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLinkLocalAddress(family, address) {
+  const normalizedFamily = String(family ?? "").toLowerCase();
+  const normalizedAddress = String(address ?? "").trim().toLowerCase();
+
+  if (!normalizedAddress) {
+    return false;
+  }
+
+  if (normalizedFamily === "ipv4" || normalizedFamily === "4") {
+    return normalizedAddress.startsWith("169.254.");
+  }
+
+  if (normalizedFamily === "ipv6" || normalizedFamily === "6") {
+    return normalizedAddress.startsWith("fe80:");
+  }
+
+  return false;
+}
+
+function listRoutableNetworkInterfaces() {
+  return Object.entries(os.networkInterfaces())
+    .flatMap(([name, addresses]) =>
+      (Array.isArray(addresses) ? addresses : [])
+        .filter((entry) =>
+          entry &&
+          !entry.internal &&
+          entry.address &&
+          !isLinkLocalAddress(entry.family, entry.address)
+        )
+        .map((entry) => ({
+          name,
+          family: String(entry.family ?? "").toUpperCase(),
+          address: entry.address
+        }))
+    );
+}
+
+function runSystemNetworkCommand(command, args) {
+  try {
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS,
+      windowsHide: true
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function readDefaultRouteState() {
+  if (process.platform === "win32") {
+    const output = runSystemNetworkCommand("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | " +
+        "Where-Object { $_.State -eq 'Alive' } | Sort-Object -Property RouteMetric, InterfaceMetric | Select-Object -First 1; " +
+        "if (-not $route) { " +
+        "$route = Get-NetRoute -AddressFamily IPv6 -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | " +
+        "Where-Object { $_.State -eq 'Alive' } | Sort-Object -Property RouteMetric, InterfaceMetric | Select-Object -First 1; } " +
+        "if ($route) { " +
+        "$adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue | Select-Object -First 1; " +
+        "if ($adapter -and $adapter.Status -eq 'Up') { Write-Output $adapter.Name } }"
+    ]);
+    return {
+      supported: true,
+      connected: Boolean(output),
+      interfaceName: output || null
+    };
+  }
+
+  if (process.platform === "darwin") {
+    const output = runSystemNetworkCommand("route", ["-n", "get", "default"]);
+    const match = output.match(/interface:\s+([^\s]+)/i);
+    return {
+      supported: true,
+      connected: Boolean(match?.[1]),
+      interfaceName: match?.[1] ?? null
+    };
+  }
+
+  const output = runSystemNetworkCommand("ip", ["route", "show", "default"]);
+  const match = output.match(/\bdev\s+([^\s]+)/i);
+  return {
+    supported: Boolean(output),
+    connected: Boolean(match?.[1]),
+    interfaceName: match?.[1] ?? null
+  };
+}
+
+function getSystemNetworkState(reason = "unspecified") {
+  const interfaces = listRoutableNetworkInterfaces();
+  const defaultRoute = readDefaultRouteState();
+  return {
+    connected: interfaces.length > 0 && (defaultRoute.supported ? defaultRoute.connected : true),
+    checked_at: now(),
+    reason,
+    interfaces,
+    default_route: defaultRoute
+  };
+}
+
+function buildSystemNetworkLogContext(networkState) {
+  return {
+    system_network_connected: Boolean(networkState?.connected),
+    system_network_checked_at: networkState?.checked_at ?? null,
+    system_network_interface_names: Array.isArray(networkState?.interfaces)
+      ? networkState.interfaces.map((entry) => entry.name)
+      : [],
+    system_network_default_route_interface: networkState?.default_route?.interfaceName ?? null
+  };
+}
+
+async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified") {
+  if (systemNetworkReplayPromise) {
+    return systemNetworkReplayPromise;
+  }
+
+  const deadline = Date.now() + SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS;
+  systemNetworkReplayPromise = (async () => {
+    appServer.prepareForSystemNetworkRestore(trigger);
+
+    while (Date.now() < deadline) {
+      if (nc.isClosed()) {
+        break;
+      }
+
+      try {
+        await Promise.race([
+          nc.flush(),
+          sleep(SYSTEM_NETWORK_PROBE_TIMEOUT_MS).then(() => {
+            throw new Error("flush_timeout");
+          })
+        ]);
+        await scheduleNatsProjectionReplay(`system_network_restored:${trigger}`);
+        await publishBridgeStatusUpdates({ ensureReady: false });
+        const activeSocket = appServer.socket;
+
+        if (activeSocket && appServer.connected && appServer.initialized && activeSocket.readyState === WebSocket.OPEN) {
+          void appServer.checkLastKnownState(`system_network_restored:${trigger}`);
+        } else {
+          appServer.scheduleReconnect(`system_network_restored:${trigger}`);
+        }
+        return true;
+      } catch {
+        await sleep(SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS);
+      }
+    }
+
+    console.warn("[OctOP bridge] NATS replay skipped after system network restore", {
+      trigger,
+      closed: nc.isClosed()
+    });
+    return false;
+  })().finally(() => {
+    systemNetworkReplayPromise = null;
+  });
+
+  return systemNetworkReplayPromise;
+}
+
+function scheduleSystemNetworkEvent(event) {
+  pendingSystemNetworkEvent = {
+    trigger: String(event?.trigger ?? "system_network").trim() || "system_network",
+    source: String(event?.source ?? "unspecified").trim() || "unspecified",
+    available: event?.available,
+    raw: event?.raw ?? null
+  };
+
+  if (systemNetworkEventTimer) {
+    clearTimeout(systemNetworkEventTimer);
+  }
+
+  systemNetworkEventTimer = setTimeout(() => {
+    systemNetworkEventTimer = null;
+    const nextEvent = pendingSystemNetworkEvent;
+    pendingSystemNetworkEvent = null;
+    void handleSystemNetworkEvent(nextEvent);
+  }, SYSTEM_NETWORK_EVENT_DEBOUNCE_MS);
+  systemNetworkEventTimer.unref?.();
+}
+
+async function handleSystemNetworkEvent(event = {}) {
+  const networkState = getSystemNetworkState(event.trigger ?? "system_network");
+  const previousConnected = systemNetworkConnected;
+  systemNetworkConnected = networkState.connected;
+
+  appendDiagnosticLog("info", "system_network.event", "system network event received", {
+    trigger: event.trigger ?? "system_network",
+    source: event.source ?? "unspecified",
+    available: event.available ?? null,
+    raw: event.raw ?? null,
+    ...buildSystemNetworkLogContext(networkState)
+  });
+
+  if (!networkState.connected) {
+    console.warn("[OctOP bridge] system network became unavailable", {
+      trigger: event.trigger ?? "system_network",
+      source: event.source ?? "unspecified",
+      ...buildSystemNetworkLogContext(networkState)
+    });
+    return;
+  }
+
+  const becameConnected = previousConnected === false;
+
+  if (!becameConnected) {
+    return;
+  }
+
+  await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+}
+
+function buildSystemNetworkMonitorSpec() {
+  if (process.platform === "win32") {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "function Emit([string]$Type, [bool]$Available) {",
+      "  $payload = @{ type = $Type; available = $Available; timestamp = [DateTimeOffset]::UtcNow.ToString('o') } | ConvertTo-Json -Compress",
+      "  [Console]::Out.WriteLine($payload)",
+      "  [Console]::Out.Flush()",
+      "}",
+      "Emit 'startup' ([System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable())",
+      "Register-ObjectEvent -InputObject ([System.Net.NetworkInformation.NetworkChange]) -EventName NetworkAvailabilityChanged -SourceIdentifier 'OctOP.NetworkAvailability' | Out-Null",
+      "Register-ObjectEvent -InputObject ([System.Net.NetworkInformation.NetworkChange]) -EventName NetworkAddressChanged -SourceIdentifier 'OctOP.NetworkAddress' | Out-Null",
+      "while ($true) {",
+      "  $event = Wait-Event -Timeout 3600",
+      "  if (-not $event) { continue }",
+      "  if ($event.SourceIdentifier -eq 'OctOP.NetworkAvailability') {",
+      "    Emit 'availability' ([bool]$event.SourceEventArgs.IsAvailable)",
+      "  } else {",
+      "    Emit 'address' ([System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable())",
+      "  }",
+      "  Remove-Event -EventIdentifier $event.EventIdentifier",
+      "}"
+    ].join("; ");
+
+    return {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", script],
+      source: "powershell_network_change"
+    };
+  }
+
+  if (process.platform === "darwin") {
+    return {
+      command: "route",
+      args: ["-n", "monitor"],
+      source: "route_monitor"
+    };
+  }
+
+  return {
+    command: "ip",
+    args: ["monitor", "link", "route", "address"],
+    source: "ip_monitor"
+  };
+}
+
+function restartSystemNetworkEventMonitor(reason = "unspecified") {
+  setTimeout(() => {
+    void startSystemNetworkEventMonitor(`restart:${reason}`);
+  }, SYSTEM_NETWORK_MONITOR_RESTART_DELAY_MS).unref?.();
+}
+
+async function startSystemNetworkEventMonitor(reason = "startup") {
+  if (systemNetworkEventMonitor && systemNetworkEventMonitor.exitCode === null) {
+    return;
+  }
+
+  const spec = buildSystemNetworkMonitorSpec();
+  systemNetworkConnected = getSystemNetworkState(`monitor:${reason}`).connected;
+  systemNetworkEventMonitor = spawn(spec.command, spec.args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true
+  });
+
+  const output = createInterface({
+    input: systemNetworkEventMonitor.stdout
+  });
+
+  output.on("line", (line) => {
+    const text = String(line ?? "").trim();
+
+    if (!text) {
+      return;
+    }
+
+    let payload = null;
+
+    if (process.platform === "win32") {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { type: "unknown", raw: text };
+      }
+    } else {
+      payload = {
+        type: "change",
+        raw: text
+      };
+    }
+
+    scheduleSystemNetworkEvent({
+      trigger: `os_network_event:${payload.type ?? "change"}`,
+      source: spec.source,
+      available: payload.available,
+      raw: payload.raw ?? text
+    });
+  });
+
+  systemNetworkEventMonitor.stderr.on("data", (chunk) => {
+    const text = chunk.toString().trim();
+
+    if (!text) {
+      return;
+    }
+
+    console.warn("[OctOP bridge] system network monitor stderr", {
+      reason,
+      source: spec.source,
+      message: text
+    });
+  });
+
+  systemNetworkEventMonitor.on("error", (error) => {
+    console.warn("[OctOP bridge] failed to start system network monitor", {
+      reason,
+      source: spec.source,
+      message: error.message
+    });
+    restartSystemNetworkEventMonitor(`error:${spec.source}`);
+  });
+
+  systemNetworkEventMonitor.on("exit", (code, signal) => {
+    output.close();
+    console.warn("[OctOP bridge] system network monitor exited", {
+      reason,
+      source: spec.source,
+      code: code ?? null,
+      signal: signal ?? null
+    });
+    restartSystemNetworkEventMonitor(`exit:${spec.source}`);
+  });
 }
 
 function createThreadEntityId() {
@@ -6164,6 +6537,98 @@ async function publishSnapshotsToKnownUsers() {
   }
 }
 
+async function publishProjectionRecoverySnapshots(loginId) {
+  const normalized = sanitizeUserId(loginId);
+  await publishSnapshots(normalized);
+
+  for (const thread of listProjectThreads(normalized)) {
+    await publishEvent(normalized, "bridge.threadIssues.updated", {
+      thread_id: thread.id,
+      issues: listThreadIssues(thread.id)
+    });
+    await publishEvent(normalized, "logicalThread.timeline.updated", {
+      root_thread_id: thread.id,
+      thread_id: thread.id,
+      entries: listThreadTimeline(thread.id)
+    });
+    await publishEvent(normalized, "bridge.threadContinuity.updated", {
+      thread_id: thread.id,
+      ...getThreadContinuity(normalized, thread.id)
+    });
+  }
+
+  for (const chat of listTodoChats(normalized)) {
+    await publishEvent(normalized, "bridge.todoMessages.updated", getTodoMessagesResponse(normalized, chat.id));
+  }
+}
+
+async function publishProjectionRecoverySnapshotsToKnownUsers(trigger = "unspecified") {
+  for (const loginId of listKnownLoginIds()) {
+    await publishProjectionRecoverySnapshots(loginId);
+  }
+
+  if (!nc.isClosed()) {
+    await nc.flush();
+  }
+
+  console.log("[OctOP bridge] NATS projection recovery snapshots published", {
+    trigger,
+    login_ids: listKnownLoginIds()
+  });
+}
+
+function scheduleNatsProjectionReplay(trigger = "unspecified") {
+  if (natsProjectionReplayPromise) {
+    return natsProjectionReplayPromise;
+  }
+
+  natsProjectionReplayPromise = (async () => {
+    try {
+      await publishProjectionRecoverySnapshotsToKnownUsers(trigger);
+    } catch (error) {
+      console.warn("[OctOP bridge] failed to publish NATS projection recovery snapshots", {
+        trigger,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      natsProjectionReplayPromise = null;
+    }
+  })();
+
+  return natsProjectionReplayPromise;
+}
+
+function startNatsStatusMonitor(connection = nc) {
+  void (async () => {
+    for await (const status of connection.status()) {
+      if (connection !== nc) {
+        return;
+      }
+
+      const type = String(status?.type ?? "").trim();
+
+      if (!type) {
+        continue;
+      }
+
+      if (type === "disconnect" || type === "reconnecting" || type === "reconnect") {
+        console.warn("[OctOP bridge] NATS status changed", {
+          type,
+          data: status?.data ?? null
+        });
+      }
+
+      if (type === "reconnect") {
+        void scheduleNatsProjectionReplay("nats_reconnect");
+      }
+    }
+  })().catch((error) => {
+    console.warn("[OctOP bridge] NATS status monitor stopped", {
+      message: error instanceof Error ? error.message : String(error)
+    });
+  });
+}
+
 function resolveLocalThreadId(threadReference) {
   const candidate = String(threadReference ?? "").trim();
 
@@ -6714,7 +7179,6 @@ class AppServerClient {
           message: error.message
         });
       });
-      this.scheduleReconnect(`process_exit:${code ?? signal ?? "unknown"}`);
     });
     this.child.on("error", (error) => {
       this.lastError = error.message;
@@ -6731,7 +7195,6 @@ class AppServerClient {
           message: publishError.message
         });
       });
-      this.scheduleReconnect("process_error");
     });
   }
 
@@ -7377,6 +7840,50 @@ class AppServerClient {
       pending.reject(new Error(reason));
       this.requests.delete(id);
     }
+  }
+
+  prepareForSystemNetworkRestore(trigger = "system_network") {
+    const ws = this.socket;
+
+    this.lastError = `system network restore pending (${trigger})`;
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      this.resetSocketState(ws, `system network restore pending (${trigger})`);
+      return false;
+    }
+
+    appendDiagnosticLog("warn", "app_server.websocket.system_network_restore_prepare", "closing stale app-server websocket before system network recovery", {
+      trigger,
+      pending_requests: this.requests.size,
+      last_ready_reason: this.lastReadyReason
+    });
+    console.warn("[OctOP bridge] closing stale app-server websocket before system network recovery", {
+      trigger,
+      pending_requests: this.requests.size
+    });
+
+    this.resetSocketState(ws, `system network restore pending (${trigger})`);
+    void publishBridgeStatusUpdates({ ensureReady: false }).catch((error) => {
+      console.warn("[OctOP bridge] failed to publish bridge status while preparing system network recovery", {
+        trigger,
+        message: error.message
+      });
+    });
+
+    try {
+      if (typeof ws.terminate === "function") {
+        ws.terminate();
+      } else {
+        ws.close();
+      }
+    } catch (error) {
+      console.warn("[OctOP bridge] failed to close stale app-server websocket before system network recovery", {
+        trigger,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return true;
   }
 
   forceReconnect(ws = null, trigger = "unspecified", detail = {}) {
@@ -8656,7 +9163,6 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     )
   ) {
     const activeSocket = appServer.socket;
-
     if (activeSocket && appServer.connected && appServer.initialized) {
       appServer.forceReconnect(activeSocket, "running_backfill_no_progress", {
         thread_id: threadId,
@@ -9775,7 +10281,7 @@ async function respond(message, payload) {
   nc.publish(message.reply, sc.encode(JSON.stringify(payload)));
 }
 
-async function subscribeRequests() {
+async function subscribeRequests(connection = nc) {
   const patterns = [
     {
       subject: "octop.user.*.bridge.*.status.get",
@@ -9836,7 +10342,7 @@ async function subscribeRequests() {
   ];
 
   for (const entry of patterns) {
-    const subscription = nc.subscribe(entry.subject);
+    const subscription = connection.subscribe(entry.subject);
 
     (async () => {
       for await (const message of subscription) {
@@ -9856,7 +10362,7 @@ async function subscribeRequests() {
     })();
   }
 
-  const todoChatCreateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.create");
+  const todoChatCreateSubscription = connection.subscribe("octop.user.*.bridge.*.todo.chat.create");
 
   (async () => {
     for await (const message of todoChatCreateSubscription) {
@@ -9877,7 +10383,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoChatUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.update");
+  const todoChatUpdateSubscription = connection.subscribe("octop.user.*.bridge.*.todo.chat.update");
 
   (async () => {
     for await (const message of todoChatUpdateSubscription) {
@@ -9898,7 +10404,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoChatDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.todo.chat.delete");
+  const todoChatDeleteSubscription = connection.subscribe("octop.user.*.bridge.*.todo.chat.delete");
 
   (async () => {
     for await (const message of todoChatDeleteSubscription) {
@@ -9919,7 +10425,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoMessageCreateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.create");
+  const todoMessageCreateSubscription = connection.subscribe("octop.user.*.bridge.*.todo.message.create");
 
   (async () => {
     for await (const message of todoMessageCreateSubscription) {
@@ -9940,7 +10446,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoMessageUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.update");
+  const todoMessageUpdateSubscription = connection.subscribe("octop.user.*.bridge.*.todo.message.update");
 
   (async () => {
     for await (const message of todoMessageUpdateSubscription) {
@@ -9961,7 +10467,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoMessageDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.delete");
+  const todoMessageDeleteSubscription = connection.subscribe("octop.user.*.bridge.*.todo.message.delete");
 
   (async () => {
     for await (const message of todoMessageDeleteSubscription) {
@@ -9982,7 +10488,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const todoMessageTransferSubscription = nc.subscribe("octop.user.*.bridge.*.todo.message.transfer");
+  const todoMessageTransferSubscription = connection.subscribe("octop.user.*.bridge.*.todo.message.transfer");
 
   (async () => {
     for await (const message of todoMessageTransferSubscription) {
@@ -10003,7 +10509,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectCreateSubscription = nc.subscribe("octop.user.*.bridge.*.project.create");
+  const projectCreateSubscription = connection.subscribe("octop.user.*.bridge.*.project.create");
 
   (async () => {
     for await (const message of projectCreateSubscription) {
@@ -10024,7 +10530,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.project.delete");
+  const projectDeleteSubscription = connection.subscribe("octop.user.*.bridge.*.project.delete");
 
   (async () => {
     for await (const message of projectDeleteSubscription) {
@@ -10045,7 +10551,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.update");
+  const projectUpdateSubscription = connection.subscribe("octop.user.*.bridge.*.project.update");
 
   (async () => {
     for await (const message of projectUpdateSubscription) {
@@ -10066,7 +10572,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const folderListSubscription = nc.subscribe("octop.user.*.bridge.*.folder.list.get");
+  const folderListSubscription = connection.subscribe("octop.user.*.bridge.*.folder.list.get");
 
   (async () => {
     for await (const message of folderListSubscription) {
@@ -10086,7 +10592,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadCreateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.create");
+  const projectThreadCreateSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.create");
 
   (async () => {
     for await (const message of projectThreadCreateSubscription) {
@@ -10107,7 +10613,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.delete");
+  const projectThreadDeleteSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.delete");
 
   (async () => {
     for await (const message of projectThreadDeleteSubscription) {
@@ -10128,7 +10634,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadRolloverSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.rollover");
+  const projectThreadRolloverSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.rollover");
 
   (async () => {
     for await (const message of projectThreadRolloverSubscription) {
@@ -10153,7 +10659,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadNormalizeSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.normalize");
+  const projectThreadNormalizeSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.normalize");
 
   (async () => {
     for await (const message of projectThreadNormalizeSubscription) {
@@ -10180,7 +10686,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadUnlockSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.unlock");
+  const projectThreadUnlockSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.unlock");
 
   (async () => {
     for await (const message of projectThreadUnlockSubscription) {
@@ -10207,7 +10713,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadStopSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.stop");
+  const projectThreadStopSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.stop");
 
   (async () => {
     for await (const message of projectThreadStopSubscription) {
@@ -10234,7 +10740,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const projectThreadUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.project.thread.update");
+  const projectThreadUpdateSubscription = connection.subscribe("octop.user.*.bridge.*.project.thread.update");
 
   (async () => {
     for await (const message of projectThreadUpdateSubscription) {
@@ -10255,7 +10761,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssueCreateSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.create");
+  const threadIssueCreateSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issue.create");
 
   (async () => {
     for await (const message of threadIssueCreateSubscription) {
@@ -10276,7 +10782,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssueUpdateSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.update");
+  const threadIssueUpdateSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issue.update");
 
   (async () => {
     for await (const message of threadIssueUpdateSubscription) {
@@ -10297,7 +10803,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssueDeleteSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.delete");
+  const threadIssueDeleteSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issue.delete");
 
   (async () => {
     for await (const message of threadIssueDeleteSubscription) {
@@ -10318,7 +10824,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssueInterruptSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.interrupt");
+  const threadIssueInterruptSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issue.interrupt");
 
   (async () => {
     for await (const message of threadIssueInterruptSubscription) {
@@ -10339,7 +10845,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssueMoveSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issue.move");
+  const threadIssueMoveSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issue.move");
 
   (async () => {
     for await (const message of threadIssueMoveSubscription) {
@@ -10360,7 +10866,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssuesStartSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issues.start");
+  const threadIssuesStartSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issues.start");
 
   (async () => {
     for await (const message of threadIssuesStartSubscription) {
@@ -10381,7 +10887,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const threadIssuesReorderSubscription = nc.subscribe("octop.user.*.bridge.*.thread.issues.reorder");
+  const threadIssuesReorderSubscription = connection.subscribe("octop.user.*.bridge.*.thread.issues.reorder");
 
   (async () => {
     for await (const message of threadIssuesReorderSubscription) {
@@ -10402,7 +10908,7 @@ async function subscribeRequests() {
     }
   })();
 
-  const pingSubscription = nc.subscribe("octop.user.*.bridge.*.command.ping");
+  const pingSubscription = connection.subscribe("octop.user.*.bridge.*.command.ping");
 
   (async () => {
     for await (const message of pingSubscription) {
@@ -10440,6 +10946,8 @@ async function subscribeRequests() {
 }
 
 await subscribeRequests();
+startNatsStatusMonitor();
+await startSystemNetworkEventMonitor("startup");
 
 setInterval(() => {
   if (!hasActiveThreadExecution(BRIDGE_OWNER_LOGIN_ID)) {
@@ -10465,7 +10973,7 @@ if (RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS > 0) {
   }, RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS).unref();
 }
 
-await publishSnapshots(BRIDGE_OWNER_LOGIN_ID);
+await publishProjectionRecoverySnapshots(BRIDGE_OWNER_LOGIN_ID);
 
 createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);

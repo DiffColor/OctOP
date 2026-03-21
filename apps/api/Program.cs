@@ -1589,7 +1589,7 @@ app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClien
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.StatusGet,
-    new { user_id = userId, bridge_id = bridgeId, ensure_ready = true },
+    new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
     cancellationToken);
 
   return Results.Text(payload?.ToJsonString() ?? "{}", "application/json; charset=utf-8");
@@ -1934,7 +1934,7 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
   {
     var snapshot = await bridgeNatsClient.RequestAsync(
       subjects.StatusGet,
-      new { user_id = userId, bridge_id = bridgeId, ensure_ready = true },
+      new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
       cancellationToken);
 
     if (snapshot is not null)

@@ -132,6 +132,7 @@ public sealed class ProjectionWorkerService : BackgroundService
       await UpsertProjectThreadsAsync(connection, @event);
       await UpsertIssueCardsAsync(connection, @event);
       await UpsertRootThreadsAsync(connection, @event);
+      await UpsertThreadContinuitySnapshotsAsync(connection, @event);
       await UpsertPhysicalThreadsAsync(connection, @event);
       await UpsertHandoffSummariesAsync(connection, @event);
       await UpsertLogicalThreadTimelineAsync(connection, @event);
@@ -358,6 +359,11 @@ public sealed class ProjectionWorkerService : BackgroundService
     await DeleteMissingThreadsAsync(connection, ProjectThreadTable, loginId, bridgeId, scope == "all" ? null : projectId, threadIds);
     await DeleteMissingThreadsAsync(connection, ThreadTable, loginId, bridgeId, scope == "all" ? null : projectId, threadIds);
 
+    if (string.Equals(scope, "all", StringComparison.Ordinal))
+    {
+      await DeleteMissingRootThreadsAsync(connection, loginId, bridgeId, threadIds);
+    }
+
     if (threads is null)
     {
       return;
@@ -453,6 +459,94 @@ public sealed class ProjectionWorkerService : BackgroundService
       item["last_event_type"] = eventType;
       item["projected_at"] = projectedAt;
       await UpsertThreadDocumentAsync(connection, RootThreadTable, item, projectedAt);
+    }
+  }
+
+  private async Task UpsertThreadContinuitySnapshotsAsync(RethinkConnection connection, JObject @event)
+  {
+    if ((string?)@event["type"] != "bridge.threadContinuity.updated")
+    {
+      return;
+    }
+
+    var payload = @event["payload"] as JObject;
+    var loginId = @event.Value<string>("login_id") ?? @event.Value<string>("user_id");
+    var bridgeId = @event.Value<string>("bridge_id");
+    var projectedAt = @event.Value<string>("timestamp");
+    var rootThread = payload?["root_thread"] as JObject;
+    var rootThreadId = payload?["thread_id"]?.Value<string>() ?? rootThread?.Value<string>("id");
+
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return;
+    }
+
+    if (rootThread is not null && rootThread["id"] is not null)
+    {
+      rootThread["login_id"] = loginId;
+      rootThread["user_id"] = loginId;
+      rootThread["bridge_id"] = bridgeId;
+      rootThread["last_event_type"] = @event.Value<string>("type");
+      rootThread["projected_at"] = projectedAt;
+      await UpsertThreadDocumentAsync(connection, RootThreadTable, rootThread, projectedAt);
+    }
+
+    var physicalThreads = payload?["physical_threads"] as JArray;
+    var physicalThreadIds = new HashSet<string>(
+      (physicalThreads ?? []).OfType<JObject>()
+        .Select(item => item.Value<string>("id"))
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>(),
+      StringComparer.Ordinal);
+    await DeleteMissingRowsByRootThreadIdAsync(connection, PhysicalThreadTable, rootThreadId, physicalThreadIds);
+
+    if (physicalThreads is not null)
+    {
+      foreach (var item in physicalThreads.OfType<JObject>())
+      {
+        if (item["id"] is null)
+        {
+          continue;
+        }
+
+        item["root_thread_id"] = item.Value<string>("root_thread_id") ?? rootThreadId;
+        item["login_id"] = loginId;
+        item["user_id"] = loginId;
+        item["bridge_id"] = bridgeId;
+        item["last_event_type"] = @event.Value<string>("type");
+        item["projected_at"] = projectedAt;
+        await UpsertThreadDocumentAsync(connection, PhysicalThreadTable, item, projectedAt);
+      }
+    }
+
+    var handoffSummaries = payload?["handoff_summaries"] as JArray;
+    var handoffSummaryIds = new HashSet<string>(
+      (handoffSummaries ?? []).OfType<JObject>()
+        .Select(item => item.Value<string>("id"))
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>(),
+      StringComparer.Ordinal);
+    await DeleteMissingRowsByRootThreadIdAsync(connection, HandoffSummaryTable, rootThreadId, handoffSummaryIds);
+
+    if (handoffSummaries is null)
+    {
+      return;
+    }
+
+    foreach (var item in handoffSummaries.OfType<JObject>())
+    {
+      if (item["id"] is null)
+      {
+        continue;
+      }
+
+      item["root_thread_id"] = item.Value<string>("root_thread_id") ?? rootThreadId;
+      item["login_id"] = loginId;
+      item["user_id"] = loginId;
+      item["bridge_id"] = bridgeId;
+      item["last_event_type"] = @event.Value<string>("type");
+      item["projected_at"] = projectedAt;
+      await UpsertThreadDocumentAsync(connection, HandoffSummaryTable, item, projectedAt);
     }
   }
 
@@ -703,6 +797,13 @@ public sealed class ProjectionWorkerService : BackgroundService
     if (type == "bridge.todoChats.updated")
     {
       var chats = @event["payload"]?["chats"] as JArray;
+      var chatIds = new HashSet<string>(
+        (chats ?? []).OfType<JObject>()
+          .Select(item => item.Value<string>("id"))
+          .Where(value => !string.IsNullOrWhiteSpace(value))
+          .Cast<string>(),
+        StringComparer.Ordinal);
+      await DeleteMissingTodoChatsAsync(connection, loginId, bridgeId, chatIds, projectedAt);
 
       if (chats is null)
       {
@@ -734,7 +835,8 @@ public sealed class ProjectionWorkerService : BackgroundService
     if (type != "todo.message.created" &&
         type != "todo.message.updated" &&
         type != "todo.message.deleted" &&
-        type != "todo.message.transferred")
+        type != "todo.message.transferred" &&
+        type != "bridge.todoMessages.updated")
     {
       return;
     }
@@ -765,6 +867,49 @@ public sealed class ProjectionWorkerService : BackgroundService
           projected_at = projectedAt
         })
         .RunResultAsync<object>(connection);
+
+      return;
+    }
+
+    if (type == "bridge.todoMessages.updated")
+    {
+      var chat = @event["payload"]?["chat"] as JObject;
+      var messages = @event["payload"]?["messages"] as JArray;
+      var chatId = chat?.Value<string>("id") ?? messages?.OfType<JObject>().FirstOrDefault()?.Value<string>("todo_chat_id");
+
+      if (string.IsNullOrWhiteSpace(chatId))
+      {
+        return;
+      }
+
+      var messageIds = new HashSet<string>(
+        (messages ?? []).OfType<JObject>()
+          .Select(item => item.Value<string>("id"))
+          .Where(value => !string.IsNullOrWhiteSpace(value))
+          .Cast<string>(),
+        StringComparer.Ordinal);
+      await DeleteMissingTodoMessagesAsync(connection, loginId, bridgeId, chatId, messageIds, projectedAt, type);
+
+      if (messages is null)
+      {
+        return;
+      }
+
+      foreach (var item in messages.OfType<JObject>())
+      {
+        var normalizedSnapshot = NormalizeTodoMessageDocument(item, loginId, bridgeId, type, projectedAt);
+
+        if (normalizedSnapshot is null)
+        {
+          continue;
+        }
+
+        await _r.Db(_rethinkDb)
+          .Table(TodoMessageTable)
+          .Insert(normalizedSnapshot)
+          .OptArg("conflict", "replace")
+          .RunResultAsync<object>(connection);
+      }
 
       return;
     }
@@ -1122,6 +1267,188 @@ public sealed class ProjectionWorkerService : BackgroundService
       {
         await _r.Db(_rethinkDb).Table(ThreadIssueCardTable).Get(issueId).Delete().RunResultAsync<object>(connection);
       }
+    }
+  }
+
+  private async Task DeleteMissingRootThreadsAsync(
+    RethinkConnection connection,
+    string? loginId,
+    string? bridgeId,
+    HashSet<string> activeThreadIds)
+  {
+    if (string.IsNullOrWhiteSpace(loginId) || string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return;
+    }
+
+    var existingRootThreads = await ReadTableRowsAsync(connection, RootThreadTable);
+
+    foreach (var thread in existingRootThreads)
+    {
+      var rootThreadId = thread.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(rootThreadId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(thread.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(thread.Value<string>("login_id") ?? thread.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        !activeThreadIds.Contains(rootThreadId))
+      {
+        await DeleteRootThreadArtifactsAsync(connection, rootThreadId);
+      }
+    }
+  }
+
+  private async Task DeleteMissingRowsByRootThreadIdAsync(
+    RethinkConnection connection,
+    string tableName,
+    string? rootThreadId,
+    HashSet<string> activeRowIds)
+  {
+    if (string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      return;
+    }
+
+    var existingRows = await ReadTableRowsAsync(connection, tableName);
+
+    foreach (var row in existingRows)
+    {
+      var rowId = row.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(rowId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(row.Value<string>("root_thread_id"), rootThreadId, StringComparison.Ordinal) &&
+        !activeRowIds.Contains(rowId))
+      {
+        await _r.Db(_rethinkDb).Table(tableName).Get(rowId).Delete().RunResultAsync<object>(connection);
+      }
+    }
+  }
+
+  private async Task DeleteMissingTodoChatsAsync(
+    RethinkConnection connection,
+    string loginId,
+    string bridgeId,
+    HashSet<string> activeChatIds,
+    string projectedAt)
+  {
+    var existingChats = await ReadTableRowsAsync(connection, TodoChatTable);
+
+    foreach (var chat in existingChats)
+    {
+      var chatId = chat.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(chatId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(chat.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(chat.Value<string>("login_id") ?? chat.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        !activeChatIds.Contains(chatId))
+      {
+        await _r.Db(_rethinkDb)
+          .Table(TodoChatTable)
+          .Get(chatId)
+          .Update(new
+          {
+            deleted_at = projectedAt,
+            updated_at = projectedAt,
+            last_event_type = "bridge.todoChats.updated",
+            projected_at = projectedAt
+          })
+          .RunResultAsync<object>(connection);
+
+        await MarkTodoMessagesDeletedByChatIdAsync(connection, chatId, projectedAt, "bridge.todoChats.updated");
+      }
+    }
+  }
+
+  private async Task DeleteMissingTodoMessagesAsync(
+    RethinkConnection connection,
+    string loginId,
+    string bridgeId,
+    string chatId,
+    HashSet<string> activeMessageIds,
+    string projectedAt,
+    string eventType)
+  {
+    var existingMessages = await ReadTableRowsAsync(connection, TodoMessageTable);
+
+    foreach (var message in existingMessages)
+    {
+      var messageId = message.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(messageId))
+      {
+        continue;
+      }
+
+      if (
+        string.Equals(message.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal) &&
+        string.Equals(message.Value<string>("login_id") ?? message.Value<string>("user_id"), loginId, StringComparison.Ordinal) &&
+        string.Equals(message.Value<string>("todo_chat_id"), chatId, StringComparison.Ordinal) &&
+        !activeMessageIds.Contains(messageId))
+      {
+        await _r.Db(_rethinkDb)
+          .Table(TodoMessageTable)
+          .Get(messageId)
+          .Update(new
+          {
+            status = "deleted",
+            deleted_at = projectedAt,
+            updated_at = projectedAt,
+            last_event_type = eventType,
+            projected_at = projectedAt
+          })
+          .RunResultAsync<object>(connection);
+      }
+    }
+  }
+
+  private async Task MarkTodoMessagesDeletedByChatIdAsync(
+    RethinkConnection connection,
+    string chatId,
+    string projectedAt,
+    string eventType)
+  {
+    var existingMessages = await ReadTableRowsAsync(connection, TodoMessageTable);
+
+    foreach (var message in existingMessages)
+    {
+      var messageId = message.Value<string>("id");
+
+      if (string.IsNullOrWhiteSpace(messageId))
+      {
+        continue;
+      }
+
+      if (!string.Equals(message.Value<string>("todo_chat_id"), chatId, StringComparison.Ordinal))
+      {
+        continue;
+      }
+
+      await _r.Db(_rethinkDb)
+        .Table(TodoMessageTable)
+        .Get(messageId)
+        .Update(new
+        {
+          status = "deleted",
+          deleted_at = projectedAt,
+          updated_at = projectedAt,
+          last_event_type = eventType,
+          projected_at = projectedAt
+        })
+        .RunResultAsync<object>(connection);
     }
   }
 
