@@ -513,6 +513,52 @@ test.describe('wide mobile split layout', () => {
     expect(Math.abs(detailFooterAfter.y - detailFooterBefore.y)).toBeLessThanOrEqual(1);
   });
 
+  test('allows resizing the split panes when the viewport exceeds twice the single-page width', async ({ page }) => {
+    await page.setViewportSize({ width: 1700, height: 430 });
+    await mockMobileApi(page);
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const listPane = page.getByTestId('thread-list-pane');
+    const detailPane = page.getByTestId('thread-detail-panel');
+    const resizer = page.getByTestId('thread-split-resizer');
+
+    await expect(resizer).toBeVisible();
+
+    const listPaneBefore = await listPane.boundingBox();
+    const detailPaneBefore = await detailPane.boundingBox();
+    const resizerBox = await resizer.boundingBox();
+
+    expect(listPaneBefore).not.toBeNull();
+    expect(detailPaneBefore).not.toBeNull();
+    expect(resizerBox).not.toBeNull();
+
+    await page.mouse.move(resizerBox.x + resizerBox.width / 2, resizerBox.y + resizerBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(resizerBox.x + resizerBox.width / 2 + 180, resizerBox.y + resizerBox.height / 2, {
+      steps: 12
+    });
+    await page.mouse.up();
+
+    await page.waitForTimeout(100);
+
+    const listPaneAfter = await listPane.boundingBox();
+    const detailPaneAfter = await detailPane.boundingBox();
+
+    expect(listPaneAfter).not.toBeNull();
+    expect(detailPaneAfter).not.toBeNull();
+    expect(listPaneAfter.width - listPaneBefore.width).toBeGreaterThan(120);
+    expect(detailPaneBefore.width - detailPaneAfter.width).toBeGreaterThan(120);
+  });
+
   test('sends on Enter and preserves line breaks on Shift+Enter in the prompt composer', async ({ page }) => {
     const requestLog = [];
 

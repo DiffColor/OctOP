@@ -323,6 +323,8 @@ const MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX = Math.max(
   MOBILE_SINGLE_PAGE_MAX_WIDTH_PX + 1,
   MOBILE_BASE_PAGE_MIN_WIDTH_PX * 2
 );
+const MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX = MOBILE_SINGLE_PAGE_MAX_WIDTH_PX * 2 + 1;
+const MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX = 320;
 
 function getMaxScrollTop(node) {
   if (!node) {
@@ -338,6 +340,14 @@ function getDistanceFromBottom(node) {
   }
 
   return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop);
+}
+
+function clampWideThreadSplitRatio(ratio, containerWidth) {
+  const safeContainerWidth = Math.max(containerWidth ?? 0, MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX);
+  const minRatio = Math.min(0.45, MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX / safeContainerWidth);
+  const maxRatio = 1 - minRatio;
+
+  return Math.min(maxRatio, Math.max(minRatio, ratio));
 }
 
 function isBottomBoundaryMomentumLocked(node) {
@@ -5219,8 +5229,13 @@ function MainPage({
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
   const [todoMessageEditorOpen, setTodoMessageEditorOpen] = useState(false);
   const [todoTransferOpen, setTodoTransferOpen] = useState(false);
+  const [wideThreadSplitRatio, setWideThreadSplitRatio] = useState(0.5);
   const projectLongPressTimerRef = useRef(null);
   const projectLongPressTriggeredRef = useRef(false);
+  const wideThreadSplitLayoutRef = useRef(null);
+  const wideThreadSplitResizePointerIdRef = useRef(null);
+  const wideThreadSplitResizeStartXRef = useRef(0);
+  const wideThreadSplitResizeStartRatioRef = useRef(0.5);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
@@ -5450,10 +5465,124 @@ function MainPage({
     activeView !== "todo" &&
     viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
     (selectedProjectId || draftThreadProjectId || selectedThreadId);
+  const wideThreadSplitResizeEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX;
   const splitThreadEmptyStateMessage =
     !selectedThreadId && !draftProject
       ? "채팅창이 없습니다. 좌측 쓰레드를 선택하거나 새 채팅창을 시작해 주세요."
       : "";
+  const wideThreadSplitLeftWeight = Math.max(1, Math.round(wideThreadSplitRatio * 100));
+  const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
+
+  useEffect(() => {
+    if (!showWideThreadSplitLayout || !wideThreadSplitResizeEnabled) {
+      setWideThreadSplitRatio(0.5);
+      return;
+    }
+
+    const containerWidth = wideThreadSplitLayoutRef.current?.clientWidth ?? viewportWidth ?? 0;
+    setWideThreadSplitRatio((current) => clampWideThreadSplitRatio(current, containerWidth));
+  }, [showWideThreadSplitLayout, viewportWidth, wideThreadSplitResizeEnabled]);
+
+  const updateWideThreadSplitRatioFromClientX = useCallback((clientX) => {
+    const container = wideThreadSplitLayoutRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+
+    if (rect.width <= 0) {
+      return;
+    }
+
+    const deltaX = clientX - wideThreadSplitResizeStartXRef.current;
+    const nextRatio = clampWideThreadSplitRatio(
+      wideThreadSplitResizeStartRatioRef.current + deltaX / rect.width,
+      rect.width
+    );
+
+    setWideThreadSplitRatio(nextRatio);
+  }, []);
+
+  const handleWideThreadSplitResizePointerDown = useCallback(
+    (event) => {
+      if (!wideThreadSplitResizeEnabled) {
+        return;
+      }
+
+      wideThreadSplitResizePointerIdRef.current = event.pointerId;
+      wideThreadSplitResizeStartXRef.current = event.clientX;
+      wideThreadSplitResizeStartRatioRef.current = wideThreadSplitRatio;
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    },
+    [wideThreadSplitRatio, wideThreadSplitResizeEnabled]
+  );
+
+  const handleWideThreadSplitResizePointerMove = useCallback(
+    (event) => {
+      if (
+        !wideThreadSplitResizeEnabled ||
+        wideThreadSplitResizePointerIdRef.current === null ||
+        event.pointerId !== wideThreadSplitResizePointerIdRef.current
+      ) {
+        return;
+      }
+
+      updateWideThreadSplitRatioFromClientX(event.clientX);
+      event.preventDefault();
+    },
+    [updateWideThreadSplitRatioFromClientX, wideThreadSplitResizeEnabled]
+  );
+
+  const handleWideThreadSplitResizePointerUp = useCallback((event) => {
+    if (wideThreadSplitResizePointerIdRef.current === null || event.pointerId !== wideThreadSplitResizePointerIdRef.current) {
+      return;
+    }
+
+    wideThreadSplitResizePointerIdRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }, []);
+
+  useEffect(() => {
+    if (!wideThreadSplitResizeEnabled || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const handleWindowPointerMove = (event) => {
+      if (
+        wideThreadSplitResizePointerIdRef.current === null ||
+        event.pointerId !== wideThreadSplitResizePointerIdRef.current
+      ) {
+        return;
+      }
+
+      updateWideThreadSplitRatioFromClientX(event.clientX);
+      event.preventDefault();
+    };
+
+    const handleWindowPointerUp = (event) => {
+      if (
+        wideThreadSplitResizePointerIdRef.current === null ||
+        event.pointerId !== wideThreadSplitResizePointerIdRef.current
+      ) {
+        return;
+      }
+
+      wideThreadSplitResizePointerIdRef.current = null;
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleWindowPointerUp);
+    window.addEventListener("pointercancel", handleWindowPointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerUp);
+      window.removeEventListener("pointercancel", handleWindowPointerUp);
+    };
+  }, [updateWideThreadSplitRatioFromClientX, wideThreadSplitResizeEnabled]);
   const inboxListContent = isTodoScope ? (
     filteredTodoChats.length === 0 ? (
       <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
@@ -5834,12 +5963,21 @@ function MainPage({
         style={{ height: viewportHeight ? `${viewportHeight}px` : "100dvh" }}
         data-testid="thread-split-layout"
       >
-        <div className="mx-auto flex h-full min-h-0 w-full max-w-[1600px] flex-col">
+        <div className="mx-auto flex h-full min-h-0 w-full flex-col">
           {appChrome}
-          <main className="flex min-h-0 flex-1 overflow-hidden gap-4 px-4 pb-4 pt-3">
+          <main
+            ref={wideThreadSplitLayoutRef}
+            className="grid min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-3"
+            style={{
+              gridTemplateColumns: wideThreadSplitResizeEnabled
+                ? `minmax(${MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX}px, ${wideThreadSplitLeftWeight}fr) 22px minmax(${MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX}px, ${wideThreadSplitRightWeight}fr)`
+                : "minmax(0, 1fr) minmax(0, 1fr)",
+              columnGap: wideThreadSplitResizeEnabled ? "0px" : "1rem"
+            }}
+          >
             <section
               data-testid="thread-list-pane"
-              className="flex h-full min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/72 shadow-2xl shadow-black/20"
+              className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/72 shadow-2xl shadow-black/20"
             >
               <div data-testid="thread-list-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
                 <section className="mt-1">{inboxListContent}</section>
@@ -5852,7 +5990,31 @@ function MainPage({
               </div>
             </section>
 
-            <section className="flex h-full min-h-0 min-w-0 basis-1/2 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
+            {wideThreadSplitResizeEnabled ? (
+              <div className="flex min-h-0 items-center justify-center">
+                <button
+                  type="button"
+                  data-testid="thread-split-resizer"
+                  aria-label="좌우 패널 크기 조절"
+                  onPointerDown={handleWideThreadSplitResizePointerDown}
+                  onPointerMove={handleWideThreadSplitResizePointerMove}
+                  onPointerUp={handleWideThreadSplitResizePointerUp}
+                  onPointerCancel={handleWideThreadSplitResizePointerUp}
+                  className="group flex h-full min-h-0 w-full touch-none items-center justify-center bg-transparent"
+                  style={{ cursor: "col-resize" }}
+                >
+                  <span className="relative flex h-full w-full items-center justify-center">
+                    <span className="h-full w-px bg-white/8 transition group-hover:bg-white/18" />
+                    <span className="absolute flex h-12 w-4 items-center justify-center rounded-full border border-white/10 bg-slate-900/92 shadow-lg shadow-black/30 backdrop-blur">
+                      <span className="h-5 w-px bg-white/20" />
+                      <span className="ml-1 h-5 w-px bg-white/20" />
+                    </span>
+                  </span>
+                </button>
+              </div>
+            ) : null}
+
+            <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/80 shadow-2xl shadow-black/20">
               <ThreadDetail
                 thread={resolvedThread}
                 project={threadProject}
