@@ -2493,14 +2493,6 @@ function BridgeDropdown({
   const statusLabel = bridgeSignal.label;
 
   useEffect(() => {
-    if (!open || typeof onOpen !== "function") {
-      return;
-    }
-
-    onOpen();
-  }, [onOpen, open]);
-
-  useEffect(() => {
     if (!open) {
       return undefined;
     }
@@ -2536,7 +2528,17 @@ function BridgeDropdown({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          setOpen((current) => {
+            const nextOpen = !current;
+
+            if (nextOpen && typeof onOpen === "function") {
+              onOpen();
+            }
+
+            return nextOpen;
+          });
+        }}
         className="flex w-full items-center gap-2 text-left text-xs text-slate-400 transition hover:text-white focus:outline-none"
       >
         <span className="truncate">
