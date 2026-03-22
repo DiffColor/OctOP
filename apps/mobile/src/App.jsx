@@ -3453,7 +3453,6 @@ function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
     <BottomSheet
       open={open}
       title="새 채팅창 시작"
-      description={`${project.name} 프로젝트에 비어 있는 채팅창을 만들고, 필요하면 시작 전에 개발지침을 함께 저장합니다.`}
       onClose={onClose}
       variant="center"
     >
@@ -7182,6 +7181,13 @@ function MainPage({
         onSelectWorkspace={onSelectWorkspace}
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
+      />
+      <ThreadCreateDialog
+        open={threadCreateDialogOpen}
+        busy={threadBusy}
+        project={selectedProject}
+        onClose={onCloseThreadCreateDialog}
+        onSubmit={onSubmitThreadCreateDialog}
       />
       <ProjectInstructionDialog
         open={projectInstructionDialogOpen}

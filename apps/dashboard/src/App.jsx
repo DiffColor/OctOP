@@ -3447,7 +3447,6 @@ function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }
           <div>
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.threadCreateDialogProjectHint}</p>
             <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadCreateDialogTitle}</h2>
-            <p className="mt-2 text-sm text-slate-400">{project.name}</p>
           </div>
           <button
             type="button"
