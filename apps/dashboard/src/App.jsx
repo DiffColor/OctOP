@@ -4648,7 +4648,6 @@ function MainPage({
   const selectedProjectThread =
   scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
   null;
-  const selectedThreadHasDeveloperInstructions = Boolean(selectedProjectThread?.developer_instructions?.trim());
   const selectedThreadContextUsage = getThreadContextUsage(selectedProjectThread);
   const selectedThreadUsageLabel =
     selectedThreadContextUsage?.percent != null
@@ -5385,19 +5384,6 @@ function MainPage({
               </div>
 
               <div className="ml-4 flex shrink-0 items-center space-x-3">
-                <button
-                  type="button"
-                  onClick={() => onOpenThreadInstructionDialog(selectedProjectThread?.id ?? "")}
-                  disabled={!bridgeAvailable || !selectedProjectThread}
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                    selectedThreadHasDeveloperInstructions
-                      ? "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
-                      : "border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {copy.footer.threadEdit}
-                </button>
-
                 <div className="relative hidden sm:block">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                     <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
