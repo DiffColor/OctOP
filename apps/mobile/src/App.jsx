@@ -3366,74 +3366,6 @@ function ProjectComposerSheet({
   );
 }
 
-function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
-  const [title, setTitle] = useState("");
-
-  useEffect(() => {
-    if (!open) {
-      setTitle("");
-      return;
-    }
-
-    setTitle(thread?.title ?? "");
-  }, [open, thread]);
-
-  if (!open || !thread) {
-    return null;
-  }
-
-  return (
-    <BottomSheet open={open} title="채팅창 제목 변경" onClose={onClose} variant="center">
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-
-          if (!title.trim()) {
-            return;
-          }
-
-          const accepted = await onSubmit(title.trim());
-
-          if (accepted !== false) {
-            onClose();
-          }
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-title">
-            제목
-          </label>
-          <input
-            id="thread-title"
-            type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !title.trim()}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "변경 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
 function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
   const [title, setTitle] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
@@ -4410,8 +4342,17 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
   );
 }
 
-function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, onSubmit }) {
-  const [value, setValue] = useState("");
+function ThreadEditDialog({
+  open,
+  busy,
+  thread,
+  threadInstructionSupported = false,
+  errorMessage,
+  onClose,
+  onSubmit
+}) {
+  const [title, setTitle] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
   const [dirty, setDirty] = useState(false);
   const draftThreadIdRef = useRef("");
   const instructionValue = thread?.developer_instructions ?? "";
@@ -4419,7 +4360,8 @@ function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, on
 
   useEffect(() => {
     if (!open) {
-      setValue("");
+      setTitle("");
+      setDeveloperInstructions("");
       setDirty(false);
       draftThreadIdRef.current = "";
       return;
@@ -4431,13 +4373,15 @@ function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, on
 
     if (draftThreadIdRef.current !== draftThreadId) {
       draftThreadIdRef.current = draftThreadId;
-      setValue(instructionValue);
+      setTitle(thread?.title ?? "");
+      setDeveloperInstructions(instructionValue);
       setDirty(false);
       return;
     }
 
     if (!dirty) {
-      setValue(instructionValue);
+      setTitle(thread?.title ?? "");
+      setDeveloperInstructions(instructionValue);
     }
   }, [dirty, draftThreadId, instructionValue, open, thread]);
 
@@ -4448,8 +4392,8 @@ function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, on
   return (
     <BottomSheet
       open={open}
-      title="채팅창 개발지침"
-      description={`${thread.title ?? "채팅창"}에만 저장되며 다음 실행 흐름부터 반영됩니다.`}
+      title="채팅창 편집"
+      description={`${thread.title ?? "채팅창"}의 제목을 수정하고, 필요하면 이 채팅창 전용 개발지침도 함께 저장합니다.`}
       onClose={onClose}
       variant="center"
     >
@@ -4458,33 +4402,58 @@ function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, on
         onSubmit={async (event) => {
           event.preventDefault();
           await onSubmit({
-            value
+            title: title.trim(),
+            developerInstructions
           });
         }}
       >
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-instruction-input">
-            개발지침 본문
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-title">
+            제목
           </label>
-          <textarea
-            id="thread-instruction-input"
-            rows="10"
-            value={value}
+          <input
+            id="thread-edit-title"
+            type="text"
+            value={title}
             onChange={(event) => {
-              setValue(event.target.value);
+              setTitle(event.target.value);
               setDirty(true);
             }}
-            placeholder="예: 이 채팅창에서만 지켜야 할 출력 형식, 금지사항, 역할 제약을 입력해 주세요."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            비워 두고 저장하면 이 채팅창 전용 개발지침이 제거됩니다.
-          </p>
         </div>
 
-        <div className="rounded-[1rem] border border-amber-400/15 bg-amber-500/5 px-4 py-3 text-[12px] leading-6 text-slate-300">
-          프로젝트 개발지침 뒤에 이어 붙여 다음 실행부터 app-server developerInstructions로 주입합니다.
-        </div>
+        {threadInstructionSupported ? (
+          <>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-instruction-input">
+                개발지침 본문
+              </label>
+              <textarea
+                id="thread-instruction-input"
+                rows="10"
+                value={developerInstructions}
+                onChange={(event) => {
+                  setDeveloperInstructions(event.target.value);
+                  setDirty(true);
+                }}
+                placeholder="예: 이 채팅창에서만 지켜야 할 출력 형식, 금지사항, 역할 제약을 입력해 주세요."
+                className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
+              />
+              <p className="mt-2 text-[11px] leading-5 text-slate-400">
+                비워 두고 저장하면 이 채팅창 전용 개발지침이 제거됩니다.
+              </p>
+            </div>
+
+            <div className="rounded-[1rem] border border-amber-400/15 bg-amber-500/5 px-4 py-3 text-[12px] leading-6 text-slate-300">
+              프로젝트 개발지침 뒤에 이어 붙여 다음 실행부터 app-server developerInstructions로 주입합니다.
+            </div>
+          </>
+        ) : (
+          <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-[12px] leading-6 text-slate-300">
+            현재 연결된 브리지는 채팅창 전용 개발지침 저장을 지원하지 않아 제목만 수정할 수 있습니다.
+          </div>
+        )}
 
         {errorMessage ? (
           <div className="rounded-[1rem] border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[12px] leading-6 text-rose-100">
@@ -4502,8 +4471,8 @@ function ThreadInstructionDialog({ open, busy, thread, errorMessage, onClose, on
           </button>
           <button
             type="submit"
-            disabled={busy}
-            className="rounded-full bg-amber-400 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={busy || !title.trim()}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? "저장 중..." : "저장"}
           </button>
@@ -4990,7 +4959,7 @@ function ThreadDetail({
   onSubmitPrompt,
   submitBusy,
   onBack,
-  onOpenInstructionDialog,
+  onOpenThreadEditDialog,
   threadInstructionSupported = false,
   messageFilter,
   onChangeMessageFilter,
@@ -5004,6 +4973,7 @@ function ThreadDetail({
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
+  const hasThreadDeveloperInstructions = Boolean(String(thread?.developer_instructions ?? "").trim());
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
@@ -5567,13 +5537,17 @@ function ThreadDetail({
           }`}
         >
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {thread?.id && threadInstructionSupported ? (
+            {thread?.id ? (
               <button
                 type="button"
-                onClick={() => onOpenInstructionDialog?.(thread)}
-                className="shrink-0 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-[12px] font-medium text-amber-100 transition hover:border-amber-300/30 hover:bg-amber-500/15"
+                onClick={() => onOpenThreadEditDialog?.(thread)}
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                  hasThreadDeveloperInstructions
+                    ? "border-amber-400/20 bg-amber-500/10 text-amber-100 hover:border-amber-300/30 hover:bg-amber-500/15"
+                    : "border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/8"
+                }`}
               >
-                개발지침
+                채팅창 편집
               </button>
             ) : null}
             {THREAD_CONTENT_FILTERS.map((filter) => (
@@ -5863,7 +5837,6 @@ function MainPage({
   projectInstructionBusy,
   threadInstructionBusy,
   threadInstructionError,
-  renameBusy,
   threadDeleteDialog,
   utilityOpen,
   projectComposerOpen,
@@ -5908,7 +5881,6 @@ function MainPage({
   onAppendThreadMessage,
   onChangeThreadComposerDraft,
   onSubmitTodoMessage,
-  onRenameThread,
   onRenameTodoChat,
   onDeleteThread,
   onDeleteThreads,
@@ -5932,7 +5904,6 @@ function MainPage({
   onBackToInbox
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
-  const [threadBeingEdited, setThreadBeingEdited] = useState(null);
   const [threadSelectionMode, setThreadSelectionMode] = useState(false);
   const [selectedThreadIds, setSelectedThreadIds] = useState([]);
   const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
@@ -6370,7 +6341,7 @@ function MainPage({
             selectionMode={threadSelectionMode}
             signalNow={signalNow}
             onOpen={onSelectThread}
-            onRename={(targetThread) => setThreadBeingEdited(targetThread)}
+            onRename={onOpenThreadInstructionDialog}
             onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
             onToggleSelect={handleToggleThreadSelection}
             onEnterSelectionMode={handleEnterThreadSelectionMode}
@@ -6510,13 +6481,6 @@ function MainPage({
   );
   const mainOverlays = (
     <>
-      <ThreadRenameDialog
-        open={Boolean(threadBeingEdited)}
-        busy={renameBusy}
-        thread={threadBeingEdited}
-        onClose={() => setThreadBeingEdited(null)}
-        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
-      />
       <DeleteConfirmDialog
         open={threadDeleteDialog.open}
         busy={threadBusy}
@@ -6623,10 +6587,11 @@ function MainPage({
         onClose={onCloseProjectInstructionDialog}
         onSubmit={onSubmitProjectInstruction}
       />
-      <ThreadInstructionDialog
+      <ThreadEditDialog
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={threadInstructionTarget}
+        threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}
         onSubmit={onSubmitThreadInstruction}
@@ -6827,7 +6792,7 @@ function MainPage({
                   onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
                   onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
                   onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
-                  onOpenInstructionDialog={onOpenThreadInstructionDialog}
+                  onOpenThreadEditDialog={onOpenThreadInstructionDialog}
                   threadInstructionSupported={threadInstructionSupported}
                   onSubmitPrompt={(payload) => {
                     if (resolvedThread?.id) {
@@ -6873,7 +6838,7 @@ function MainPage({
           onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
           onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
           onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
-          onOpenInstructionDialog={onOpenThreadInstructionDialog}
+          onOpenThreadEditDialog={onOpenThreadInstructionDialog}
           threadInstructionSupported={threadInstructionSupported}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
@@ -7038,7 +7003,7 @@ function MainPage({
                       selectionMode={threadSelectionMode}
                       signalNow={signalNow}
                       onOpen={onSelectThread}
-                      onRename={(targetThread) => setThreadBeingEdited(targetThread)}
+                      onRename={onOpenThreadInstructionDialog}
                       onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
                       onToggleSelect={handleToggleThreadSelection}
                       onEnterSelectionMode={handleEnterThreadSelectionMode}
@@ -7083,14 +7048,6 @@ function MainPage({
           )}
         </div>
       </div>
-
-      <ThreadRenameDialog
-        open={Boolean(threadBeingEdited)}
-        busy={renameBusy}
-        thread={threadBeingEdited}
-        onClose={() => setThreadBeingEdited(null)}
-        onSubmit={(title) => onRenameThread(threadBeingEdited?.id, title)}
-      />
       <DeleteConfirmDialog
         open={threadDeleteDialog.open}
         busy={threadBusy}
@@ -7197,10 +7154,11 @@ function MainPage({
         onClose={onCloseProjectInstructionDialog}
         onSubmit={onSubmitProjectInstruction}
       />
-      <ThreadInstructionDialog
+      <ThreadEditDialog
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={threadInstructionTarget}
+        threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}
         onSubmit={onSubmitThreadInstruction}
@@ -7273,7 +7231,6 @@ export default function App() {
   const [todoBusy, setTodoBusy] = useState(false);
   const [todoRenameBusy, setTodoRenameBusy] = useState(false);
   const [todoTransferBusy, setTodoTransferBusy] = useState(false);
-  const [renameBusy, setRenameBusy] = useState(false);
   const [activeView, setActiveView] = useState(() => initialWorkspaceLayoutRef.current.activeView);
   const [threadMessageFilter, setThreadMessageFilter] = useState("all");
   const [bridgeListSyncing, setBridgeListSyncing] = useState(false);
@@ -10249,44 +10206,6 @@ export default function App() {
     }
   };
 
-  const handleRenameThread = async (threadId, title) => {
-    if (!session?.loginId || !selectedBridgeId || !threadId) {
-      return false;
-    }
-
-    setRenameBusy(true);
-
-    try {
-      const response = await apiRequest(
-        `/api/threads/${threadId}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ name: title })
-        }
-      );
-
-      if (response?.thread) {
-        setThreads((current) => upsertThread(current, response.thread));
-        setThreadDetails((current) => ({
-          ...current,
-          [threadId]: {
-            ...(current[threadId] ?? {}),
-            thread: response.thread
-          }
-        }));
-      }
-
-      return true;
-    } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
-      return false;
-    } finally {
-      setRenameBusy(false);
-    }
-  };
-
   const deleteThreads = useCallback(async (threadIds, confirmMessage = "") => {
     if (!session?.loginId || !selectedBridgeId) {
       return {
@@ -10725,7 +10644,7 @@ export default function App() {
   const handleOpenThreadInstructionDialog = (thread) => {
     const normalizedThread = normalizeThread(thread);
 
-    if (!normalizedThread || !threadInstructionSupported) {
+    if (!normalizedThread) {
       return;
     }
 
@@ -10744,10 +10663,11 @@ export default function App() {
     setThreadInstructionTarget(null);
   };
 
-  const handleSubmitThreadInstruction = async ({ value }) => {
+  const handleSubmitThreadInstruction = async ({ title, developerInstructions }) => {
     const threadId = String(threadInstructionTarget?.id ?? "").trim();
+    const nextTitle = String(title ?? "").trim();
 
-    if (!session?.loginId || !selectedBridgeId || !threadId) {
+    if (!session?.loginId || !selectedBridgeId || !threadId || !nextTitle) {
       return;
     }
 
@@ -10755,14 +10675,20 @@ export default function App() {
     setThreadInstructionError("");
 
     try {
+      const requestBody = {
+        name: nextTitle
+      };
+
+      if (threadInstructionSupported) {
+        requestBody.developer_instructions = String(developerInstructions ?? "");
+        requestBody.update_developer_instructions = true;
+      }
+
       const response = await apiRequest(
         `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "PATCH",
-          body: JSON.stringify({
-            developer_instructions: value,
-            update_developer_instructions: true
-          })
+          body: JSON.stringify(requestBody)
         }
       );
 
@@ -10818,7 +10744,10 @@ export default function App() {
       setThreadInstructionDialogOpen(false);
       setThreadInstructionTarget(null);
     } catch (error) {
-      setThreadInstructionError(getThreadDeveloperInstructionSaveErrorMessage(error));
+      const message = threadInstructionSupported
+        ? getThreadDeveloperInstructionSaveErrorMessage(error)
+        : error.message ?? "채팅창을 수정하지 못했습니다.";
+      setThreadInstructionError(message);
     } finally {
       setThreadInstructionBusy(false);
     }
@@ -10997,7 +10926,6 @@ export default function App() {
         todoBusy={todoBusy}
         todoRenameBusy={todoRenameBusy}
         todoTransferBusy={todoTransferBusy}
-        renameBusy={renameBusy}
         projectComposerOpen={projectComposerOpen}
         projectInstructionDialogOpen={projectInstructionDialogOpen}
         projectInstructionType={projectInstructionType}
@@ -11041,7 +10969,6 @@ export default function App() {
         onAppendThreadMessage={handleAppendThreadMessage}
         onChangeThreadComposerDraft={updateThreadComposerDraft}
         onSubmitTodoMessage={handleSubmitTodoMessage}
-        onRenameThread={handleRenameThread}
         onRenameTodoChat={handleRenameTodoChat}
         onDeleteThread={handleDeleteThread}
         onDeleteThreads={handleDeleteThreads}
