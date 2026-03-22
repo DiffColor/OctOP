@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
@@ -109,6 +110,7 @@ const BRIDGE_STORAGE_DIR = resolve(process.env.OCTOP_STATE_HOME ?? resolve(os.ho
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
+const DIAGNOSTIC_LOG_MAX_BYTES = 1024 * 1024;
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 const CURRENT_FILE_PATH = fileURLToPath(import.meta.url);
@@ -288,8 +290,19 @@ function appendDiagnosticLog(level, event, message, details = {}) {
   };
 
   try {
+    const serializedEntry = `${JSON.stringify(entry)}\n`;
     mkdirSync(dirname(DIAGNOSTIC_LOG_PATH), { recursive: true });
-    writeFileSync(DIAGNOSTIC_LOG_PATH, `${JSON.stringify(entry)}\n`, {
+
+    if (existsSync(DIAGNOSTIC_LOG_PATH)) {
+      const currentSize = statSync(DIAGNOSTIC_LOG_PATH).size;
+      const nextSize = currentSize + Buffer.byteLength(serializedEntry, "utf8");
+
+      if (currentSize >= DIAGNOSTIC_LOG_MAX_BYTES || nextSize > DIAGNOSTIC_LOG_MAX_BYTES) {
+        unlinkSync(DIAGNOSTIC_LOG_PATH);
+      }
+    }
+
+    writeFileSync(DIAGNOSTIC_LOG_PATH, serializedEntry, {
       encoding: "utf8",
       flag: "a"
     });

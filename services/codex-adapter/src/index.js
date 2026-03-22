@@ -12,6 +12,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
@@ -119,6 +120,7 @@ const BRIDGE_STORAGE_DIR = resolve(process.env.OCTOP_STATE_HOME ?? resolve(os.ho
 const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.json`);
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
+const DIAGNOSTIC_LOG_MAX_BYTES = 1024 * 1024;
 const ISSUE_ATTACHMENT_STAGE_ROOT = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-issue-attachments`);
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
@@ -302,8 +304,19 @@ function appendDiagnosticLog(level, event, message, details = {}) {
   };
 
   try {
+    const serializedEntry = `${JSON.stringify(entry)}\n`;
     mkdirSync(dirname(DIAGNOSTIC_LOG_PATH), { recursive: true });
-    writeFileSync(DIAGNOSTIC_LOG_PATH, `${JSON.stringify(entry)}\n`, {
+
+    if (existsSync(DIAGNOSTIC_LOG_PATH)) {
+      const currentSize = statSync(DIAGNOSTIC_LOG_PATH).size;
+      const nextSize = currentSize + Buffer.byteLength(serializedEntry, "utf8");
+
+      if (currentSize >= DIAGNOSTIC_LOG_MAX_BYTES || nextSize > DIAGNOSTIC_LOG_MAX_BYTES) {
+        rmSync(DIAGNOSTIC_LOG_PATH, { force: true });
+      }
+    }
+
+    writeFileSync(DIAGNOSTIC_LOG_PATH, serializedEntry, {
       encoding: "utf8",
       flag: "a"
     });
@@ -4931,13 +4944,12 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     physicalThread.project_id,
     physicalThread.root_thread_id
   );
-  const reasoningEffort = resolveIssueReasoningEffort(options.issue ?? null);
   const threadStartParams = {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
-    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   };
@@ -6685,41 +6697,20 @@ function listThreadMessages(threadId) {
   return [...(threadMessagesById.get(threadId) ?? [])];
 }
 
-function buildExecutionPrompt(prompt = "", options = {}) {
+function buildExecutionPrompt(prompt = "") {
   const normalizedPrompt = String(prompt ?? "").trim();
-  const sourceAppId = String(options.sourceAppId ?? "").trim().toLowerCase();
-  const instruction =
-    sourceAppId === "mobile-web"
-      ? [
-          "아래 사용자 프롬프트를 기준으로 핵심 문제와 확인 결과를 먼저 간결하게 제시하십시오.",
-          "꼭 필요한 조사만 빠르게 수행하고 불필요하게 긴 계획 수립이나 과도한 도구 호출은 피하십시오."
-        ].join(" ")
-      : [
-          "아래 프롬프트를 최우선 지시로 따르십시오.",
-          "질문 없이 작업을 순차적으로 끝까지 진행하십시오.",
-          "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
-          "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
-        ].join(" ");
+  const instruction = [
+    "아래 프롬프트를 최우선 지시로 따르십시오.",
+    "질문 없이 작업을 순차적으로 끝까지 진행하십시오.",
+    "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
+    "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
+  ].join(" ");
 
   if (!normalizedPrompt) {
     return instruction;
   }
 
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
-}
-
-function resolveIssueReasoningEffort(issue = null, fallback = CODEX_REASONING_EFFORT) {
-  const sourceAppId = String(issue?.source_app_id ?? issue?.sourceAppId ?? "").trim().toLowerCase();
-
-  if (sourceAppId !== "mobile-web") {
-    return fallback;
-  }
-
-  if (["none", "low", "medium"].includes(String(fallback ?? "").trim().toLowerCase())) {
-    return fallback;
-  }
-
-  return "medium";
 }
 
 function formatIssueAttachmentSize(sizeBytes) {
@@ -6823,9 +6814,7 @@ function buildExecutionInputPrompt(issue = null) {
     sections.push(attachmentSection);
   }
 
-  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"), {
-    sourceAppId: issue?.source_app_id ?? issue?.sourceAppId ?? null
-  });
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"));
 }
 
 function buildHandoffPrompt(summary, issue = null) {
@@ -6846,9 +6835,7 @@ function buildHandoffPrompt(summary, issue = null) {
     sections.push("", attachmentSection);
   }
 
-  return buildExecutionPrompt(sections.filter(Boolean).join("\n"), {
-    sourceAppId: issue?.source_app_id ?? issue?.sourceAppId ?? null
-  });
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n"));
 }
 
 function buildIssueTurnInput(issue = null, inputPrompt = "") {
