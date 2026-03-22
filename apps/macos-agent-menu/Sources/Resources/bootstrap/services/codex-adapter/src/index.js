@@ -167,14 +167,8 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
 const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS ?? 5000
 );
-const RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS = Number(
-  process.env.OCTOP_RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS ?? 60000
-);
 const RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS ?? 15000
-);
-const RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
-  process.env.OCTOP_RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS ?? 30000
 );
 const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
@@ -8591,28 +8585,6 @@ function isBridgeIdle() {
 
 const appServer = new AppServerClient();
 
-function hasHealthyAppServerRealtimeConnection() {
-  return (
-    Boolean(appServer?.connected) &&
-    Boolean(appServer?.initialized) &&
-    appServer?.socket?.readyState === WebSocket.OPEN
-  );
-}
-
-function hasPendingRunningIssueBackfillRequests() {
-  for (const threadId of activeIssueByThreadId.keys()) {
-    const meta = runningIssueMetaByThreadId.get(threadId);
-    const issueId = activeIssueByThreadId.get(threadId) ?? null;
-    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
-
-    if (meta?.backfillRequestedAt && issue && !issue.deleted_at) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function listKnownLoginIds() {
   return [...new Set([BRIDGE_OWNER_LOGIN_ID, ...users.keys()].filter(Boolean))];
 }
@@ -9380,11 +9352,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   };
 }
 
-async function backfillRequestedRunningIssues(trigger = "interval", options = {}) {
-  if (!options.allowWhileRealtimeConnected && hasHealthyAppServerRealtimeConnection() && !hasPendingRunningIssueBackfillRequests()) {
-    return;
-  }
-
+async function backfillRequestedRunningIssues(trigger = "interval") {
   const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const issueId = activeIssueByThreadId.get(threadId) ?? null;
@@ -9436,14 +9404,7 @@ async function backfillRequestedRunningIssues(trigger = "interval", options = {}
   return runningIssueBackfillPromise;
 }
 
-async function sampleRunningIssueThreadReads(trigger = "interval_sample", options = {}) {
-  if (!options.allowWhileRealtimeConnected && hasHealthyAppServerRealtimeConnection()) {
-    return;
-  }
-
-  const sampleIntervalMs = hasHealthyAppServerRealtimeConnection()
-    ? RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS
-    : RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS;
+async function sampleRunningIssueThreadReads(trigger = "interval_sample") {
   const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const issueId = activeIssueByThreadId.get(threadId) ?? null;
@@ -9462,7 +9423,7 @@ async function sampleRunningIssueThreadReads(trigger = "interval_sample", option
       return true;
     }
 
-    return Date.now() - lastThreadReadAtMs >= sampleIntervalMs;
+    return Date.now() - lastThreadReadAtMs >= RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS;
   });
 
   if (candidateThreadIds.length === 0) {
@@ -10046,14 +10007,7 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
   };
 }
 
-async function reconcileRunningIssues(remoteThreads = null, options = {}) {
-  if (!remoteThreads && !options.allowWhileRealtimeConnected && hasHealthyAppServerRealtimeConnection()) {
-    return;
-  }
-
-  const reconcileIntervalMs = hasHealthyAppServerRealtimeConnection()
-    ? RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS
-    : RUNNING_ISSUE_WATCHDOG_INTERVAL_MS;
+async function reconcileRunningIssues(remoteThreads = null) {
   const candidateThreadIds = new Set(activeIssueByThreadId.keys());
 
   for (const threadId of threadStateById.keys()) {
@@ -10069,17 +10023,8 @@ async function reconcileRunningIssues(remoteThreads = null, options = {}) {
   const reconciliableThreadIds = [...candidateThreadIds].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const lastActivityAt = Date.parse(meta?.lastActivityAt ?? 0);
-    const lastReconciledAt = Date.parse(meta?.lastReconciledAt ?? 0);
 
-    if (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt < RUNNING_ISSUE_STALE_MS) {
-      return false;
-    }
-
-    if (!Number.isFinite(lastReconciledAt)) {
-      return true;
-    }
-
-    return Date.now() - lastReconciledAt >= reconcileIntervalMs;
+    return Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= RUNNING_ISSUE_STALE_MS;
   });
 
   if (reconciliableThreadIds.length === 0) {
@@ -11186,24 +11131,18 @@ setInterval(() => {
 }, 30000).unref();
 
 setInterval(() => {
-  void reconcileRunningIssues(null, {
-    allowWhileRealtimeConnected: true
-  });
+  void reconcileRunningIssues();
 }, RUNNING_ISSUE_WATCHDOG_INTERVAL_MS).unref();
 
 if (RUNNING_ISSUE_BACKFILL_INTERVAL_MS > 0) {
   setInterval(() => {
-    void backfillRequestedRunningIssues("interval", {
-      allowWhileRealtimeConnected: true
-    });
+    void backfillRequestedRunningIssues();
   }, RUNNING_ISSUE_BACKFILL_INTERVAL_MS).unref();
 }
 
 if (RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS > 0) {
   setInterval(() => {
-    void sampleRunningIssueThreadReads("interval_sample", {
-      allowWhileRealtimeConnected: true
-    });
+    void sampleRunningIssueThreadReads();
   }, RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS).unref();
 }
 
