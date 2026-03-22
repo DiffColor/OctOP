@@ -121,6 +121,7 @@ const sc = StringCodec();
 const nc = await connectToNats();
 let natsProjectionReplayPromise = null;
 let systemNetworkConnected = null;
+let lastSystemNetworkStateSignature = null;
 let systemNetworkReplayPromise = null;
 let systemNetworkEventMonitor = null;
 let systemNetworkEventTimer = null;
@@ -482,6 +483,19 @@ function buildSystemNetworkLogContext(networkState) {
   };
 }
 
+function buildSystemNetworkStateSignature(networkState) {
+  const interfaceNames = Array.isArray(networkState?.interfaces)
+    ? [...new Set(networkState.interfaces.map((entry) => String(entry?.name ?? "").trim()).filter(Boolean))].sort()
+    : [];
+  const defaultRouteInterface = String(networkState?.default_route?.interfaceName ?? "").trim() || null;
+
+  return JSON.stringify({
+    connected: Boolean(networkState?.connected),
+    interface_names: interfaceNames,
+    default_route_interface: defaultRouteInterface
+  });
+}
+
 async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified") {
   if (systemNetworkReplayPromise) {
     return systemNetworkReplayPromise;
@@ -554,7 +568,14 @@ function scheduleSystemNetworkEvent(event) {
 async function handleSystemNetworkEvent(event = {}) {
   const networkState = getSystemNetworkState(event.trigger ?? "system_network");
   const previousConnected = systemNetworkConnected;
+  const previousStateSignature = lastSystemNetworkStateSignature;
+  const nextStateSignature = buildSystemNetworkStateSignature(networkState);
   systemNetworkConnected = networkState.connected;
+  lastSystemNetworkStateSignature = nextStateSignature;
+
+  if (previousStateSignature === nextStateSignature) {
+    return;
+  }
 
   appendDiagnosticLog("info", "system_network.event", "system network event received", {
     trigger: event.trigger ?? "system_network",
@@ -641,7 +662,9 @@ async function startSystemNetworkEventMonitor(reason = "startup") {
   }
 
   const spec = buildSystemNetworkMonitorSpec();
-  systemNetworkConnected = getSystemNetworkState(`monitor:${reason}`).connected;
+  const initialNetworkState = getSystemNetworkState(`monitor:${reason}`);
+  systemNetworkConnected = initialNetworkState.connected;
+  lastSystemNetworkStateSignature = buildSystemNetworkStateSignature(initialNetworkState);
   systemNetworkEventMonitor = spawn(spec.command, spec.args, {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
@@ -6000,7 +6023,16 @@ function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physi
 
   const eventTurnId = extractNotificationTurnId(params);
   const trackedTurnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
-  return Boolean(eventTurnId && trackedTurnId && eventTurnId === trackedTurnId);
+
+  if (!trackedTurnId) {
+    return true;
+  }
+
+  if (!eventTurnId) {
+    return true;
+  }
+
+  return eventTurnId === trackedTurnId;
 }
 
 function normalizeThreadRecord(thread, fallback = {}) {

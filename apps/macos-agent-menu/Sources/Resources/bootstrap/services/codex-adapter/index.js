@@ -5536,7 +5536,16 @@ function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physi
 
   const eventTurnId = extractNotificationTurnId(params);
   const trackedTurnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
-  return Boolean(eventTurnId && trackedTurnId && eventTurnId === trackedTurnId);
+
+  if (!trackedTurnId) {
+    return true;
+  }
+
+  if (!eventTurnId) {
+    return true;
+  }
+
+  return eventTurnId === trackedTurnId;
 }
 
 function normalizeThreadRecord(thread, fallback = {}) {

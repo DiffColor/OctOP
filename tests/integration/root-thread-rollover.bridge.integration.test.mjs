@@ -2467,6 +2467,84 @@ test("재사용 physical thread의 turn 불일치 terminal 이벤트는 새 issu
   }
 });
 
+test("turn id가 없는 terminal thread/status/changed는 현재 실행 종료로 반영된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-terminal-status-without-turn-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-terminal-status-no-turn-token",
+    userId: "integration-user",
+    bridgeId: `terminal-status-no-turn-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId, sourcePhysicalThreadId, sourceCodexThreadId } = await createRunningIssueScenario(
+      bridge,
+      {
+        project,
+        threadName: "Terminal Status Without Turn Id"
+      }
+    );
+
+    fakeAppServer.notify("turn/plan/updated", {
+      threadId: sourceCodexThreadId,
+      plan: {
+        text: "step 1"
+      }
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.last_event, "turn.plan.updated");
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "plan update before terminal status without turn id"
+    });
+
+    fakeAppServer.notify("thread/status/changed", {
+      threadId: sourceCodexThreadId,
+      status: {
+        type: "idle"
+      }
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(issuePayload.issue?.status, "completed");
+      assert.equal(issuePayload.issue?.last_event, "thread.status.changed");
+      assert.equal(issuePayload.issue?.executed_physical_thread_id, sourcePhysicalThreadId);
+      assert.equal(continuityPayload.active_physical_thread?.status, "idle");
+      assert.equal(continuityPayload.active_physical_thread?.last_event, "thread.status.changed");
+      assert.equal(continuityPayload.active_physical_thread?.turn_id, null);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "terminal status without turn id applied"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("다른 thread issue 시작은 현재 running issue와 동시에 실행된다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-cross-thread-queue-int-"));
   const fakeAppServer = new FakeAppServer();
