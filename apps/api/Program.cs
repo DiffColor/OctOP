@@ -243,7 +243,8 @@ app.MapPost("/api/attachments", async (
     }.ToJsonString(),
     "application/json; charset=utf-8",
     statusCode: StatusCodes.Status201Created);
-});
+})
+  .DisableAntiforgery();
 
 app.MapGet("/api/attachments/{uploadId}", async (
   string uploadId,
