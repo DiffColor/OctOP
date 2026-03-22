@@ -179,8 +179,14 @@ const RUNNING_ISSUE_MISSING_REMOTE_RETRY_COUNT = Number(
 const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS ?? 5000
 );
+const RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS = Number(
+  process.env.OCTOP_RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS ?? 60000
+);
 const RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS ?? 15000
+);
+const RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
+  process.env.OCTOP_RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS ?? 30000
 );
 const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
   process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
@@ -9917,7 +9923,10 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
 }
 
 async function backfillRequestedRunningIssues(trigger = "interval", options = {}) {
-  if (!shouldRunRunningIssuePolling(options)) {
+  const allowWhileRealtimeConnected =
+    options.allowWhileRealtimeConnected || hasPendingRunningIssueBackfillRequests();
+
+  if (!shouldRunRunningIssuePolling({ ...options, allowWhileRealtimeConnected })) {
     return;
   }
 
@@ -9977,6 +9986,9 @@ async function sampleRunningIssueThreadReads(trigger = "interval_sample", option
     return;
   }
 
+  const sampleIntervalMs = hasHealthyAppServerRealtimeConnection()
+    ? RUNNING_ISSUE_HEALTHY_THREAD_READ_SAMPLE_INTERVAL_MS
+    : RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS;
   const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const issueId = activeIssueByThreadId.get(threadId) ?? null;
@@ -9995,7 +10007,7 @@ async function sampleRunningIssueThreadReads(trigger = "interval_sample", option
       return true;
     }
 
-    return Date.now() - lastThreadReadAtMs >= RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS;
+    return Date.now() - lastThreadReadAtMs >= sampleIntervalMs;
   });
 
   if (candidateThreadIds.length === 0) {
@@ -10584,6 +10596,9 @@ async function reconcileRunningIssues(remoteThreads = null, options = {}) {
     return;
   }
 
+  const reconcileIntervalMs = hasHealthyAppServerRealtimeConnection()
+    ? RUNNING_ISSUE_HEALTHY_RECONCILE_INTERVAL_MS
+    : RUNNING_ISSUE_WATCHDOG_INTERVAL_MS;
   const candidateThreadIds = new Set(activeIssueByThreadId.keys());
 
   for (const threadId of threadStateById.keys()) {
@@ -10599,8 +10614,17 @@ async function reconcileRunningIssues(remoteThreads = null, options = {}) {
   const reconciliableThreadIds = [...candidateThreadIds].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const lastActivityAt = Date.parse(meta?.lastActivityAt ?? 0);
+    const lastReconciledAt = Date.parse(meta?.lastReconciledAt ?? 0);
 
-    return Number.isFinite(lastActivityAt) && Date.now() - lastActivityAt >= RUNNING_ISSUE_STALE_MS;
+    if (!Number.isFinite(lastActivityAt) || Date.now() - lastActivityAt < RUNNING_ISSUE_STALE_MS) {
+      return false;
+    }
+
+    if (!Number.isFinite(lastReconciledAt)) {
+      return true;
+    }
+
+    return Date.now() - lastReconciledAt >= reconcileIntervalMs;
   });
 
   if (reconciliableThreadIds.length === 0) {
@@ -11707,30 +11731,24 @@ setInterval(() => {
 }, 30000).unref();
 
 setInterval(() => {
-  if (!shouldRunRunningIssuePolling()) {
-    return;
-  }
-
-  void reconcileRunningIssues();
+  void reconcileRunningIssues(null, {
+    allowWhileRealtimeConnected: true
+  });
 }, RUNNING_ISSUE_WATCHDOG_INTERVAL_MS).unref();
 
 if (RUNNING_ISSUE_BACKFILL_INTERVAL_MS > 0) {
   setInterval(() => {
-    if (!shouldRunRunningIssuePolling()) {
-      return;
-    }
-
-    void backfillRequestedRunningIssues();
+    void backfillRequestedRunningIssues("interval", {
+      allowWhileRealtimeConnected: true
+    });
   }, RUNNING_ISSUE_BACKFILL_INTERVAL_MS).unref();
 }
 
 if (RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS > 0) {
   setInterval(() => {
-    if (!shouldRunRunningIssuePolling()) {
-      return;
-    }
-
-    void sampleRunningIssueThreadReads();
+    void sampleRunningIssueThreadReads("interval_sample", {
+      allowWhileRealtimeConnected: true
+    });
   }, RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS).unref();
 }
 
