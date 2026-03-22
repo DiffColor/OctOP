@@ -4297,7 +4297,7 @@ function TodoChatDetail({
   return (
     <div className={rootClassName} style={rootStyle}>
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center ${showBackButton ? "gap-3" : "gap-0"}`}>
           {showBackButton ? (
             <button
               type="button"
@@ -4308,9 +4308,7 @@ function TodoChatDetail({
                 <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
             </button>
-          ) : (
-            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
-          )}
+          ) : null}
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{chat?.title ?? "새 ToDo 채팅"}</p>
@@ -5638,7 +5636,7 @@ function ThreadDetail({
   return (
     <div className={rootClassName} style={rootStyle} data-testid="thread-detail-panel">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center ${showBackButton ? "gap-3" : "gap-0"}`}>
           {showBackButton ? (
             <button
               type="button"
@@ -5649,9 +5647,7 @@ function ThreadDetail({
                 <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
             </button>
-          ) : (
-            <div className="h-10 w-10 shrink-0" aria-hidden="true" />
-          )}
+          ) : null}
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-white">{threadTitle}</p>
