@@ -528,7 +528,17 @@ const COPY = {
       instructionDialogHintDeveloper:
         "Saved on the selected project and injected into app-server developerInstructions when a thread starts.",
       instructionDialogHintThreadDeveloper:
-        "Saved only on this thread and appended after the project developerInstructions on the next run for this thread."
+        "Saved only on this thread and appended after the project developerInstructions on the next run for this thread.",
+      threadCreateDialogTitle: "Start New Thread",
+      threadCreateDialogProjectHint: "Project",
+      threadCreateDialogNameLabel: "Title",
+      threadCreateDialogNamePlaceholder: "If left blank, Untitled will be used.",
+      threadCreateDialogDeveloperLabel: "Developer Instruction",
+      threadCreateDialogDeveloperPlaceholder: "Optionally add the developer guidance to save before the first run.",
+      threadCreateDialogHint:
+        "Both title and developer instruction are optional. The developer instruction is saved on the thread before you start working in it.",
+      threadCreateDialogSubmit: "Start Chat",
+      threadCreateDialogSubmitting: "Creating..."
     }
   },
   ko: {
@@ -705,7 +715,17 @@ const COPY = {
       instructionDialogHintDeveloper:
         "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다.",
       instructionDialogHintThreadDeveloper:
-        "현재 쓰레드에만 저장되며, 다음 실행 흐름부터 프로젝트 개발지침 뒤에 이어 붙여 app-server developerInstructions로 주입됩니다."
+        "현재 쓰레드에만 저장되며, 다음 실행 흐름부터 프로젝트 개발지침 뒤에 이어 붙여 app-server developerInstructions로 주입됩니다.",
+      threadCreateDialogTitle: "새 쓰레드 시작",
+      threadCreateDialogProjectHint: "프로젝트",
+      threadCreateDialogNameLabel: "제목",
+      threadCreateDialogNamePlaceholder: "비워두면 제목없음으로 생성됩니다.",
+      threadCreateDialogDeveloperLabel: "개발지침",
+      threadCreateDialogDeveloperPlaceholder: "첫 실행 전에 저장할 채팅창 전용 개발지침이 있으면 입력해 주세요.",
+      threadCreateDialogHint:
+        "제목과 개발지침은 선택입니다. 개발지침은 먼저 저장한 뒤 이 쓰레드에서 작업을 시작하게 됩니다.",
+      threadCreateDialogSubmit: "채팅 시작",
+      threadCreateDialogSubmitting: "생성 중..."
     }
   }
 };
@@ -3392,6 +3412,107 @@ function ProjectInstructionDialog({ language, open, busy, project, instructionTy
   );
 }
 
+function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }) {
+  const copy = getCopy(language);
+  const [name, setName] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDeveloperInstructions("");
+    }
+  }, [open]);
+
+  if (!open || !project) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    const accepted = await onSubmit({
+      name,
+      developerInstructions
+    });
+
+    if (accepted !== false) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.threadCreateDialogProjectHint}</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadCreateDialogTitle}</h2>
+            <p className="mt-2 text-sm text-slate-400">{project.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            {copy.footer.instructionDialogClose}
+          </button>
+        </div>
+
+        <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-name">
+              {copy.footer.threadCreateDialogNameLabel}
+            </label>
+            <input
+              id="thread-create-name"
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={copy.footer.threadCreateDialogNamePlaceholder}
+              className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-developer-instructions">
+              {copy.footer.threadCreateDialogDeveloperLabel}
+            </label>
+            <textarea
+              id="thread-create-developer-instructions"
+              rows="10"
+              value={developerInstructions}
+              onChange={(event) => setDeveloperInstructions(event.target.value)}
+              placeholder={copy.footer.threadCreateDialogDeveloperPlaceholder}
+              className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-xs leading-6 text-slate-300">
+            {copy.footer.threadCreateDialogHint}
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              {copy.footer.instructionDialogCancel}
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? copy.footer.threadCreateDialogSubmitting : copy.footer.threadCreateDialogSubmit}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [value, setValue] = useState("");
@@ -4188,7 +4309,9 @@ function MainPage({
   search,
   loadingState,
   projectBusy,
+  threadBusy,
   projectInstructionBusy,
+  threadCreateDialogOpen,
   threadInstructionBusy,
   threadInstructionError,
   issueBusy,
@@ -4217,6 +4340,8 @@ function MainPage({
   onDeleteProject,
   onRenameProject,
   onCreateThread,
+  onCloseThreadCreateDialog,
+  onSubmitThreadCreateDialog,
   onOpenThreadInstructionDialog,
   onRenameThread,
   onDeleteThread,
@@ -4934,7 +5059,7 @@ function MainPage({
                       <button
                         type="button"
                         onClick={onCreateThread}
-                        disabled={!selectedProject}
+                        disabled={!selectedProject || threadBusy}
                         className="rounded-md border border-slate-800 px-2 py-1 text-[11px] font-medium normal-case tracking-normal text-slate-300 transition hover:border-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {copy.board.addThread}
@@ -5722,6 +5847,14 @@ function MainPage({
         onClose={onCloseThreadInstructionDialog}
         onSubmit={onSubmitThreadInstruction}
       />
+      <ThreadCreateDialog
+        language={language}
+        open={threadCreateDialogOpen}
+        busy={threadBusy}
+        project={selectedProject}
+        onClose={onCloseThreadCreateDialog}
+        onSubmit={onSubmitThreadCreateDialog}
+      />
 	      <SettingsDialog
 	        open={settingsOpen}
 	        session={session}
@@ -5830,12 +5963,14 @@ export default function App() {
   const [bridgeDisconnectOverrideById, setBridgeDisconnectOverrideById] = useState({});
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [threadCreateDialogOpen, setThreadCreateDialogOpen] = useState(false);
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
   const [threadInstructionDialogOpen, setThreadInstructionDialogOpen] = useState(false);
   const [threadInstructionBusy, setThreadInstructionBusy] = useState(false);
   const [threadInstructionError, setThreadInstructionError] = useState("");
+  const [threadBusy, setThreadBusy] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
@@ -8577,41 +8712,114 @@ export default function App() {
     }
   };
 
-  const handleCreateThread = async () => {
-    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+  const handleOpenThreadCreateDialog = () => {
+    if (!selectedProjectId) {
       return;
     }
 
+    setThreadCreateDialogOpen(true);
+  };
+
+  const handleCloseThreadCreateDialog = () => {
+    if (threadBusy) {
+      return;
+    }
+
+    setThreadCreateDialogOpen(false);
+  };
+
+  const handleSubmitThreadCreateDialog = async ({ name, developerInstructions }) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      return false;
+    }
+
     const bridgeId = selectedBridgeId;
+    const projectId = selectedProjectId;
+    const nextName = String(name ?? "").trim() || "제목없음";
+    const nextDeveloperInstructions = String(developerInstructions ?? "");
+    setThreadBusy(true);
+
     try {
-      const response = await apiRequest(
-        `/api/projects/${encodeURIComponent(selectedProjectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+      const createResponse = await apiRequest(
+        `/api/projects/${encodeURIComponent(projectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify({
-            name: copy.board.newThread
+            name: nextName
           })
         }
       );
 
-      if (Array.isArray(response?.threads)) {
-        setProjectThreads((current) => {
-          const preserved = current.filter((thread) => thread.project_id !== selectedProjectId);
-          return [...preserved, ...mergeProjectThreads([], response.threads)];
-        });
+      const createdThreadId = String(createResponse?.thread?.id ?? "").trim();
+
+      if (!createdThreadId) {
+        throw new Error("쓰레드를 생성하지 못했습니다.");
       }
 
-      if (response?.thread?.id) {
-        setProjectThreads((current) => upsertProjectThread(current, response.thread));
-        setSelectedProjectThreadId(response.thread.id);
-        setBridgeStatus(bridgeId, (current) => ({
-          ...current,
-          counts: {
-            ...current.counts,
-            threads: (current.counts?.threads ?? 0) + 1
-          }
-        }));
+      let nextThread =
+        normalizeProjectThread(createResponse?.thread, projectId) ??
+        mergeProjectThreads([], createResponse?.threads ?? []).find((thread) => thread.id === createdThreadId) ??
+        null;
+
+      const trimmedDeveloperInstructions = nextDeveloperInstructions.trim();
+
+      if (trimmedDeveloperInstructions) {
+        try {
+          const updateResponse = await apiRequest(
+            `/api/threads/${encodeURIComponent(createdThreadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({
+                developer_instructions: nextDeveloperInstructions,
+                update_developer_instructions: true
+              })
+            }
+          );
+
+          nextThread =
+            normalizeProjectThread(updateResponse?.thread, projectId) ??
+            mergeProjectThreads([], updateResponse?.threads ?? []).find((thread) => thread.id === createdThreadId) ??
+            nextThread;
+        } catch (error) {
+          const message = getThreadDeveloperInstructionSaveErrorMessage(error);
+          setRecentEvents((current) => [
+            {
+              id: createId(),
+              type: "thread.instructions.update.failed",
+              timestamp: new Date().toISOString(),
+              summary: `${nextName} 쓰레드는 생성됐지만 개발지침 저장에는 실패했습니다. ${message}`
+            },
+            ...current
+          ].slice(0, 20));
+        }
       }
+
+      if (!nextThread) {
+        nextThread = {
+          id: createdThreadId,
+          name: nextName,
+          project_id: projectId,
+          developer_instructions: trimmedDeveloperInstructions,
+          status: "idle",
+          progress: 0,
+          last_event: "thread.created",
+          last_message: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+      }
+
+      setProjectThreads((current) => upsertProjectThread(current, nextThread));
+      setSelectedProjectThreadId(createdThreadId);
+      setBridgeStatus(bridgeId, (current) => ({
+        ...current,
+        counts: {
+          ...current.counts,
+          threads: (current.counts?.threads ?? 0) + 1
+        }
+      }));
+      setThreadCreateDialogOpen(false);
+      return true;
     } catch (error) {
       setRecentEvents((current) => [
         {
@@ -8622,6 +8830,9 @@ export default function App() {
         },
         ...current
       ].slice(0, 20));
+      return false;
+    } finally {
+      setThreadBusy(false);
     }
   };
 
@@ -8986,6 +9197,8 @@ export default function App() {
       prepIssueOrderIds={orderedPrepIssueIds}
       loadingState={loadingState}
       projectBusy={projectBusy}
+      threadBusy={threadBusy}
+      threadCreateDialogOpen={threadCreateDialogOpen}
       projectInstructionBusy={projectInstructionBusy}
       threadInstructionBusy={threadInstructionBusy}
       issueBusy={issueBusy}
@@ -9021,7 +9234,9 @@ export default function App() {
       onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
-      onCreateThread={() => void handleCreateThread()}
+      onCreateThread={handleOpenThreadCreateDialog}
+      onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
+      onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
       onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
       onRenameThread={(threadId, name) => handleRenameThread(threadId, name)}
       onDeleteThread={(threadId) => void handleDeleteThread(threadId)}

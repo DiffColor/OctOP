@@ -3434,6 +3434,95 @@ function ThreadRenameDialog({ open, busy, thread, onClose, onSubmit }) {
   );
 }
 
+function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
+  const [title, setTitle] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      setDeveloperInstructions("");
+    }
+  }, [open]);
+
+  if (!open || !project) {
+    return null;
+  }
+
+  return (
+    <BottomSheet
+      open={open}
+      title="새 채팅창 시작"
+      description={`${project.name} 프로젝트에 비어 있는 채팅창을 만들고, 필요하면 시작 전에 개발지침을 함께 저장합니다.`}
+      onClose={onClose}
+      variant="center"
+    >
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const accepted = await onSubmit({
+            title,
+            developerInstructions
+          });
+
+          if (accepted !== false) {
+            onClose();
+          }
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-title">
+            제목
+          </label>
+          <input
+            id="thread-create-title"
+            type="text"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="비워두면 제목없음으로 생성됩니다."
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-developer-instructions">
+            개발지침
+          </label>
+          <textarea
+            id="thread-create-developer-instructions"
+            rows="8"
+            value={developerInstructions}
+            onChange={(event) => setDeveloperInstructions(event.target.value)}
+            placeholder="이 채팅창에서만 먼저 적용할 개발지침이 있으면 입력해 주세요."
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
+          />
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            제목과 개발지침은 선택입니다. 개발지침은 저장하면 이 채팅창의 다음 실행부터 적용됩니다.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "생성 중..." : "채팅 시작"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
+  );
+}
+
 function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
   const startPointRef = useRef(null);
   const baseOffsetRef = useRef(0);
@@ -5767,6 +5856,7 @@ function MainPage({
   search,
   loadingState,
   projectBusy,
+  threadCreateDialogOpen,
   threadBusy,
   todoBusy,
   todoRenameBusy,
@@ -5796,6 +5886,7 @@ function MainPage({
   onOpenProjectComposer,
   onOpenProjectInstructionDialog,
   onOpenThreadInstructionDialog,
+  onCloseThreadCreateDialog,
   onInstallPwa,
   onDismissInstallPrompt,
   onCloseUtility,
@@ -5811,6 +5902,7 @@ function MainPage({
   onBrowseFolder,
   onSelectWorkspace,
   onSubmitProject,
+  onSubmitThreadCreateDialog,
   onSubmitProjectInstruction,
   onSubmitThreadInstruction,
   onCreateThread,
@@ -6517,6 +6609,13 @@ function MainPage({
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
       />
+      <ThreadCreateDialog
+        open={threadCreateDialogOpen}
+        busy={threadBusy}
+        project={selectedProject}
+        onClose={onCloseThreadCreateDialog}
+        onSubmit={onSubmitThreadCreateDialog}
+      />
       <ProjectInstructionDialog
         open={projectInstructionDialogOpen}
         busy={projectInstructionBusy}
@@ -7150,6 +7249,7 @@ export default function App() {
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [projectComposerOpen, setProjectComposerOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [threadCreateDialogOpen, setThreadCreateDialogOpen] = useState(false);
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
@@ -10416,6 +10516,144 @@ export default function App() {
     }
   };
 
+  const handleCloseThreadCreateDialog = () => {
+    if (threadBusy) {
+      return;
+    }
+
+    setThreadCreateDialogOpen(false);
+  };
+
+  const handleSubmitThreadCreateDialog = async ({ title, developerInstructions }) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
+      return false;
+    }
+
+    const projectId = selectedProjectId;
+    const bridgeId = selectedBridgeId;
+    setThreadBusy(true);
+
+    try {
+      const nextTitle = String(title ?? "").trim() || "제목없음";
+      const nextDeveloperInstructions = String(developerInstructions ?? "");
+      const createThreadPath =
+        `/api/projects/${encodeURIComponent(projectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`;
+      const createThreadOptions = {
+        method: "POST",
+        body: JSON.stringify({
+          name: nextTitle
+        })
+      };
+      let createResponse;
+
+      try {
+        createResponse = await apiRequest(createThreadPath, createThreadOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            createThreadPath,
+            createThreadOptions,
+            error,
+            `채팅창 생성 실패\n- project_id: ${projectId}\n- bridge_id: ${bridgeId}`
+          )
+        );
+      }
+
+      const createdThreadId = String(createResponse?.thread?.id ?? "").trim();
+
+      if (!createdThreadId) {
+        throw new Error("채팅창을 생성하지 못했습니다.");
+      }
+
+      let nextThread =
+        normalizeThread(createResponse?.thread, projectId) ??
+        mergeThreads([], createResponse?.threads ?? []).find((thread) => thread.id === createdThreadId) ??
+        null;
+
+      const trimmedDeveloperInstructions = nextDeveloperInstructions.trim();
+      let postCreateWarning = "";
+
+      if (trimmedDeveloperInstructions) {
+        const updateThreadPath =
+          `/api/threads/${encodeURIComponent(createdThreadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`;
+        const updateThreadOptions = {
+          method: "PATCH",
+          body: JSON.stringify({
+            developer_instructions: nextDeveloperInstructions,
+            update_developer_instructions: true
+          })
+        };
+        let updateResponse;
+
+        try {
+          updateResponse = await apiRequest(updateThreadPath, updateThreadOptions);
+        } catch (error) {
+          const message = getThreadDeveloperInstructionSaveErrorMessage(error);
+          postCreateWarning = `${nextTitle} 채팅창은 생성됐지만 개발지침 저장에 실패했습니다.\n${message}`;
+        }
+
+        if (updateResponse) {
+          nextThread =
+            normalizeThread(updateResponse?.thread, projectId) ??
+            mergeThreads([], updateResponse?.threads ?? []).find((thread) => thread.id === createdThreadId) ??
+            nextThread;
+        }
+      }
+
+      if (!nextThread) {
+        nextThread = {
+          id: createdThreadId,
+          title: nextTitle,
+          project_id: projectId,
+          developer_instructions: trimmedDeveloperInstructions,
+          status: "idle",
+          progress: 0,
+          last_event: "thread.created",
+          last_message: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+      }
+
+      setThreads((current) => upsertThread(current, nextThread));
+      setThreadListsByProjectId((current) => ({
+        ...current,
+        [projectId]: upsertThread(current[projectId] ?? [], nextThread)
+      }));
+      setThreadDetails((current) => ({
+        ...current,
+        [createdThreadId]: {
+          ...(current[createdThreadId] ?? {}),
+          thread: nextThread,
+          issues: current[createdThreadId]?.issues ?? [],
+          messages: current[createdThreadId]?.messages ?? [],
+          loading: false,
+          error: ""
+        }
+      }));
+
+      setSelectedTodoChatId("");
+      setSelectedThreadId(createdThreadId);
+      setDraftThreadProjectId("");
+      setThreadMessageFilter("all");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
+      setThreadCreateDialogOpen(false);
+
+      if (postCreateWarning && typeof window !== "undefined") {
+        window.alert(postCreateWarning);
+      }
+
+      return true;
+    } catch (error) {
+      if (typeof window !== "undefined") {
+        window.alert(error.message);
+      }
+      return false;
+    } finally {
+      setThreadBusy(false);
+    }
+  };
+
   const handleOpenProjectInstructionDialog = (instructionType) => {
     if (!selectedProjectId) {
       return;
@@ -10650,9 +10888,11 @@ export default function App() {
     selectProjectScope(nextProjectId);
     setSelectedThreadId("");
     setSelectedTodoChatId("");
-    setDraftThreadProjectId(nextProjectId);
+    setDraftThreadProjectId("");
+    removeThreadComposerDrafts([buildThreadComposerDraftKey({ projectId: nextProjectId, isDraft: true })]);
     setThreadMessageFilter("all");
-    setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
+    setActiveView("inbox");
+    setThreadCreateDialogOpen(true);
   };
 
   const handleDismissInstallPrompt = () => {
@@ -10743,6 +10983,7 @@ export default function App() {
         loadingState={loadingState}
         utilityOpen={utilityOpen}
         projectBusy={projectBusy}
+        threadCreateDialogOpen={threadCreateDialogOpen}
         projectInstructionBusy={projectInstructionBusy}
         threadInstructionBusy={threadInstructionBusy}
         threadBusy={threadBusy}
@@ -10776,6 +11017,7 @@ export default function App() {
         onOpenProjectComposer={() => void handleOpenProjectComposer()}
         onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
         onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
+        onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
         onInstallPwa={() => void handleInstallPwa()}
         onDismissInstallPrompt={handleDismissInstallPrompt}
         onCloseUtility={() => setUtilityOpen(false)}
@@ -10786,6 +11028,7 @@ export default function App() {
         onBrowseFolder={(path) => browseWorkspacePath(path)}
         onSelectWorkspace={setSelectedWorkspacePath}
         onSubmitProject={handleCreateProject}
+        onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
         onSubmitProjectInstruction={handleSubmitProjectInstruction}
         onSubmitThreadInstruction={handleSubmitThreadInstruction}
         onCreateThread={handleCreateThread}
