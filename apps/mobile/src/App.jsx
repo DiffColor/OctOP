@@ -2111,6 +2111,173 @@ function summarizeMessageContent(content, limit = 160) {
   return `${normalized.slice(0, safeLimit)}...`;
 }
 
+const FENCED_CODE_BLOCK_PATTERN = /```([^\n`]*)\n?([\s\S]*?)```/g;
+const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
+const SHELL_CODE_LANGUAGES = new Set(["sh", "shell", "bash", "zsh", "console", "terminal", "shellscript"]);
+
+function parseRichMessageContent(content) {
+  const normalized = String(content ?? "");
+
+  if (!normalized) {
+    return [];
+  }
+
+  const segments = [];
+  let lastIndex = 0;
+  FENCED_CODE_BLOCK_PATTERN.lastIndex = 0;
+
+  for (const match of normalized.matchAll(FENCED_CODE_BLOCK_PATTERN)) {
+    const [raw, language = "", code = ""] = match;
+    const matchIndex = match.index ?? 0;
+
+    if (matchIndex > lastIndex) {
+      segments.push({
+        type: "text",
+        value: normalized.slice(lastIndex, matchIndex)
+      });
+    }
+
+    segments.push({
+      type: "code",
+      language: String(language ?? "").trim(),
+      value: String(code ?? "").replace(/\n$/, "")
+    });
+    lastIndex = matchIndex + raw.length;
+  }
+
+  if (lastIndex < normalized.length) {
+    segments.push({
+      type: "text",
+      value: normalized.slice(lastIndex)
+    });
+  }
+
+  return segments;
+}
+
+function inferCodeBlockLabel(language, content) {
+  const normalizedLanguage = String(language ?? "").trim().toLowerCase();
+
+  if (normalizedLanguage) {
+    if (SHELL_CODE_LANGUAGES.has(normalizedLanguage)) {
+      return "shell";
+    }
+
+    return normalizedLanguage;
+  }
+
+  const normalizedContent = String(content ?? "").trim();
+  const looksLikeShell =
+    /(^|\n)\s*[$#>]\s/.test(normalizedContent) ||
+    /(^|\n)\s*(pnpm|npm|yarn|bun|git|cd|ls|mkdir|rm|cp|mv|cat|sed|awk|curl|wget|ssh|docker|kubectl)\b/.test(
+      normalizedContent
+    );
+
+  return looksLikeShell ? "shell" : "code";
+}
+
+function renderInlineCodeTokens(text, inlineCodeClassName, keyPrefix) {
+  const normalized = String(text ?? "");
+
+  if (!normalized) {
+    return null;
+  }
+
+  INLINE_CODE_PATTERN.lastIndex = 0;
+  const nodes = [];
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of normalized.matchAll(INLINE_CODE_PATTERN)) {
+    const [raw, codeText = ""] = match;
+    const matchIndex = match.index ?? 0;
+
+    if (matchIndex > lastIndex) {
+      nodes.push(
+        <span key={`${keyPrefix}-text-${tokenIndex}`}>{normalized.slice(lastIndex, matchIndex)}</span>
+      );
+    }
+
+    nodes.push(
+      <code
+        key={`${keyPrefix}-code-${tokenIndex}`}
+        className={`rounded-lg border px-1.5 py-0.5 font-mono text-[0.92em] ${inlineCodeClassName}`}
+      >
+        {codeText}
+      </code>
+    );
+
+    lastIndex = matchIndex + raw.length;
+    tokenIndex += 1;
+  }
+
+  if (lastIndex < normalized.length) {
+    nodes.push(<span key={`${keyPrefix}-tail`}>{normalized.slice(lastIndex)}</span>);
+  }
+
+  return nodes.length > 0 ? nodes : normalized;
+}
+
+function RichMessageContent({ content, tone = "light" }) {
+  const segments = parseRichMessageContent(content);
+  const inlineCodeClassName =
+    tone === "brand"
+      ? "border-slate-950/10 bg-slate-950/10 text-slate-950"
+      : tone === "system"
+        ? "border-white/10 bg-white/10 text-slate-50"
+        : "border-slate-950/10 bg-slate-950/5 text-slate-950";
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {segments.map((segment, index) => {
+        if (segment.type === "code") {
+          const label = inferCodeBlockLabel(segment.language, segment.value);
+
+          return (
+            <div
+              key={`code-${index}`}
+              className="overflow-hidden rounded-2xl border border-slate-950/60 bg-[#0a0f1a] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-white/5 bg-white/[0.03] px-3 py-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-300/90" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/90" />
+                </div>
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                  {label}
+                </span>
+              </div>
+              <div className="overflow-x-auto px-3 py-3">
+                <pre className="m-0 w-max min-w-full font-mono text-[13px] leading-6 text-slate-100">
+                  <code>{segment.value}</code>
+                </pre>
+              </div>
+            </div>
+          );
+        }
+
+        if (!String(segment.value ?? "").trim()) {
+          return null;
+        }
+
+        return (
+          <p
+            key={`text-${index}`}
+            className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6"
+          >
+            {renderInlineCodeTokens(segment.value, inlineCodeClassName, `segment-${index}`)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function buildRunTimeline(thread) {
   if (!thread) {
     return [];
@@ -4209,7 +4376,7 @@ function TodoChatDetail({
               className="text-left"
             >
               <MessageBubble align="right" tone="brand" title="메모" meta={formatRelativeTime(message.updated_at)}>
-                <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6">{message.content}</p>
+                <RichMessageContent content={message.content} tone="brand" />
               </MessageBubble>
             </button>
           ))}
@@ -5620,9 +5787,12 @@ function ThreadDetail({
                       </p>
                     </div>
                   ) : null}
-                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6">
-                    {message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")}
-                  </p>
+                  <RichMessageContent
+                    content={
+                      message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")
+                    }
+                    tone={message.tone}
+                  />
                 </MessageBubble>
               );
             })
