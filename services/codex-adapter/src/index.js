@@ -7757,7 +7757,13 @@ class AppServerClient {
       account_type: this.account?.type ?? null
     });
     queueMicrotask(() => {
-      void backfillRequestedRunningIssues(`ready:${reason}`);
+      if (!hasPendingRunningIssueBackfillRequests()) {
+        return;
+      }
+
+      void backfillRequestedRunningIssues(`ready:${reason}`, {
+        allowWhileRealtimeConnected: true
+      });
     });
     return this;
   }
@@ -9072,6 +9078,36 @@ function isBridgeIdle() {
 
 const appServer = new AppServerClient();
 
+function hasHealthyAppServerRealtimeConnection() {
+  return (
+    Boolean(appServer?.connected) &&
+    Boolean(appServer?.initialized) &&
+    appServer?.socket?.readyState === WebSocket.OPEN
+  );
+}
+
+function hasPendingRunningIssueBackfillRequests() {
+  for (const threadId of activeIssueByThreadId.keys()) {
+    const meta = runningIssueMetaByThreadId.get(threadId);
+    const issueId = activeIssueByThreadId.get(threadId) ?? null;
+    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
+
+    if (meta?.backfillRequestedAt && issue && !issue.deleted_at) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function shouldRunRunningIssuePolling({ allowWhileRealtimeConnected = false } = {}) {
+  if (allowWhileRealtimeConnected) {
+    return true;
+  }
+
+  return !hasHealthyAppServerRealtimeConnection();
+}
+
 function listKnownLoginIds() {
   return [...new Set([BRIDGE_OWNER_LOGIN_ID, ...users.keys()].filter(Boolean))];
 }
@@ -9840,7 +9876,11 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
   };
 }
 
-async function backfillRequestedRunningIssues(trigger = "interval") {
+async function backfillRequestedRunningIssues(trigger = "interval", options = {}) {
+  if (!shouldRunRunningIssuePolling(options)) {
+    return;
+  }
+
   const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const issueId = activeIssueByThreadId.get(threadId) ?? null;
@@ -9892,7 +9932,11 @@ async function backfillRequestedRunningIssues(trigger = "interval") {
   return runningIssueBackfillPromise;
 }
 
-async function sampleRunningIssueThreadReads(trigger = "interval_sample") {
+async function sampleRunningIssueThreadReads(trigger = "interval_sample", options = {}) {
+  if (!shouldRunRunningIssuePolling(options)) {
+    return;
+  }
+
   const candidateThreadIds = [...activeIssueByThreadId.keys()].filter((threadId) => {
     const meta = runningIssueMetaByThreadId.get(threadId);
     const issueId = activeIssueByThreadId.get(threadId) ?? null;
@@ -10495,7 +10539,11 @@ async function normalizeRootThread(userId, rootThreadId, options = {}) {
   };
 }
 
-async function reconcileRunningIssues(remoteThreads = null) {
+async function reconcileRunningIssues(remoteThreads = null, options = {}) {
+  if (!remoteThreads && !shouldRunRunningIssuePolling(options)) {
+    return;
+  }
+
   const candidateThreadIds = new Set(activeIssueByThreadId.keys());
 
   for (const threadId of threadStateById.keys()) {
@@ -11603,17 +11651,29 @@ setInterval(() => {
 }, 30000).unref();
 
 setInterval(() => {
+  if (!shouldRunRunningIssuePolling()) {
+    return;
+  }
+
   void reconcileRunningIssues();
 }, RUNNING_ISSUE_WATCHDOG_INTERVAL_MS).unref();
 
 if (RUNNING_ISSUE_BACKFILL_INTERVAL_MS > 0) {
   setInterval(() => {
+    if (!shouldRunRunningIssuePolling()) {
+      return;
+    }
+
     void backfillRequestedRunningIssues();
   }, RUNNING_ISSUE_BACKFILL_INTERVAL_MS).unref();
 }
 
 if (RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS > 0) {
   setInterval(() => {
+    if (!shouldRunRunningIssuePolling()) {
+      return;
+    }
+
     void sampleRunningIssueThreadReads();
   }, RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS).unref();
 }
