@@ -9301,54 +9301,76 @@ function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
   return turns.at(-1) ?? null;
 }
 
+function joinBackfillTextSegments(segments = []) {
+  return segments.reduce((combined, segment) => {
+    const nextSegment = String(segment ?? "");
+
+    if (!nextSegment) {
+      return combined;
+    }
+
+    if (!combined) {
+      return nextSegment;
+    }
+
+    if (combined.endsWith("\n") || nextSegment.startsWith("\n")) {
+      return `${combined}${nextSegment}`;
+    }
+
+    return `${combined}\n${nextSegment}`;
+  }, "");
+}
+
 function collectTextFromRemoteMessageContent(content) {
   if (!Array.isArray(content)) {
     return "";
   }
 
-  return content
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
+  return joinBackfillTextSegments(
+    content
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return "";
+        }
+
+        if (typeof entry.text === "string" && entry.text.trim()) {
+          return entry.text;
+        }
+
         return "";
-      }
-
-      if (typeof entry.text === "string" && entry.text.trim()) {
-        return entry.text;
-      }
-
-      return "";
-    })
-    .filter(Boolean)
-    .join("");
+      })
+      .filter(Boolean)
+  );
 }
 
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
-  return items
-    .map((item) => {
-      if (!item || typeof item !== "object") {
+  return joinBackfillTextSegments(
+    items
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return "";
+        }
+
+        if (String(item.type ?? "").trim() === "agentMessage") {
+          return (
+            String(item.text ?? "").trim() ||
+            collectTextFromRemoteMessageContent(item.content) ||
+            String(item?.agentMessage?.text ?? "").trim()
+          );
+        }
+
+        if (item.agentMessage && typeof item.agentMessage === "object") {
+          return (
+            String(item.agentMessage.text ?? "").trim() ||
+            collectTextFromRemoteMessageContent(item.agentMessage.content)
+          );
+        }
+
         return "";
-      }
-
-      if (String(item.type ?? "").trim() === "agentMessage") {
-        return (
-          String(item.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.content) ||
-          String(item?.agentMessage?.text ?? "").trim()
-        );
-      }
-
-      if (item.agentMessage && typeof item.agentMessage === "object") {
-        return (
-          String(item.agentMessage.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.agentMessage.content)
-        );
-      }
-
-      return "";
-    })
-    .filter(Boolean)
-    .join("");
+      })
+      .filter(Boolean)
+  );
 }
 
 function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {
