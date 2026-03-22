@@ -35,6 +35,69 @@ const MAX_ISSUE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_ISSUE_ATTACHMENT_TEXT_CHARS = 20_000;
 const TEXT_ATTACHMENT_FILE_PATTERN =
   /\.(?:txt|md|markdown|json|jsonc|ya?ml|xml|csv|ts|tsx|js|jsx|mjs|cjs|css|scss|sass|html|htm|cs|java|kt|swift|py|rb|php|go|rs|sh|zsh|bash|ps1|sql|toml|ini|cfg|conf|env|gitignore|dockerfile)$/i;
+const ISSUE_ATTACHMENT_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
+const ISSUE_ATTACHMENT_DOCUMENT_EXTENSIONS = ["pdf", "doc", "docx", "pptx"];
+const ISSUE_ATTACHMENT_SPREADSHEET_EXTENSIONS = ["csv", "tsv", "xlsx"];
+const ISSUE_ATTACHMENT_ARCHIVE_EXTENSIONS = ["zip", "tar"];
+const ISSUE_ATTACHMENT_BINARY_DATA_EXTENSIONS = ["pkl"];
+const ISSUE_ATTACHMENT_TEXT_EXTENSIONS = [
+  "txt",
+  "md",
+  "markdown",
+  "json",
+  "jsonc",
+  "yaml",
+  "yml",
+  "xml",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "css",
+  "scss",
+  "sass",
+  "html",
+  "htm",
+  "c",
+  "cpp",
+  "cs",
+  "java",
+  "kt",
+  "swift",
+  "py",
+  "rb",
+  "php",
+  "go",
+  "rs",
+  "sh",
+  "zsh",
+  "bash",
+  "ps1",
+  "sql",
+  "toml",
+  "ini",
+  "cfg",
+  "conf",
+  "env",
+  "tex"
+];
+const ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES = [".gitignore", "dockerfile"];
+const ISSUE_ATTACHMENT_SUPPORTED_EXTENSIONS = [
+  ...ISSUE_ATTACHMENT_IMAGE_EXTENSIONS,
+  ...ISSUE_ATTACHMENT_DOCUMENT_EXTENSIONS,
+  ...ISSUE_ATTACHMENT_SPREADSHEET_EXTENSIONS,
+  ...ISSUE_ATTACHMENT_ARCHIVE_EXTENSIONS,
+  ...ISSUE_ATTACHMENT_BINARY_DATA_EXTENSIONS,
+  ...ISSUE_ATTACHMENT_TEXT_EXTENSIONS
+];
+const ISSUE_ATTACHMENT_SUPPORTED_EXTENSION_SET = new Set(ISSUE_ATTACHMENT_SUPPORTED_EXTENSIONS);
+const ISSUE_ATTACHMENT_SPECIAL_FILE_NAME_SET = new Set(ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES);
+const ISSUE_ATTACHMENT_ACCEPT = [
+  ...ISSUE_ATTACHMENT_SUPPORTED_EXTENSIONS.map((extension) => `.${extension}`),
+  ...ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES
+].join(",");
 const bridgeRequestFailureListeners = new Set();
 
 function createEmptyBridgeStatus() {
@@ -2001,13 +2064,184 @@ function isImageAttachmentMimeType(mimeType = "") {
     .startsWith("image/");
 }
 
+function getIssueAttachmentFileName(value = "") {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function getIssueAttachmentFileExtension(fileName = "") {
+  const normalized = getIssueAttachmentFileName(fileName);
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (ISSUE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(normalized)) {
+    return normalized;
+  }
+
+  if (normalized.startsWith(".") && normalized.indexOf(".", 1) < 0) {
+    return normalized;
+  }
+
+  const extensionIndex = normalized.lastIndexOf(".");
+
+  if (extensionIndex <= 0 || extensionIndex === normalized.length - 1) {
+    return "";
+  }
+
+  return normalized.slice(extensionIndex + 1);
+}
+
+function isSupportedIssueAttachmentFile(file) {
+  const fileName = getIssueAttachmentFileName(file?.name);
+  const extension = getIssueAttachmentFileExtension(fileName);
+
+  if (!fileName) {
+    return false;
+  }
+
+  if (ISSUE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(fileName)) {
+    return true;
+  }
+
+  if (!extension) {
+    return false;
+  }
+
+  return ISSUE_ATTACHMENT_SUPPORTED_EXTENSION_SET.has(extension);
+}
+
+function resolveIssueAttachmentCategory(fileName = "", mimeType = "") {
+  const extension = getIssueAttachmentFileExtension(fileName);
+  const normalizedMimeType = String(mimeType ?? "").trim().toLowerCase();
+
+  if (isImageAttachmentMimeType(normalizedMimeType) || ISSUE_ATTACHMENT_IMAGE_EXTENSIONS.includes(extension)) {
+    return "image";
+  }
+
+  if (extension === "pdf") {
+    return "pdf";
+  }
+
+  if (extension === "doc" || extension === "docx") {
+    return "document";
+  }
+
+  if (extension === "pptx") {
+    return "presentation";
+  }
+
+  if (ISSUE_ATTACHMENT_SPREADSHEET_EXTENSIONS.includes(extension)) {
+    return "spreadsheet";
+  }
+
+  if (extension === "json" || extension === "jsonc" || extension === "xml" || extension === "yaml" || extension === "yml") {
+    return "structured";
+  }
+
+  if (ISSUE_ATTACHMENT_ARCHIVE_EXTENSIONS.includes(extension)) {
+    return "archive";
+  }
+
+  if (ISSUE_ATTACHMENT_BINARY_DATA_EXTENSIONS.includes(extension)) {
+    return "binary";
+  }
+
+  if (extension === "txt" || extension === "md" || extension === "markdown" || ISSUE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(extension)) {
+    return "text";
+  }
+
+  return "code";
+}
+
+function resolveIssueAttachmentBadge(fileName = "", mimeType = "") {
+  const extension = getIssueAttachmentFileExtension(fileName);
+  const category = resolveIssueAttachmentCategory(fileName, mimeType);
+  const label = (() => {
+    if (extension === ".gitignore") {
+      return "GIT";
+    }
+
+    if (extension === "dockerfile") {
+      return "DKR";
+    }
+
+    if (!extension) {
+      return "FILE";
+    }
+
+    return extension.replace(/^\./, "").slice(0, 4).toUpperCase();
+  })();
+
+  switch (category) {
+    case "image":
+      return {
+        label,
+        className: "border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-100"
+      };
+    case "pdf":
+      return {
+        label,
+        className: "border-rose-500/40 bg-rose-500/15 text-rose-100"
+      };
+    case "document":
+      return {
+        label,
+        className: "border-sky-500/40 bg-sky-500/15 text-sky-100"
+      };
+    case "presentation":
+      return {
+        label,
+        className: "border-orange-500/40 bg-orange-500/15 text-orange-100"
+      };
+    case "spreadsheet":
+      return {
+        label,
+        className: "border-emerald-500/40 bg-emerald-500/15 text-emerald-100"
+      };
+    case "structured":
+      return {
+        label,
+        className: "border-cyan-500/40 bg-cyan-500/15 text-cyan-100"
+      };
+    case "archive":
+      return {
+        label,
+        className: "border-amber-500/40 bg-amber-500/15 text-amber-100"
+      };
+    case "binary":
+      return {
+        label,
+        className: "border-indigo-500/40 bg-indigo-500/15 text-indigo-100"
+      };
+    case "text":
+      return {
+        label,
+        className: "border-slate-500/40 bg-slate-500/15 text-slate-100"
+      };
+    default:
+      return {
+        label,
+        className: "border-violet-500/40 bg-violet-500/15 text-violet-100"
+      };
+  }
+}
+
 function shouldInlineTextAttachment(file) {
   const mimeType = String(file?.type ?? "")
     .trim()
     .toLowerCase();
   const fileName = String(file?.name ?? "").trim();
+  const extension = getIssueAttachmentFileExtension(fileName);
 
-  return mimeType.startsWith("text/") || mimeType.includes("json") || mimeType.includes("xml") || TEXT_ATTACHMENT_FILE_PATTERN.test(fileName);
+  return (
+    mimeType.startsWith("text/") ||
+    mimeType.includes("json") ||
+    mimeType.includes("xml") ||
+    ISSUE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(getIssueAttachmentFileName(fileName)) ||
+    ISSUE_ATTACHMENT_TEXT_EXTENSIONS.includes(extension) ||
+    TEXT_ATTACHMENT_FILE_PATTERN.test(fileName)
+  );
 }
 
 function truncateAttachmentTextContent(text) {
@@ -2218,6 +2452,11 @@ async function appendIssueAttachments(currentAttachments, files, bridgeId) {
       continue;
     }
 
+    if (!isSupportedIssueAttachmentFile(file)) {
+      rejectedCount += 1;
+      continue;
+    }
+
     if ((Number(file?.size ?? 0) || 0) > MAX_ISSUE_ATTACHMENT_BYTES) {
       rejectedCount += 1;
       continue;
@@ -2262,6 +2501,18 @@ function formatIssueAttachmentSize(sizeBytes, language) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function IssueAttachmentBadge({ attachment }) {
+  const badge = resolveIssueAttachmentBadge(attachment?.name, attachment?.mime_type);
+
+  return (
+    <span
+      className={`inline-flex h-9 min-w-[3.25rem] items-center justify-center rounded-xl border px-2 text-[11px] font-semibold tracking-[0.18em] ${badge.className}`}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
 function IssueAttachmentInput({ language, attachments, errorMessage, busy, onAppendFiles, onRemoveAttachment }) {
   const copy = getCopy(language);
   const fileInputRef = useRef(null);
@@ -2288,6 +2539,7 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
           ref={fileInputRef}
           type="file"
           multiple
+          accept={ISSUE_ATTACHMENT_ACCEPT}
           className="hidden"
           onChange={handleFileChange}
         />
@@ -2302,13 +2554,20 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
       </div>
 
       {fileAttachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
+        <div className="space-y-2">
           {fileAttachments.map((attachment) => (
-            <span
+            <div
               key={attachment.id}
-              className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-700 bg-slate-950/80 px-3 py-1.5 text-xs text-slate-200"
+              className="flex max-w-full items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-3 py-3 text-xs text-slate-200"
             >
-              <span className="max-w-[16rem] truncate">{attachment.name}</span>
+              <IssueAttachmentBadge attachment={attachment} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-white">{attachment.name}</p>
+                <p className="mt-1 truncate text-[11px] text-slate-500">
+                  {resolveIssueAttachmentBadge(attachment.name, attachment.mime_type).label} ·{" "}
+                  {formatIssueAttachmentSize(attachment.size_bytes, language)}
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => onRemoveAttachment(attachment.id)}
@@ -2317,7 +2576,7 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
               >
                 ×
               </button>
-            </span>
+            </div>
           ))}
         </div>
       ) : null}
@@ -2326,6 +2585,9 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {imageAttachments.map((attachment) => (
             <div key={attachment.id} className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/80">
+              <div className="absolute left-2 top-2 z-10">
+                <IssueAttachmentBadge attachment={attachment} />
+              </div>
               {attachment.preview_url ? (
                 <img src={attachment.preview_url} alt={attachment.name} className="h-28 w-full object-cover" />
               ) : (
