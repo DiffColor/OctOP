@@ -50,6 +50,41 @@ async function waitFor(assertion, { timeoutMs = 30000, intervalMs = 200, label =
   throw new Error(`${label} 대기 시간 초과: ${lastError?.message ?? "unknown error"}`);
 }
 
+async function readPersistedThreadStorage(threadStoragePath, validate = () => true, label = "thread storage ready") {
+  return waitFor(async () => {
+    const persisted = JSON.parse(await readFile(threadStoragePath, "utf8"));
+    assert.equal(validate(persisted), true);
+    return persisted;
+  }, {
+    label
+  });
+}
+
+function toClientIssueAttachment(attachment = {}) {
+  return {
+    id: String(attachment.id ?? "").trim(),
+    name: String(attachment.name ?? "").trim(),
+    kind: attachment.kind === "image" ? "image" : "file",
+    mime_type: attachment.mime_type == null ? null : String(attachment.mime_type),
+    size_bytes: Number.isFinite(Number(attachment.size_bytes)) ? Number(attachment.size_bytes) : 0,
+    preview_url: attachment.preview_url == null ? null : String(attachment.preview_url),
+    text_content: attachment.text_content == null ? null : String(attachment.text_content),
+    text_truncated: Boolean(attachment.text_truncated)
+  };
+}
+
+function assertClientIssueAttachments(actualAttachments, expectedAttachments) {
+  const hiddenFields = ["upload_id", "download_url", "cleanup_url", "local_path", "uploaded_at"];
+
+  assert.deepEqual(actualAttachments, expectedAttachments);
+
+  for (const attachment of actualAttachments) {
+    for (const field of hiddenFields) {
+      assert.equal(Object.hasOwn(attachment, field), false, `attachment client payload leaked ${field}`);
+    }
+  }
+}
+
 function encodeWebSocketFrame(payload, opcode = 0x1) {
   const body = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), "utf8");
   const length = body.length;
@@ -669,6 +704,7 @@ class BridgeProcess {
       env: {
         ...process.env,
         HOME: this.homeDir,
+        OCTOP_STATE_HOME: resolve(this.homeDir, ".octop"),
         OCTOP_BRIDGE_HOST: "127.0.0.1",
         OCTOP_BRIDGE_PORT: String(this.port),
         OCTOP_BRIDGE_TOKEN: this.token,
@@ -877,7 +913,7 @@ function completeIssueOnThread(fakeAppServer, { codexThreadId, delta = REPO_ROOT
 async function triggerPreflightThresholdRollover(
   bridge,
   fakeAppServer,
-  { rootThreadId, sourceCodexThreadId, sourcePhysicalThreadId, nextIssueId }
+  { rootThreadId, sourceCodexThreadId, sourcePhysicalThreadId, nextIssueId, sourceCompletionDelta = REPO_ROOT }
 ) {
   await markThreadContextHigh(bridge, fakeAppServer, {
     rootThreadId,
@@ -891,6 +927,7 @@ async function triggerPreflightThresholdRollover(
 
   completeIssueOnThread(fakeAppServer, {
     codexThreadId: sourceCodexThreadId,
+    delta: sourceCompletionDelta,
     turnId: "turn-source-final"
   });
 
@@ -1420,6 +1457,182 @@ test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실�
       timeoutMs: 45000,
       intervalMs: 300,
       label: "recovered issue completed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("thread 개발지침은 저장 후 재시작에도 유지되고 새 physical thread 시작에 함께 주입된다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-instruction-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "thread-instruction-token",
+    userId: "thread-instruction-user",
+    bridgeId: `thread-instruction-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+
+  try {
+    const project = await getWorkspaceProject(bridge);
+    const projectInstruction = "프로젝트 공통 개발지침";
+    const threadInstruction = "현재 채팅창 전용 개발지침";
+    const sourceAssistantReply = "thread instruction source reply";
+    const rolloverAssistantReply = "thread instruction rollover reply";
+
+    const updatedProject = await bridge.request(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        developer_instructions: projectInstruction,
+        update_developer_instructions: true
+      })
+    });
+    assert.equal(updatedProject.project?.developer_instructions, projectInstruction);
+
+    const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Thread Instruction Test"
+      })
+    });
+    const rootThreadId = createThreadPayload.thread.id;
+
+    const updatedThreadPayload = await bridge.request(`/api/threads/${rootThreadId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        developer_instructions: threadInstruction,
+        update_developer_instructions: true
+      })
+    });
+    assert.equal(updatedThreadPayload.thread?.developer_instructions, threadInstruction);
+    assert.equal(
+      updatedThreadPayload.threads?.some(
+        (thread) => thread.id === rootThreadId && thread.developer_instructions === threadInstruction
+      ),
+      true
+    );
+
+    await bridge.stop();
+    await bridge.start();
+
+    const reloadedThreads = await bridge.request(`/api/projects/${project.id}/threads`);
+    assert.equal(
+      reloadedThreads.threads?.some(
+        (thread) => thread.id === rootThreadId && thread.developer_instructions === threadInstruction
+      ),
+      true
+    );
+
+    const issueOnePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Instruction Active Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueTwoPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Instruction Next Issue",
+        prompt: PROMPT
+      })
+    });
+    const activeIssueId = issueOnePayload.issue.id;
+    const stagedIssueId = issueTwoPayload.issue.id;
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [activeIssueId]
+      })
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.status, "running");
+      assert.ok(payload.issue?.executed_physical_thread_id);
+      return payload;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "thread instruction issue running"
+    });
+
+    const sourceContinuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+    const expectedDeveloperInstructions = `${projectInstruction}\n\n${threadInstruction}`;
+    const firstThreadStartRequest = fakeAppServer.getRequests("thread/start").at(-1);
+    const firstTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
+    const firstTurnInput = String(firstTurnStartRequest?.params?.input?.[0]?.text ?? "");
+    assert.equal(firstThreadStartRequest?.params?.developerInstructions, expectedDeveloperInstructions);
+    assert.equal(firstThreadStartRequest?.params?.input, undefined);
+    assert.doesNotMatch(firstTurnInput, /프로젝트 공통 개발지침/);
+    assert.doesNotMatch(firstTurnInput, /현재 채팅창 전용 개발지침/);
+    assert.equal(firstTurnStartRequest?.params?.developerInstructions, undefined);
+    assert.equal(firstTurnStartRequest?.params?.baseInstructions, undefined);
+
+    const rolloverResult = await triggerPreflightThresholdRollover(bridge, fakeAppServer, {
+      rootThreadId,
+      sourceCodexThreadId: sourceContinuity.active_physical_thread.codex_thread_id,
+      sourcePhysicalThreadId: sourceContinuity.active_physical_thread.id,
+      nextIssueId: stagedIssueId,
+      sourceCompletionDelta: sourceAssistantReply
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length, 2);
+    const rolloverThreadStartRequest = fakeAppServer.getRequests("thread/start").at(-1);
+    const rolloverTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
+    const rolloverTurnInput = String(rolloverTurnStartRequest?.params?.input?.[0]?.text ?? "");
+    assert.equal(rolloverThreadStartRequest?.params?.developerInstructions, expectedDeveloperInstructions);
+    assert.equal(rolloverThreadStartRequest?.params?.input, undefined);
+    assert.doesNotMatch(rolloverTurnInput, /프로젝트 공통 개발지침/);
+    assert.doesNotMatch(rolloverTurnInput, /현재 채팅창 전용 개발지침/);
+    assert.equal(rolloverTurnStartRequest?.params?.developerInstructions, undefined);
+    assert.equal(rolloverTurnStartRequest?.params?.baseInstructions, undefined);
+    assert.notEqual(rolloverResult.targetPhysicalThreadId, sourceContinuity.active_physical_thread.id);
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const assistantMessages = payload.messages.filter((message) => message.role === "assistant");
+      assert.equal(payload.issue?.status, "completed");
+      assert.equal(assistantMessages.length >= 1, true);
+      assert.equal(assistantMessages.at(-1)?.content, sourceAssistantReply);
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "thread instruction source issue completed"
+    });
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: rolloverResult.targetCodexThreadId,
+      delta: rolloverAssistantReply,
+      turnId: "turn-thread-instruction-rollover-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${stagedIssueId}`);
+      const assistantMessages = payload.messages.filter((message) => message.role === "assistant");
+      assert.equal(payload.issue?.status, "completed");
+      assert.equal(assistantMessages.length >= 1, true);
+      assert.equal(assistantMessages.at(-1)?.content, rolloverAssistantReply);
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "thread instruction rollover issue completed"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
@@ -3070,7 +3283,18 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
     );
 
     const threadStoragePath = resolve(homeDir, ".octop", `${bridge.bridgeId}-threads.json`);
-    const persistedBeforeDelete = JSON.parse(await readFile(threadStoragePath, "utf8"));
+    const persistedBeforeDelete = await readPersistedThreadStorage(
+      threadStoragePath,
+      (persisted) => {
+        const storedUserState = persisted?.[bridge.userId];
+        return Boolean(
+          storedUserState &&
+          storedUserState.project_thread_ids?.includes(rootThreadId) &&
+          storedUserState.handoff_summary_ids?.length === 1
+        );
+      },
+      "rollover thread storage before delete"
+    );
     const storedUserState = persistedBeforeDelete[bridge.userId];
     assert.equal(storedUserState.project_thread_ids.includes(rootThreadId), true);
     assert.equal(storedUserState.physical_thread_ids.length, 2);
@@ -3149,7 +3373,11 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
     assert.equal(issueDetailAfterDelete.issue, null);
     assert.deepEqual(issueDetailAfterDelete.messages, []);
 
-    const persistedAfterDelete = JSON.parse(await readFile(threadStoragePath, "utf8"));
+    const persistedAfterDelete = await readPersistedThreadStorage(
+      threadStoragePath,
+      (persisted) => Boolean(persisted?.[bridge.userId]?.project_threads?.[rootThreadId]?.deleted_at),
+      "rollover thread storage after delete"
+    );
     const deletedRootThread = persistedAfterDelete[bridge.userId].project_threads[rootThreadId];
     const storedPhysicalThreads = persistedAfterDelete[bridge.userId].physical_threads;
     assert.ok(deletedRootThread.deleted_at);
@@ -3614,14 +3842,8 @@ test("issue 첨부는 생성과 수정 후 유지되고 실행 프롬프트에�
       }
     ];
 
-    const normalizedInitialAttachments = initialAttachments.map((attachment) => ({
-      ...attachment,
-      preview_url: null
-    }));
-    const normalizedUpdatedAttachments = updatedAttachments.map((attachment) => ({
-      ...attachment,
-      preview_url: null
-    }));
+    const expectedInitialAttachments = initialAttachments.map((attachment) => toClientIssueAttachment(attachment));
+    const expectedUpdatedAttachments = updatedAttachments.map((attachment) => toClientIssueAttachment(attachment));
 
     const createdIssue = await bridge.request(`/api/threads/${threadId}/issues`, {
       method: "POST",
@@ -3633,7 +3855,13 @@ test("issue 첨부는 생성과 수정 후 유지되고 실행 프롬프트에�
     });
     const issueId = createdIssue.issue.id;
 
-    assert.deepEqual(createdIssue.issue.attachments, normalizedInitialAttachments);
+    assertClientIssueAttachments(createdIssue.issue.attachments, expectedInitialAttachments);
+
+    const listedIssuesAfterCreate = await bridge.request(`/api/threads/${threadId}/issues`);
+    assertClientIssueAttachments(
+      listedIssuesAfterCreate.issues.find((issue) => issue.id === issueId)?.attachments ?? [],
+      expectedInitialAttachments
+    );
 
     const updatedIssue = await bridge.request(`/api/issues/${issueId}`, {
       method: "PATCH",
@@ -3644,10 +3872,16 @@ test("issue 첨부는 생성과 수정 후 유지되고 실행 프롬프트에�
       })
     });
 
-    assert.deepEqual(updatedIssue.issue.attachments, normalizedUpdatedAttachments);
+    assertClientIssueAttachments(updatedIssue.issue.attachments, expectedUpdatedAttachments);
 
     const detailPayload = await bridge.request(`/api/issues/${issueId}`);
-    assert.deepEqual(detailPayload.issue?.attachments, normalizedUpdatedAttachments);
+    assertClientIssueAttachments(detailPayload.issue?.attachments ?? [], expectedUpdatedAttachments);
+
+    const listedIssuesAfterUpdate = await bridge.request(`/api/threads/${threadId}/issues`);
+    assertClientIssueAttachments(
+      listedIssuesAfterUpdate.issues.find((issue) => issue.id === issueId)?.attachments ?? [],
+      expectedUpdatedAttachments
+    );
 
     const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
       method: "POST",

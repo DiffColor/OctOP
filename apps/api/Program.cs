@@ -936,6 +936,22 @@ app.MapPatch("/api/threads/{threadId}", async (
   }
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var requestedDeveloperInstructionsUpdate = body?["update_developer_instructions"]?.GetValue<bool?>() ?? false;
+
+  if (requestedDeveloperInstructionsUpdate)
+  {
+    var statusPayload = await GetBridgeStatusPayloadAsync(bridgeNatsClient, userId, bridgeId, cancellationToken);
+
+    if (!BridgeSupportsCapability(statusPayload, "thread_developer_instructions"))
+    {
+      return BuildUnsupportedBridgeFeatureResult(
+        bridgeId,
+        statusPayload,
+        "thread_developer_instructions",
+        "connected bridge does not support thread developer instructions update");
+    }
+  }
+
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectThreadUpdate,
@@ -945,7 +961,9 @@ app.MapPatch("/api/threads/{threadId}", async (
       user_id = userId,
       bridge_id = bridgeId,
       thread_id = threadId,
-      name = body?["name"]?.GetValue<string>()
+      name = body?["name"]?.GetValue<string>(),
+      developer_instructions = body?["developer_instructions"]?.GetValue<string>(),
+      update_developer_instructions = body?["update_developer_instructions"]?.GetValue<bool?>() ?? false
     },
     cancellationToken
   );
@@ -1988,6 +2006,44 @@ static async Task<string?> ResolveBridgeIdAsync(
   cancellationToken.ThrowIfCancellationRequested();
   var bridges = await octopStore.ListBridgesForUserAsync(userId);
   return bridges.OfType<JObject>().FirstOrDefault()?.Value<string>("bridge_id");
+}
+
+static async Task<JsonNode?> GetBridgeStatusPayloadAsync(
+  BridgeNatsClient bridgeNatsClient,
+  string userId,
+  string bridgeId,
+  CancellationToken cancellationToken)
+{
+  var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+  return await bridgeNatsClient.RequestAsync(
+    subjects.StatusGet,
+    new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
+    cancellationToken);
+}
+
+static bool BridgeSupportsCapability(JsonNode? statusPayload, string capability)
+{
+  return statusPayload?["capabilities"]?[capability]?.GetValue<bool?>() == true;
+}
+
+static IResult BuildUnsupportedBridgeFeatureResult(
+  string bridgeId,
+  JsonNode? statusPayload,
+  string feature,
+  string message)
+{
+  return Results.Text(
+    JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+      ["accepted"] = false,
+      ["error"] = message,
+      ["code"] = "unsupported_bridge_feature",
+      ["feature"] = feature,
+      ["bridge_id"] = bridgeId,
+      ["bridge_revision"] = GetStringValue(statusPayload?["bridge_revision"])
+    }),
+    "application/json; charset=utf-8",
+    statusCode: StatusCodes.Status409Conflict);
 }
 
 static string ResolveIdentityKey(HttpContext httpContext)

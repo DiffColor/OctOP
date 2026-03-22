@@ -46,6 +46,9 @@ function createEmptyBridgeStatus() {
       last_error: null,
       last_socket_activity_at: null
     },
+    capabilities: {
+      thread_developer_instructions: false
+    },
     counts: {
       projects: 0,
       threads: 0
@@ -65,6 +68,10 @@ function normalizeBridgeStatus(nextStatus) {
       ...base.app_server,
       ...(resolved.app_server ?? {})
     },
+    capabilities: {
+      ...base.capabilities,
+      ...(resolved.capabilities ?? {})
+    },
     counts: {
       projects: Number.isFinite(Number(resolved.counts?.projects))
         ? Number(resolved.counts.projects)
@@ -74,6 +81,10 @@ function normalizeBridgeStatus(nextStatus) {
         : base.counts.threads
     }
   };
+}
+
+function bridgeSupportsThreadDeveloperInstructions(status) {
+  return status?.capabilities?.thread_developer_instructions === true;
 }
 
 function subscribeBridgeRequestFailures(listener) {
@@ -498,20 +509,26 @@ const COPY = {
       languageEnglish: "English",
       generalInstruction: "General Instruction",
       developerInstruction: "Developer Instruction",
+      threadInstruction: "Thread Instruction",
       instructionSet: "Set",
       instructionEdit: "Edit",
       instructionMissingProject: "Select a project first.",
+      instructionMissingThread: "Select a thread first.",
       instructionDialogClose: "Close",
       instructionDialogCancel: "Cancel",
       instructionDialogSave: "Save",
       instructionDialogSaving: "Saving...",
       instructionDialogProject: "Project",
+      instructionDialogThread: "Thread",
       instructionDialogPlaceholderGeneral: "Enter the base guidance to inject when a Codex thread starts.",
       instructionDialogPlaceholderDeveloper: "Enter the developer guidance to inject when a Codex thread starts.",
+      instructionDialogPlaceholderThreadDeveloper: "Enter the thread-specific developer guidance to inject on the next run for this thread.",
       instructionDialogHintGeneral:
         "Saved on the selected project and injected into app-server baseInstructions when a thread starts.",
       instructionDialogHintDeveloper:
-        "Saved on the selected project and injected into app-server developerInstructions when a thread starts."
+        "Saved on the selected project and injected into app-server developerInstructions when a thread starts.",
+      instructionDialogHintThreadDeveloper:
+        "Saved only on this thread and appended after the project developerInstructions on the next run for this thread."
     }
   },
   ko: {
@@ -669,20 +686,26 @@ const COPY = {
       languageEnglish: "영어",
       generalInstruction: "일반지침",
       developerInstruction: "개발지침",
+      threadInstruction: "Thread 개발지침",
       instructionSet: "설정",
       instructionEdit: "수정",
       instructionMissingProject: "먼저 프로젝트를 선택해 주세요.",
+      instructionMissingThread: "먼저 쓰레드를 선택해 주세요.",
       instructionDialogClose: "닫기",
       instructionDialogCancel: "취소",
       instructionDialogSave: "저장",
       instructionDialogSaving: "저장 중...",
       instructionDialogProject: "프로젝트",
+      instructionDialogThread: "쓰레드",
       instructionDialogPlaceholderGeneral: "Codex thread 시작 시 주입할 기본 지침을 입력해 주세요.",
       instructionDialogPlaceholderDeveloper: "Codex thread 시작 시 주입할 개발 지침을 입력해 주세요.",
+      instructionDialogPlaceholderThreadDeveloper: "이 쓰레드의 다음 실행 흐름부터 적용할 전용 개발지침을 입력해 주세요.",
       instructionDialogHintGeneral:
         "선택한 프로젝트에 저장되며, app-server의 baseInstructions로 thread 시작 시 주입됩니다.",
       instructionDialogHintDeveloper:
-        "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다."
+        "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다.",
+      instructionDialogHintThreadDeveloper:
+        "현재 쓰레드에만 저장되며, 다음 실행 흐름부터 프로젝트 개발지침 뒤에 이어 붙여 app-server developerInstructions로 주입됩니다."
     }
   }
 };
@@ -1486,6 +1509,17 @@ function parseResponseBody(response, text) {
   }
 }
 
+function getThreadDeveloperInstructionSaveErrorMessage(error) {
+  if (error?.code === "unsupported_bridge_feature" && error?.feature === "thread_developer_instructions") {
+    const revision = String(error?.bridgeRevision ?? "").trim();
+    return revision
+      ? `연결된 브리지(${revision})가 채팅창 개발지침 저장을 지원하지 않습니다. 브리지를 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.`
+      : "연결된 브리지가 채팅창 개발지침 저장을 지원하지 않습니다. 브리지를 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.";
+  }
+
+  return String(error?.message ?? "저장 중 오류가 발생했습니다.");
+}
+
 async function apiRequest(path, options = {}) {
   const method = String(options.method ?? "GET").toUpperCase();
   const requestUrl = `${API_BASE_URL}${path}`;
@@ -1551,7 +1585,13 @@ async function apiRequest(path, options = {}) {
         message
       });
     }
-    throw new Error(message);
+    const requestError = new Error(message);
+    requestError.status = response.status;
+    requestError.code = payload?.code ?? null;
+    requestError.feature = payload?.feature ?? null;
+    requestError.bridgeRevision = payload?.bridge_revision ?? null;
+    requestError.payload = payload;
+    throw requestError;
   }
 
   return payload;
@@ -1568,6 +1608,7 @@ function normalizeProjectThread(thread, fallbackProjectId = null) {
     id: thread.id,
     name: thread.name ?? thread.title ?? "",
     project_id: thread.project_id ?? fallbackProjectId,
+    developer_instructions: thread.developer_instructions ?? "",
     status: thread.status ?? "queued",
     progress: clampProgress(thread.progress),
     last_event: thread.last_event ?? "thread.started",
@@ -3351,7 +3392,98 @@ function ProjectInstructionDialog({ language, open, busy, project, instructionTy
   );
 }
 
-function ThreadContextMenu({ language, menuState, onRename, onDelete, onClose }) {
+function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, onClose, onSubmit }) {
+  const copy = getCopy(language);
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setValue("");
+      return;
+    }
+
+    setValue(thread?.developer_instructions ?? "");
+  }, [open, thread]);
+
+  if (!open || !thread) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    await onSubmit({
+      value
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.instructionDialogThread}</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadInstruction}</h2>
+            <p className="mt-2 text-sm text-slate-400">{thread.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            {copy.footer.instructionDialogClose}
+          </button>
+        </div>
+
+        <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+          <textarea
+            rows="12"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={copy.footer.instructionDialogPlaceholderThreadDeveloper}
+            className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
+          />
+
+          <div className="rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-xs leading-6 text-slate-300">
+            {copy.footer.instructionDialogHintThreadDeveloper}
+          </div>
+
+          {errorMessage ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs leading-6 text-rose-200">
+              {errorMessage}
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              {copy.footer.instructionDialogCancel}
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? copy.footer.instructionDialogSaving : copy.footer.instructionDialogSave}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ThreadContextMenu({
+  language,
+  menuState,
+  threadInstructionSupported,
+  onRename,
+  onOpenInstruction,
+  onDelete,
+  onClose
+}) {
   const copy = getCopy(language);
 
   if (!menuState.open) {
@@ -3377,6 +3509,15 @@ function ThreadContextMenu({ language, menuState, onRename, onDelete, onClose })
         >
           {copy.board.rename}
         </button>
+        {threadInstructionSupported ? (
+          <button
+            type="button"
+            onClick={onOpenInstruction}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-emerald-200 transition hover:bg-emerald-500/10"
+          >
+            {copy.footer.threadInstruction}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onDelete}
@@ -4048,6 +4189,7 @@ function MainPage({
   loadingState,
   projectBusy,
   projectInstructionBusy,
+  threadInstructionBusy,
   issueBusy,
   interruptingIssueId,
   startBusy,
@@ -4074,6 +4216,7 @@ function MainPage({
   onDeleteProject,
   onRenameProject,
   onCreateThread,
+  onOpenThreadInstructionDialog,
   onRenameThread,
   onDeleteThread,
   onOpenThreadMenu,
@@ -4105,6 +4248,10 @@ function MainPage({
   projectInstructionType,
   onCloseProjectInstructionDialog,
   onSubmitProjectInstruction,
+  threadInstructionDialogOpen,
+  threadInstructionSupported,
+  onCloseThreadInstructionDialog,
+  onSubmitThreadInstruction,
   onSubmitIssue,
   onSubmitIssueEdit,
   onRefresh,
@@ -4195,6 +4342,7 @@ function MainPage({
   const selectedProjectThread =
   scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
   null;
+  const selectedThreadHasDeveloperInstructions = Boolean(selectedProjectThread?.developer_instructions?.trim());
   const selectedThreadContextUsage = getThreadContextUsage(selectedProjectThread);
   const selectedThreadUsageLabel =
     selectedThreadContextUsage?.percent != null
@@ -5431,6 +5579,28 @@ function MainPage({
                     {copy.footer.developerInstruction} ·{" "}
                     {selectedProjectHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenThreadInstructionDialog(selectedProjectThread?.id ?? "")}
+                    disabled={!selectedProjectThread || !threadInstructionSupported}
+                    title={
+                      !selectedProjectThread
+                        ? copy.footer.instructionMissingThread
+                        : !threadInstructionSupported
+                          ? language === "ko"
+                            ? "연결된 브리지가 채팅창 개발지침 저장을 지원하지 않습니다."
+                            : "The connected bridge does not support thread instruction saving."
+                          : copy.footer.threadInstruction
+                    }
+                    className={`rounded-full border px-2.5 py-1 transition ${
+                      selectedThreadHasDeveloperInstructions
+                        ? "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
+                        : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {copy.footer.threadInstruction} ·{" "}
+                    {selectedThreadHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
+                  </button>
                 </>
               ) : null}
             </div>
@@ -5542,6 +5712,15 @@ function MainPage({
 	        onClose={onCloseProjectInstructionDialog}
 	        onSubmit={onSubmitProjectInstruction}
 	      />
+      <ThreadInstructionDialog
+        language={language}
+        open={threadInstructionDialogOpen}
+        busy={threadInstructionBusy}
+        thread={selectedProjectThread}
+        errorMessage={threadInstructionError}
+        onClose={onCloseThreadInstructionDialog}
+        onSubmit={onSubmitThreadInstruction}
+      />
 	      <SettingsDialog
 	        open={settingsOpen}
 	        session={session}
@@ -5571,10 +5750,17 @@ function MainPage({
       <ThreadContextMenu
         language={language}
         menuState={threadMenuState}
+        threadInstructionSupported={threadInstructionSupported}
         onRename={() => {
           onCloseThreadMenu();
           if (threadMenuState.thread) {
             beginThreadRename(threadMenuState.thread);
+          }
+        }}
+        onOpenInstruction={() => {
+          onCloseThreadMenu();
+          if (threadMenuState.thread) {
+            onOpenThreadInstructionDialog(threadMenuState.thread.id);
           }
         }}
         onDelete={() => {
@@ -5646,6 +5832,9 @@ export default function App() {
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
+  const [threadInstructionDialogOpen, setThreadInstructionDialogOpen] = useState(false);
+  const [threadInstructionBusy, setThreadInstructionBusy] = useState(false);
+  const [threadInstructionError, setThreadInstructionError] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
   const [issueBusy, setIssueBusy] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
@@ -5684,6 +5873,7 @@ export default function App() {
     () => normalizeBridgeStatus(selectedBridgeId ? bridgeStatusById[selectedBridgeId] : null),
     [bridgeStatusById, selectedBridgeId]
   );
+  const threadInstructionSupported = bridgeSupportsThreadDeveloperInstructions(status);
   const bridgeConnected = Boolean(status.app_server?.connected) &&
     !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]);
   const bridgeAvailable = Boolean(selectedBridgeId) && bridgeConnected;
@@ -6293,6 +6483,7 @@ export default function App() {
       });
       setProjectComposerOpen(false);
       setProjectInstructionDialogOpen(false);
+      setThreadInstructionDialogOpen(false);
       setComposerOpen(false);
       setIssueEditorOpen(false);
       setEditingIssueId("");
@@ -8284,6 +8475,72 @@ export default function App() {
     }
   };
 
+  const handleOpenThreadInstructionDialog = (threadId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
+    if (!normalizedThreadId || !threadInstructionSupported) {
+      return;
+    }
+
+    setSelectedProjectThreadId(normalizedThreadId);
+    setThreadInstructionError("");
+    setThreadInstructionDialogOpen(true);
+  };
+
+  const handleCloseThreadInstructionDialog = () => {
+    if (threadInstructionBusy) {
+      return;
+    }
+
+    setThreadInstructionError("");
+    setThreadInstructionDialogOpen(false);
+  };
+
+  const handleSubmitThreadInstruction = async ({ value }) => {
+    if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
+      return;
+    }
+
+    setThreadInstructionBusy(true);
+    setThreadInstructionError("");
+
+    try {
+      const response = await apiRequest(
+        `/api/threads/${encodeURIComponent(selectedProjectThreadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            developer_instructions: value,
+            update_developer_instructions: true
+          })
+        }
+      );
+
+      if (Array.isArray(response?.threads)) {
+        setProjectThreads((current) => replaceProjectThreadsForProject(current, response.threads, selectedProjectIdRef.current));
+      } else if (response?.thread?.id) {
+        setProjectThreads((current) => upsertProjectThread(current, response.thread));
+      }
+
+      setThreadInstructionError("");
+      setThreadInstructionDialogOpen(false);
+    } catch (error) {
+      const message = getThreadDeveloperInstructionSaveErrorMessage(error);
+      setThreadInstructionError(message);
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "thread.instructions.update.failed",
+          timestamp: new Date().toISOString(),
+          summary: message
+        },
+        ...current
+      ].slice(0, 20));
+    } finally {
+      setThreadInstructionBusy(false);
+    }
+  };
+
   const handleRenameThread = async (threadId, name) => {
     if (!session?.loginId || !selectedBridgeId || !threadId) {
       return false;
@@ -8729,12 +8986,15 @@ export default function App() {
       loadingState={loadingState}
       projectBusy={projectBusy}
       projectInstructionBusy={projectInstructionBusy}
+      threadInstructionBusy={threadInstructionBusy}
       issueBusy={issueBusy}
       interruptingIssueId={interruptingIssueId}
       startBusy={startBusy}
       projectComposerOpen={projectComposerOpen}
       projectInstructionDialogOpen={projectInstructionDialogOpen}
       projectInstructionType={projectInstructionType}
+      threadInstructionDialogOpen={threadInstructionDialogOpen}
+      threadInstructionSupported={threadInstructionSupported}
       composerOpen={composerOpen}
       issueEditorOpen={issueEditorOpen}
       issueEditorBusy={issueEditorBusy}
@@ -8761,6 +9021,7 @@ export default function App() {
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
       onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
       onCreateThread={() => void handleCreateThread()}
+      onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
       onRenameThread={(threadId, name) => handleRenameThread(threadId, name)}
       onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
       onOpenThreadMenu={(event, thread) => {
@@ -8798,6 +9059,7 @@ export default function App() {
       onOpenComposer={() => setComposerOpen(true)}
       onCloseProjectComposer={handleCloseProjectComposer}
       onCloseProjectInstructionDialog={handleCloseProjectInstructionDialog}
+      onCloseThreadInstructionDialog={handleCloseThreadInstructionDialog}
       onCloseComposer={() => setComposerOpen(false)}
       onCloseIssueEditor={handleCloseIssueEditor}
       onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
@@ -8805,6 +9067,7 @@ export default function App() {
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitProjectInstruction={handleSubmitProjectInstruction}
+      onSubmitThreadInstruction={handleSubmitThreadInstruction}
       onSubmitIssue={handleCreateIssue}
       onSubmitIssueEdit={handleUpdateIssue}
       onRefresh={() => void handleRefresh()}

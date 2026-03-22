@@ -1419,6 +1419,9 @@ function normalizeProjectThread(loginId, thread = {}) {
     project_id: String(thread.project_id ?? "").trim(),
     name: String(thread.name ?? thread.title ?? "Main").trim() || "Main",
     description: String(thread.description ?? "").trim(),
+    developer_instructions: normalizeInstructionText(
+      thread.developer_instructions ?? thread.developerInstructions
+    ),
     bridge_id: BRIDGE_ID,
     login_id: sanitizeUserId(loginId),
     codex_thread_id: thread.codex_thread_id ? String(thread.codex_thread_id).trim() : null,
@@ -1662,6 +1665,9 @@ function normalizeThreadTokenUsage(tokenUsage = null, fallback = {}) {
 }
 
 function normalizeIssueCard(issue = {}) {
+  const queuePosition = issue.queue_position ?? issue.queuePosition;
+  const prepPosition = issue.prep_position ?? issue.prepPosition;
+
   return {
     id: sanitizeBridgeId(issue.id ?? createIssueCardId()),
     project_id: String(issue.project_id ?? "").trim(),
@@ -1679,8 +1685,18 @@ function normalizeIssueCard(issue = {}) {
     progress: Number.isFinite(Number(issue.progress)) ? Number(issue.progress) : 0,
     last_event: String(issue.last_event ?? "issue.created").trim(),
     last_message: String(issue.last_message ?? "").trim(),
-    queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
-    prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
+    queue_position:
+      queuePosition == null || queuePosition === ""
+        ? null
+        : Number.isFinite(Number(queuePosition))
+          ? Number(queuePosition)
+          : null,
+    prep_position:
+      prepPosition == null || prepPosition === ""
+        ? null
+        : Number.isFinite(Number(prepPosition))
+          ? Number(prepPosition)
+          : null,
     source_app_id: String(issue.source_app_id ?? issue.sourceAppId ?? "").trim() || null,
     created_at: issue.created_at ?? now(),
     updated_at: issue.updated_at ?? now(),
@@ -2962,6 +2978,16 @@ function listThreadIssues(threadId) {
     });
 }
 
+function serializeIssueForClient(issue) {
+  return normalizeIssueCard(issue);
+}
+
+function listThreadIssuesForClient(threadId) {
+  return listThreadIssues(threadId)
+    .map((issue) => serializeIssueForClient(issue))
+    .filter(Boolean);
+}
+
 function listThreadTimeline(threadId) {
   const issues = listThreadIssues(threadId)
     .slice()
@@ -3821,6 +3847,47 @@ function getProjectInstructionOverrides(userId, projectId) {
   };
 }
 
+function mergeDeveloperInstructionTexts(...values) {
+  return values
+    .map((value) => normalizeInstructionText(value))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function getThreadDeveloperInstruction(userId, threadId) {
+  const normalizedThreadId = sanitizeBridgeId(threadId);
+  const thread = threadStateById.get(normalizedThreadId);
+
+  if (!thread || threadOwners.get(normalizedThreadId) !== sanitizeUserId(userId)) {
+    return "";
+  }
+
+  return normalizeInstructionText(thread.developer_instructions);
+}
+
+function buildThreadInstructionOverrides(userId, projectId, threadId) {
+  const projectOverrides = getProjectInstructionOverrides(userId, projectId);
+  try {
+    const developerInstructions = mergeDeveloperInstructionTexts(
+      projectOverrides.developerInstructions,
+      getThreadDeveloperInstruction(userId, threadId)
+    );
+
+    return {
+      ...(projectOverrides.baseInstructions ? { baseInstructions: projectOverrides.baseInstructions } : {}),
+      ...(developerInstructions ? { developerInstructions } : {})
+    };
+  } catch (error) {
+    console.warn("[OctOP bridge] thread developer instruction merge failed; falling back to project instructions", {
+      user_id: sanitizeUserId(userId),
+      project_id: projectId ?? null,
+      thread_id: threadId ?? null,
+      error: error?.message ?? String(error)
+    });
+    return projectOverrides;
+  }
+}
+
 async function createProjectThread(userId, payload = {}) {
   const state = ensureUserState(userId);
   const projectId = String(payload.project_id ?? payload.projectId ?? "").trim();
@@ -3876,13 +3943,21 @@ async function createProjectThread(userId, payload = {}) {
 
 async function updateProjectThread(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
+  const hasNameUpdate = payload.name !== undefined && payload.name !== null;
+  const hasDeveloperInstructionsUpdate =
+    Object.prototype.hasOwnProperty.call(payload, "update_developer_instructions") &&
+    Boolean(payload.update_developer_instructions);
   const name = String(payload.name ?? "").trim();
 
   if (!threadId) {
     throw new Error("변경할 thread id가 필요합니다.");
   }
 
-  if (!name) {
+  if (!hasNameUpdate && !hasDeveloperInstructionsUpdate) {
+    throw new Error("변경할 thread 값이 필요합니다.");
+  }
+
+  if (hasNameUpdate && !name) {
     throw new Error("thread 이름이 필요합니다.");
   }
 
@@ -3894,7 +3969,14 @@ async function updateProjectThread(userId, payload = {}) {
 
   const next = {
     ...current,
-    name,
+    ...(hasNameUpdate ? { name } : {}),
+    ...(hasDeveloperInstructionsUpdate
+      ? {
+          developer_instructions: normalizeInstructionText(
+            payload.developer_instructions ?? payload.developerInstructions
+          )
+        }
+      : {}),
     updated_at: now()
   };
 
@@ -4218,7 +4300,7 @@ function deleteRootThreadSummaries(rootThreadId) {
 function buildThreadIssuesResponse(userId, rootThreadId) {
   return {
     thread: threadStateById.get(rootThreadId) ?? null,
-    issues: listThreadIssues(rootThreadId),
+    issues: listThreadIssuesForClient(rootThreadId),
     continuity: getThreadContinuity(userId, rootThreadId)
   };
 }
@@ -4360,7 +4442,7 @@ function getIssueDetail(userId, issueId) {
   }
 
   return {
-    issue,
+    issue: serializeIssueForClient(issue),
     thread,
     messages: listIssueMessages(issueId)
   };
@@ -4411,10 +4493,13 @@ async function createThreadIssue(userId, payload = {}) {
   });
   updateProjectThreadSnapshot(threadId);
   persistThreadById(threadId);
-  await publishEvent(userId, "issue.created", { issue, thread_id: threadId });
+  await publishEvent(userId, "issue.created", {
+    issue: serializeIssueForClient(issue),
+    thread_id: threadId
+  });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: threadId,
@@ -4429,8 +4514,8 @@ async function createThreadIssue(userId, payload = {}) {
 
   return {
     accepted: true,
-    issue,
-    issues: listThreadIssues(threadId)
+    issue: serializeIssueForClient(issue),
+    issues: listThreadIssuesForClient(threadId)
   };
 }
 
@@ -4461,7 +4546,11 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
 
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
-  const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
+  const instructionOverrides = buildThreadInstructionOverrides(
+    userId,
+    physicalThread.project_id,
+    physicalThread.root_thread_id
+  );
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
@@ -4635,7 +4724,7 @@ async function startTurnOnPhysicalThread(
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: rootThreadId,
-    issues: listThreadIssues(rootThreadId)
+    issues: listThreadIssuesForClient(rootThreadId)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: rootThreadId,
@@ -4696,7 +4785,7 @@ async function startTurnOnPhysicalThread(
       });
       await publishEvent(userId, "bridge.threadIssues.updated", {
         thread_id: rootThreadId,
-        issues: listThreadIssues(rootThreadId)
+        issues: listThreadIssuesForClient(rootThreadId)
       });
       await publishEvent(userId, "logicalThread.timeline.updated", {
         root_thread_id: rootThreadId,
@@ -4757,7 +4846,7 @@ async function startTurnOnPhysicalThread(
       });
       await publishEvent(userId, "bridge.threadIssues.updated", {
         thread_id: rootThreadId,
-        issues: listThreadIssues(rootThreadId)
+        issues: listThreadIssuesForClient(rootThreadId)
       });
       await publishEvent(userId, "logicalThread.timeline.updated", {
         root_thread_id: rootThreadId,
@@ -4951,7 +5040,7 @@ async function startThreadIssues(userId, payload = {}) {
   if (eligibleIssueIds.length === 0) {
     return {
       accepted: true,
-      issues: listThreadIssues(threadId)
+      issues: listThreadIssuesForClient(threadId)
     };
   }
 
@@ -4978,7 +5067,7 @@ async function startThreadIssues(userId, payload = {}) {
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: threadId,
@@ -4995,7 +5084,7 @@ async function startThreadIssues(userId, payload = {}) {
   return {
     accepted: true,
     blocked_by_thread_id: null,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   };
 }
 
@@ -5024,12 +5113,12 @@ async function reorderThreadIssues(userId, payload = {}) {
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   });
 
   return {
     accepted: true,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   };
 }
 
@@ -5046,7 +5135,7 @@ async function reorderPrepIssues(userId, payload = {}) {
   if (stagedIds.length === 0) {
     return {
       accepted: true,
-      issues: listThreadIssues(threadId)
+      issues: listThreadIssuesForClient(threadId)
     };
   }
 
@@ -5055,7 +5144,7 @@ async function reorderPrepIssues(userId, payload = {}) {
   if (reordered.length === 0) {
     return {
       accepted: true,
-      issues: listThreadIssues(threadId)
+      issues: listThreadIssuesForClient(threadId)
     };
   }
 
@@ -5080,12 +5169,12 @@ async function reorderPrepIssues(userId, payload = {}) {
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   });
 
   return {
     accepted: true,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   };
 }
 
@@ -5145,7 +5234,7 @@ async function deleteThreadIssue(userId, payload = {}) {
           action: "stop_failed",
           error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
           thread,
-          issues: listThreadIssues(issue.thread_id),
+          issues: listThreadIssuesForClient(issue.thread_id),
           issue_id: issueId,
           interrupt_result: {
             interrupted: interruptResult.interrupted,
@@ -5192,7 +5281,7 @@ async function deleteThreadIssue(userId, payload = {}) {
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: issue.thread_id,
-    issues: listThreadIssues(issue.thread_id)
+    issues: listThreadIssuesForClient(issue.thread_id)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: issue.thread_id,
@@ -5213,7 +5302,7 @@ async function deleteThreadIssue(userId, payload = {}) {
 
   return {
     accepted: true,
-    issues: listThreadIssues(issue.thread_id),
+    issues: listThreadIssuesForClient(issue.thread_id),
     deleted_issue_id: issueId,
     recovery_steps: recoverySteps,
     interrupt_result: interruptResult
@@ -5253,7 +5342,7 @@ async function interruptThreadIssue(userId, payload = {}) {
       accepted: true,
       action: "noop",
       thread,
-      issues: listThreadIssues(issue.thread_id)
+      issues: listThreadIssuesForClient(issue.thread_id)
     };
   }
 
@@ -5286,7 +5375,7 @@ async function interruptThreadIssue(userId, payload = {}) {
         action: "stop_failed",
         error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
         thread,
-        issues: listThreadIssues(issue.thread_id),
+        issues: listThreadIssuesForClient(issue.thread_id),
         issue_id: issueId,
         interrupt_result: {
           interrupted: interruptResult.interrupted,
@@ -5354,7 +5443,7 @@ async function interruptThreadIssue(userId, payload = {}) {
     accepted: true,
     action: wasActive || wasQueued ? "interrupted" : nextIssueStatus === "staged" ? "restaged" : "interrupted",
     thread: threadStateById.get(issue.thread_id) ?? thread,
-    issues: listThreadIssues(issue.thread_id),
+    issues: listThreadIssuesForClient(issue.thread_id),
     issue_id: issueId,
     recovery_steps: recoverySteps,
     interrupt_result: interruptResult
@@ -5397,7 +5486,7 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       accepted: true,
       action: clearedInvalidTracking ? "recovered_tracking" : "noop",
       thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssues(rootThreadId),
+      issues: listThreadIssuesForClient(rootThreadId),
       stopped_issue_id: null,
       recovery_steps: recoverySteps,
       verification: null,
@@ -5414,7 +5503,7 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       action: "stop_unverified",
       error: "활성 thread binding이 없어 안전하게 정지할 수 없습니다.",
       thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssues(rootThreadId),
+      issues: listThreadIssuesForClient(rootThreadId),
       stopped_issue_id: trackedIssue.id,
       recovery_steps: recoverySteps,
       verification: {
@@ -5452,7 +5541,7 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       action: "stop_unverified",
       error: "원격 실행 중단 여부를 확인하지 못했습니다.",
       thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssues(rootThreadId),
+      issues: listThreadIssuesForClient(rootThreadId),
       stopped_issue_id: trackedIssue.id,
       recovery_steps: recoverySteps,
       verification: {
@@ -5489,7 +5578,7 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       action: "still_running",
       error: "원격 실행이 아직 중단되지 않았습니다.",
       thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssues(rootThreadId),
+      issues: listThreadIssuesForClient(rootThreadId),
       stopped_issue_id: trackedIssue.id,
       recovery_steps: recoverySteps,
       verification: {
@@ -5540,7 +5629,7 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
     accepted: true,
     action: "stopped",
     thread: threadStateById.get(rootThreadId) ?? rootThread,
-    issues: listThreadIssues(rootThreadId),
+    issues: listThreadIssuesForClient(rootThreadId),
     stopped_issue_id: trackedIssue.id,
     recovery_steps: recoverySteps,
     verification: {
@@ -5593,11 +5682,11 @@ async function moveThreadIssue(userId, payload = {}) {
     return {
       accepted: true,
       action: "noop",
-      issue,
+      issue: serializeIssueForClient(issue),
       source_thread: sourceThread,
       target_thread: targetThread,
-      source_issues: listThreadIssues(sourceThreadId),
-      target_issues: listThreadIssues(targetThreadId)
+      source_issues: listThreadIssuesForClient(sourceThreadId),
+      target_issues: listThreadIssuesForClient(targetThreadId)
     };
   }
 
@@ -5639,8 +5728,8 @@ async function moveThreadIssue(userId, payload = {}) {
         issue_id: issueId,
         source_thread: sourceThread,
         target_thread: targetThread,
-        source_issues: listThreadIssues(sourceThreadId),
-        target_issues: listThreadIssues(targetThreadId),
+        source_issues: listThreadIssuesForClient(sourceThreadId),
+        target_issues: listThreadIssuesForClient(targetThreadId),
         interrupt_result: {
           interrupted: interruptResult.interrupted,
           stopped_realtime: interruptResult.stoppedRealtime,
@@ -5712,7 +5801,7 @@ async function moveThreadIssue(userId, payload = {}) {
   }
 
   await publishEvent(userId, "issue.moved", {
-    issue: nextIssue,
+    issue: serializeIssueForClient(nextIssue),
     source_thread_id: sourceThreadId,
     target_thread_id: targetThreadId
   });
@@ -5722,11 +5811,11 @@ async function moveThreadIssue(userId, payload = {}) {
   return {
     accepted: true,
     action: "moved",
-    issue: nextIssue,
+    issue: serializeIssueForClient(nextIssue),
     source_thread: threadStateById.get(sourceThreadId) ?? sourceThread,
     target_thread: threadStateById.get(targetThreadId) ?? targetThread,
-    source_issues: listThreadIssues(sourceThreadId),
-    target_issues: listThreadIssues(targetThreadId),
+    source_issues: listThreadIssuesForClient(sourceThreadId),
+    target_issues: listThreadIssuesForClient(targetThreadId),
     recovery_steps: recoverySteps,
     interrupt_result: interruptResult
       ? {
@@ -5794,12 +5883,12 @@ async function updateThreadIssue(userId, payload = {}) {
 
   updateProjectThreadSnapshot(thread.id);
   await publishEvent(userId, "issue.updated", {
-    issue: next,
+    issue: serializeIssueForClient(next),
     thread_id: thread.id
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: thread.id,
-    issues: listThreadIssues(thread.id)
+    issues: listThreadIssuesForClient(thread.id)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: thread.id,
@@ -5814,8 +5903,8 @@ async function updateThreadIssue(userId, payload = {}) {
 
   return {
     accepted: true,
-    issue: next,
-    issues: listThreadIssues(thread.id)
+    issue: serializeIssueForClient(next),
+    issues: listThreadIssuesForClient(thread.id)
   };
 }
 
@@ -6404,7 +6493,6 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       status: "running",
       last_event: "rootThread.rollover.completed"
     });
-    persistThreadById(rootThreadId);
 
     const continuationStartResult = await startTurnOnPhysicalThread(
       userId,
@@ -6544,7 +6632,7 @@ async function publishProjectionRecoverySnapshots(loginId) {
   for (const thread of listProjectThreads(normalized)) {
     await publishEvent(normalized, "bridge.threadIssues.updated", {
       thread_id: thread.id,
-      issues: listThreadIssues(thread.id)
+      issues: listThreadIssuesForClient(thread.id)
     });
     await publishEvent(normalized, "logicalThread.timeline.updated", {
       root_thread_id: thread.id,
@@ -7580,7 +7668,7 @@ class AppServerClient {
       if (threadId) {
         await publishEvent(owner, "bridge.threadIssues.updated", {
           thread_id: threadId,
-          issues: listThreadIssues(threadId)
+          issues: listThreadIssuesForClient(threadId)
         });
         await publishEvent(owner, "logicalThread.timeline.updated", {
           root_thread_id: threadId,
@@ -8474,6 +8562,9 @@ function collectBridgeStatus(userId) {
     },
     nats: {
       connected: !nc.isClosed()
+    },
+    capabilities: {
+      thread_developer_instructions: true
     },
     counts: {
       projects: state.projects.length,
@@ -9398,7 +9489,7 @@ async function publishThreadState(userId, threadId) {
   });
   await publishEvent(userId, "bridge.threadIssues.updated", {
     thread_id: threadId,
-    issues: listThreadIssues(threadId)
+    issues: listThreadIssuesForClient(threadId)
   });
   await publishEvent(userId, "logicalThread.timeline.updated", {
     root_thread_id: threadId,
@@ -9457,7 +9548,7 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
           action: "stop_failed",
           error: "마지막 이슈를 안전하게 중단하지 못했습니다.",
           thread: threadStateById.get(rootThreadId) ?? rootThread,
-          issues: listThreadIssues(rootThreadId),
+          issues: listThreadIssuesForClient(rootThreadId),
           unlocked_issue_id: null,
           queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
           recovery_steps: recoverySteps,
@@ -9528,7 +9619,7 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
           ? "resumed"
           : "noop",
     thread: threadStateById.get(rootThreadId) ?? rootThread,
-    issues: listThreadIssues(rootThreadId),
+    issues: listThreadIssuesForClient(rootThreadId),
     unlocked_issue_id: recoverySteps.includes("released_last_issue_lock") ? trackedIssue?.id ?? null : null,
     queued_issue_ids: [...ensurePendingQueue(rootThreadId)],
     recovery_steps: recoverySteps,
