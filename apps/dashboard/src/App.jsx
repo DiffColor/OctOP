@@ -509,6 +509,7 @@ const COPY = {
       languageEnglish: "English",
       generalInstruction: "General Instruction",
       developerInstruction: "Developer Instruction",
+      threadEdit: "Edit Thread",
       threadInstruction: "Thread Instruction",
       instructionSet: "Set",
       instructionEdit: "Edit",
@@ -529,6 +530,11 @@ const COPY = {
         "Saved on the selected project and injected into app-server developerInstructions when a thread starts.",
       instructionDialogHintThreadDeveloper:
         "Saved only on this thread and appended after the project developerInstructions on the next run for this thread.",
+      threadEditDialogTitle: "Edit Thread",
+      threadEditDialogNameLabel: "Title",
+      threadEditDialogNamePlaceholder: "Enter the thread title.",
+      threadEditDialogUnsupported:
+        "The connected bridge does not support thread-specific developer instructions, so only the title can be changed.",
       threadCreateDialogTitle: "Start New Thread",
       threadCreateDialogProjectHint: "Project",
       threadCreateDialogNameLabel: "Title",
@@ -696,6 +702,7 @@ const COPY = {
       languageEnglish: "영어",
       generalInstruction: "일반지침",
       developerInstruction: "개발지침",
+      threadEdit: "쓰레드 편집",
       threadInstruction: "Thread 개발지침",
       instructionSet: "설정",
       instructionEdit: "수정",
@@ -716,6 +723,11 @@ const COPY = {
         "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다.",
       instructionDialogHintThreadDeveloper:
         "현재 쓰레드에만 저장되며, 다음 실행 흐름부터 프로젝트 개발지침 뒤에 이어 붙여 app-server developerInstructions로 주입됩니다.",
+      threadEditDialogTitle: "쓰레드 편집",
+      threadEditDialogNameLabel: "제목",
+      threadEditDialogNamePlaceholder: "쓰레드 제목을 입력해 주세요.",
+      threadEditDialogUnsupported:
+        "현재 연결된 브리지는 쓰레드 전용 개발지침 저장을 지원하지 않아 제목만 수정할 수 있습니다.",
       threadCreateDialogTitle: "새 쓰레드 시작",
       threadCreateDialogProjectHint: "프로젝트",
       threadCreateDialogNameLabel: "제목",
@@ -1258,6 +1270,168 @@ function formatDateTime(value, language) {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
+}
+
+const FENCED_CODE_BLOCK_PATTERN = /```([^\n`]*)\n?([\s\S]*?)```/g;
+const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
+const SHELL_CODE_LANGUAGES = new Set(["sh", "shell", "bash", "zsh", "console", "terminal", "shellscript"]);
+
+function parseRichMessageContent(content) {
+  const normalized = String(content ?? "");
+
+  if (!normalized) {
+    return [];
+  }
+
+  const segments = [];
+  let lastIndex = 0;
+  FENCED_CODE_BLOCK_PATTERN.lastIndex = 0;
+
+  for (const match of normalized.matchAll(FENCED_CODE_BLOCK_PATTERN)) {
+    const [raw, language = "", code = ""] = match;
+    const matchIndex = match.index ?? 0;
+
+    if (matchIndex > lastIndex) {
+      segments.push({
+        type: "text",
+        value: normalized.slice(lastIndex, matchIndex)
+      });
+    }
+
+    segments.push({
+      type: "code",
+      language: String(language ?? "").trim(),
+      value: String(code ?? "").replace(/\n$/, "")
+    });
+    lastIndex = matchIndex + raw.length;
+  }
+
+  if (lastIndex < normalized.length) {
+    segments.push({
+      type: "text",
+      value: normalized.slice(lastIndex)
+    });
+  }
+
+  return segments;
+}
+
+function inferCodeBlockLabel(language, content) {
+  const normalizedLanguage = String(language ?? "").trim().toLowerCase();
+
+  if (normalizedLanguage) {
+    if (SHELL_CODE_LANGUAGES.has(normalizedLanguage)) {
+      return "shell";
+    }
+
+    return normalizedLanguage;
+  }
+
+  const normalizedContent = String(content ?? "").trim();
+  const looksLikeShell =
+    /(^|\n)\s*[$#>]\s/.test(normalizedContent) ||
+    /(^|\n)\s*(pnpm|npm|yarn|bun|git|cd|ls|mkdir|rm|cp|mv|cat|sed|awk|curl|wget|ssh|docker|kubectl)\b/.test(
+      normalizedContent
+    );
+
+  return looksLikeShell ? "shell" : "code";
+}
+
+function renderInlineCodeTokens(text, inlineCodeClassName, keyPrefix) {
+  const normalized = String(text ?? "");
+
+  if (!normalized) {
+    return null;
+  }
+
+  INLINE_CODE_PATTERN.lastIndex = 0;
+  const nodes = [];
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of normalized.matchAll(INLINE_CODE_PATTERN)) {
+    const [raw, codeText = ""] = match;
+    const matchIndex = match.index ?? 0;
+
+    if (matchIndex > lastIndex) {
+      nodes.push(
+        <span key={`${keyPrefix}-text-${tokenIndex}`}>{normalized.slice(lastIndex, matchIndex)}</span>
+      );
+    }
+
+    nodes.push(
+      <code
+        key={`${keyPrefix}-code-${tokenIndex}`}
+        className={`rounded-lg border px-1.5 py-0.5 font-mono text-[0.92em] ${inlineCodeClassName}`}
+      >
+        {codeText}
+      </code>
+    );
+
+    lastIndex = matchIndex + raw.length;
+    tokenIndex += 1;
+  }
+
+  if (lastIndex < normalized.length) {
+    nodes.push(<span key={`${keyPrefix}-tail`}>{normalized.slice(lastIndex)}</span>);
+  }
+
+  return nodes.length > 0 ? nodes : normalized;
+}
+
+function RichMessageContent({ content, tone = "dark" }) {
+  const segments = parseRichMessageContent(content);
+  const inlineCodeClassName =
+    tone === "brand"
+      ? "border-slate-950/10 bg-slate-950/10 text-slate-950"
+      : "border-white/10 bg-white/5 text-slate-100";
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {segments.map((segment, index) => {
+        if (segment.type === "code") {
+          const label = inferCodeBlockLabel(segment.language, segment.value);
+
+          return (
+            <div
+              key={`code-${index}`}
+              className="overflow-hidden rounded-2xl border border-white/10 bg-[#050913] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-white/5 bg-white/[0.03] px-3 py-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-300/90" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/90" />
+                </div>
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                  {label}
+                </span>
+              </div>
+              <div className="overflow-x-auto px-3 py-3">
+                <pre className="m-0 w-max min-w-full font-mono text-[13px] leading-6 text-slate-100">
+                  <code>{segment.value}</code>
+                </pre>
+              </div>
+            </div>
+          );
+        }
+
+        if (!String(segment.value ?? "").trim()) {
+          return null;
+        }
+
+        return (
+          <p key={`text-${index}`} className="whitespace-pre-wrap break-words text-sm leading-6">
+            {renderInlineCodeTokens(segment.value, inlineCodeClassName, `segment-${index}`)}
+          </p>
+        );
+      })}
+    </div>
+  );
 }
 
 function formatRelativeTime(value, language) {
@@ -3512,17 +3686,29 @@ function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }
   );
 }
 
-function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, onClose, onSubmit }) {
+function ThreadEditDialog({
+  language,
+  open,
+  busy,
+  thread,
+  threadInstructionSupported = false,
+  errorMessage,
+  onClose,
+  onSubmit
+}) {
   const copy = getCopy(language);
-  const [value, setValue] = useState("");
+  const [name, setName] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
 
   useEffect(() => {
     if (!open) {
-      setValue("");
+      setName("");
+      setDeveloperInstructions("");
       return;
     }
 
-    setValue(thread?.developer_instructions ?? "");
+    setName(thread?.name ?? "");
+    setDeveloperInstructions(thread?.developer_instructions ?? "");
   }, [open, thread]);
 
   if (!open || !thread) {
@@ -3531,8 +3717,14 @@ function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, o
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+
+    if (!name.trim()) {
+      return;
+    }
+
     await onSubmit({
-      value
+      name: name.trim(),
+      developerInstructions
     });
   };
 
@@ -3542,7 +3734,7 @@ function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, o
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.instructionDialogThread}</p>
-            <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadInstruction}</h2>
+            <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadEditDialogTitle}</h2>
             <p className="mt-2 text-sm text-slate-400">{thread.name}</p>
           </div>
           <button
@@ -3555,17 +3747,45 @@ function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, o
         </div>
 
         <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
-          <textarea
-            rows="12"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            placeholder={copy.footer.instructionDialogPlaceholderThreadDeveloper}
-            className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
-          />
-
-          <div className="rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-xs leading-6 text-slate-300">
-            {copy.footer.instructionDialogHintThreadDeveloper}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-name">
+              {copy.footer.threadEditDialogNameLabel}
+            </label>
+            <input
+              id="thread-edit-name"
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={copy.footer.threadEditDialogNamePlaceholder}
+              className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
           </div>
+
+          {threadInstructionSupported ? (
+            <>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-developer-instructions">
+                  {copy.footer.developerInstruction}
+                </label>
+                <textarea
+                  id="thread-edit-developer-instructions"
+                  rows="12"
+                  value={developerInstructions}
+                  onChange={(event) => setDeveloperInstructions(event.target.value)}
+                  placeholder={copy.footer.instructionDialogPlaceholderThreadDeveloper}
+                  className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
+                />
+              </div>
+
+              <div className="rounded-2xl border border-emerald-400/15 bg-emerald-500/5 px-4 py-3 text-xs leading-6 text-slate-300">
+                {copy.footer.instructionDialogHintThreadDeveloper}
+              </div>
+            </>
+          ) : (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-6 text-slate-300">
+              {copy.footer.threadEditDialogUnsupported}
+            </div>
+          )}
 
           {errorMessage ? (
             <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs leading-6 text-rose-200">
@@ -3583,7 +3803,7 @@ function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, o
             </button>
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || !name.trim()}
               className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? copy.footer.instructionDialogSaving : copy.footer.instructionDialogSave}
@@ -3598,9 +3818,7 @@ function ThreadInstructionDialog({ language, open, busy, thread, errorMessage, o
 function ThreadContextMenu({
   language,
   menuState,
-  threadInstructionSupported,
   onRename,
-  onOpenInstruction,
   onDelete,
   onClose
 }) {
@@ -3627,17 +3845,8 @@ function ThreadContextMenu({
           onClick={onRename}
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-slate-800"
         >
-          {copy.board.rename}
+          {copy.footer.threadEdit}
         </button>
-        {threadInstructionSupported ? (
-          <button
-            type="button"
-            onClick={onOpenInstruction}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-emerald-200 transition hover:bg-emerald-500/10"
-          >
-            {copy.footer.threadInstruction}
-          </button>
-        ) : null}
         <button
           type="button"
           onClick={onDelete}
@@ -3654,13 +3863,8 @@ function SidebarThreadItem({
   language,
   thread,
   active,
-  editing,
-  editingName,
   onSelect,
-  onBeginRename,
-  onChangeRename,
-  onSubmitRename,
-  onCancelRename,
+  onEdit,
   onContextMenu,
   issueDropActive,
   canAcceptIssueDrop,
@@ -3705,39 +3909,17 @@ function SidebarThreadItem({
             : "text-slate-400 hover:bg-slate-800 hover:text-white"
       }`}
     >
-      {editing ? (
-        <input
-          type="text"
-          autoFocus
-          value={editingName}
-          onChange={(event) => onChangeRename(event.target.value)}
-          onBlur={() => void onSubmitRename(thread)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void onSubmitRename(thread);
-            }
-
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onCancelRename();
-            }
-          }}
-          className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm text-white outline-none ring-1 ring-sky-400/20"
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={() => onSelect(thread.id)}
-          onDoubleClick={() => onBeginRename(thread)}
-          className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
-        >
-          <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
-          <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
-            {compactUpdatedAt}
-          </span>
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => onSelect(thread.id)}
+        onDoubleClick={() => onEdit(thread.id)}
+        className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+      >
+        <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
+        <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
+          {compactUpdatedAt}
+        </span>
+      </button>
     </div>
   );
 }
@@ -3833,7 +4015,7 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
                           {formatDateTime(message.timestamp, language)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p>
+                      <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
                     </div>
                   </div>
                 );
@@ -4342,7 +4524,6 @@ function MainPage({
   onCloseThreadCreateDialog,
   onSubmitThreadCreateDialog,
   onOpenThreadInstructionDialog,
-  onRenameThread,
   onDeleteThread,
   onOpenThreadMenu,
   onCloseThreadMenu,
@@ -4701,9 +4882,6 @@ function MainPage({
     },
     [onToggleIssueSelection]
   );
-  const [editingThreadId, setEditingThreadId] = useState("");
-  const [editingThreadName, setEditingThreadName] = useState("");
-
   useEffect(() => {
     storeSidebarWidth(sidebarWidth);
   }, [sidebarWidth]);
@@ -4958,31 +5136,6 @@ function MainPage({
     }
   };
 
-  const beginThreadRename = (thread) => {
-    setEditingThreadId(thread.id);
-    setEditingThreadName(thread.name);
-  };
-
-  const cancelThreadRename = () => {
-    setEditingThreadId("");
-    setEditingThreadName("");
-  };
-
-  const submitThreadRename = async (thread) => {
-    const nextName = editingThreadName.trim();
-
-    if (!nextName || nextName === thread.name) {
-      cancelThreadRename();
-      return;
-    }
-
-    const accepted = await onRenameThread(thread.id, nextName);
-
-    if (accepted) {
-      cancelThreadRename();
-    }
-  };
-
   const startSidebarResize = (event) => {
     event.preventDefault();
     const originX = event.clientX;
@@ -5177,13 +5330,8 @@ function MainPage({
                                     language={language}
                                     thread={thread}
                                     active={thread.id === selectedProjectThreadId}
-                                    editing={editingThreadId === thread.id}
-                                    editingName={editingThreadName}
                                     onSelect={handleSelectSidebarThread}
-                                    onBeginRename={beginThreadRename}
-                                    onChangeRename={setEditingThreadName}
-                                    onSubmitRename={submitThreadRename}
-                                    onCancelRename={cancelThreadRename}
+                                    onEdit={onOpenThreadInstructionDialog}
                                     onContextMenu={onOpenThreadMenu}
                                     issueDropActive={issueMoveTargetThreadId === thread.id}
                                     canAcceptIssueDrop={draggingMovableIssueIds.length > 0 && thread.id !== selectedProjectThreadId}
@@ -5237,6 +5385,19 @@ function MainPage({
               </div>
 
               <div className="ml-4 flex shrink-0 items-center space-x-3">
+                <button
+                  type="button"
+                  onClick={() => onOpenThreadInstructionDialog(selectedProjectThread?.id ?? "")}
+                  disabled={!bridgeAvailable || !selectedProjectThread}
+                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                    selectedThreadHasDeveloperInstructions
+                      ? "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
+                      : "border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  {copy.footer.threadEdit}
+                </button>
+
                 <div className="relative hidden sm:block">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                     <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5704,28 +5865,6 @@ function MainPage({
                     {copy.footer.developerInstruction} ·{" "}
                     {selectedProjectHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenThreadInstructionDialog(selectedProjectThread?.id ?? "")}
-                    disabled={!selectedProjectThread || !threadInstructionSupported}
-                    title={
-                      !selectedProjectThread
-                        ? copy.footer.instructionMissingThread
-                        : !threadInstructionSupported
-                          ? language === "ko"
-                            ? "연결된 브리지가 채팅창 개발지침 저장을 지원하지 않습니다."
-                            : "The connected bridge does not support thread instruction saving."
-                          : copy.footer.threadInstruction
-                    }
-                    className={`rounded-full border px-2.5 py-1 transition ${
-                      selectedThreadHasDeveloperInstructions
-                        ? "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:border-amber-300/40"
-                        : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white"
-                    } disabled:cursor-not-allowed disabled:opacity-50`}
-                  >
-                    {copy.footer.threadInstruction} ·{" "}
-                    {selectedThreadHasDeveloperInstructions ? copy.footer.instructionEdit : copy.footer.instructionSet}
-                  </button>
                 </>
               ) : null}
             </div>
@@ -5837,11 +5976,12 @@ function MainPage({
 	        onClose={onCloseProjectInstructionDialog}
 	        onSubmit={onSubmitProjectInstruction}
 	      />
-      <ThreadInstructionDialog
+      <ThreadEditDialog
         language={language}
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={selectedProjectThread}
+        threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}
         onSubmit={onSubmitThreadInstruction}
@@ -5883,14 +6023,7 @@ function MainPage({
       <ThreadContextMenu
         language={language}
         menuState={threadMenuState}
-        threadInstructionSupported={threadInstructionSupported}
         onRename={() => {
-          onCloseThreadMenu();
-          if (threadMenuState.thread) {
-            beginThreadRename(threadMenuState.thread);
-          }
-        }}
-        onOpenInstruction={() => {
           onCloseThreadMenu();
           if (threadMenuState.thread) {
             onOpenThreadInstructionDialog(threadMenuState.thread.id);
@@ -8613,7 +8746,7 @@ export default function App() {
   const handleOpenThreadInstructionDialog = (threadId = "") => {
     const normalizedThreadId = String(threadId ?? "").trim();
 
-    if (!normalizedThreadId || !threadInstructionSupported) {
+    if (!normalizedThreadId) {
       return;
     }
 
@@ -8631,7 +8764,7 @@ export default function App() {
     setThreadInstructionDialogOpen(false);
   };
 
-  const handleSubmitThreadInstruction = async ({ value }) => {
+  const handleSubmitThreadInstruction = async ({ name, developerInstructions }) => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId) {
       return;
     }
@@ -8640,14 +8773,20 @@ export default function App() {
     setThreadInstructionError("");
 
     try {
+      const requestBody = {
+        name: String(name ?? "").trim()
+      };
+
+      if (threadInstructionSupported) {
+        requestBody.developer_instructions = String(developerInstructions ?? "");
+        requestBody.update_developer_instructions = true;
+      }
+
       const response = await apiRequest(
         `/api/threads/${encodeURIComponent(selectedProjectThreadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "PATCH",
-          body: JSON.stringify({
-            developer_instructions: value,
-            update_developer_instructions: true
-          })
+          body: JSON.stringify(requestBody)
         }
       );
 
@@ -8673,41 +8812,6 @@ export default function App() {
       ].slice(0, 20));
     } finally {
       setThreadInstructionBusy(false);
-    }
-  };
-
-  const handleRenameThread = async (threadId, name) => {
-    if (!session?.loginId || !selectedBridgeId || !threadId) {
-      return false;
-    }
-
-    try {
-      const response = await apiRequest(
-        `/api/threads/${encodeURIComponent(threadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ name })
-        }
-      );
-
-      if (Array.isArray(response?.threads)) {
-        setProjectThreads(mergeProjectThreads([], response.threads));
-      } else if (response?.thread?.id) {
-        setProjectThreads((current) => upsertProjectThread(current, response.thread));
-      }
-
-      return true;
-    } catch (error) {
-      setRecentEvents((current) => [
-        {
-          id: createId(),
-          type: "thread.rename.failed",
-          timestamp: new Date().toISOString(),
-          summary: error.message
-        },
-        ...current
-      ].slice(0, 20));
-      return false;
     }
   };
 
@@ -9237,7 +9341,6 @@ export default function App() {
       onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
       onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
       onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
-      onRenameThread={(threadId, name) => handleRenameThread(threadId, name)}
       onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
       onOpenThreadMenu={(event, thread) => {
         event.preventDefault();
