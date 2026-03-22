@@ -3891,10 +3891,9 @@ function getThreadDeveloperInstruction(userId, threadId) {
 function buildThreadInstructionOverrides(userId, projectId, threadId) {
   const projectOverrides = getProjectInstructionOverrides(userId, projectId);
   try {
-    const developerInstructions = mergeDeveloperInstructionTexts(
-      projectOverrides.developerInstructions,
-      getThreadDeveloperInstruction(userId, threadId)
-    );
+    // Experiment patch: keep storing thread developer instructions, but do not
+    // inject them into app-server thread/start until the regression is isolated.
+    const developerInstructions = projectOverrides.developerInstructions;
 
     return {
       ...(projectOverrides.baseInstructions ? { baseInstructions: projectOverrides.baseInstructions } : {}),

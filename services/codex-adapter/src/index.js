@@ -4236,10 +4236,9 @@ function getThreadDeveloperInstruction(userId, threadId) {
 function buildThreadInstructionOverrides(userId, projectId, threadId) {
   const projectOverrides = getProjectInstructionOverrides(userId, projectId);
   try {
-    const developerInstructions = mergeDeveloperInstructionTexts(
-      projectOverrides.developerInstructions,
-      getThreadDeveloperInstruction(userId, threadId)
-    );
+    // Experiment patch: keep storing thread developer instructions, but do not
+    // inject them into app-server thread/start until the regression is isolated.
+    const developerInstructions = projectOverrides.developerInstructions;
 
     return {
       ...(projectOverrides.baseInstructions ? { baseInstructions: projectOverrides.baseInstructions } : {}),
@@ -4902,17 +4901,17 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
   return ensureCodexThreadForActivePhysicalThread(userId, threadId);
 }
 
-async function ensureCodexThreadForActivePhysicalThread(userId, rootThreadId) {
+async function ensureCodexThreadForActivePhysicalThread(userId, rootThreadId, options = {}) {
   const activePhysicalThread = getActivePhysicalThread(rootThreadId);
 
   if (!activePhysicalThread) {
     throw new Error("active physical thread를 찾을 수 없습니다.");
   }
 
-  return ensureCodexThreadForPhysicalThread(userId, activePhysicalThread.id);
+  return ensureCodexThreadForPhysicalThread(userId, activePhysicalThread.id, options);
 }
 
-async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
+async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, options = {}) {
   const physicalThread = physicalThreadStateById.get(physicalThreadId);
 
   if (!physicalThread) {
@@ -4930,13 +4929,14 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
     physicalThread.project_id,
     physicalThread.root_thread_id
   );
+  const reasoningEffort = resolveIssueReasoningEffort(options.issue ?? null);
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
     model: CODEX_MODEL,
-    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   }, "thread/start.ensureCodexThreadForPhysicalThread");
@@ -5084,7 +5084,9 @@ async function startTurnOnPhysicalThread(
         ? buildPrompt(preparedIssue)
         : String(buildPrompt ?? "").trim();
     turnInput = buildIssueTurnInput(preparedIssue, inputPrompt);
-    codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+    codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId, {
+      issue: preparedIssue
+    });
   } catch (error) {
     clearIssueAttachmentStageDirectory(issueId);
     throw error;
@@ -5206,7 +5208,9 @@ async function startTurnOnPhysicalThread(
 
       if (threadNotFound && attempt === 0) {
         invalidateCodexThreadBinding(rootThreadId);
-        await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+        await ensureCodexThreadForPhysicalThread(userId, physicalThreadId, {
+          issue
+        });
         attempt += 1;
         continue;
       }
@@ -6659,20 +6663,41 @@ function listThreadMessages(threadId) {
   return [...(threadMessagesById.get(threadId) ?? [])];
 }
 
-function buildExecutionPrompt(prompt = "") {
+function buildExecutionPrompt(prompt = "", options = {}) {
   const normalizedPrompt = String(prompt ?? "").trim();
-  const instruction = [
-    "아래 프롬프트를 최우선 지시로 따르십시오.",
-    "질문 없이 작업을 순차적으로 끝까지 진행하십시오.",
-    "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
-    "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
-  ].join(" ");
+  const sourceAppId = String(options.sourceAppId ?? "").trim().toLowerCase();
+  const instruction =
+    sourceAppId === "mobile-web"
+      ? [
+          "아래 사용자 프롬프트를 기준으로 핵심 문제와 확인 결과를 먼저 간결하게 제시하십시오.",
+          "꼭 필요한 조사만 빠르게 수행하고 불필요하게 긴 계획 수립이나 과도한 도구 호출은 피하십시오."
+        ].join(" ")
+      : [
+          "아래 프롬프트를 최우선 지시로 따르십시오.",
+          "질문 없이 작업을 순차적으로 끝까지 진행하십시오.",
+          "판단이 필요한 부분은 스스로 가장 합리적인 방법을 선택하십시오.",
+          "중간 확인 요청보다 실제 결과를 만드는 데 집중하십시오."
+        ].join(" ");
 
   if (!normalizedPrompt) {
     return instruction;
   }
 
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
+}
+
+function resolveIssueReasoningEffort(issue = null, fallback = CODEX_REASONING_EFFORT) {
+  const sourceAppId = String(issue?.source_app_id ?? issue?.sourceAppId ?? "").trim().toLowerCase();
+
+  if (sourceAppId !== "mobile-web") {
+    return fallback;
+  }
+
+  if (["none", "low", "medium"].includes(String(fallback ?? "").trim().toLowerCase())) {
+    return fallback;
+  }
+
+  return "medium";
 }
 
 function formatIssueAttachmentSize(sizeBytes) {
@@ -6776,7 +6801,9 @@ function buildExecutionInputPrompt(issue = null) {
     sections.push(attachmentSection);
   }
 
-  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"));
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"), {
+    sourceAppId: issue?.source_app_id ?? issue?.sourceAppId ?? null
+  });
 }
 
 function buildHandoffPrompt(summary, issue = null) {
@@ -6797,7 +6824,9 @@ function buildHandoffPrompt(summary, issue = null) {
     sections.push("", attachmentSection);
   }
 
-  return buildExecutionPrompt(sections.filter(Boolean).join("\n"));
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n"), {
+    sourceAppId: issue?.source_app_id ?? issue?.sourceAppId ?? null
+  });
 }
 
 function buildIssueTurnInput(issue = null, inputPrompt = "") {
@@ -6988,7 +7017,9 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       handoff_summary_id: summary.id,
       status: "active"
     });
-    const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id);
+    const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id, {
+      issue: activeIssue
+    });
     const interrupted = isPreflight
       ? { ok: true, skipped: true }
       : await requestAppServerBestEffort("turn/interrupt", {
