@@ -5773,6 +5773,7 @@ function MainPage({
   todoTransferBusy,
   projectInstructionBusy,
   threadInstructionBusy,
+  threadInstructionError,
   renameBusy,
   threadDeleteDialog,
   utilityOpen,

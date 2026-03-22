@@ -4190,6 +4190,7 @@ function MainPage({
   projectBusy,
   projectInstructionBusy,
   threadInstructionBusy,
+  threadInstructionError,
   issueBusy,
   interruptingIssueId,
   startBusy,
