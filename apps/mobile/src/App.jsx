@@ -4959,7 +4959,6 @@ function ThreadDetail({
   onSubmitPrompt,
   submitBusy,
   onBack,
-  onOpenThreadEditDialog,
   threadInstructionSupported = false,
   messageFilter,
   onChangeMessageFilter,
@@ -4973,7 +4972,6 @@ function ThreadDetail({
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
-  const hasThreadDeveloperInstructions = Boolean(String(thread?.developer_instructions ?? "").trim());
   const scrollRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
@@ -5537,19 +5535,6 @@ function ThreadDetail({
           }`}
         >
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {thread?.id ? (
-              <button
-                type="button"
-                onClick={() => onOpenThreadEditDialog?.(thread)}
-                className={`shrink-0 rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                  hasThreadDeveloperInstructions
-                    ? "border-amber-400/20 bg-amber-500/10 text-amber-100 hover:border-amber-300/30 hover:bg-amber-500/15"
-                    : "border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/8"
-                }`}
-              >
-                채팅창 편집
-              </button>
-            ) : null}
             {THREAD_CONTENT_FILTERS.map((filter) => (
               <button
                 key={filter.id}
@@ -6792,7 +6777,6 @@ function MainPage({
                   onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
                   onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
                   onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
-                  onOpenThreadEditDialog={onOpenThreadInstructionDialog}
                   threadInstructionSupported={threadInstructionSupported}
                   onSubmitPrompt={(payload) => {
                     if (resolvedThread?.id) {
@@ -6838,7 +6822,6 @@ function MainPage({
           onInterruptIssue={resolvedThread?.id ? onInterruptThreadIssue : null}
           onRetryIssue={resolvedThread?.id ? onRetryThreadIssue : null}
           onDeleteIssue={resolvedThread?.id ? onDeleteThreadIssue : null}
-          onOpenThreadEditDialog={onOpenThreadInstructionDialog}
           threadInstructionSupported={threadInstructionSupported}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
