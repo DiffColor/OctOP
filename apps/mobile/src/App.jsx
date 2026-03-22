@@ -5850,28 +5850,27 @@ function ThreadDetail({
                   style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
                 />
                 <span>{status.label}</span>
-                <span className="text-slate-500">{thread.progress}%</span>
                 <span className="text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
               </div>
             </div>
           ) : null}
-	          {thread ? (
-	            <div className="flex justify-center">
-	              <div className="flex flex-wrap items-center justify-center gap-2">
-	                <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
-	                  {getRealtimeProgressText(thread)}
-	                </div>
-	                {contextUsage?.percent != null ? (
-	                  <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
-	                    {formatThreadContextUsage(thread)}
-	                    {contextUsage?.usedTokens !== null && contextUsage?.windowTokens !== null
-	                      ? ` · ${contextUsage.usedTokens.toLocaleString("ko-KR")} / ${contextUsage.windowTokens.toLocaleString("ko-KR")}`
-	                      : ""}
-	                  </div>
-	                ) : null}
-	              </div>
-	            </div>
-	          ) : null}
+          {thread ? (
+            <div className="flex justify-center">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
+                  {getRealtimeProgressText(thread)}
+                </div>
+                {contextUsage?.percent != null ? (
+                  <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-[11px] text-slate-300">
+                    {formatThreadContextUsage(thread)}
+                    {contextUsage?.usedTokens !== null && contextUsage?.windowTokens !== null
+                      ? ` · ${contextUsage.usedTokens.toLocaleString("ko-KR")} / ${contextUsage.windowTokens.toLocaleString("ko-KR")}`
+                      : ""}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <div ref={scrollAnchorRef} />
         </div>
       </div>
