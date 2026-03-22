@@ -3874,7 +3874,7 @@ function mergeDeveloperInstructionTexts(...values) {
   return values
     .map((value) => normalizeInstructionText(value))
     .filter(Boolean)
-    .join(", ");
+    .join("\n\n");
 }
 
 function getThreadDeveloperInstruction(userId, threadId) {
@@ -4776,7 +4776,7 @@ async function startTurnOnPhysicalThread(
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
       const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
-      const turnResponse = await appServer.request("turn/start", {
+      const turnStartParams = {
         threadId: activeCodexThreadId,
         cwd,
         approvalPolicy: CODEX_APPROVAL_POLICY,
@@ -4786,7 +4786,18 @@ async function startTurnOnPhysicalThread(
             text: inputPrompt
           }
         ]
-      }, "turn/start.startTurnOnPhysicalThread");
+      };
+      appendDiagnosticLog("info", "app_server.turn_start.params", "turn/start params before app-server request", {
+        source: "startTurnOnPhysicalThread",
+        user_id: sanitizeUserId(userId),
+        project_id: rootThread.project_id ?? null,
+        root_thread_id: rootThreadId,
+        physical_thread_id: physicalThreadId,
+        issue_id: issueId,
+        codex_thread_id: activeCodexThreadId ?? null,
+        params: turnStartParams
+      });
+      const turnResponse = await appServer.request("turn/start", turnStartParams, "turn/start.startTurnOnPhysicalThread");
 
       const turn = turnResponse.result?.turn ?? null;
       const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId);
@@ -10104,7 +10115,7 @@ async function startThreadTurn(userId, threadId) {
   const cwd = resolveProjectWorkspace(userId, current.project_id);
 
   try {
-    const turnResponse = await appServer.request("turn/start", {
+    const turnStartParams = {
       threadId,
       cwd,
       approvalPolicy: CODEX_APPROVAL_POLICY,
@@ -10116,7 +10127,15 @@ async function startThreadTurn(userId, threadId) {
           )
         }
       ]
-    }, "turn/start.startThreadTurn");
+    };
+    appendDiagnosticLog("info", "app_server.turn_start.params", "turn/start params before app-server request", {
+      source: "startThreadTurn",
+      user_id: sanitizeUserId(userId),
+      project_id: current.project_id ?? null,
+      root_thread_id: threadId,
+      params: turnStartParams
+    });
+    const turnResponse = await appServer.request("turn/start", turnStartParams, "turn/start.startThreadTurn");
 
     const turn = turnResponse.result?.turn ?? null;
 
