@@ -4932,8 +4932,7 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     physicalThread.root_thread_id
   );
   const reasoningEffort = resolveIssueReasoningEffort(options.issue ?? null);
-  await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
-  const threadResponse = await appServer.request("thread/start", {
+  const threadStartParams = {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
@@ -4941,7 +4940,17 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
-  }, "thread/start.ensureCodexThreadForPhysicalThread");
+  };
+  await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
+  appendDiagnosticLog("info", "app_server.thread_start.params", "thread/start params before app-server request", {
+    source: "ensureCodexThreadForPhysicalThread",
+    user_id: sanitizeUserId(userId),
+    project_id: physicalThread.project_id ?? null,
+    root_thread_id: physicalThread.root_thread_id ?? null,
+    physical_thread_id: physicalThreadId,
+    params: threadStartParams
+  });
+  const threadResponse = await appServer.request("thread/start", threadStartParams, "thread/start.ensureCodexThreadForPhysicalThread");
   const codexThread = threadResponse.result?.thread;
 
   if (!codexThread?.id) {
@@ -10775,9 +10784,7 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
-  await appServer.ensureReady("createQueuedIssue");
-
-  const threadResponse = await appServer.request("thread/start", {
+  const threadStartParams = {
     cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandbox: CODEX_SANDBOX,
@@ -10785,7 +10792,17 @@ async function createQueuedIssue(userId, payload = {}) {
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
     ...instructionOverrides
-  }, "thread/start.createQueuedIssue");
+  };
+  await appServer.ensureReady("createQueuedIssue");
+
+  appendDiagnosticLog("info", "app_server.thread_start.params", "thread/start params before app-server request", {
+    source: "createQueuedIssue",
+    user_id: sanitizeUserId(userId),
+    project_id: projectId ?? null,
+    issue_title: issueTitle,
+    params: threadStartParams
+  });
+  const threadResponse = await appServer.request("thread/start", threadStartParams, "thread/start.createQueuedIssue");
   const thread = threadResponse.result?.thread;
 
   if (!thread?.id) {
