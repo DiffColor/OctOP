@@ -28,6 +28,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<PushServiceClient>();
 builder.Services.AddSingleton(_ => new BridgeNatsClient(natsUrl));
 builder.Services.AddSingleton<OctopStore>();
+builder.Services.AddSingleton<GatewayAttachmentStore>();
 builder.Services.AddSingleton<VapidKeyService>();
 builder.Services.AddSingleton<PushSubscriptionService>();
 builder.Services.AddSingleton<WebPushNotificationService>();
@@ -162,6 +163,128 @@ app.MapGet("/health", () =>
     ["ok"] = true,
     ["service"] = "octop-gateway"
   });
+});
+
+app.MapPost("/api/attachments", async (
+  HttpContext httpContext,
+  [FromForm] GatewayAttachmentUploadRequest request,
+  GatewayAttachmentStore attachmentStore,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = BridgeSubjects.SanitizeBridgeId(httpContext.Request.Query["bridge_id"].ToString());
+  var file = request.File;
+
+  if (file is null || file.Length <= 0)
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "attachment file is required",
+        ["code"] = "attachment_file_required"
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  if (file.Length > GatewayAttachmentStore.MaxAttachmentBytes)
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "attachment is too large",
+        ["code"] = "attachment_too_large",
+        ["max_bytes"] = GatewayAttachmentStore.MaxAttachmentBytes
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status413PayloadTooLarge);
+  }
+
+  GatewayAttachmentRecord record;
+
+  try
+  {
+    await using var stream = file.OpenReadStream();
+    record = await attachmentStore.SaveAsync(userId, bridgeId, file.FileName, file.ContentType, stream, cancellationToken);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "attachment_too_large", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "attachment is too large",
+        ["code"] = "attachment_too_large",
+        ["max_bytes"] = GatewayAttachmentStore.MaxAttachmentBytes
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status413PayloadTooLarge);
+  }
+
+  var apiBaseUrl = ResolvePublicApiBaseUrl(httpContext);
+  var downloadUrl = $"{apiBaseUrl}/api/attachments/{Uri.EscapeDataString(record.UploadId)}?token={Uri.EscapeDataString(record.DownloadToken)}";
+  var cleanupUrl = $"{apiBaseUrl}/api/attachments/{Uri.EscapeDataString(record.UploadId)}?cleanup_token={Uri.EscapeDataString(record.CleanupToken)}";
+
+  return Results.Text(
+    new JsonObject
+    {
+      ["attachment"] = new JsonObject
+      {
+        ["upload_id"] = record.UploadId,
+        ["download_url"] = downloadUrl,
+        ["cleanup_url"] = cleanupUrl,
+        ["uploaded_at"] = record.UploadedAt,
+        ["name"] = record.FileName,
+        ["mime_type"] = record.ContentType,
+        ["size_bytes"] = record.SizeBytes
+      }
+    }.ToJsonString(),
+    "application/json; charset=utf-8",
+    statusCode: StatusCodes.Status201Created);
+});
+
+app.MapGet("/api/attachments/{uploadId}", async (
+  string uploadId,
+  HttpContext httpContext,
+  GatewayAttachmentStore attachmentStore,
+  CancellationToken cancellationToken) =>
+{
+  var token = httpContext.Request.Query["token"].ToString();
+  var record = await attachmentStore.GetAsync(uploadId, cancellationToken);
+
+  if (record is null || !string.Equals(record.DownloadToken, token, StringComparison.Ordinal))
+  {
+    return Results.NotFound();
+  }
+
+  var filePath = attachmentStore.GetFilePath(record);
+
+  if (!File.Exists(filePath))
+  {
+    return Results.NotFound();
+  }
+
+  httpContext.Response.Headers.CacheControl = "private, max-age=300";
+  return Results.File(filePath, record.ContentType, fileDownloadName: record.FileName);
+});
+
+app.MapDelete("/api/attachments/{uploadId}", async (
+  string uploadId,
+  HttpContext httpContext,
+  GatewayAttachmentStore attachmentStore,
+  CancellationToken cancellationToken) =>
+{
+  var cleanupToken = httpContext.Request.Query["cleanup_token"].ToString();
+
+  if (string.IsNullOrWhiteSpace(cleanupToken))
+  {
+    return Results.NotFound();
+  }
+
+  var deleted = await attachmentStore.DeleteAsync(uploadId, cleanupToken, cancellationToken);
+  return deleted ? Results.NoContent() : Results.NotFound();
 });
 
 app.MapPost("/api/auth/login", async (HttpContext httpContext, IHttpClientFactory httpClientFactory, OctopStore octopStore, CancellationToken cancellationToken) =>
@@ -2056,6 +2179,18 @@ static string ResolveIdentityKey(HttpContext httpContext)
   }
 
   return BridgeSubjects.SanitizeUserId(httpContext.Request.Query["user_id"].ToString());
+}
+
+static string ResolvePublicApiBaseUrl(HttpContext httpContext)
+{
+  var configured = Environment.GetEnvironmentVariable("OCTOP_PUBLIC_API_BASE_URL");
+
+  if (!string.IsNullOrWhiteSpace(configured))
+  {
+    return configured.TrimEnd('/');
+  }
+
+  return $"{httpContext.Request.Scheme}://{httpContext.Request.Host.Value}".TrimEnd('/');
 }
 
 static string ResolvePushAppId(HttpContext httpContext)

@@ -1726,7 +1726,7 @@ async function apiRequest(path, options = {}) {
       cache: options.cache ?? "no-store",
       headers: {
         Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
         ...(options.headers ?? {})
       }
     });
@@ -2079,6 +2079,22 @@ function normalizeIssueAttachment(attachment) {
   const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim();
   const textContent = attachment.text_content == null ? null : String(attachment.text_content);
   const previewUrl = attachment.preview_url == null ? null : String(attachment.preview_url);
+  const uploadId =
+    attachment.upload_id == null && attachment.uploadId == null
+      ? null
+      : String(attachment.upload_id ?? attachment.uploadId).trim() || null;
+  const downloadUrl =
+    attachment.download_url == null && attachment.downloadUrl == null
+      ? null
+      : String(attachment.download_url ?? attachment.downloadUrl).trim() || null;
+  const cleanupUrl =
+    attachment.cleanup_url == null && attachment.cleanupUrl == null
+      ? null
+      : String(attachment.cleanup_url ?? attachment.cleanupUrl).trim() || null;
+  const uploadedAt =
+    attachment.uploaded_at == null && attachment.uploadedAt == null
+      ? null
+      : String(attachment.uploaded_at ?? attachment.uploadedAt).trim() || null;
 
   return {
     id: String(attachment.id ?? createIssueAttachmentId()).trim() || createIssueAttachmentId(),
@@ -2090,7 +2106,11 @@ function normalizeIssueAttachment(attachment) {
       : 0,
     preview_url: previewUrl || null,
     text_content: textContent && textContent.length > 0 ? textContent : null,
-    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated)
+    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated),
+    upload_id: uploadId,
+    download_url: downloadUrl,
+    cleanup_url: cleanupUrl,
+    uploaded_at: uploadedAt
   };
 }
 
@@ -2102,7 +2122,46 @@ function normalizeIssueAttachments(attachments) {
   return attachments.map((attachment) => normalizeIssueAttachment(attachment)).filter(Boolean);
 }
 
-async function createIssueAttachmentFromFile(file) {
+async function uploadIssueAttachmentFile(file, bridgeId) {
+  const formData = new FormData();
+  formData.set("file", file);
+  const query = bridgeId ? `?bridge_id=${encodeURIComponent(bridgeId)}` : "";
+  const response = await apiRequest(`/api/attachments${query}`, {
+    method: "POST",
+    body: formData
+  });
+
+  return normalizeIssueAttachment(response?.attachment) ?? {};
+}
+
+async function cleanupIssueAttachmentUpload(attachment) {
+  const cleanupUrl = String(attachment?.cleanup_url ?? attachment?.cleanupUrl ?? "").trim();
+
+  if (!cleanupUrl) {
+    return;
+  }
+
+  try {
+    await fetch(cleanupUrl, {
+      method: "DELETE",
+      keepalive: true
+    });
+  } catch {
+    // noop
+  }
+}
+
+async function cleanupIssueAttachmentUploads(attachments) {
+  const normalizedAttachments = normalizeIssueAttachments(attachments);
+
+  await Promise.allSettled(
+    normalizedAttachments
+      .filter((attachment) => attachment.cleanup_url)
+      .map((attachment) => cleanupIssueAttachmentUpload(attachment))
+  );
+}
+
+async function createIssueAttachmentFromFile(file, bridgeId) {
   const mimeType = String(file?.type ?? "").trim();
   const attachment = {
     id: createIssueAttachmentId(),
@@ -2114,22 +2173,39 @@ async function createIssueAttachmentFromFile(file) {
     text_content: null,
     text_truncated: false
   };
+  const shouldInlineText = shouldInlineTextAttachment(file);
 
   if (attachment.kind === "image") {
+    const uploaded = await uploadIssueAttachmentFile(file, bridgeId);
     attachment.preview_url = await createImageThumbnailDataUrl(file);
+    attachment.upload_id = uploaded.upload_id ?? null;
+    attachment.download_url = uploaded.download_url ?? null;
+    attachment.cleanup_url = uploaded.cleanup_url ?? null;
+    attachment.uploaded_at = uploaded.uploaded_at ?? null;
+    attachment.size_bytes = Number(uploaded.size_bytes ?? attachment.size_bytes) || attachment.size_bytes;
     return attachment;
   }
 
-  if (shouldInlineTextAttachment(file)) {
+  if (shouldInlineText) {
     const { text, truncated } = truncateAttachmentTextContent(await file.text());
     attachment.text_content = text;
     attachment.text_truncated = truncated;
+
+    if (!truncated) {
+      return attachment;
+    }
   }
 
+  const uploaded = await uploadIssueAttachmentFile(file, bridgeId);
+  attachment.upload_id = uploaded.upload_id ?? null;
+  attachment.download_url = uploaded.download_url ?? null;
+  attachment.cleanup_url = uploaded.cleanup_url ?? null;
+  attachment.uploaded_at = uploaded.uploaded_at ?? null;
+  attachment.size_bytes = Number(uploaded.size_bytes ?? attachment.size_bytes) || attachment.size_bytes;
   return attachment;
 }
 
-async function appendIssueAttachments(currentAttachments, files) {
+async function appendIssueAttachments(currentAttachments, files, bridgeId) {
   const attachments = [...normalizeIssueAttachments(currentAttachments)];
   const dedupeKeys = new Set(
     attachments.map((attachment) => `${attachment.name}:${attachment.size_bytes}:${attachment.mime_type ?? ""}`)
@@ -2154,7 +2230,7 @@ async function appendIssueAttachments(currentAttachments, files) {
     }
 
     try {
-      const attachment = await createIssueAttachmentFromFile(file);
+      const attachment = await createIssueAttachmentFromFile(file, bridgeId);
       attachments.push(attachment);
       dedupeKeys.add(dedupeKey);
     } catch {
@@ -2873,7 +2949,7 @@ function LoginPage({ language, initialLoginId, loading, error, onSubmit }) {
   );
 }
 
-function IssueComposer({ language, open, busy, selectedProject, selectedThread, onClose, onSubmit }) {
+function IssueComposer({ language, open, busy, selectedBridgeId, selectedProject, selectedThread, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -2881,6 +2957,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const promptInputRef = useRef(null);
+  const skipCleanupOnCloseRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
@@ -2889,6 +2966,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
       setAttachments([]);
       setAttachmentError("");
       setAttachmentBusy(false);
+      skipCleanupOnCloseRef.current = false;
     }
   }, [open]);
 
@@ -2914,7 +2992,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
     setAttachmentBusy(true);
 
     try {
-      const result = await appendIssueAttachments(attachments, files);
+      const result = await appendIssueAttachments(attachments, files, selectedBridgeId);
       setAttachments(result.attachments);
       setAttachmentError(
         result.rejectedCount > 0
@@ -2935,11 +3013,26 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
       return;
     }
 
-    await onSubmit({
-      title: title.trim(),
-      prompt: prompt.trim(),
-      attachments: normalizeIssueAttachments(attachments)
-    });
+    skipCleanupOnCloseRef.current = true;
+
+    try {
+      await onSubmit({
+        title: title.trim(),
+        prompt: prompt.trim(),
+        attachments: normalizeIssueAttachments(attachments)
+      });
+    } catch (error) {
+      skipCleanupOnCloseRef.current = false;
+      throw error;
+    }
+  };
+
+  const handleClose = async () => {
+    if (!skipCleanupOnCloseRef.current) {
+      await cleanupIssueAttachmentUploads(attachments);
+    }
+
+    onClose();
   };
 
   return (
@@ -2951,7 +3044,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => void handleClose()}
             className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
             {copy.projectComposer.close}
@@ -2986,7 +3079,13 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
             busy={busy || attachmentBusy}
             onAppendFiles={handleAppendFiles}
             onRemoveAttachment={(attachmentId) => {
-              setAttachments((current) => removeIssueAttachment(current, attachmentId));
+              setAttachments((current) => {
+                const target = normalizeIssueAttachments(current).find((attachment) => attachment.id === attachmentId);
+                if (target) {
+                  void cleanupIssueAttachmentUpload(target);
+                }
+                return removeIssueAttachment(current, attachmentId);
+              });
               setAttachmentError("");
             }}
           />
@@ -3009,7 +3108,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
           <div className="flex items-center justify-end gap-3">
             <button
               type="button"
-              onClick={onClose}
+              onClick={() => void handleClose()}
               className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
             >
               {copy.issueComposer.cancel}
@@ -3028,7 +3127,7 @@ function IssueComposer({ language, open, busy, selectedProject, selectedThread, 
   );
 }
 
-function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
+function IssueEditor({ language, open, busy, selectedBridgeId, issue, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -3036,6 +3135,7 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const promptInputRef = useRef(null);
+  const skipCleanupOnCloseRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
@@ -3044,6 +3144,7 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
       setAttachments([]);
       setAttachmentError("");
       setAttachmentBusy(false);
+      skipCleanupOnCloseRef.current = false;
       return;
     }
 
@@ -3075,7 +3176,7 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
     setAttachmentBusy(true);
 
     try {
-      const result = await appendIssueAttachments(attachments, files);
+      const result = await appendIssueAttachments(attachments, files, selectedBridgeId);
       setAttachments(result.attachments);
       setAttachmentError(
         result.rejectedCount > 0
@@ -3096,11 +3197,26 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
       return;
     }
 
-    await onSubmit({
-      title: title.trim(),
-      prompt: prompt.trim(),
-      attachments: normalizeIssueAttachments(attachments)
-    });
+    skipCleanupOnCloseRef.current = true;
+
+    try {
+      await onSubmit({
+        title: title.trim(),
+        prompt: prompt.trim(),
+        attachments: normalizeIssueAttachments(attachments)
+      });
+    } catch (error) {
+      skipCleanupOnCloseRef.current = false;
+      throw error;
+    }
+  };
+
+  const handleClose = async () => {
+    if (!skipCleanupOnCloseRef.current) {
+      await cleanupIssueAttachmentUploads(attachments);
+    }
+
+    onClose();
   };
 
   return (
@@ -3114,7 +3230,7 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => void handleClose()}
             className="rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
           >
             {copy.projectComposer.close}
@@ -3144,7 +3260,13 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
               busy={busy || attachmentBusy}
               onAppendFiles={handleAppendFiles}
               onRemoveAttachment={(attachmentId) => {
-                setAttachments((current) => removeIssueAttachment(current, attachmentId));
+                setAttachments((current) => {
+                  const target = normalizeIssueAttachments(current).find((attachment) => attachment.id === attachmentId);
+                  if (target) {
+                    void cleanupIssueAttachmentUpload(target);
+                  }
+                  return removeIssueAttachment(current, attachmentId);
+                });
                 setAttachmentError("");
               }}
             />
@@ -3168,7 +3290,7 @@ function IssueEditor({ language, open, busy, issue, onClose, onSubmit }) {
           <div className="flex items-center justify-end gap-3">
             <button
               type="button"
-              onClick={onClose}
+              onClick={() => void handleClose()}
               className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
             >
               {copy.issueComposer.cancel}
@@ -5926,6 +6048,7 @@ function MainPage({
         language={language}
         open={composerOpen}
         busy={issueBusy}
+        selectedBridgeId={selectedBridgeId}
         selectedProject={selectedProject}
         selectedThread={selectedProjectThread}
         onClose={onCloseComposer}
@@ -5935,6 +6058,7 @@ function MainPage({
         language={language}
         open={issueEditorOpen}
         busy={issueEditorBusy}
+        selectedBridgeId={selectedBridgeId}
         issue={editingIssue}
         onClose={onCloseIssueEditor}
         onSubmit={onSubmitIssueEdit}

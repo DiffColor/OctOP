@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -3985,6 +3986,166 @@ test("issue 첨부는 생성과 수정 후 유지되고 실행 프롬프트에�
     assert.match(input, /\[첨부 자료\]/);
     assert.match(input, /spec\.txt/);
     assert.match(input, /updated attachment body/);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("이미지 첨부 download_url은 로컬 파일로 staging되어 app-server localImage로 전달된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-image-attachments-int-"));
+  const bridgePort = await getFreePort();
+  const attachmentServerPort = await getFreePort();
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+    "base64"
+  );
+  const cleanupRequests = [];
+  const attachmentServer = createHttpServer((req, res) => {
+    if (req.url === "/download/sample.png") {
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": String(pngBytes.length)
+      });
+      res.end(pngBytes);
+      return;
+    }
+
+    if (req.url === "/cleanup/sample.png" && req.method === "DELETE") {
+      cleanupRequests.push(Date.now());
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise((resolve) => attachmentServer.listen(attachmentServerPort, "127.0.0.1", resolve));
+  const fakeAppServer = new FakeAppServer();
+  let bridge = null;
+
+  t.after(async () => {
+    if (bridge) {
+      await bridge.stop();
+    }
+    await fakeAppServer.stop();
+    await new Promise((resolve, reject) => attachmentServer.close((error) => error ? reject(error) : resolve()));
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await fakeAppServer.start();
+    bridge = new BridgeProcess({
+      port: bridgePort,
+      token: "octop-image-attachments-token",
+      userId: "jazzlife",
+      bridgeId: `image-attachments-${randomUUID().slice(0, 8)}`,
+      homeDir,
+      appServerUrl: fakeAppServer.url
+    });
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const createdThread = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Image Attachment Thread"
+      })
+    });
+    const threadId = createdThread.thread.id;
+
+    const createdIssue = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Image Attachment",
+        prompt: "이미지 첨부를 전달해 주세요.",
+        attachments: [
+          {
+            id: "attachment-image-1",
+            name: "sample.png",
+            kind: "image",
+            mime_type: "image/png",
+            size_bytes: pngBytes.length,
+            preview_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+            download_url: `http://127.0.0.1:${attachmentServerPort}/download/sample.png`,
+            cleanup_url: `http://127.0.0.1:${attachmentServerPort}/cleanup/sample.png`
+          }
+        ]
+      })
+    });
+    const issueId = createdIssue.issue.id;
+
+    const updatedIssue = await bridge.request(`/api/issues/${issueId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: "Image Attachment",
+        prompt: "이미지 첨부를 전달해 주세요.",
+        attachments: [
+          {
+            id: "attachment-image-1",
+            name: "sample.png",
+            kind: "image",
+            mime_type: "image/png",
+            size_bytes: pngBytes.length,
+            preview_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII="
+          }
+        ]
+      })
+    });
+
+    assertClientIssueAttachments(updatedIssue.issue.attachments, [
+      {
+        id: "attachment-image-1",
+        name: "sample.png",
+        kind: "image",
+        mime_type: "image/png",
+        size_bytes: pngBytes.length,
+        preview_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+        text_content: null,
+        text_truncated: false
+      }
+    ]);
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+    assert.equal(startPayload.accepted, true);
+
+    const turnStartRequest = await waitFor(async () => {
+      const request = fakeAppServer.getRequests("turn/start").at(-1);
+      assert.ok(request, "turn/start 요청이 전송되어야 합니다.");
+      assert.equal(Array.isArray(request.params?.input), true);
+      assert.equal(request.params.input.length >= 2, true);
+      return request;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "image attachment turn/start"
+    });
+
+    const imageInput = turnStartRequest.params.input.find((entry) => entry?.type === "localImage");
+    assert.ok(imageInput?.path, "이미지 첨부가 localImage로 전달되어야 합니다.");
+    assert.equal(existsSync(imageInput.path), true);
+    const stagedBytes = await readFile(imageInput.path);
+    assert.deepEqual(stagedBytes, pngBytes);
+
+    await bridge.request(`/api/issues/${issueId}`, {
+      method: "DELETE"
+    });
+
+    await waitFor(() => {
+      assert.equal(cleanupRequests.length >= 1, true);
+      return true;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "image attachment cleanup"
+    });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;

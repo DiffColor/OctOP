@@ -1788,6 +1788,39 @@ function normalizeIssueAttachmentLocalPath(value) {
   return normalized.slice(0, 2000);
 }
 
+function hasOwnAttachmentField(attachment, ...fieldNames) {
+  if (!attachment || typeof attachment !== "object") {
+    return false;
+  }
+
+  return fieldNames.some((fieldName) => Object.hasOwn(attachment, fieldName));
+}
+
+function mergePreservedIssueAttachmentRuntimeFields(attachment, previousAttachment) {
+  if (!previousAttachment) {
+    return attachment;
+  }
+
+  return {
+    ...attachment,
+    upload_id: hasOwnAttachmentField(attachment, "upload_id", "uploadId")
+      ? attachment.upload_id ?? attachment.uploadId
+      : previousAttachment.upload_id,
+    download_url: hasOwnAttachmentField(attachment, "download_url", "downloadUrl")
+      ? attachment.download_url ?? attachment.downloadUrl
+      : previousAttachment.download_url,
+    cleanup_url: hasOwnAttachmentField(attachment, "cleanup_url", "cleanupUrl")
+      ? attachment.cleanup_url ?? attachment.cleanupUrl
+      : previousAttachment.cleanup_url,
+    local_path: hasOwnAttachmentField(attachment, "local_path", "localPath")
+      ? attachment.local_path ?? attachment.localPath
+      : previousAttachment.local_path,
+    uploaded_at: hasOwnAttachmentField(attachment, "uploaded_at", "uploadedAt")
+      ? attachment.uploaded_at ?? attachment.uploadedAt
+      : previousAttachment.uploaded_at
+  };
+}
+
 function normalizeIssueAttachment(attachment = {}) {
   const name = String(attachment.name ?? "").trim().slice(0, 160);
 
@@ -1840,6 +1873,25 @@ function normalizeIssueAttachments(attachments = []) {
 
   return attachments
     .map((attachment) => normalizeIssueAttachment(attachment))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function normalizeIssueAttachmentsWithExisting(attachments = [], existingAttachments = []) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  const existingById = new Map(
+    normalizeIssueAttachments(existingAttachments).map((attachment) => [attachment.id, attachment])
+  );
+
+  return attachments
+    .map((attachment) => {
+      const rawId = sanitizeBridgeId(attachment?.id ?? "");
+      const previousAttachment = rawId ? existingById.get(rawId) ?? null : null;
+      return normalizeIssueAttachment(mergePreservedIssueAttachmentRuntimeFields(attachment, previousAttachment));
+    })
     .filter(Boolean)
     .slice(0, 8);
 }
@@ -6275,7 +6327,6 @@ async function updateThreadIssue(userId, payload = {}) {
   const issueId = String(payload.issue_id ?? payload.issueId ?? "").trim();
   const prompt = String(payload.prompt ?? "").trim();
   const title = String(payload.title ?? "").trim();
-  const attachments = normalizeIssueAttachments(payload.attachments);
 
   if (!issueId) {
     throw new Error("수정할 이슈 id가 필요합니다.");
@@ -6300,6 +6351,8 @@ async function updateThreadIssue(userId, payload = {}) {
   if (issue.status !== "staged") {
     throw new Error("준비 중인 이슈만 수정할 수 있습니다.");
   }
+
+  const attachments = normalizeIssueAttachmentsWithExisting(payload.attachments, issue.attachments);
 
   await cleanupRemovedIssueAttachments(issue.attachments, attachments);
 
