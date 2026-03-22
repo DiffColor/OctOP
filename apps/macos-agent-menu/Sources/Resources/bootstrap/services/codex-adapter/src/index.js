@@ -3887,7 +3887,7 @@ function mergeDeveloperInstructionTexts(...values) {
   return values
     .map((value) => normalizeInstructionText(value))
     .filter(Boolean)
-    .join("\n\n");
+    .join(" ");
 }
 
 function getThreadDeveloperInstruction(userId, threadId) {
