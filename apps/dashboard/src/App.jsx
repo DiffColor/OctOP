@@ -17,6 +17,7 @@ const LANGUAGE_STORAGE_KEY = "octop.dashboard.language";
 const SIDEBAR_WIDTH_STORAGE_KEY = "octop.dashboard.sidebar.width";
 const ARCHIVE_STORAGE_KEY = "octop.dashboard.archives";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.dashboard.selectedBridge";
+const PROJECT_LIST_ORDER_STORAGE_KEY = "octop.dashboard.projectListOrder";
 const ISSUE_SOURCE_APP_ID = "dashboard-web";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
@@ -106,6 +107,10 @@ const ISSUE_ATTACHMENT_ACCEPT = [
 const THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const INSTANT_NOTIFICATION_DEFAULT_DURATION_MS = 3200;
 const INSTANT_NOTIFICATION_ERROR_DURATION_MS = 5200;
+const SIDEBAR_PROJECT_LONG_PRESS_MS = 220;
+const SIDEBAR_PROJECT_LONG_PRESS_CANCEL_TOLERANCE_PX = 8;
+const SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX = 40;
+const SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX = 18;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -1059,6 +1064,147 @@ function storeSession(session, rememberDevice) {
 function clearSessionStorage() {
   window.localStorage.removeItem(LOCAL_STORAGE_KEY);
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function buildProjectListOrderScopeKey({ loginId = "", bridgeId = "" } = {}) {
+  const normalizedLoginId = String(loginId ?? "").trim();
+  const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+  if (!normalizedLoginId || !normalizedBridgeId) {
+    return "";
+  }
+
+  return `${normalizedLoginId}::${normalizedBridgeId}`;
+}
+
+function normalizeProjectListOrder(source, availableProjectIds = null) {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  const allowedProjectIds = Array.isArray(availableProjectIds)
+    ? new Set(
+        availableProjectIds
+          .map((projectId) => String(projectId ?? "").trim())
+          .filter(Boolean)
+      )
+    : null;
+  const seen = new Set();
+  const next = [];
+
+  for (const rawProjectId of source) {
+    const projectId = String(rawProjectId ?? "").trim();
+
+    if (!projectId || seen.has(projectId)) {
+      continue;
+    }
+
+    if (allowedProjectIds && !allowedProjectIds.has(projectId)) {
+      continue;
+    }
+
+    seen.add(projectId);
+    next.push(projectId);
+  }
+
+  return next.slice(0, 512);
+}
+
+function areStringArraysEqual(left = [], right = []) {
+  if (left === right) {
+    return true;
+  }
+
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function readStoredProjectListOrderMap() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(PROJECT_LIST_ORDER_STORAGE_KEY);
+
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredProjectListOrder(scope = {}) {
+  const scopeKey = buildProjectListOrderScopeKey(scope);
+
+  if (!scopeKey) {
+    return [];
+  }
+
+  const stored = readStoredProjectListOrderMap();
+  return normalizeProjectListOrder(stored[scopeKey]);
+}
+
+function storeProjectListOrder(order, scope = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const scopeKey = buildProjectListOrderScopeKey(scope);
+
+  if (!scopeKey) {
+    return;
+  }
+
+  const normalizedOrder = normalizeProjectListOrder(order);
+  const nextState = readStoredProjectListOrderMap();
+
+  if (normalizedOrder.length > 0) {
+    nextState[scopeKey] = normalizedOrder;
+  } else {
+    delete nextState[scopeKey];
+  }
+
+  try {
+    if (Object.keys(nextState).length === 0) {
+      window.localStorage.removeItem(PROJECT_LIST_ORDER_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(PROJECT_LIST_ORDER_STORAGE_KEY, JSON.stringify(nextState));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function resolveOrderedProjectList(projects, preferredOrderIds = []) {
+  const normalizedProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const availableProjectIds = normalizedProjects.map((project) => String(project.id ?? "").trim()).filter(Boolean);
+  const normalizedPreferredOrder = normalizeProjectListOrder(preferredOrderIds, availableProjectIds);
+  const preferredProjectIdSet = new Set(normalizedPreferredOrder);
+  const projectById = new Map(normalizedProjects.map((project) => [project.id, project]));
+
+  return [
+    ...normalizedPreferredOrder.map((projectId) => projectById.get(projectId)).filter(Boolean),
+    ...normalizedProjects.filter((project) => !preferredProjectIdSet.has(project.id))
+  ];
+}
+
+function pickFirstOrderedProjectId(projects, scope = {}) {
+  return resolveOrderedProjectList(projects, readStoredProjectListOrder(scope))[0]?.id ?? "";
 }
 
 function normalizeArchivedIssueIds(rawIds) {
@@ -2899,6 +3045,30 @@ function reorderIds(items, draggedId, targetId) {
 
   const [moved] = next.splice(fromIndex, 1);
   next.splice(targetIndex, 0, moved);
+  return next;
+}
+
+function reorderIdsByPlacement(items, draggedId, targetId, placeAfter = false) {
+  if (!draggedId || !targetId || draggedId === targetId) {
+    return items;
+  }
+
+  const next = [...items];
+  const fromIndex = next.indexOf(draggedId);
+  const targetIndex = next.indexOf(targetId);
+
+  if (fromIndex === -1 || targetIndex === -1) {
+    return items;
+  }
+
+  const [moved] = next.splice(fromIndex, 1);
+  const normalizedTargetIndex = next.indexOf(targetId);
+
+  if (normalizedTargetIndex === -1) {
+    return items;
+  }
+
+  next.splice(normalizedTargetIndex + (placeAfter ? 1 : 0), 0, moved);
   return next;
 }
 
@@ -5718,6 +5888,19 @@ function MainPage({
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
+  const [projectOrderIds, setProjectOrderIds] = useState(() =>
+    typeof window === "undefined"
+      ? []
+      : readStoredProjectListOrder({
+          loginId: session?.loginId,
+          bridgeId: selectedBridgeId
+        })
+  );
+  const [draggingProjectId, setDraggingProjectId] = useState("");
+  const [projectDropIndicator, setProjectDropIndicator] = useState({
+    projectId: "",
+    position: "before"
+  });
   const [expandedProjectIds, setExpandedProjectIds] = useState({});
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -5733,6 +5916,11 @@ function MainPage({
     columnId: ""
   });
   const languageMenuRef = useRef(null);
+  const projectListScrollRef = useRef(null);
+  const projectRowNodesRef = useRef(new Map());
+  const projectLongPressTimerRef = useRef(null);
+  const projectLongPressTriggeredRef = useRef(false);
+  const projectPointerDragStateRef = useRef(null);
   const boardScrollRef = useRef(null);
   const boardScrollbarTrackRef = useRef(null);
   const boardScrollbarDragRef = useRef({
@@ -5748,16 +5936,25 @@ function MainPage({
     y: 0,
     columnId: ""
   });
+  const orderedSidebarProjects = useMemo(
+    () => resolveOrderedProjectList(projects, projectOrderIds),
+    [projectOrderIds, projects]
+  );
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
-    projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+    projects.find((project) => project.id === selectedProjectId) ??
+    orderedSidebarProjects[0] ??
+    projects[0] ??
+    null;
   const selectedProjectHasBaseInstructions = Boolean(selectedProject?.base_instructions?.trim());
   const selectedProjectHasDeveloperInstructions = Boolean(selectedProject?.developer_instructions?.trim());
   const bridgeUnavailableMessage =
     language === "ko"
       ? "브릿지가 연결되지 않아 프로젝트와 쓰레드를 표시할 수 없습니다."
       : "Projects and threads are unavailable while the bridge is offline.";
+  const projectReorderLongPressTitle =
+    language === "ko" ? "길게 눌러 프로젝트 순서를 이동합니다." : "Long-press to reorder this project.";
   const scopedProjectThreads = projectThreads.filter(
     (thread) => !selectedProjectId || thread.project_id === selectedProjectId
   );
@@ -6116,9 +6313,117 @@ function MainPage({
       columnId: ""
     });
   }, []);
+  const clearPendingProjectLongPress = useCallback(() => {
+    if (projectLongPressTimerRef.current) {
+      window.clearTimeout(projectLongPressTimerRef.current);
+      projectLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  const registerSidebarProjectNode = useCallback((projectId, node) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    if (!normalizedProjectId) {
+      return;
+    }
+
+    if (node) {
+      projectRowNodesRef.current.set(normalizedProjectId, node);
+      return;
+    }
+
+    projectRowNodesRef.current.delete(normalizedProjectId);
+  }, []);
+
+  const maybeAutoScrollProjectList = useCallback((clientY) => {
+    const scrollNode = projectListScrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    const rect = scrollNode.getBoundingClientRect();
+
+    if (clientY <= rect.top + SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX) {
+      scrollNode.scrollTop = Math.max(0, scrollNode.scrollTop - SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX);
+      return;
+    }
+
+    if (clientY >= rect.bottom - SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX) {
+      scrollNode.scrollTop = Math.min(
+        scrollNode.scrollHeight - scrollNode.clientHeight,
+        scrollNode.scrollTop + SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX
+      );
+    }
+  }, []);
+
+  const resolveProjectDropIndicatorFromClientY = useCallback(
+    (clientY, draggedProjectId) => {
+      const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
+      const draggableProjects = orderedSidebarProjects.filter((project) => project.id !== normalizedDraggedProjectId);
+      const fallbackProjectId =
+        draggableProjects[draggableProjects.length - 1]?.id ?? orderedSidebarProjects[orderedSidebarProjects.length - 1]?.id ?? "";
+
+      for (const project of draggableProjects) {
+        const node = projectRowNodesRef.current.get(project.id);
+
+        if (!node) {
+          continue;
+        }
+
+        const rect = node.getBoundingClientRect();
+
+        if (clientY < rect.top + rect.height / 2) {
+          return {
+            projectId: project.id,
+            position: "before"
+          };
+        }
+      }
+
+      return {
+        projectId: fallbackProjectId,
+        position: "after"
+      };
+    },
+    [orderedSidebarProjects]
+  );
   useEffect(() => {
     storeSidebarWidth(sidebarWidth);
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    setProjectOrderIds(
+      readStoredProjectListOrder({
+        loginId: session?.loginId,
+        bridgeId: selectedBridgeId
+      })
+    );
+    setDraggingProjectId("");
+    setProjectDropIndicator({
+      projectId: "",
+      position: "before"
+    });
+  }, [selectedBridgeId, session?.loginId]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    const availableProjectIds = projects.map((project) => project.id);
+    const normalizedOrder = normalizeProjectListOrder(projectOrderIds, availableProjectIds);
+
+    if (!areStringArraysEqual(normalizedOrder, projectOrderIds)) {
+      setProjectOrderIds(normalizedOrder);
+      return;
+    }
+
+    storeProjectListOrder(normalizedOrder, {
+      loginId: session.loginId,
+      bridgeId: selectedBridgeId
+    });
+  }, [projectOrderIds, projects, selectedBridgeId, session?.loginId]);
 
   useEffect(() => {
     if (!languageMenuOpen) {
@@ -6159,6 +6464,14 @@ function MainPage({
       setArchiveViewerColumnId("");
     }
   }, [archiveViewerColumnId, archiveViewerIssues.length]);
+  useEffect(
+    () => () => {
+      clearPendingProjectLongPress();
+      projectPointerDragStateRef.current = null;
+      projectLongPressTriggeredRef.current = false;
+    },
+    [clearPendingProjectLongPress]
+  );
   useEffect(() => {
     if (!archiveMenuState.open) {
       return;
@@ -6401,6 +6714,183 @@ function MainPage({
     window.addEventListener("mouseup", handleMouseUp);
   };
 
+  const clearProjectDragState = useCallback(() => {
+    setDraggingProjectId("");
+    setProjectDropIndicator({
+      projectId: "",
+      position: "before"
+    });
+  }, []);
+
+  const handleProjectDragActivatorPointerDown = useCallback(
+    (projectId, event) => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const normalizedProjectId = String(projectId ?? "").trim();
+
+      if (!normalizedProjectId) {
+        return;
+      }
+
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      clearPendingProjectLongPress();
+      projectLongPressTriggeredRef.current = false;
+      projectPointerDragStateRef.current = {
+        active: false,
+        pointerId: event.pointerId,
+        projectId: normalizedProjectId,
+        startX: event.clientX,
+        startY: event.clientY
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+
+      projectLongPressTimerRef.current = window.setTimeout(() => {
+        const activeDragState = projectPointerDragStateRef.current;
+
+        if (
+          !activeDragState ||
+          activeDragState.pointerId !== event.pointerId ||
+          activeDragState.projectId !== normalizedProjectId
+        ) {
+          projectLongPressTimerRef.current = null;
+          return;
+        }
+
+        projectLongPressTimerRef.current = null;
+        activeDragState.active = true;
+        projectLongPressTriggeredRef.current = true;
+        setDraggingProjectId(normalizedProjectId);
+        setProjectDropIndicator(resolveProjectDropIndicatorFromClientY(event.clientY, normalizedProjectId));
+      }, SIDEBAR_PROJECT_LONG_PRESS_MS);
+    },
+    [clearPendingProjectLongPress, resolveProjectDropIndicatorFromClientY]
+  );
+
+  const handleProjectDragActivatorPointerMove = useCallback(
+    (event) => {
+      const activeDragState = projectPointerDragStateRef.current;
+
+      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - activeDragState.startX;
+      const deltaY = event.clientY - activeDragState.startY;
+
+      if (!activeDragState.active) {
+        if (Math.hypot(deltaX, deltaY) > SIDEBAR_PROJECT_LONG_PRESS_CANCEL_TOLERANCE_PX) {
+          clearPendingProjectLongPress();
+          projectPointerDragStateRef.current = null;
+        }
+
+        return;
+      }
+
+      event.preventDefault();
+      maybeAutoScrollProjectList(event.clientY);
+      setProjectDropIndicator((current) => {
+        const next = resolveProjectDropIndicatorFromClientY(event.clientY, activeDragState.projectId);
+
+        if (!next.projectId) {
+          return current;
+        }
+
+        return current.projectId === next.projectId && current.position === next.position ? current : next;
+      });
+    },
+    [clearPendingProjectLongPress, maybeAutoScrollProjectList, resolveProjectDropIndicatorFromClientY]
+  );
+
+  const handleProjectDragActivatorPointerEnd = useCallback(
+    (event) => {
+      const activeDragState = projectPointerDragStateRef.current;
+
+      clearPendingProjectLongPress();
+      if (typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+
+      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+        projectLongPressTriggeredRef.current = false;
+        projectPointerDragStateRef.current = null;
+        return;
+      }
+
+      projectPointerDragStateRef.current = null;
+
+      if (!activeDragState.active) {
+        projectLongPressTriggeredRef.current = false;
+        return;
+      }
+
+      event.preventDefault();
+
+      const nextIndicator =
+        projectDropIndicator.projectId
+          ? projectDropIndicator
+          : resolveProjectDropIndicatorFromClientY(event.clientY, activeDragState.projectId);
+
+      if (nextIndicator.projectId) {
+        const nextProjectOrder = reorderIdsByPlacement(
+          orderedSidebarProjects.map((project) => project.id),
+          activeDragState.projectId,
+          nextIndicator.projectId,
+          nextIndicator.position === "after"
+        );
+
+        setProjectOrderIds(nextProjectOrder);
+      }
+
+      clearProjectDragState();
+      window.setTimeout(() => {
+        projectLongPressTriggeredRef.current = false;
+      }, 0);
+    },
+    [
+      clearPendingProjectLongPress,
+      clearProjectDragState,
+      orderedSidebarProjects,
+      projectDropIndicator,
+      resolveProjectDropIndicatorFromClientY
+    ]
+  );
+
+  const handleProjectDragActivatorPointerCancel = useCallback(
+    (event) => {
+      clearPendingProjectLongPress();
+      if (typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+      projectPointerDragStateRef.current = null;
+      projectLongPressTriggeredRef.current = false;
+      clearProjectDragState();
+    },
+    [clearPendingProjectLongPress, clearProjectDragState]
+  );
+
+  const handleProjectDragActivatorClickCapture = useCallback((event) => {
+    if (!projectLongPressTriggeredRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    projectLongPressTriggeredRef.current = false;
+  }, []);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       <div className="flex min-h-screen flex-col">
@@ -6465,17 +6955,33 @@ function MainPage({
                     </div>
                   </div>
 
-                  <div className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-scroll px-1">
+                  <div
+                    ref={projectListScrollRef}
+                    className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-scroll px-1"
+                  >
                     {projects.length === 0 ? (
                       <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
                     ) : (
-                      projects.map((project) => {
+                      orderedSidebarProjects.map((project) => {
                         const active = project.id === selectedProjectId;
                         const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
                         const expanded = expandedProjectIds[project.id] ?? active;
+                        const showDropBefore =
+                          draggingProjectId &&
+                          projectDropIndicator.projectId === project.id &&
+                          projectDropIndicator.position === "before";
+                        const showDropAfter =
+                          draggingProjectId &&
+                          projectDropIndicator.projectId === project.id &&
+                          projectDropIndicator.position === "after";
 
                         return (
-                          <div key={project.id} className="rounded-md px-0.5 py-0.5">
+                          <div
+                            key={project.id}
+                            ref={(node) => registerSidebarProjectNode(project.id, node)}
+                            className="rounded-md px-0.5 py-0.5"
+                          >
+                            {showDropBefore ? <div className="mb-1 h-0.5 rounded-full bg-sky-400" /> : null}
                             <div
                               className={`w-full rounded-md px-1.5 py-1.5 transition ${
                                 active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
@@ -6483,60 +6989,72 @@ function MainPage({
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      handleToggleProjectExpanded(project.id);
-                                    }}
-                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
-                                    aria-label={expanded ? "collapse project tree" : "expand project tree"}
+                                  <div
+                                    className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md select-none ${
+                                      draggingProjectId === project.id ? "cursor-grabbing" : "cursor-pointer"
+                                    }`}
+                                    title={projectReorderLongPressTitle}
+                                    onPointerDown={(event) => handleProjectDragActivatorPointerDown(project.id, event)}
+                                    onPointerMove={handleProjectDragActivatorPointerMove}
+                                    onPointerUp={handleProjectDragActivatorPointerEnd}
+                                    onPointerCancel={handleProjectDragActivatorPointerCancel}
+                                    onClickCapture={handleProjectDragActivatorClickCapture}
                                   >
-                                    {expanded ? (
-                                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path
-                                          d="M3 9.5A2.5 2.5 0 015.5 7H9l1.4-1.6a2 2 0 011.5-.7h2.8A2.3 2.3 0 0116.5 6H18a3 3 0 013 3v1.5a2.5 2.5 0 01-2.5 2.5H10"
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="1.8"
-                                        />
-                                        <path
-                                          d="M3.5 11.5h8.7a2.2 2.2 0 011.7.8l1.2 1.5h3.4a2 2 0 012 2v1.2A2.5 2.5 0 0118 19.5H6A2.5 2.5 0 013.5 17z"
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="1.8"
-                                        />
-                                      </svg>
-                                    ) : (
-                                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path
-                                          d="M3.5 8.5A2.5 2.5 0 016 6h3.3l1.4-1.6a2 2 0 011.5-.7h5.3A2.5 2.5 0 0120 6.2V8"
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="1.8"
-                                        />
-                                        <path
-                                          d="M3.5 8.5h17v7A2.5 2.5 0 0118 18H6a2.5 2.5 0 01-2.5-2.5z"
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="1.8"
-                                        />
-                                      </svg>
-                                    )}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSelectProject(project.id)}
-                                    onContextMenu={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      handleSelectProject(project.id);
-                                      onOpenProjectMenu(event, project);
-                                    }}
-                                    className="min-w-0 flex-1 text-left"
-                                  >
-                                    <OverflowRevealText value={project.name} className="text-sm font-medium" />
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleToggleProjectExpanded(project.id);
+                                      }}
+                                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition hover:bg-slate-900 hover:text-slate-200"
+                                      aria-label={expanded ? "collapse project tree" : "expand project tree"}
+                                    >
+                                      {expanded ? (
+                                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path
+                                            d="M3 9.5A2.5 2.5 0 015.5 7H9l1.4-1.6a2 2 0 011.5-.7h2.8A2.3 2.3 0 0116.5 6H18a3 3 0 013 3v1.5a2.5 2.5 0 01-2.5 2.5H10"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth="1.8"
+                                          />
+                                          <path
+                                            d="M3.5 11.5h8.7a2.2 2.2 0 011.7.8l1.2 1.5h3.4a2 2 0 012 2v1.2A2.5 2.5 0 0118 19.5H6A2.5 2.5 0 013.5 17z"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth="1.8"
+                                          />
+                                        </svg>
+                                      ) : (
+                                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path
+                                            d="M3.5 8.5A2.5 2.5 0 016 6h3.3l1.4-1.6a2 2 0 011.5-.7h5.3A2.5 2.5 0 0120 6.2V8"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth="1.8"
+                                          />
+                                          <path
+                                            d="M3.5 8.5h17v7A2.5 2.5 0 0118 18H6a2.5 2.5 0 01-2.5-2.5z"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth="1.8"
+                                          />
+                                        </svg>
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelectProject(project.id)}
+                                      onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        handleSelectProject(project.id);
+                                        onOpenProjectMenu(event, project);
+                                      }}
+                                      className="min-w-0 flex-1 text-left"
+                                    >
+                                      <OverflowRevealText value={project.name} className="text-sm font-medium" />
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             {expanded ? (
@@ -6560,6 +7078,7 @@ function MainPage({
                               </div>
                             ) : null}
                           </div>
+                            {showDropAfter ? <div className="mt-1 h-0.5 rounded-full bg-sky-400" /> : null}
                           </div>
                         );
                       })
@@ -7992,7 +8511,12 @@ export default function App() {
           return current;
         }
 
-        return nextProjects.projects?.[0]?.id || "";
+        return (
+          pickFirstOrderedProjectId(nextProjects.projects ?? [], {
+            loginId: sessionArg.loginId,
+            bridgeId
+          }) || ""
+        );
       });
       setProjectThreads([]);
       loadedProjectThreadsRef.current = {};
@@ -8620,7 +9144,12 @@ export default function App() {
               return current;
             }
 
-            return nextProjects[0]?.id || "";
+            return (
+              pickFirstOrderedProjectId(nextProjects, {
+                loginId: session?.loginId,
+                bridgeId: activeBridgeId
+              }) || ""
+            );
           });
           return;
         }
@@ -8862,9 +9391,14 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedProjectId && projects.length > 0) {
-      setSelectedProjectId(projects[0].id);
+      setSelectedProjectId(
+        pickFirstOrderedProjectId(projects, {
+          loginId: session?.loginId,
+          bridgeId: selectedBridgeId
+        }) || projects[0].id
+      );
     }
-  }, [projects, selectedProjectId]);
+  }, [projects, selectedBridgeId, selectedProjectId, session?.loginId]);
 
   useEffect(() => {
     const pending = pendingPushDeepLinkRef.current;
