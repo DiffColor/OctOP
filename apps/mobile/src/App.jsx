@@ -408,6 +408,11 @@ const MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX = Math.max(
 const MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX = MOBILE_BASE_PAGE_MIN_WIDTH_PX * 2;
 const MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX = 320;
 const MAX_TRACKED_PROJECT_FILTER_USAGE = 120;
+const PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX = 8;
+const PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX = 10;
+const THREAD_LIST_ITEM_LONG_PRESS_MS = 420;
+const THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX = 10;
+const THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX = 8;
 
 function getMaxScrollTop(node) {
   if (!node) {
@@ -572,9 +577,254 @@ function createDefaultMobileWorkspaceLayout() {
     draftThreadProjectId: "",
     threadComposerDrafts: {},
     projectFilterUsage: {},
+    projectChipOrder: [],
+    threadOrderByProjectId: {},
     activeView: "inbox",
     wideThreadSplitRatio: DEFAULT_WIDE_THREAD_SPLIT_RATIO
   };
+}
+
+function normalizeProjectChipOrder(source, availableProjectIds = null) {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  const allowedProjectIds = Array.isArray(availableProjectIds)
+    ? new Set(
+        availableProjectIds
+          .map((projectId) => String(projectId ?? "").trim())
+          .filter(Boolean)
+      )
+    : null;
+  const seen = new Set();
+  const next = [];
+
+  for (const rawProjectId of source) {
+    const projectId = String(rawProjectId ?? "").trim();
+
+    if (!projectId || seen.has(projectId)) {
+      continue;
+    }
+
+    if (allowedProjectIds && !allowedProjectIds.has(projectId)) {
+      continue;
+    }
+
+    seen.add(projectId);
+    next.push(projectId);
+  }
+
+  return next.slice(0, MAX_TRACKED_PROJECT_FILTER_USAGE);
+}
+
+function areStringArraysEqual(left = [], right = []) {
+  if (left === right) {
+    return true;
+  }
+
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function areStringArrayRecordEqual(left = {}, right = {}) {
+  const leftEntries = Object.entries(left)
+    .map(([key, value]) => [String(key ?? "").trim(), Array.isArray(value) ? value : []])
+    .filter(([key]) => Boolean(key))
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  const rightEntries = Object.entries(right)
+    .map(([key, value]) => [String(key ?? "").trim(), Array.isArray(value) ? value : []])
+    .filter(([key]) => Boolean(key))
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+
+  for (let index = 0; index < leftEntries.length; index += 1) {
+    const [leftKey, leftValue] = leftEntries[index];
+    const [rightKey, rightValue] = rightEntries[index];
+
+    if (leftKey !== rightKey || !areStringArraysEqual(leftValue, rightValue)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function reorderProjectChipIdsByIndex(projectIds, draggedProjectId, targetIndex) {
+  const normalizedProjectIds = normalizeProjectChipOrder(projectIds);
+  const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
+
+  if (!normalizedDraggedProjectId || normalizedProjectIds.length <= 1) {
+    return normalizedProjectIds;
+  }
+
+  const fromIndex = normalizedProjectIds.indexOf(normalizedDraggedProjectId);
+
+  if (fromIndex < 0) {
+    return normalizedProjectIds;
+  }
+
+  const nextProjectIds = [...normalizedProjectIds];
+  const [draggedId] = nextProjectIds.splice(fromIndex, 1);
+  const clampedTargetIndex = Math.max(0, Math.min(Number(targetIndex) || 0, nextProjectIds.length));
+  nextProjectIds.splice(clampedTargetIndex, 0, draggedId);
+  return nextProjectIds;
+}
+
+function normalizeThreadOrder(source, availableThreadIds = null) {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  const allowedThreadIds = Array.isArray(availableThreadIds)
+    ? new Set(
+        availableThreadIds
+          .map((threadId) => String(threadId ?? "").trim())
+          .filter(Boolean)
+      )
+    : null;
+  const seen = new Set();
+  const next = [];
+
+  for (const rawThreadId of source) {
+    const threadId = String(rawThreadId ?? "").trim();
+
+    if (!threadId || seen.has(threadId)) {
+      continue;
+    }
+
+    if (allowedThreadIds && !allowedThreadIds.has(threadId)) {
+      continue;
+    }
+
+    seen.add(threadId);
+    next.push(threadId);
+  }
+
+  return next.slice(0, MAX_CACHED_THREADS_PER_PROJECT);
+}
+
+function normalizeThreadOrderByProjectId(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([rawProjectId, rawThreadOrder]) => {
+        const projectId = String(rawProjectId ?? "").trim();
+
+        if (!projectId) {
+          return null;
+        }
+
+        const normalizedThreadOrder = normalizeThreadOrder(rawThreadOrder);
+
+        if (normalizedThreadOrder.length === 0) {
+          return null;
+        }
+
+        return [projectId, normalizedThreadOrder];
+      })
+      .filter(Boolean)
+  );
+}
+
+function resolveOrderedThreadIds(threadIds, threadOrder = []) {
+  const normalizedThreadIds = normalizeThreadOrder(threadIds);
+  const preferredOrderIds = normalizeThreadOrder(threadOrder, normalizedThreadIds);
+  const preferredOrderSet = new Set(preferredOrderIds);
+
+  return [...preferredOrderIds, ...normalizedThreadIds.filter((threadId) => !preferredOrderSet.has(threadId))];
+}
+
+function reorderThreadIdsByIndex(threadIds, draggedThreadId, targetIndex) {
+  const normalizedThreadIds = normalizeThreadOrder(threadIds);
+  const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
+
+  if (!normalizedDraggedThreadId || normalizedThreadIds.length <= 1) {
+    return normalizedThreadIds;
+  }
+
+  const fromIndex = normalizedThreadIds.indexOf(normalizedDraggedThreadId);
+
+  if (fromIndex < 0) {
+    return normalizedThreadIds;
+  }
+
+  const nextThreadIds = [...normalizedThreadIds];
+  const [draggedId] = nextThreadIds.splice(fromIndex, 1);
+  const clampedTargetIndex = Math.max(0, Math.min(Number(targetIndex) || 0, nextThreadIds.length));
+  nextThreadIds.splice(clampedTargetIndex, 0, draggedId);
+  return nextThreadIds;
+}
+
+function applySubsetThreadOrder(threadIds, subsetThreadIds, reorderedSubsetThreadIds) {
+  const normalizedThreadIds = normalizeThreadOrder(threadIds);
+  const normalizedSubsetThreadIds = normalizeThreadOrder(subsetThreadIds, normalizedThreadIds);
+  const normalizedReorderedSubsetThreadIds = normalizeThreadOrder(reorderedSubsetThreadIds, normalizedSubsetThreadIds);
+
+  if (normalizedSubsetThreadIds.length === 0 || normalizedReorderedSubsetThreadIds.length !== normalizedSubsetThreadIds.length) {
+    return normalizedThreadIds;
+  }
+
+  const subsetThreadIdSet = new Set(normalizedSubsetThreadIds);
+  let subsetIndex = 0;
+
+  return normalizedThreadIds.map((threadId) => {
+    if (!subsetThreadIdSet.has(threadId)) {
+      return threadId;
+    }
+
+    const nextThreadId = normalizedReorderedSubsetThreadIds[subsetIndex] ?? threadId;
+    subsetIndex += 1;
+    return nextThreadId;
+  });
+}
+
+function resolveOrderedThreads(threads, threadOrder = []) {
+  const normalizedThreads = threads.map((thread) => normalizeThread(thread)).filter(Boolean);
+  const availableThreadIds = normalizedThreads.map((thread) => thread.id);
+  const preferredOrderIds = normalizeThreadOrder(threadOrder, availableThreadIds);
+  const preferredOrderSet = new Set(preferredOrderIds);
+  const threadById = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
+
+  return [
+    ...preferredOrderIds.map((threadId) => threadById.get(threadId)).filter(Boolean),
+    ...normalizedThreads.filter((thread) => !preferredOrderSet.has(thread.id))
+  ];
+}
+
+function resolveOrderedProjects(projects, projectFilterUsage, projectChipOrder = []) {
+  void projectFilterUsage;
+  const projectEntries = [...projects].map((project, index) => ({
+    project,
+    index
+  }));
+  const availableProjectIds = projectEntries.map(({ project }) => project.id);
+  const preferredOrderIds = normalizeProjectChipOrder(projectChipOrder, availableProjectIds);
+  const preferredOrderSet = new Set(preferredOrderIds);
+  const projectById = new Map(projectEntries.map(({ project }) => [project.id, project]));
+  const remainingProjects = projectEntries
+    .filter(({ project }) => !preferredOrderSet.has(project.id))
+    .sort((left, right) => left.index - right.index)
+    .map(({ project }) => project);
+
+  return [
+    ...preferredOrderIds.map((projectId) => projectById.get(projectId)).filter(Boolean),
+    ...remainingProjects
+  ];
 }
 
 function normalizeThreadComposerDrafts(source) {
@@ -710,6 +960,8 @@ function normalizeMobileWorkspaceLayout(layout, filters = {}) {
     draftThreadProjectId: String(source.draftThreadProjectId ?? "").trim(),
     threadComposerDrafts: normalizeThreadComposerDrafts(source.threadComposerDrafts),
     projectFilterUsage: normalizeProjectFilterUsage(source.projectFilterUsage),
+    projectChipOrder: normalizeProjectChipOrder(source.projectChipOrder),
+    threadOrderByProjectId: normalizeThreadOrderByProjectId(source.threadOrderByProjectId),
     activeView,
     wideThreadSplitRatio:
       Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_WIDE_THREAD_SPLIT_RATIO
@@ -2549,14 +2801,6 @@ function appendLiveAssistantMessage(messages, event, fallback = {}) {
 function mergeThreads(currentThreads, nextThreads) {
   const nextById = new Map();
 
-  for (const thread of currentThreads) {
-    const normalized = normalizeThread(thread);
-
-    if (normalized) {
-      nextById.set(normalized.id, normalized);
-    }
-  }
-
   for (const thread of nextThreads) {
     const normalized = normalizeThread(thread);
 
@@ -2565,9 +2809,31 @@ function mergeThreads(currentThreads, nextThreads) {
     }
   }
 
-  return [...nextById.values()].sort(
-    (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
-  );
+  const mergedThreads = [];
+  const seen = new Set();
+
+  for (const thread of currentThreads) {
+    const normalized = normalizeThread(thread);
+
+    if (!normalized || seen.has(normalized.id)) {
+      continue;
+    }
+
+    mergedThreads.push(nextById.get(normalized.id) ?? normalized);
+    seen.add(normalized.id);
+    nextById.delete(normalized.id);
+  }
+
+  for (const thread of nextById.values()) {
+    if (seen.has(thread.id)) {
+      continue;
+    }
+
+    mergedThreads.push(thread);
+    seen.add(thread.id);
+  }
+
+  return mergedThreads;
 }
 
 function groupThreadsByProjectId(threads) {
@@ -2607,7 +2873,7 @@ function upsertThread(currentThreads, thread) {
     };
   }
 
-  return next.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  return next;
 }
 
 function removeThreadsByIds(currentThreads, threadIds) {
@@ -5832,6 +6098,13 @@ function ThreadListItem({
   selected = false,
   selectionMode = false,
   signalNow,
+  registerNode,
+  reorderActive = false,
+  reorderOffsetY = 0,
+  onStartReorder,
+  onMoveReorder,
+  onEndReorder,
+  onCancelReorder,
   onOpen,
   onRename,
   onDelete,
@@ -5851,7 +6124,6 @@ function ThreadListItem({
   const longPressTriggeredRef = useRef(false);
   const ACTION_WIDTH = 92;
   const SNAP_THRESHOLD = 42;
-  const LONG_PRESS_TRIGGER_MS = 420;
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const highlighted = selectionMode ? selected : active;
@@ -5890,13 +6162,30 @@ function ThreadListItem({
         longPressTimerRef.current = null;
         longPressTriggeredRef.current = true;
         setRevealOffset(0);
-        onEnterSelectionMode?.(thread.id);
-      }, LONG_PRESS_TRIGGER_MS);
+        onStartReorder?.({
+          thread,
+          pointerId: event.pointerId,
+          clientY: event.clientY
+        });
+      }, THREAD_LIST_ITEM_LONG_PRESS_MS);
     }
-  }, [clearPendingLongPress, onEnterSelectionMode, setRevealOffset, thread.id]);
+  }, [clearPendingLongPress, onStartReorder, setRevealOffset, thread]);
 
   const handlePointerMove = useCallback(
     (event) => {
+      if (reorderActive) {
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+
+        onMoveReorder?.({
+          threadId: thread.id,
+          pointerId: event.pointerId,
+          clientY: event.clientY
+        });
+        return;
+      }
+
       if (
         startPointRef.current === null ||
         (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)
@@ -5908,6 +6197,10 @@ function ThreadListItem({
       const deltaY = event.clientY - startPointRef.current.y;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
+
+      if (Math.hypot(deltaX, deltaY) > THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX) {
+        clearPendingLongPress();
+      }
 
       if (swipeAxisRef.current === null) {
         if (absX < 6 && absY < 6) {
@@ -5933,10 +6226,25 @@ function ThreadListItem({
       setDragging(true);
       setRevealOffset(baseOffsetRef.current + deltaX);
     },
-    [clearPendingLongPress, setRevealOffset]
+    [clearPendingLongPress, onMoveReorder, reorderActive, setRevealOffset, thread.id]
   );
 
   const handlePointerUp = useCallback((event) => {
+    if (reorderActive) {
+      clearPendingLongPress();
+      startPointRef.current = null;
+      baseOffsetRef.current = 0;
+      pointerIdRef.current = null;
+      swipeAxisRef.current = null;
+      setDragging(false);
+      onEndReorder?.({
+        threadId: thread.id,
+        pointerId: event.pointerId
+      });
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      return;
+    }
+
     if (startPointRef.current === null) {
       return;
     }
@@ -5957,7 +6265,35 @@ function ThreadListItem({
     swipeAxisRef.current = null;
     setDragging(false);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }, [clearPendingLongPress, setRevealOffset]);
+  }, [clearPendingLongPress, onEndReorder, reorderActive, setRevealOffset, thread.id]);
+
+  const handlePointerCancel = useCallback(
+    (event) => {
+      clearPendingLongPress();
+
+      if (reorderActive) {
+        onCancelReorder?.({
+          threadId: thread.id,
+          pointerId: event.pointerId
+        });
+      }
+
+      startPointRef.current = null;
+      baseOffsetRef.current = 0;
+      pointerIdRef.current = null;
+      swipeAxisRef.current = null;
+      setDragging(false);
+
+      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+    },
+    [clearPendingLongPress, onCancelReorder, reorderActive, thread.id]
+  );
 
   const showDeleteAction = offset > 0;
   const showRenameAction = offset < 0;
@@ -5992,11 +6328,12 @@ function ThreadListItem({
 
       <button
         type="button"
+        ref={(node) => registerNode?.(thread.id, node)}
         data-testid={`thread-list-item-${thread.id}`}
         onPointerDown={selectionMode ? undefined : handlePointerDown}
         onPointerMove={selectionMode ? undefined : handlePointerMove}
         onPointerUp={selectionMode ? undefined : handlePointerUp}
-        onPointerCancel={selectionMode ? undefined : handlePointerUp}
+        onPointerCancel={selectionMode ? undefined : handlePointerCancel}
         onClick={() => {
           if (longPressTriggeredRef.current) {
             longPressTriggeredRef.current = false;
@@ -6026,13 +6363,14 @@ function ThreadListItem({
           }
         }}
         className={`thread-list-item-touch-target relative w-full px-3 py-3 text-left ${
-          dragging ? "" : "transition-transform duration-180 ease-out"
+          dragging || reorderActive ? "" : "transition-transform duration-180 ease-out"
         } ${highlighted ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
         aria-pressed={selectionMode ? selected : undefined}
         aria-label={selectionMode ? `${thread.title} 선택` : undefined}
         style={{
-          transform: `translate3d(${offset}px, 0, 0)`,
-          touchAction: selectionMode ? "auto" : "pan-y",
+          transform: `translate3d(${offset}px, ${reorderOffsetY}px, 0) scale(${reorderActive ? 1.01 : 1})`,
+          touchAction: selectionMode ? "auto" : reorderActive ? "none" : "pan-y",
+          zIndex: reorderActive ? 10 : 0,
           willChange: "transform"
         }}
       >
@@ -7542,6 +7880,8 @@ function MainPage({
   draftThreadProjectId,
   threadComposerDrafts,
   projectFilterUsage,
+  projectChipOrder,
+  threadOrderByProjectId,
   search,
   loadingState,
   projectBusy,
@@ -7566,6 +7906,8 @@ function MainPage({
   threadMessageFilter,
   onSearchChange,
   onChangeThreadMessageFilter,
+  onChangeProjectChipOrder,
+  onChangeThreadOrder,
   onSelectBridge,
   onOpenBridgeDropdown,
   onSelectProject,
@@ -7644,42 +7986,31 @@ function MainPage({
   );
   const projectLongPressTimerRef = useRef(null);
   const projectLongPressTriggeredRef = useRef(false);
+  const lastProjectChipTapRef = useRef({ projectId: "", at: 0 });
+  const projectChipRowRef = useRef(null);
+  const projectChipNodesRef = useRef(new Map());
+  const projectChipDragStateRef = useRef(null);
+  const projectChipDropIndexRef = useRef(-1);
+  const threadListItemNodesRef = useRef(new Map());
+  const threadListDragStateRef = useRef(null);
+  const threadListDropIndexRef = useRef(-1);
   const wideThreadSplitLayoutRef = useRef(null);
   const wideThreadSplitResizePointerIdRef = useRef(null);
   const wideThreadSplitResizeStartXRef = useRef(0);
   const wideThreadSplitResizeStartRatioRef = useRef(0.5);
+  const [draggingProjectChipId, setDraggingProjectChipId] = useState("");
+  const [draggingProjectChipOffsetX, setDraggingProjectChipOffsetX] = useState(0);
+  const [draggingThreadId, setDraggingThreadId] = useState("");
+  const [draggingThreadOffsetY, setDraggingThreadOffsetY] = useState(0);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const orderedProjects = useMemo(() => {
-    const usageByProjectId = projectFilterUsage && typeof projectFilterUsage === "object" ? projectFilterUsage : {};
-
-    return [...projects]
-      .map((project, index) => ({
-        project,
-        index,
-        usageCount: Math.max(0, Math.round(Number(usageByProjectId[project.id]?.usageCount ?? 0) || 0)),
-        lastUsedAt: Math.max(0, Math.round(Number(usageByProjectId[project.id]?.lastUsedAt ?? 0) || 0))
-      }))
-      .sort((left, right) => {
-        const lastUsedDelta = right.lastUsedAt - left.lastUsedAt;
-
-        if (lastUsedDelta !== 0) {
-          return lastUsedDelta;
-        }
-
-        const usageCountDelta = right.usageCount - left.usageCount;
-
-        if (usageCountDelta !== 0) {
-          return usageCountDelta;
-        }
-
-        return left.index - right.index;
-      })
-      .map((entry) => entry.project);
-  }, [projectFilterUsage, projects]);
+    return resolveOrderedProjects(projects, projectFilterUsage, projectChipOrder);
+  }, [projectChipOrder, projectFilterUsage, projects]);
+  const orderedProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const threadInstructionProject =
     projects.find((project) => project.id === threadInstructionTarget?.project_id) ??
@@ -7727,8 +8058,15 @@ function MainPage({
       return matchesSearch;
     });
   }, [searchKeyword, todoChats]);
+  const orderedThreads = useMemo(() => {
+    if (selectedScope?.kind !== "project") {
+      return [];
+    }
+
+    return resolveOrderedThreads(threads, threadOrderByProjectId[selectedProjectId] ?? []);
+  }, [selectedProjectId, selectedScope?.kind, threadOrderByProjectId, threads]);
   const filteredThreads = useMemo(() => {
-    return threads.filter((thread) => {
+    return orderedThreads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
       const matchesSearch =
         !searchKeyword ||
@@ -7737,7 +8075,9 @@ function MainPage({
 
       return matchesProject && matchesSearch;
     });
-  }, [searchKeyword, selectedProjectId, threads]);
+  }, [orderedThreads, searchKeyword, selectedProjectId]);
+  const orderedThreadIds = useMemo(() => orderedThreads.map((thread) => thread.id), [orderedThreads]);
+  const filteredThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
   const selectedProjectThreadIds = useMemo(
     () =>
       new Set(
@@ -7780,11 +8120,95 @@ function MainPage({
       projectLongPressTimerRef.current = null;
     }
   }, []);
+  const resetProjectChipDragInteraction = useCallback(() => {
+    projectChipDragStateRef.current = null;
+    projectChipDropIndexRef.current = -1;
+    setDraggingProjectChipId("");
+    setDraggingProjectChipOffsetX(0);
+  }, []);
+  const resetThreadListDragInteraction = useCallback(() => {
+    threadListDragStateRef.current = null;
+    threadListDropIndexRef.current = -1;
+    setDraggingThreadId("");
+    setDraggingThreadOffsetY(0);
+  }, []);
+  const registerProjectChipNode = useCallback((projectId, node) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    if (!normalizedProjectId) {
+      return;
+    }
+
+    if (node) {
+      projectChipNodesRef.current.set(normalizedProjectId, node);
+      return;
+    }
+
+    projectChipNodesRef.current.delete(normalizedProjectId);
+  }, []);
+  const registerThreadListItemNode = useCallback((threadId, node) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
+    if (!normalizedThreadId) {
+      return;
+    }
+
+    if (node) {
+      threadListItemNodesRef.current.set(normalizedThreadId, node);
+      return;
+    }
+
+    threadListItemNodesRef.current.delete(normalizedThreadId);
+  }, []);
+  const resolveProjectChipDropIndex = useCallback(
+    (clientX, draggedProjectId) => {
+      const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== draggedProjectId);
+
+      for (let index = 0; index < draggableProjectIds.length; index += 1) {
+        const projectId = draggableProjectIds[index];
+        const node = projectChipNodesRef.current.get(projectId);
+
+        if (!node) {
+          continue;
+        }
+
+        const rect = node.getBoundingClientRect();
+
+        if (clientX < rect.left + rect.width / 2) {
+          return index;
+        }
+      }
+
+      return draggableProjectIds.length;
+    },
+    [orderedProjectIds]
+  );
+  const maybeAutoScrollProjectChipRow = useCallback((clientX) => {
+    const rowNode = projectChipRowRef.current;
+
+    if (!rowNode) {
+      return;
+    }
+
+    const rect = rowNode.getBoundingClientRect();
+    const edgeThreshold = 36;
+
+    if (clientX <= rect.left + edgeThreshold) {
+      rowNode.scrollLeft = Math.max(0, rowNode.scrollLeft - 18);
+      return;
+    }
+
+    if (clientX >= rect.right - edgeThreshold) {
+      rowNode.scrollLeft = Math.min(rowNode.scrollWidth - rowNode.clientWidth, rowNode.scrollLeft + 18);
+    }
+  }, []);
   useEffect(
     () => () => {
       clearPendingProjectLongPress();
+      resetProjectChipDragInteraction();
+      resetThreadListDragInteraction();
     },
-    [clearPendingProjectLongPress]
+    [clearPendingProjectLongPress, resetProjectChipDragInteraction, resetThreadListDragInteraction]
   );
   useEffect(() => {
     setSelectedThreadIds((current) => current.filter((threadId) => selectedProjectThreadIds.has(threadId)));
@@ -7854,22 +8278,142 @@ function MainPage({
 
       event.preventDefault();
       projectLongPressTriggeredRef.current = false;
+      lastProjectChipTapRef.current = { projectId: "", at: 0 };
       clearPendingProjectLongPress();
+      resetProjectChipDragInteraction();
+      projectChipDragStateRef.current = {
+        active: false,
+        moved: false,
+        pointerId: event.pointerId,
+        project,
+        startX: event.clientX,
+        startY: event.clientY,
+        startScrollLeft: projectChipRowRef.current?.scrollLeft ?? 0
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
 
       projectLongPressTimerRef.current = window.setTimeout(() => {
+        const activeDragState = projectChipDragStateRef.current;
+
+        if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+          projectLongPressTimerRef.current = null;
+          return;
+        }
+
         projectLongPressTimerRef.current = null;
         projectLongPressTriggeredRef.current = true;
-        openProjectActionSheet(project);
+        lastProjectChipTapRef.current = { projectId: "", at: 0 };
+        activeDragState.active = true;
+        activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
+        projectChipDropIndexRef.current = resolveProjectChipDropIndex(event.clientX, project.id);
+        setDraggingProjectChipId(project.id);
+        setDraggingProjectChipOffsetX(0);
       }, PROJECT_CHIP_LONG_PRESS_MS);
     },
-    [clearPendingProjectLongPress, openProjectActionSheet]
+    [clearPendingProjectLongPress, resetProjectChipDragInteraction, resolveProjectChipDropIndex]
   );
-  const handleProjectChipPointerCancel = useCallback(() => {
-    if (projectLongPressTimerRef.current) {
+  const handleProjectChipPointerMove = useCallback(
+    (event) => {
+      const activeDragState = projectChipDragStateRef.current;
+
+      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - activeDragState.startX;
+      const deltaY = event.clientY - activeDragState.startY;
+
+      if (!activeDragState.active) {
+        if (Math.hypot(deltaX, deltaY) > PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX) {
+          clearPendingProjectLongPress();
+          projectChipDragStateRef.current = null;
+        }
+
+        return;
+      }
+
+      maybeAutoScrollProjectChipRow(event.clientX);
+
+      const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
+      const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
+
+      if (!activeDragState.moved && Math.hypot(dragOffsetX, deltaY) > PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX) {
+        activeDragState.moved = true;
+      }
+
+      projectChipDropIndexRef.current = resolveProjectChipDropIndex(event.clientX, activeDragState.project.id);
+      setDraggingProjectChipOffsetX(dragOffsetX);
+      event.preventDefault();
+    },
+    [clearPendingProjectLongPress, maybeAutoScrollProjectChipRow, resolveProjectChipDropIndex]
+  );
+  const handleProjectChipPointerEnd = useCallback(
+    (event) => {
+      const activeDragState = projectChipDragStateRef.current;
+
       clearPendingProjectLongPress();
+
+      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+        projectLongPressTriggeredRef.current = false;
+        resetProjectChipDragInteraction();
+        return;
+      }
+
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+      const { active, moved, project } = activeDragState;
+      const dropIndex = projectChipDropIndexRef.current;
+
+      resetProjectChipDragInteraction();
+
+      if (!active) {
+        projectLongPressTriggeredRef.current = false;
+        return;
+      }
+
+      event.preventDefault();
+
+      if (moved) {
+        const nextProjectOrder = reorderProjectChipIdsByIndex(orderedProjectIds, project.id, dropIndex);
+
+        if (!areStringArraysEqual(nextProjectOrder, orderedProjectIds)) {
+          onChangeProjectChipOrder(nextProjectOrder);
+        }
+
+        window.setTimeout(() => {
+          projectLongPressTriggeredRef.current = false;
+        }, 0);
+        return;
+      }
+
+      window.setTimeout(() => {
+        projectLongPressTriggeredRef.current = false;
+      }, 0);
+    },
+    [
+      clearPendingProjectLongPress,
+      onChangeProjectChipOrder,
+      orderedProjectIds,
+      resetProjectChipDragInteraction
+    ]
+  );
+  const handleProjectChipPointerCancel = useCallback(
+    (event) => {
+      clearPendingProjectLongPress();
+
+      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function" && event.pointerId != null) {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+
       projectLongPressTriggeredRef.current = false;
-    }
-  }, [clearPendingProjectLongPress]);
+      resetProjectChipDragInteraction();
+    },
+    [clearPendingProjectLongPress, resetProjectChipDragInteraction]
+  );
   const handleProjectChipClick = useCallback(
     (projectId) => {
       if (projectLongPressTriggeredRef.current) {
@@ -7877,11 +8421,163 @@ function MainPage({
         return;
       }
 
+      const normalizedProjectId = String(projectId ?? "").trim();
+      const now = Date.now();
+
+      if (
+        normalizedProjectId &&
+        lastProjectChipTapRef.current.projectId === normalizedProjectId &&
+        now - lastProjectChipTapRef.current.at <= 320
+      ) {
+        lastProjectChipTapRef.current = { projectId: "", at: 0 };
+        const targetProject = projects.find((project) => project.id === normalizedProjectId) ?? null;
+
+        if (targetProject) {
+          clearPendingProjectLongPress();
+          resetProjectChipDragInteraction();
+          onOpenProjectEditDialog(targetProject);
+          return;
+        }
+      }
+
+      lastProjectChipTapRef.current = {
+        projectId: normalizedProjectId,
+        at: now
+      };
+
       setThreadSelectionMode(false);
       setSelectedThreadIds([]);
-      onSelectProject(projectId);
+      onSelectProject(normalizedProjectId);
     },
-    [onSelectProject]
+    [clearPendingProjectLongPress, onOpenProjectEditDialog, onSelectProject, projects, resetProjectChipDragInteraction]
+  );
+  const handleProjectChipDoubleClick = useCallback(
+    (event, project) => {
+      event.preventDefault();
+      clearPendingProjectLongPress();
+      projectLongPressTriggeredRef.current = false;
+      lastProjectChipTapRef.current = { projectId: "", at: 0 };
+      resetProjectChipDragInteraction();
+      onOpenProjectEditDialog(project);
+    },
+    [clearPendingProjectLongPress, onOpenProjectEditDialog, resetProjectChipDragInteraction]
+  );
+  const resolveThreadDropIndex = useCallback(
+    (clientY, draggedThreadId) => {
+      const draggableThreadIds = filteredThreadIds.filter((threadId) => threadId !== draggedThreadId);
+
+      for (let index = 0; index < draggableThreadIds.length; index += 1) {
+        const threadId = draggableThreadIds[index];
+        const node = threadListItemNodesRef.current.get(threadId);
+
+        if (!node) {
+          continue;
+        }
+
+        const rect = node.getBoundingClientRect();
+
+        if (clientY < rect.top + rect.height / 2) {
+          return index;
+        }
+      }
+
+      return draggableThreadIds.length;
+    },
+    [filteredThreadIds]
+  );
+  const handleThreadReorderStart = useCallback(
+    ({ thread, pointerId, clientY }) => {
+      if (!thread?.id || !selectedProjectId) {
+        return;
+      }
+
+      setThreadSelectionMode(false);
+      setSelectedThreadIds([]);
+      threadListDragStateRef.current = {
+        active: true,
+        moved: false,
+        pointerId,
+        thread,
+        startY: clientY
+      };
+      threadListDropIndexRef.current = resolveThreadDropIndex(clientY, thread.id);
+      setDraggingThreadId(thread.id);
+      setDraggingThreadOffsetY(0);
+    },
+    [resolveThreadDropIndex, selectedProjectId]
+  );
+  const handleThreadReorderMove = useCallback(
+    ({ threadId, pointerId, clientY }) => {
+      const activeDragState = threadListDragStateRef.current;
+
+      if (
+        !activeDragState ||
+        activeDragState.pointerId !== pointerId ||
+        activeDragState.thread?.id !== String(threadId ?? "").trim()
+      ) {
+        return false;
+      }
+
+      const dragOffsetY = clientY - activeDragState.startY;
+
+      if (!activeDragState.moved && Math.abs(dragOffsetY) > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
+        activeDragState.moved = true;
+      }
+
+      threadListDropIndexRef.current = resolveThreadDropIndex(clientY, activeDragState.thread.id);
+      setDraggingThreadOffsetY(dragOffsetY);
+      return true;
+    },
+    [resolveThreadDropIndex]
+  );
+  const handleThreadReorderEnd = useCallback(
+    ({ threadId, pointerId }) => {
+      const activeDragState = threadListDragStateRef.current;
+
+      if (
+        !activeDragState ||
+        activeDragState.pointerId !== pointerId ||
+        activeDragState.thread?.id !== String(threadId ?? "").trim()
+      ) {
+        resetThreadListDragInteraction();
+        return false;
+      }
+
+      const { moved, thread } = activeDragState;
+      const dropIndex = threadListDropIndexRef.current;
+      resetThreadListDragInteraction();
+
+      if (!moved || !selectedProjectId) {
+        return true;
+      }
+
+      const reorderedVisibleThreadIds = reorderThreadIdsByIndex(filteredThreadIds, thread.id, dropIndex);
+      const nextThreadOrder = applySubsetThreadOrder(orderedThreadIds, filteredThreadIds, reorderedVisibleThreadIds);
+
+      if (!areStringArraysEqual(nextThreadOrder, orderedThreadIds)) {
+        onChangeThreadOrder(selectedProjectId, nextThreadOrder);
+      }
+
+      return true;
+    },
+    [filteredThreadIds, onChangeThreadOrder, orderedThreadIds, resetThreadListDragInteraction, selectedProjectId]
+  );
+  const handleThreadReorderCancel = useCallback(
+    ({ threadId, pointerId }) => {
+      const activeDragState = threadListDragStateRef.current;
+
+      if (
+        activeDragState &&
+        activeDragState.pointerId === pointerId &&
+        activeDragState.thread?.id === String(threadId ?? "").trim()
+      ) {
+        resetThreadListDragInteraction();
+        return true;
+      }
+
+      return false;
+    },
+    [resetThreadListDragInteraction]
   );
   const handleEnterThreadSelectionMode = useCallback((threadId = "") => {
     const normalizedThreadId = String(threadId ?? "").trim();
@@ -7962,6 +8658,69 @@ function MainPage({
       : "";
   const wideThreadSplitLeftWeight = Math.max(1, Math.round(wideThreadSplitRatio * 100));
   const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
+  const projectChipRow = (
+    <div className="border-b border-white/10 px-4 pb-3 pt-2">
+      <div
+        ref={projectChipRowRef}
+        className={`flex gap-2 overflow-x-auto pb-1 ${draggingProjectChipId ? "cursor-grabbing" : ""}`}
+      >
+        <button
+          type="button"
+          onClick={() => onSelectTodoScope()}
+          className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+            isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
+          }`}
+        >
+          ToDo
+        </button>
+        {orderedProjects.map((project) => {
+          const isDraggingProjectChip = draggingProjectChipId === project.id;
+
+          return (
+            <button
+              key={project.id}
+              ref={(node) => registerProjectChipNode(project.id, node)}
+              type="button"
+              onClick={() => handleProjectChipClick(project.id)}
+              onDoubleClick={(event) => handleProjectChipDoubleClick(event, project)}
+              onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
+              onPointerMove={handleProjectChipPointerMove}
+              onPointerUp={handleProjectChipPointerEnd}
+              onPointerCancel={handleProjectChipPointerCancel}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                clearPendingProjectLongPress();
+                projectLongPressTriggeredRef.current = false;
+                lastProjectChipTapRef.current = { projectId: "", at: 0 };
+                resetProjectChipDragInteraction();
+                openProjectActionSheet(project);
+              }}
+              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+                isDraggingProjectChip
+                  ? "bg-white text-slate-900 shadow-[0_12px_24px_rgba(15,23,42,0.35)]"
+                  : !isTodoScope && project.id === selectedProjectId
+                    ? "bg-white text-slate-900"
+                    : "bg-transparent text-slate-400 hover:text-white"
+              }`}
+              style={
+                isDraggingProjectChip
+                  ? {
+                      position: "relative",
+                      zIndex: 20,
+                      transform: `translateX(${draggingProjectChipOffsetX}px) scale(1.02)`,
+                      transition: "none",
+                      touchAction: "none"
+                    }
+                  : undefined
+              }
+            >
+              {project.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   useEffect(() => {
     const storedRatio = readStoredMobileWorkspaceLayout({
@@ -8137,6 +8896,13 @@ function MainPage({
             selected={selectedThreadIds.includes(thread.id)}
             selectionMode={threadSelectionMode}
             signalNow={signalNow}
+            registerNode={registerThreadListItemNode}
+            reorderActive={draggingThreadId === thread.id}
+            reorderOffsetY={draggingThreadId === thread.id ? draggingThreadOffsetY : 0}
+            onStartReorder={handleThreadReorderStart}
+            onMoveReorder={handleThreadReorderMove}
+            onEndReorder={handleThreadReorderEnd}
+            onCancelReorder={handleThreadReorderCancel}
             onOpen={onSelectThread}
             onRename={onOpenThreadInstructionDialog}
             onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
@@ -8242,42 +9008,7 @@ function MainPage({
         onDismiss={onDismissInstallPrompt}
       />
 
-      <div className="border-b border-white/10 px-4 pb-3 pt-2">
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          <button
-            type="button"
-            onClick={() => onSelectTodoScope()}
-            className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
-              isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
-            }`}
-          >
-            ToDo
-          </button>
-          {orderedProjects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              onClick={() => handleProjectChipClick(project.id)}
-              onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
-              onPointerUp={handleProjectChipPointerCancel}
-              onPointerLeave={handleProjectChipPointerCancel}
-              onPointerCancel={handleProjectChipPointerCancel}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                clearPendingProjectLongPress();
-                openProjectActionSheet(project);
-              }}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
-                !isTodoScope && project.id === selectedProjectId
-                  ? "bg-white text-slate-900"
-                  : "bg-transparent text-slate-400 hover:text-white"
-              }`}
-            >
-              {project.name}
-            </button>
-          ))}
-        </div>
-      </div>
+      {projectChipRow}
     </div>
   );
   const mainOverlays = (
@@ -8765,38 +9496,7 @@ function MainPage({
             onDismiss={onDismissInstallPrompt}
           />
 
-          <div className="border-b border-white/10 px-4 pb-3 pt-2">
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              <button
-                type="button"
-                onClick={() => onSelectTodoScope()}
-                className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
-                  isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
-                }`}
-              >
-                ToDo
-              </button>
-              {orderedProjects.map((project) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  onClick={() => handleProjectChipClick(project.id)}
-                  onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
-                  onPointerUp={handleProjectChipPointerCancel}
-                  onPointerLeave={handleProjectChipPointerCancel}
-                  onPointerCancel={handleProjectChipPointerCancel}
-                  onContextMenu={(event) => event.preventDefault()}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
-                    !isTodoScope && project.id === selectedProjectId
-                      ? "bg-white text-slate-900"
-                      : "bg-transparent text-slate-400 hover:text-white"
-                  }`}
-                >
-                  {project.name}
-                </button>
-              ))}
-            </div>
-          </div>
+          {projectChipRow}
         </div>
 
         <main className="flex-1 px-4 pb-28 pt-3">
@@ -8841,6 +9541,13 @@ function MainPage({
                       selected={selectedThreadIds.includes(thread.id)}
                       selectionMode={threadSelectionMode}
                       signalNow={signalNow}
+                      registerNode={registerThreadListItemNode}
+                      reorderActive={draggingThreadId === thread.id}
+                      reorderOffsetY={draggingThreadId === thread.id ? draggingThreadOffsetY : 0}
+                      onStartReorder={handleThreadReorderStart}
+                      onMoveReorder={handleThreadReorderMove}
+                      onEndReorder={handleThreadReorderEnd}
+                      onCancelReorder={handleThreadReorderCancel}
                       onOpen={onSelectThread}
                       onRename={onOpenThreadInstructionDialog}
                       onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
@@ -9064,6 +9771,12 @@ export default function App() {
   );
   const [projectFilterUsage, setProjectFilterUsage] = useState(
     () => initialWorkspaceLayoutRef.current.projectFilterUsage ?? {}
+  );
+  const [projectChipOrder, setProjectChipOrder] = useState(
+    () => initialWorkspaceLayoutRef.current.projectChipOrder ?? []
+  );
+  const [threadOrderByProjectId, setThreadOrderByProjectId] = useState(
+    () => initialWorkspaceLayoutRef.current.threadOrderByProjectId ?? {}
   );
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
@@ -9455,6 +10168,25 @@ export default function App() {
     removeThreadComposerDrafts(normalizedThreadIds.map((threadId) => buildThreadComposerDraftKey({ threadId })));
     setThreads((current) => removeThreadsByIds(current, normalizedThreadIds));
     setThreadListsByProjectId((current) => removeThreadIdsFromProjectCache(current, normalizedThreadIds));
+    setThreadOrderByProjectId((current) => {
+      let changed = false;
+      const next = {};
+
+      Object.entries(current ?? {}).forEach(([projectId, threadOrder]) => {
+        const currentThreadOrder = normalizeThreadOrder(threadOrder);
+        const nextThreadOrder = currentThreadOrder.filter((threadId) => !normalizedThreadIds.includes(threadId));
+
+        if (!areStringArraysEqual(currentThreadOrder, nextThreadOrder)) {
+          changed = true;
+        }
+
+        if (nextThreadOrder.length > 0) {
+          next[projectId] = nextThreadOrder;
+        }
+      });
+
+      return changed ? next : current;
+    });
     setThreadDetails((current) => {
       let changed = false;
       const next = { ...current };
@@ -9496,7 +10228,7 @@ export default function App() {
 
     setThreadListsByProjectId((current) => ({
       ...current,
-      [normalizedProjectId]: mergeThreads([], nextThreads)
+      [normalizedProjectId]: mergeThreads(current[normalizedProjectId] ?? [], nextThreads)
     }));
   }, []);
   const updateThreadCacheRef = useRef(updateThreadCache);
@@ -9524,32 +10256,12 @@ export default function App() {
       resolver(accepted);
     }
   }, []);
-  const markProjectFilterUsed = useCallback((projectId) => {
-    const normalizedProjectId = String(projectId ?? "").trim();
-
-    if (!normalizedProjectId) {
-      return;
-    }
-
-    setProjectFilterUsage((current) =>
-      normalizeProjectFilterUsage({
-        ...current,
-        [normalizedProjectId]: {
-          usageCount: Math.max(0, Math.round(Number(current?.[normalizedProjectId]?.usageCount ?? 0) || 0)) + 1,
-          lastUsedAt: Date.now()
-        }
-      })
-    );
-  }, []);
   const selectProjectScope = useCallback((projectId, options = {}) => {
+    void options;
     const normalizedProjectId = String(projectId ?? "").trim();
 
     setSelectedScope({ kind: "project", id: normalizedProjectId });
-
-    if (options.recordUsage !== false) {
-      markProjectFilterUsed(normalizedProjectId);
-    }
-  }, [markProjectFilterUsed]);
+  }, []);
   const selectTodoScope = useCallback(() => {
     setSelectedScope({ kind: "todo", id: TODO_SCOPE_ID });
   }, []);
@@ -11303,6 +12015,8 @@ export default function App() {
     setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
     setThreadComposerDrafts(restoredLayout.threadComposerDrafts);
     setProjectFilterUsage(restoredLayout.projectFilterUsage ?? {});
+    setProjectChipOrder(restoredLayout.projectChipOrder ?? []);
+    setThreadOrderByProjectId(restoredLayout.threadOrderByProjectId ?? {});
     setThreadListsByProjectId(restoredWorkspaceSnapshot.threadListsByProjectId);
     setTodoChats(restoredWorkspaceSnapshot.todoChats);
     setTodoChatDetails({});
@@ -11327,6 +12041,8 @@ export default function App() {
         draftThreadProjectId,
         threadComposerDrafts,
         projectFilterUsage,
+        projectChipOrder,
+        threadOrderByProjectId,
         activeView
       },
       {
@@ -11343,8 +12059,55 @@ export default function App() {
     selectedTodoChatId,
     threadComposerDrafts,
     projectFilterUsage,
+    projectChipOrder,
+    threadOrderByProjectId,
     session?.loginId
   ]);
+
+  useEffect(() => {
+    const availableProjectIds = projects.map((project) => project.id);
+
+    setProjectChipOrder((current) => {
+      const normalizedOrder = normalizeProjectChipOrder(current, availableProjectIds);
+      return areStringArraysEqual(current, normalizedOrder) ? current : normalizedOrder;
+    });
+  }, [projects]);
+
+  useEffect(() => {
+    const availableProjectIds = new Set(projects.map((project) => String(project?.id ?? "").trim()).filter(Boolean));
+
+    setThreadOrderByProjectId((current) => {
+      const next = {};
+      const projectIds = new Set([
+        ...Object.keys(current ?? {}),
+        ...Object.keys(threadListsByProjectId ?? {})
+      ]);
+
+      projectIds.forEach((projectId) => {
+        if (!availableProjectIds.has(projectId)) {
+          return;
+        }
+
+        const cachedThreads = Array.isArray(threadListsByProjectId?.[projectId]) ? threadListsByProjectId[projectId] : null;
+
+        if (cachedThreads) {
+          next[projectId] = resolveOrderedThreadIds(
+            cachedThreads.map((thread) => thread?.id),
+            current?.[projectId] ?? []
+          );
+          return;
+        }
+
+        const normalizedOrder = normalizeThreadOrder(current?.[projectId] ?? []);
+
+        if (normalizedOrder.length > 0) {
+          next[projectId] = normalizedOrder;
+        }
+      });
+
+      return areStringArrayRecordEqual(current, next) ? current : next;
+    });
+  }, [projects, threadListsByProjectId]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeKnown) {
@@ -11657,6 +12420,8 @@ export default function App() {
     setDraftThreadProjectId("");
     setThreadComposerDrafts({});
     setProjectFilterUsage({});
+    setProjectChipOrder([]);
+    setThreadOrderByProjectId({});
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
@@ -12819,6 +13584,16 @@ export default function App() {
         delete next[projectId];
         return next;
       });
+      setProjectChipOrder((current) => normalizeProjectChipOrder(current, updatedProjects.map((project) => project.id)));
+      setThreadOrderByProjectId((current) => {
+        if (!current || !current[projectId]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[projectId];
+        return next;
+      });
 
       setDraftThreadProjectId((current) => (current === projectId ? "" : current));
       if (projectEditTargetId === projectId) {
@@ -13434,6 +14209,8 @@ export default function App() {
         draftThreadProjectId={draftThreadProjectId}
         threadComposerDrafts={threadComposerDrafts}
         projectFilterUsage={projectFilterUsage}
+        projectChipOrder={projectChipOrder}
+        threadOrderByProjectId={threadOrderByProjectId}
         search={search}
         loadingState={loadingState}
         utilityOpen={utilityOpen}
@@ -13463,6 +14240,27 @@ export default function App() {
         threadDetail={currentThreadDetailState}
         onSearchChange={setSearch}
         onChangeThreadMessageFilter={setThreadMessageFilter}
+        onChangeProjectChipOrder={setProjectChipOrder}
+        onChangeThreadOrder={(projectId, nextThreadOrder) => {
+          const normalizedProjectId = String(projectId ?? "").trim();
+
+          if (!normalizedProjectId) {
+            return;
+          }
+
+          setThreadOrderByProjectId((current) => {
+            const normalizedThreadOrder = normalizeThreadOrder(nextThreadOrder);
+            const next = { ...current };
+
+            if (normalizedThreadOrder.length === 0) {
+              delete next[normalizedProjectId];
+            } else {
+              next[normalizedProjectId] = normalizedThreadOrder;
+            }
+
+            return areStringArrayRecordEqual(current, next) ? current : next;
+          });
+        }}
         onSelectBridge={setSelectedBridgeId}
         onOpenBridgeDropdown={handleOpenBridgeDropdown}
         onSelectProject={handleSelectProject}
