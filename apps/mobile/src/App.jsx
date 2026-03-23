@@ -3366,12 +3366,14 @@ function ProjectComposerSheet({
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
   const tapStateRef = useRef({ path: "", timestamp: 0 });
 
   useEffect(() => {
     if (!open) {
       setName("");
       setDescription("");
+      setDeveloperInstructions("");
       tapStateRef.current = { path: "", timestamp: 0 };
       return;
     }
@@ -3414,6 +3416,7 @@ function ProjectComposerSheet({
     await onSubmit({
       name: name.trim(),
       description: description.trim(),
+      developerInstructions,
       workspace_path: selectedWorkspacePath
     });
   };
@@ -3512,6 +3515,23 @@ function ProjectComposerSheet({
           />
         </div>
 
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-developer-instructions">
+            공통 개발지침
+          </label>
+          <textarea
+            id="project-developer-instructions"
+            rows="8"
+            value={developerInstructions}
+            onChange={(event) => setDeveloperInstructions(event.target.value)}
+            placeholder="예: 답변 언어, 금지사항, 출력 형식, 코드 수정 원칙 등 이 프로젝트 전체에 공통으로 적용할 개발지침을 입력해 주세요."
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
+          />
+          <div className="mt-3 rounded-[1rem] border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-[12px] leading-6 text-emerald-50">
+            여기 저장한 공통 개발지침은 이 프로젝트의 새 채팅창이 실행될 때 기본 developerInstructions로 자동 적용됩니다.
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
@@ -3536,6 +3556,7 @@ function ProjectComposerSheet({
 function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
   const [title, setTitle] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
+  const projectDeveloperInstructions = String(project?.developer_instructions ?? "").trim();
 
   useEffect(() => {
     if (!open) {
@@ -3592,12 +3613,18 @@ function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
             rows="8"
             value={developerInstructions}
             onChange={(event) => setDeveloperInstructions(event.target.value)}
-            placeholder="이 채팅창에서만 먼저 적용할 개발지침이 있으면 입력해 주세요."
+            placeholder="이 채팅창에서만 추가로 적용할 개발지침이 있으면 입력해 주세요."
             className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
           />
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            제목과 개발지침은 선택입니다. 개발지침은 저장하면 이 채팅창의 다음 실행부터 적용됩니다.
-          </p>
+          {projectDeveloperInstructions ? (
+            <div className="mt-3 rounded-[1rem] border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-[12px] leading-6 text-emerald-50">
+              이 프로젝트의 공통 개발지침이 새 채팅창 기본 지침으로 자동 적용됩니다. 여기 입력한 채팅창 개발지침은 그 뒤에 이어 붙습니다.
+            </div>
+          ) : (
+            <p className="mt-2 text-[11px] leading-5 text-slate-400">
+              프로젝트 공통 개발지침이 없으면 이 값만 이 채팅창의 다음 실행부터 적용됩니다.
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -4404,6 +4431,164 @@ function TodoChatDetail({
         </div>
       </div>
     </div>
+  );
+}
+
+function ProjectActionSheet({ open, project, busy = false, onClose, onEdit, onDelete }) {
+  if (!open || !project) {
+    return null;
+  }
+
+  return (
+    <BottomSheet
+      open={open}
+      title="프로젝트 작업"
+      description={`${project.name} 프로젝트를 편집하거나 삭제할 수 있습니다.`}
+      onClose={busy ? () => {} : onClose}
+      variant="center"
+    >
+      <div className="space-y-3 px-5 py-5">
+        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
+          공통 개발지침은 새 채팅창이 실행될 때 기본 지침으로 자동 주입됩니다.
+        </div>
+        <button
+          type="button"
+          onClick={onEdit}
+          disabled={busy}
+          className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          편집
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={busy}
+          className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          삭제
+        </button>
+      </div>
+    </BottomSheet>
+  );
+}
+
+function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmit }) {
+  const [name, setName] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const draftProjectIdRef = useRef("");
+  const draftProjectId = open && project ? project.id : "";
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDeveloperInstructions("");
+      setDirty(false);
+      draftProjectIdRef.current = "";
+      return;
+    }
+
+    if (!project) {
+      return;
+    }
+
+    if (draftProjectIdRef.current !== draftProjectId) {
+      draftProjectIdRef.current = draftProjectId;
+      setName(project?.name ?? "");
+      setDeveloperInstructions(project?.developer_instructions ?? "");
+      setDirty(false);
+      return;
+    }
+
+    if (!dirty) {
+      setName(project?.name ?? "");
+      setDeveloperInstructions(project?.developer_instructions ?? "");
+    }
+  }, [dirty, draftProjectId, open, project]);
+
+  if (!open || !project) {
+    return null;
+  }
+
+  return (
+    <BottomSheet
+      open={open}
+      title="프로젝트 편집"
+      description="프로젝트 이름과 공통 개발지침을 수정합니다. 공통 개발지침은 새 채팅창 실행 시 기본 developerInstructions로 들어갑니다."
+      onClose={onClose}
+      variant="center"
+    >
+      <form
+        className="space-y-5 px-5 py-5"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await onSubmit({
+            name: name.trim(),
+            developerInstructions
+          });
+        }}
+      >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-name">
+            프로젝트 이름
+          </label>
+          <input
+            id="project-edit-name"
+            type="text"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setDirty(true);
+            }}
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-developer-instructions">
+            공통 개발지침
+          </label>
+          <textarea
+            id="project-edit-developer-instructions"
+            rows="10"
+            value={developerInstructions}
+            onChange={(event) => {
+              setDeveloperInstructions(event.target.value);
+              setDirty(true);
+            }}
+            placeholder="예: 코드 스타일, 테스트 기준, 금지사항, 응답 형식 같은 프로젝트 공통 규칙을 입력해 주세요."
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-400/30"
+          />
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            비워 두고 저장하면 공통 개발지침이 제거됩니다.
+          </p>
+        </div>
+
+        {errorMessage ? (
+          <div className="rounded-[1rem] border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[12px] leading-6 text-rose-100">
+            {errorMessage}
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            취소
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !name.trim()}
+            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </form>
+    </BottomSheet>
   );
 }
 
@@ -5985,6 +6170,10 @@ function MainPage({
   todoRenameBusy,
   todoTransferBusy,
   projectInstructionBusy,
+  projectEditDialogOpen,
+  projectEditTarget,
+  projectEditBusy,
+  projectEditError,
   threadInstructionBusy,
   threadInstructionError,
   threadDeleteDialog,
@@ -6007,6 +6196,7 @@ function MainPage({
   onOpenUtility,
   onOpenProjectComposer,
   onOpenProjectInstructionDialog,
+  onOpenProjectEditDialog,
   onOpenThreadInstructionDialog,
   onCloseThreadCreateDialog,
   onInstallPwa,
@@ -6016,6 +6206,7 @@ function MainPage({
   projectInstructionDialogOpen,
   projectInstructionType,
   onCloseProjectInstructionDialog,
+  onCloseProjectEditDialog,
   threadInstructionDialogOpen,
   threadInstructionTarget,
   threadInstructionSupported,
@@ -6026,6 +6217,7 @@ function MainPage({
   onSubmitProject,
   onSubmitThreadCreateDialog,
   onSubmitProjectInstruction,
+  onSubmitProjectEdit,
   onSubmitThreadInstruction,
   onCreateThread,
   onAppendThreadMessage,
@@ -6055,6 +6247,7 @@ function MainPage({
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [threadSelectionMode, setThreadSelectionMode] = useState(false);
+  const [projectActionProjectId, setProjectActionProjectId] = useState("");
   const [selectedThreadIds, setSelectedThreadIds] = useState([]);
   const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
@@ -6079,6 +6272,7 @@ function MainPage({
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const draftProject = projects.find((project) => project.id === draftThreadProjectId) ?? null;
+  const projectActionTarget = projects.find((project) => project.id === projectActionProjectId) ?? null;
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const selectedTodoChat = todoChats.find((chat) => chat.id === selectedTodoChatId) ?? null;
   const resolvedThread =
@@ -6192,30 +6386,39 @@ function MainPage({
         }
       }
 
+      setProjectActionProjectId("");
       void onDeleteProject(project.id);
     },
     [onDeleteProject]
   );
+  const openProjectActionSheet = useCallback((project) => {
+    if (!project?.id) {
+      return;
+    }
+
+    setProjectActionProjectId(project.id);
+  }, []);
   const handleProjectChipPointerDown = useCallback(
     (event, project) => {
-      if (!onDeleteProject || typeof window === "undefined" || !project) {
+      if (typeof window === "undefined" || !project) {
         return;
       }
 
-      if (event?.pointerType === "touch" || event?.pointerType === "pen") {
-        event.preventDefault();
+      if (event?.pointerType !== "touch" && event?.pointerType !== "pen") {
+        return;
       }
 
+      event.preventDefault();
       projectLongPressTriggeredRef.current = false;
       clearPendingProjectLongPress();
 
       projectLongPressTimerRef.current = window.setTimeout(() => {
         projectLongPressTimerRef.current = null;
         projectLongPressTriggeredRef.current = true;
-        requestProjectDeletion(project);
+        openProjectActionSheet(project);
       }, PROJECT_CHIP_LONG_PRESS_MS);
     },
-    [clearPendingProjectLongPress, onDeleteProject, requestProjectDeletion]
+    [clearPendingProjectLongPress, openProjectActionSheet]
   );
   const handleProjectChipPointerCancel = useCallback(() => {
     if (projectLongPressTimerRef.current) {
@@ -6615,7 +6818,11 @@ function MainPage({
               onPointerUp={handleProjectChipPointerCancel}
               onPointerLeave={handleProjectChipPointerCancel}
               onPointerCancel={handleProjectChipPointerCancel}
-              onContextMenu={(event) => event.preventDefault()}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                clearPendingProjectLongPress();
+                openProjectActionSheet(project);
+              }}
               className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
                 !isTodoScope && project.id === selectedProjectId
                   ? "bg-white text-slate-900"
@@ -6697,6 +6904,21 @@ function MainPage({
           return accepted;
         }}
       />
+      <ProjectActionSheet
+        open={Boolean(projectActionTarget)}
+        project={projectActionTarget}
+        busy={projectEditBusy || projectBusy}
+        onClose={() => setProjectActionProjectId("")}
+        onEdit={() => {
+          if (!projectActionTarget) {
+            return;
+          }
+
+          setProjectActionProjectId("");
+          onOpenProjectEditDialog(projectActionTarget);
+        }}
+        onDelete={() => requestProjectDeletion(projectActionTarget)}
+      />
       <UtilitySheet
         open={utilityOpen}
         session={session}
@@ -6736,6 +6958,14 @@ function MainPage({
         instructionType={projectInstructionType}
         onClose={onCloseProjectInstructionDialog}
         onSubmit={onSubmitProjectInstruction}
+      />
+      <ProjectEditDialog
+        open={projectEditDialogOpen}
+        busy={projectEditBusy}
+        project={projectEditTarget}
+        errorMessage={projectEditError}
+        onClose={onCloseProjectEditDialog}
+        onSubmit={onSubmitProjectEdit}
       />
       <ThreadEditDialog
         open={threadInstructionDialogOpen}
@@ -7365,6 +7595,10 @@ export default function App() {
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
+  const [projectEditDialogOpen, setProjectEditDialogOpen] = useState(false);
+  const [projectEditBusy, setProjectEditBusy] = useState(false);
+  const [projectEditError, setProjectEditError] = useState("");
+  const [projectEditTargetId, setProjectEditTargetId] = useState("");
   const [threadInstructionDialogOpen, setThreadInstructionDialogOpen] = useState(false);
   const [threadInstructionBusy, setThreadInstructionBusy] = useState(false);
   const [threadInstructionError, setThreadInstructionError] = useState("");
@@ -7419,6 +7653,10 @@ export default function App() {
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
+  );
+  const projectEditTarget = useMemo(
+    () => projects.find((project) => project.id === projectEditTargetId) ?? null,
+    [projectEditTargetId, projects]
   );
   const selectedProjectId = selectedScope.kind === "project" ? selectedScope.id : "";
   const bridgeConnected = Boolean(status?.app_server?.connected) && !bridgeDisconnectOverridden;
@@ -10530,6 +10768,11 @@ export default function App() {
       }
 
       setDraftThreadProjectId((current) => (current === projectId ? "" : current));
+      if (projectEditTargetId === projectId) {
+        setProjectEditDialogOpen(false);
+        setProjectEditTargetId("");
+        setProjectEditError("");
+      }
       removeThreadComposerDrafts([
         buildThreadComposerDraftKey({ projectId, isDraft: true }),
         ...threads
@@ -10736,12 +10979,34 @@ export default function App() {
     setProjectInstructionDialogOpen(true);
   };
 
+  const handleOpenProjectEditDialog = (project) => {
+    const projectId = String(project?.id ?? selectedProjectId ?? "").trim();
+
+    if (!projectId) {
+      return;
+    }
+
+    setProjectEditError("");
+    setProjectEditTargetId(projectId);
+    setProjectEditDialogOpen(true);
+  };
+
   const handleCloseProjectInstructionDialog = () => {
     if (projectInstructionBusy) {
       return;
     }
 
     setProjectInstructionDialogOpen(false);
+  };
+
+  const handleCloseProjectEditDialog = () => {
+    if (projectEditBusy) {
+      return;
+    }
+
+    setProjectEditError("");
+    setProjectEditDialogOpen(false);
+    setProjectEditTargetId("");
   };
 
   const handleSubmitProjectInstruction = async ({ instructionType, value }) => {
@@ -10786,6 +11051,58 @@ export default function App() {
       }
     } finally {
       setProjectInstructionBusy(false);
+    }
+  };
+
+  const handleSubmitProjectEdit = async ({ name, developerInstructions }) => {
+    const projectId = String(projectEditTarget?.id ?? "").trim();
+    const nextName = String(name ?? "").trim();
+
+    if (!session?.loginId || !selectedBridgeId || !projectId || !nextName) {
+      return false;
+    }
+
+    setProjectEditBusy(true);
+    setProjectEditError("");
+
+    try {
+      const response = await apiRequest(
+        `/api/projects/${encodeURIComponent(projectId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: nextName,
+            developer_instructions: String(developerInstructions ?? ""),
+            update_developer_instructions: true
+          })
+        }
+      );
+
+      let updatedProject = null;
+
+      if (Array.isArray(response?.projects)) {
+        setProjects(response.projects);
+        updatedProject = response.projects.find((project) => project.id === projectId) ?? null;
+      } else if (response?.project?.id) {
+        updatedProject = response.project.id === projectId ? response.project : null;
+        setProjects((current) =>
+          current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))
+        );
+      }
+
+      if (updatedProject?.id) {
+        setProjectEditTargetId(updatedProject.id);
+      }
+
+      setProjectEditDialogOpen(false);
+      setProjectEditTargetId("");
+      setProjectEditError("");
+      return true;
+    } catch (error) {
+      setProjectEditError(error.message ?? "프로젝트를 수정하지 못했습니다.");
+      return false;
+    } finally {
+      setProjectEditBusy(false);
     }
   };
 
@@ -11068,6 +11385,10 @@ export default function App() {
         projectBusy={projectBusy}
         threadCreateDialogOpen={threadCreateDialogOpen}
         projectInstructionBusy={projectInstructionBusy}
+        projectEditDialogOpen={projectEditDialogOpen}
+        projectEditTarget={projectEditTarget}
+        projectEditBusy={projectEditBusy}
+        projectEditError={projectEditError}
         threadInstructionBusy={threadInstructionBusy}
         threadBusy={threadBusy}
         threadDeleteDialog={threadDeleteDialog}
@@ -11098,6 +11419,7 @@ export default function App() {
         onOpenUtility={() => setUtilityOpen(true)}
         onOpenProjectComposer={() => void handleOpenProjectComposer()}
         onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
+        onOpenProjectEditDialog={handleOpenProjectEditDialog}
         onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
         onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
         onInstallPwa={() => void handleInstallPwa()}
@@ -11105,6 +11427,7 @@ export default function App() {
         onCloseUtility={() => setUtilityOpen(false)}
         onCloseProjectComposer={handleCloseProjectComposer}
         onCloseProjectInstructionDialog={handleCloseProjectInstructionDialog}
+        onCloseProjectEditDialog={handleCloseProjectEditDialog}
         onCloseThreadInstructionDialog={handleCloseThreadInstructionDialog}
         onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
         onBrowseFolder={(path) => browseWorkspacePath(path)}
@@ -11112,6 +11435,7 @@ export default function App() {
         onSubmitProject={handleCreateProject}
         onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
         onSubmitProjectInstruction={handleSubmitProjectInstruction}
+        onSubmitProjectEdit={handleSubmitProjectEdit}
         onSubmitThreadInstruction={handleSubmitThreadInstruction}
         onCreateThread={handleCreateThread}
         onAppendThreadMessage={handleAppendThreadMessage}
