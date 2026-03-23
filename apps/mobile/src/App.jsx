@@ -3601,6 +3601,8 @@ function InlineIssueComposer({
   onInputBlur = null
 }) {
   const LONG_PRESS_THRESHOLD_MS = 650;
+  const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_PX = 160;
+  const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_RATIO = 0.14;
   const normalizedDraftKey = String(draftKey ?? "").trim();
   const normalizedDraftValue = normalizeComposerDraftValue(draftValue);
   const [internalPrompt, setInternalPrompt] = useState(() => normalizedDraftValue);
@@ -3616,6 +3618,10 @@ function InlineIssueComposer({
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
   const lastFinalTranscriptRef = useRef("");
+  const viewportBaselineHeightsRef = useRef({
+    portrait: 0,
+    landscape: 0
+  });
   const { alert: showAlert } = useMobileFeedback();
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
@@ -3686,9 +3692,96 @@ function InlineIssueComposer({
     }
   }, []);
 
+  const readCurrentViewportMetrics = useCallback(() => {
+    if (typeof window === "undefined") {
+      return {
+        width: 0,
+        height: 0,
+        orientation: "portrait"
+      };
+    }
+
+    const viewport = window.visualViewport;
+    const width = Math.max(0, Math.round(viewport?.width || window.innerWidth || 0));
+    const height = Math.max(0, Math.round(viewport?.height || window.innerHeight || 0));
+
+    return {
+      width,
+      height,
+      orientation: getViewportOrientation(width, height)
+    };
+  }, []);
+
+  const syncViewportBaseline = useCallback(() => {
+    const { height, orientation } = readCurrentViewportMetrics();
+
+    if (height <= 0) {
+      return;
+    }
+
+    const currentBaseline = Number(viewportBaselineHeightsRef.current[orientation] ?? 0);
+
+    if (height > currentBaseline) {
+      viewportBaselineHeightsRef.current = {
+        ...viewportBaselineHeightsRef.current,
+        [orientation]: height
+      };
+    }
+  }, [readCurrentViewportMetrics]);
+
+  const isSoftwareKeyboardOpen = useCallback(() => {
+    const { height, orientation } = readCurrentViewportMetrics();
+    const baselineHeight = Number(viewportBaselineHeightsRef.current[orientation] ?? 0);
+
+    if (height <= 0 || baselineHeight <= 0 || height >= baselineHeight) {
+      return false;
+    }
+
+    const deltaHeight = baselineHeight - height;
+    const threshold = Math.max(
+      SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_PX,
+      Math.round(baselineHeight * SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_RATIO)
+    );
+
+    return deltaHeight >= threshold;
+  }, [readCurrentViewportMetrics]);
+
   useLayoutEffect(() => {
     syncPromptHeight();
   }, [prompt, selectedProject, syncPromptHeight]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const viewport = window.visualViewport;
+    const handleViewportChange = () => {
+      syncViewportBaseline();
+    };
+
+    syncViewportBaseline();
+
+    if (!viewport) {
+      window.addEventListener("resize", handleViewportChange);
+      window.addEventListener("orientationchange", handleViewportChange);
+
+      return () => {
+        window.removeEventListener("resize", handleViewportChange);
+        window.removeEventListener("orientationchange", handleViewportChange);
+      };
+    }
+
+    viewport.addEventListener("resize", handleViewportChange);
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("orientationchange", handleViewportChange);
+
+    return () => {
+      viewport.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("orientationchange", handleViewportChange);
+    };
+  }, [syncViewportBaseline]);
 
   const handlePromptChange = useCallback(
     (event) => {
@@ -3972,7 +4065,7 @@ function InlineIssueComposer({
 
   const handlePromptKeyDown = useCallback(
     (event) => {
-      if (event.key !== "Enter") {
+      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
         return;
       }
 
@@ -3980,7 +4073,7 @@ function InlineIssueComposer({
         return;
       }
 
-      if (!event.ctrlKey && !event.metaKey) {
+      if (isSoftwareKeyboardOpen()) {
         return;
       }
 
@@ -3992,7 +4085,7 @@ function InlineIssueComposer({
 
       void handlePromptSubmit();
     },
-    [busy, disabled, handlePromptSubmit, selectedProject]
+    [busy, disabled, handlePromptSubmit, isSoftwareKeyboardOpen, selectedProject]
   );
 
   const toggleVoiceCapture = useCallback(() => {
