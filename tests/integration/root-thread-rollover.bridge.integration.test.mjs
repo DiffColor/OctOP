@@ -184,6 +184,7 @@ class FakeAppServer {
     this.connectionCount = 0;
     this.pingCount = 0;
     this.threadListRequestCount = 0;
+    this.threadReadRequestCount = 0;
     this.idleTimerBySocket = new Map();
     this.pongTimers = new Set();
     this.noResponseOnceMethods = new Set(
@@ -632,15 +633,28 @@ class FakeAppServer {
         }
         return;
       case "thread/read": {
+        this.threadReadRequestCount += 1;
         const threadId = String(message.params?.threadId ?? "").trim();
         const thread = this.threads.get(threadId) ?? null;
+        const threadPayload = thread
+          ? {
+              ...thread,
+              turns: message.params?.includeTurns ? JSON.parse(JSON.stringify(thread.turns ?? [])) : []
+            }
+          : null;
+        const overriddenPayload =
+          typeof this.options.onThreadRead === "function"
+            ? this.options.onThreadRead({
+                server: this,
+                message,
+                threadId,
+                thread,
+                threadReadCount: this.threadReadRequestCount,
+                threadPayload
+              })
+            : undefined;
         this.respond(message.id, {
-          thread: thread
-            ? {
-                ...thread,
-                turns: message.params?.includeTurns ? thread.turns ?? [] : []
-              }
-            : null
+          thread: overriddenPayload === undefined ? threadPayload : overriddenPayload
         });
         return;
       }
@@ -2130,6 +2144,94 @@ test("running backfill은 새 delta가 없어도 기존 item.agentMessage.delta 
       timeoutMs: 15000,
       intervalMs: 250,
       label: "running backfill preserves item delta event"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("running backfill은 ws delta 이후 더 짧은 stale snapshot으로 assistant 내용을 되감지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-backfill-stale-snapshot-int-"));
+  const fakeAppServer = new FakeAppServer({
+    onThreadRead: ({ threadPayload }) => {
+      if (!threadPayload) {
+        return threadPayload;
+      }
+
+      const overridden = JSON.parse(JSON.stringify(threadPayload));
+      const currentTurn = overridden.turns?.at(-1) ?? null;
+      const assistantItem = currentTurn?.items?.find((item) => item?.agentMessage) ?? null;
+
+      if (assistantItem?.agentMessage) {
+        assistantItem.agentMessage.text = "첫 문장";
+      }
+
+      return overridden;
+    }
+  });
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    server.notify("item/agentMessage/delta", {
+      threadId,
+      delta: "첫 문장"
+    });
+
+    setTimeout(() => {
+      server.notify("item/agentMessage/delta", {
+        threadId,
+        delta: " 실시간 추가"
+      });
+    }, 1200);
+  };
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-backfill-stale-snapshot-token",
+    userId: "integration-user",
+    bridgeId: `running-backfill-stale-snapshot-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "200",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "600",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "200"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Running Backfill Stale Snapshot Guard"
+    });
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      const assistantMessages = issuePayload.messages.filter((message) => message.role === "assistant");
+
+      assert.equal(fakeAppServer.getRequests("thread/read").length >= 2, true);
+      assert.equal(issuePayload.issue?.status, "running");
+      assert.equal(issuePayload.issue?.last_message, "첫 문장 실시간 추가");
+      assert.equal(assistantMessages.at(-1)?.content, "첫 문장 실시간 추가");
+      assert.equal(continuityPayload.active_physical_thread?.last_message, "첫 문장 실시간 추가");
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "stale backfill snapshot does not rewind ws delta"
     });
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;

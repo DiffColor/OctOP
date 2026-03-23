@@ -3242,7 +3242,25 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
       changed: false,
       appendedDelta: "",
       replaced: false,
-      content: normalizedText
+      content: normalizedText,
+      ignoredStaleSnapshot: false
+    };
+  }
+
+  const shouldIgnoreStaleSnapshot =
+    Boolean(currentText) &&
+    (
+      currentText.startsWith(normalizedText) ||
+      currentText.length > normalizedText.length
+    );
+
+  if (shouldIgnoreStaleSnapshot) {
+    return {
+      changed: false,
+      appendedDelta: "",
+      replaced: false,
+      content: currentText,
+      ignoredStaleSnapshot: true
     };
   }
 
@@ -3254,7 +3272,8 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
       changed: true,
       appendedDelta: normalizedText.slice(currentText.length),
       replaced: false,
-      content: normalizedText
+      content: normalizedText,
+      ignoredStaleSnapshot: false
     };
   }
 
@@ -3262,7 +3281,8 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
     changed: true,
     appendedDelta: "",
     replaced: true,
-    content: normalizedText
+    content: normalizedText,
+    ignoredStaleSnapshot: false
   };
 }
 
@@ -7596,6 +7616,64 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
   return remotePayload;
 }
 
+const orderedBridgeEventQueueByKey = new Map();
+
+function resolveOrderedBridgeEventQueueKey(context = {}) {
+  const normalizedThreadId = String(context.threadId ?? context.rootThreadId ?? "").trim();
+
+  if (normalizedThreadId) {
+    return `thread:${normalizedThreadId}`;
+  }
+
+  const normalizedPhysicalThreadId = String(context.physicalThreadId ?? "").trim();
+
+  if (normalizedPhysicalThreadId) {
+    const rootThreadId = physicalThreadStateById.get(normalizedPhysicalThreadId)?.root_thread_id ?? null;
+
+    if (rootThreadId) {
+      return `thread:${rootThreadId}`;
+    }
+
+    return `physical:${normalizedPhysicalThreadId}`;
+  }
+
+  const normalizedCodexThreadId = String(context.codexThreadId ?? "").trim();
+
+  if (normalizedCodexThreadId) {
+    const resolvedPhysicalThreadId = resolvePhysicalThreadIdByCodexThreadId(normalizedCodexThreadId);
+    const rootThreadId =
+      (resolvedPhysicalThreadId
+        ? physicalThreadStateById.get(resolvedPhysicalThreadId)?.root_thread_id ?? null
+        : null) ??
+      resolveLocalThreadId(normalizedCodexThreadId);
+
+    if (rootThreadId) {
+      return `thread:${rootThreadId}`;
+    }
+
+    return `codex:${normalizedCodexThreadId}`;
+  }
+
+  const owner = String(context.owner ?? BRIDGE_OWNER_LOGIN_ID ?? "global").trim() || "global";
+  return `global:${owner}`;
+}
+
+async function enqueueOrderedBridgeEvent(context = {}, handler = async () => {}) {
+  const queueKey = resolveOrderedBridgeEventQueueKey(context);
+  const previous = orderedBridgeEventQueueByKey.get(queueKey) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => handler());
+  const tracked = next.finally(() => {
+    if (orderedBridgeEventQueueByKey.get(queueKey) === tracked) {
+      orderedBridgeEventQueueByKey.delete(queueKey);
+    }
+  });
+
+  orderedBridgeEventQueueByKey.set(queueKey, tracked);
+  return tracked;
+}
+
 function buildCompactRemoteNotificationPayload(method, params = {}) {
   switch (method) {
     case "thread/started":
@@ -8082,7 +8160,31 @@ class AppServerClient {
       return;
     }
 
-    void this.handleNotification(data.method, data.params ?? {});
+    const params = data.params ?? {};
+    const codexThreadId =
+      params.thread?.id ??
+      params.threadId ??
+      params.conversationId ??
+      params.thread_id ??
+      null;
+
+    void enqueueOrderedBridgeEvent({
+      owner: resolveOwnerFromParams(params),
+      rootThreadId: params.root_thread_id ?? null,
+      physicalThreadId: params.physical_thread_id ?? null,
+      codexThreadId
+    }, () => this.handleNotification(data.method, params)).catch((error) => {
+      this.lastError = error.message;
+      appendDiagnosticLog("error", "app_server.notification.failed", "app-server notification handling failed", {
+        method: data.method,
+        params,
+        error
+      });
+      console.error("[OctOP bridge] app-server notification handling failed", {
+        method: data.method,
+        message: error.message
+      });
+    });
   }
 
   async handleNotification(method, params) {
@@ -9546,8 +9648,6 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     });
   }
 
-  const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
-
   markRunningIssueActivity(threadId, {
     lastActivityAt: meta.lastActivityAt,
     backfillLastPolledAt: now()
@@ -9559,6 +9659,50 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     throw new Error("thread/read 응답에 thread가 없습니다.");
   }
 
+  return enqueueOrderedBridgeEvent({
+    owner,
+    threadId,
+    rootThreadId: threadId,
+    physicalThreadId,
+    codexThreadId: remoteThread.id
+  }, () => applyRunningIssueBackfillSnapshot(owner, threadId, remoteThread, reason));
+}
+
+async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread, reason = "unspecified") {
+  const owner = sanitizeUserId(userId);
+  const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
+  const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
+  const thread = threadStateById.get(threadId) ?? null;
+  const issue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+  const physicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    thread?.active_physical_thread_id ??
+    null;
+  const physicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) ?? null : null;
+
+  if (!remoteThread?.id) {
+    throw new Error("thread/read 응답에 thread가 없습니다.");
+  }
+
+  if (!activeIssueId || !meta || !thread || !issue || thread.deleted_at || issue.deleted_at) {
+    if (reason !== "interval") {
+      appendDiagnosticLog("warn", "running_issue.backfill.skipped", "running issue backfill skipped after queue wait", {
+        thread_id: threadId,
+        reason,
+        active_issue_id: activeIssueId,
+        has_meta: Boolean(meta),
+        has_thread: Boolean(thread),
+        has_issue: Boolean(issue),
+        thread_deleted: Boolean(thread?.deleted_at),
+        issue_deleted: Boolean(issue?.deleted_at),
+        remote_thread_id: remoteThread.id
+      });
+    }
+    return { accepted: false, skipped: true };
+  }
+
+  const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
   const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
   const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
@@ -9882,6 +10026,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       codex_thread_id: remoteThread.id,
       remote_status: remoteStatus,
       appended_delta_length: syncedAssistant.appendedDelta.length,
+      stale_snapshot_ignored: syncedAssistant.ignoredStaleSnapshot,
       token_usage_changed: tokenUsageChanged,
       observable_progress: hasObservableRunningProgress,
       no_progress_backfill_count: nextNoProgressBackfillCount,
