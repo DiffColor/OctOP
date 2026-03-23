@@ -23,6 +23,7 @@ const LEGACY_LOCAL_STORAGE_KEY = "octop.dashboard.session";
 const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
 const MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY = "octop.mobile.workspace.layout.v1";
+const THREAD_DETAIL_CACHE_STORAGE_KEY = "octop.mobile.threadDetails.cache.v1";
 const ISSUE_SOURCE_APP_ID = "mobile-web";
 const createDefaultStatus = () => ({
   app_server: {
@@ -86,11 +87,16 @@ const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 const APP_RESUME_COALESCE_MS = 400;
+const BACKGROUND_THREAD_PRELOAD_COUNT = 2;
+const BACKGROUND_THREAD_PRELOAD_DELAY_MS = 220;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
 const VIEWPORT_METRICS_STORAGE_KEY = "octop.mobile.viewport.metrics.v1";
 const VIEWPORT_STORAGE_REUSE_TOLERANCE_PX = 96;
+const MAX_CACHED_THREAD_DETAILS_PER_SCOPE = 6;
+const MAX_CACHED_THREAD_MESSAGES_PER_THREAD = 160;
+const MAX_CACHED_THREAD_ISSUES_PER_THREAD = 24;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -636,6 +642,217 @@ function clearStoredMobileWorkspaceLayout() {
 
 function buildWorkspaceLayoutOwnerKey(loginId, bridgeId) {
   return `${String(loginId ?? "").trim()}::${String(bridgeId ?? "").trim()}`;
+}
+
+function createDefaultThreadDetailCacheStore() {
+  return {
+    version: 1,
+    scopes: {}
+  };
+}
+
+function normalizeCachedThreadMessages(messages = []) {
+  return messages
+    .map((message, index) => {
+      if (!message) {
+        return null;
+      }
+
+      const role =
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "system" || message.kind === "handoff_summary"
+            ? "system"
+            : "user";
+      const timestamp = String(message.timestamp ?? new Date().toISOString());
+      const id = String(message.id ?? `${role}-${index}`).trim();
+
+      if (!id) {
+        return null;
+      }
+
+      return {
+        id,
+        role,
+        kind: typeof message.kind === "string" ? message.kind : "message",
+        content: typeof message.content === "string" ? message.content : String(message.content ?? ""),
+        timestamp,
+        issue_id: message.issue_id ?? null,
+        issue_title: typeof message.issue_title === "string" ? message.issue_title : String(message.issue_title ?? ""),
+        issue_status: typeof message.issue_status === "string" ? message.issue_status : String(message.issue_status ?? "")
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? ""))
+    .slice(-MAX_CACHED_THREAD_MESSAGES_PER_THREAD);
+}
+
+function normalizeCachedThreadDetailEntry(entry, fallbackThreadId = "") {
+  const normalizedThread = normalizeThread(entry?.thread);
+  const resolvedThreadId = normalizedThread?.id ?? String(fallbackThreadId ?? "").trim();
+
+  if (!resolvedThreadId) {
+    return null;
+  }
+
+  const normalizedIssues = (entry?.issues ?? [])
+    .map((issue) => normalizeIssue(issue, resolvedThreadId))
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(left.created_at ?? "") - Date.parse(right.created_at ?? ""))
+    .slice(-MAX_CACHED_THREAD_ISSUES_PER_THREAD);
+  const normalizedMessages = normalizeCachedThreadMessages(entry?.messages ?? []);
+  const fetchedAt = Number(entry?.fetchedAt);
+  const versionCandidate =
+    typeof entry?.version === "string" && entry.version.trim()
+      ? entry.version.trim()
+      : normalizedThread?.updated_at ?? normalizedThread?.created_at ?? null;
+
+  if (!normalizedThread && normalizedIssues.length === 0 && normalizedMessages.length === 0) {
+    return null;
+  }
+
+  return {
+    loading: false,
+    error: "",
+    thread: normalizedThread ?? null,
+    issues: normalizedIssues,
+    messages: normalizedMessages,
+    fetchedAt: Number.isFinite(fetchedAt) && fetchedAt > 0 ? fetchedAt : Date.now(),
+    version: versionCandidate
+  };
+}
+
+function trimThreadDetailCacheEntries(entries = {}) {
+  return Object.fromEntries(
+    Object.entries(entries)
+      .map(([threadId, entry]) => [threadId, normalizeCachedThreadDetailEntry(entry, threadId)])
+      .filter(([, entry]) => Boolean(entry))
+      .sort(([, left], [, right]) => {
+        const leftFetchedAt = Number(left?.fetchedAt ?? 0);
+        const rightFetchedAt = Number(right?.fetchedAt ?? 0);
+        return rightFetchedAt - leftFetchedAt;
+      })
+      .slice(0, MAX_CACHED_THREAD_DETAILS_PER_SCOPE)
+  );
+}
+
+function readStoredThreadDetailCache(filters = {}) {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  const ownerKey = buildWorkspaceLayoutOwnerKey(filters.loginId, filters.bridgeId);
+
+  if (!ownerKey || ownerKey === "::") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(THREAD_DETAIL_CACHE_STORAGE_KEY);
+
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    const scopedEntries = parsed?.scopes?.[ownerKey]?.entries ?? {};
+    return trimThreadDetailCacheEntries(scopedEntries);
+  } catch {
+    return {};
+  }
+}
+
+function storeThreadDetailCache(entries, filters = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const ownerKey = buildWorkspaceLayoutOwnerKey(filters.loginId, filters.bridgeId);
+
+  if (!ownerKey || ownerKey === "::") {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(THREAD_DETAIL_CACHE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : createDefaultThreadDetailCacheStore();
+    const nextStore = {
+      ...createDefaultThreadDetailCacheStore(),
+      ...(parsed && typeof parsed === "object" ? parsed : {}),
+      scopes: {
+        ...(parsed?.scopes ?? {})
+      }
+    };
+    const trimmedEntries = trimThreadDetailCacheEntries(entries);
+
+    if (Object.keys(trimmedEntries).length === 0) {
+      delete nextStore.scopes[ownerKey];
+    } else {
+      nextStore.scopes[ownerKey] = {
+        updatedAt: new Date().toISOString(),
+        entries: trimmedEntries
+      };
+    }
+
+    window.localStorage.setItem(THREAD_DETAIL_CACHE_STORAGE_KEY, JSON.stringify(nextStore));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function shouldPreloadThreadDetail(entry, thread, options = {}) {
+  if (!thread?.id) {
+    return false;
+  }
+
+  if (entry?.loading) {
+    return false;
+  }
+
+  if (options.force === true) {
+    return true;
+  }
+
+  const cachedMessageCount = Array.isArray(entry?.messages) ? entry.messages.length : 0;
+  const threadVersion = String(thread?.updated_at ?? thread?.created_at ?? "").trim();
+  const entryVersion = String(entry?.version ?? entry?.thread?.updated_at ?? entry?.thread?.created_at ?? "").trim();
+
+  if (!entry) {
+    return true;
+  }
+
+  if (cachedMessageCount === 0) {
+    return true;
+  }
+
+  if (!threadVersion) {
+    return false;
+  }
+
+  return entryVersion !== threadVersion;
+}
+
+function pickBackgroundThreadPreloadIds(threads = [], preferredThreadIds = [], limit = BACKGROUND_THREAD_PRELOAD_COUNT) {
+  const ordered = [];
+  const seen = new Set();
+
+  const append = (threadId) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
+    if (!normalizedThreadId || seen.has(normalizedThreadId)) {
+      return;
+    }
+
+    seen.add(normalizedThreadId);
+    ordered.push(normalizedThreadId);
+  };
+
+  preferredThreadIds.forEach(append);
+  [...threads]
+    .sort((left, right) => Date.parse(right?.updated_at ?? "") - Date.parse(left?.updated_at ?? ""))
+    .forEach((thread) => append(thread?.id));
+
+  return ordered.slice(0, Math.max(0, limit));
 }
 
 function isPwaPromptDismissed() {
@@ -7792,6 +8009,7 @@ export default function App() {
   const initialSessionRef = useRef(undefined);
   const initialSelectedBridgeIdRef = useRef(undefined);
   const initialWorkspaceLayoutRef = useRef(undefined);
+  const initialThreadDetailsRef = useRef(undefined);
 
   if (initialSessionRef.current === undefined) {
     const initialSession = typeof window === "undefined" ? null : readStoredSession();
@@ -7800,6 +8018,10 @@ export default function App() {
     initialSessionRef.current = initialSession;
     initialSelectedBridgeIdRef.current = initialSelectedBridgeId;
     initialWorkspaceLayoutRef.current = readStoredMobileWorkspaceLayout({
+      loginId: initialSession?.loginId ?? "",
+      bridgeId: initialSelectedBridgeId
+    });
+    initialThreadDetailsRef.current = readStoredThreadDetailCache({
       loginId: initialSession?.loginId ?? "",
       bridgeId: initialSelectedBridgeId
     });
@@ -7813,7 +8035,7 @@ export default function App() {
   const [threads, setThreads] = useState([]);
   const [threadListsByProjectId, setThreadListsByProjectId] = useState({});
   const [todoChats, setTodoChats] = useState([]);
-  const [threadDetails, setThreadDetails] = useState({});
+  const [threadDetails, setThreadDetails] = useState(() => initialThreadDetailsRef.current ?? {});
   const [todoChatDetails, setTodoChatDetails] = useState({});
   const [workspaceRoots, setWorkspaceRoots] = useState([]);
   const [folderState, setFolderState] = useState({ path: "", parent_path: null, entries: [] });
@@ -7874,6 +8096,8 @@ export default function App() {
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
   const threadReloadMetaByIdRef = useRef(new Map());
+  const threadDetailsPersistTimerRef = useRef(null);
+  const threadPreloadRunIdRef = useRef(0);
   const threadLiveProgressAtByIdRef = useRef(new Map());
   const lastForegroundResumeAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
@@ -8209,6 +8433,36 @@ export default function App() {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    if (threadDetailsPersistTimerRef.current) {
+      window.clearTimeout(threadDetailsPersistTimerRef.current);
+      threadDetailsPersistTimerRef.current = null;
+    }
+
+    if (!session?.loginId || !selectedBridgeId) {
+      return undefined;
+    }
+
+    threadDetailsPersistTimerRef.current = window.setTimeout(() => {
+      threadDetailsPersistTimerRef.current = null;
+      storeThreadDetailCache(threadDetails, {
+        loginId: session.loginId,
+        bridgeId: selectedBridgeId
+      });
+    }, 320);
+
+    return () => {
+      if (threadDetailsPersistTimerRef.current) {
+        window.clearTimeout(threadDetailsPersistTimerRef.current);
+        threadDetailsPersistTimerRef.current = null;
+      }
+    };
+  }, [selectedBridgeId, session?.loginId, threadDetails]);
+
   const handleAppForegroundResume = useCallback(async (reason = "foreground_resume") => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       return;
@@ -8264,7 +8518,10 @@ export default function App() {
     }
 
     if (selectedScope.kind === "project" && selectedProjectIdRef.current) {
-      void loadProjectThreads(session, activeBridgeId, selectedProjectIdRef.current, { applyToInbox: true });
+      void loadProjectThreads(session, activeBridgeId, selectedProjectIdRef.current, {
+        applyToInbox: true,
+        preferredThreadId: selectedThreadIdRef.current
+      });
     }
   }, [
     selectedActiveIssue,
@@ -8630,6 +8887,48 @@ export default function App() {
     scheduleThreadMessagesReloadRef.current = scheduleThreadMessagesReload;
   }, [scheduleThreadMessagesReload]);
 
+  const preloadThreadDetailsInBackground = useCallback(
+    (nextThreads = [], preferredThreadIds = []) => {
+      if (!session?.loginId || !selectedBridgeId) {
+        return;
+      }
+
+      const runId = threadPreloadRunIdRef.current + 1;
+      threadPreloadRunIdRef.current = runId;
+      const candidates = pickBackgroundThreadPreloadIds(nextThreads, preferredThreadIds);
+
+      if (candidates.length === 0) {
+        return;
+      }
+
+      void (async () => {
+        for (let index = 0; index < candidates.length; index += 1) {
+          if (threadPreloadRunIdRef.current !== runId || selectedBridgeIdRef.current !== selectedBridgeId) {
+            return;
+          }
+
+          const threadId = candidates[index];
+          const matchedThread = nextThreads.find((thread) => thread.id === threadId) ?? null;
+          const currentEntry = threadDetailsRef.current?.[threadId] ?? null;
+
+          if (shouldPreloadThreadDetail(currentEntry, matchedThread)) {
+            await loadThreadMessages(threadId, {
+              version: matchedThread?.updated_at ?? matchedThread?.created_at ?? null,
+              suppressLoadingIndicator: true
+            });
+          }
+
+          if (index < candidates.length - 1) {
+            await new Promise((resolve) => {
+              window.setTimeout(resolve, BACKGROUND_THREAD_PRELOAD_DELAY_MS);
+            });
+          }
+        }
+      })();
+    },
+    [loadThreadMessages, selectedBridgeId, session?.loginId]
+  );
+
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
       return [];
@@ -8767,15 +9066,20 @@ export default function App() {
       setThreadListsByProjectId({});
 
       if (nextProjectId) {
-        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, { applyToInbox: true });
+        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, {
+          applyToInbox: true,
+          preferredThreadId: selectedThreadIdRef.current
+        });
+        const resolvedSelectedThreadId =
+          selectedThreadIdRef.current && nextThreads.some((thread) => thread.id === selectedThreadIdRef.current)
+            ? selectedThreadIdRef.current
+            : nextThreads[0]?.id || "";
 
         if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
           return;
         }
 
-        setSelectedThreadId((current) =>
-          current && nextThreads.some((thread) => thread.id === current) ? current : nextThreads[0]?.id || ""
-        );
+        setSelectedThreadId(resolvedSelectedThreadId);
       } else {
         setThreads([]);
         setSelectedThreadId("");
@@ -8877,6 +9181,13 @@ export default function App() {
 
     if (options.applyToInbox !== false) {
       setThreads(nextThreads);
+    }
+
+    if (options.preload !== false) {
+      const preferredThreadIds = Array.isArray(options.preferredThreadIds)
+        ? options.preferredThreadIds
+        : [options.preferredThreadId ?? ""];
+      preloadThreadDetailsInBackground(nextThreads, preferredThreadIds);
     }
 
     return nextThreads;
@@ -9540,12 +9851,17 @@ export default function App() {
     const previousOwnerKey = workspaceLayoutOwnerKeyRef.current;
     const ownerChanged = previousOwnerKey !== workspaceLayoutOwnerKey;
     workspaceLayoutOwnerKeyRef.current = workspaceLayoutOwnerKey;
+    const restoredThreadDetails = readStoredThreadDetailCache({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    });
 
     if (!ownerChanged) {
       setLoadingState(selectedBridgeId && selectedBridgeKnown ? "loading" : "idle");
       return;
     }
 
+    threadPreloadRunIdRef.current += 1;
     threadLoadRequestIdByIdRef.current = new Map();
     todoChatLoadRequestIdRef.current += 1;
     for (const timerId of threadReloadTimersByIdRef.current.values()) {
@@ -9553,6 +9869,10 @@ export default function App() {
     }
     threadReloadTimersByIdRef.current.clear();
     threadReloadMetaByIdRef.current = new Map();
+    if (threadDetailsPersistTimerRef.current) {
+      window.clearTimeout(threadDetailsPersistTimerRef.current);
+      threadDetailsPersistTimerRef.current = null;
+    }
 
     const restoredLayout = readStoredMobileWorkspaceLayout({
       loginId: session?.loginId ?? "",
@@ -9570,7 +9890,7 @@ export default function App() {
     setThreadListsByProjectId({});
     setTodoChats([]);
     setTodoChatDetails({});
-    setThreadDetails({});
+    setThreadDetails(restoredThreadDetails);
     setWorkspaceRoots([]);
     setFolderState({ path: "", parent_path: null, entries: [] });
     setSelectedWorkspacePath("");
@@ -9642,7 +9962,10 @@ export default function App() {
       return;
     }
 
-    void loadProjectThreads(session, selectedBridgeId, selectedProjectId, { applyToInbox: true });
+    void loadProjectThreads(session, selectedBridgeId, selectedProjectId, {
+      applyToInbox: true,
+      preferredThreadId: selectedThreadIdRef.current
+    });
   }, [selectedBridgeId, selectedProjectId, session]);
 
   useEffect(() => {
@@ -9936,7 +10259,11 @@ export default function App() {
       }
 
       return loadProjectThreads(session, selectedBridgeId, normalizedProjectId, {
-        applyToInbox: options.applyToInbox ?? (selectedScope.kind === "project" && selectedProjectId === normalizedProjectId)
+        applyToInbox: options.applyToInbox ?? (selectedScope.kind === "project" && selectedProjectId === normalizedProjectId),
+        preferredThreadId:
+          selectedScope.kind === "project" && selectedProjectId === normalizedProjectId
+            ? selectedThreadIdRef.current
+            : ""
       });
     },
     [selectedBridgeId, selectedProjectId, selectedScope.kind, session, threadListsByProjectId]
