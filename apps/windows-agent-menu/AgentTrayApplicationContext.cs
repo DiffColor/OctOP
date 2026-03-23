@@ -41,6 +41,19 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     public bool Initialized { get; init; }
   }
 
+  private sealed class ServiceProcessInfo
+  {
+    public int ProcessId { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public string CommandLine { get; init; } = string.Empty;
+  }
+
+  private sealed class ServiceLaunchCheck
+  {
+    public bool Passed { get; init; }
+    public string Message { get; init; } = string.Empty;
+  }
+
   private readonly SynchronizationContext _uiContext;
   private readonly NotifyIcon _notifyIcon;
   private readonly ContextMenuStrip _menu;
@@ -728,7 +741,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     _exitInProgress = true;
     _isExiting = true;
-    ScheduleForcedProcessTermination();
 
     try
     {
@@ -1224,57 +1236,28 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _lastUpdatedAt = DateTimeOffset.Now;
   }
 
-  private static void ScheduleForcedProcessTermination()
-  {
-    var currentProcessId = Environment.ProcessId;
-    _ = Task.Run(async () =>
-    {
-      try
-      {
-        await Task.Delay(1500);
-        using var process = Process.GetProcessById(currentProcessId);
-        if (!process.HasExited)
-        {
-          process.Kill(entireProcessTree: true);
-        }
-      }
-      catch
-      {
-      }
-    });
-  }
-
   private List<int> FindServiceProcessIds()
   {
-    var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
-      .Select(static path => path.Replace("'", "''"))
+    return FindServiceProcesses()
+      .Select(static process => process.ProcessId)
+      .Where(static processId => processId > 0)
+      .Distinct()
       .ToList();
-    var runtimeRootCondition = runtimeRoots.Count == 0
-      ? "$false"
-      : "(" + string.Join(
-        " -or ",
-        runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'")) + ")";
-    var appServerListenTarget = EscapePowerShellLikePattern(_configuration.AppServerWsUrl?.Trim());
-    var appServerCondition = string.IsNullOrWhiteSpace(appServerListenTarget)
-      ? "$_.CommandLine -like '*codex*app-server*--listen*ws://*'"
-      : "$_.CommandLine -like '*app-server*--listen*" + appServerListenTarget + "*'";
+  }
+
+  private List<ServiceProcessInfo> FindServiceProcesses()
+  {
     var command = string.Join(
       " ",
       [
-        "Get-CimInstance Win32_Process |",
-        "Where-Object {",
-        "$_.CommandLine -and",
-        "(",
-        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-local-agent.mjs*') -or",
-        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-bridge.mjs*') -or",
-        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*services\\codex-adapter\\src\\index.js*') -or",
-        "((($_.Name -eq 'node.exe') -or ($_.Name -eq 'cmd.exe') -or ($_.Name -eq 'codex.exe')) -and (" + appServerCondition + "))",
-        ")",
-        "} |",
-        "Select-Object -ExpandProperty ProcessId"
+        BuildServiceProcessQuery(),
+        "| ForEach-Object {",
+        "$commandLine = ($_.CommandLine -replace '[\\r\\n]+', ' ');",
+        "Write-Output ($_.ProcessId.ToString() + \"`t\" + $_.Name + \"`t\" + $commandLine)",
+        "}"
       ]);
 
-    return RunPowerShellProcessQuery(command);
+    return RunPowerShellProcessInspectionQuery(command);
   }
 
   private List<int> FindStdioSessionProcessIds()
@@ -1420,6 +1403,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     {
       return [];
     }
+  }
+
+  private List<int> FindListeningPortsForProcess(int processId)
+  {
+    if (processId <= 0)
+    {
+      return [];
+    }
+
+    var command = string.Join(
+      " ",
+      [
+        "Get-NetTCPConnection -State Listen -OwningProcess " + processId + " -ErrorAction SilentlyContinue |",
+        "Select-Object -ExpandProperty LocalPort -Unique"
+      ]);
+
+    return RunPowerShellProcessQuery(command)
+      .Where(static port => port is >= 1 and <= 65535)
+      .Distinct()
+      .ToList();
   }
 
   private async Task<bool> WaitForPortsReleasedAsync(IReadOnlyCollection<int> ports, int timeoutMs = 15000)
@@ -1576,9 +1579,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return new InvalidOperationException($"서비스 프로세스 정리가 완료되지 않았습니다.{suffix}");
   }
 
-  private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 15000)
+  private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 10000)
   {
-    var requiredPorts = ResolveStartupValidationPorts(_configuration);
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
 
     while (DateTimeOffset.UtcNow < deadline)
@@ -1595,28 +1597,87 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return false;
       }
 
-      var portsReady = requiredPorts.Count == 0 ||
-        FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count;
-      if (portsReady)
+      var checks = await BuildServiceLaunchChecksAsync();
+      if (checks.All(static check => check.Passed))
       {
-        var bridgeHealth = await TryReadBridgeHealthStatusAsync(_configuration);
-        if (bridgeHealth?.Ok == true &&
-            bridgeHealth.AppServerConnected &&
-            bridgeHealth.AppServerInitialized)
-        {
-          return true;
-        }
+        return true;
       }
 
-      await Task.Delay(500);
+      await Task.Delay(250);
     }
 
     return false;
   }
 
-  private static IReadOnlyCollection<int> ResolveStartupValidationPorts(RuntimeConfiguration configuration)
+  private async Task<IReadOnlyList<ServiceLaunchCheck>> BuildServiceLaunchChecksAsync()
   {
-    return ResolveServicePorts(configuration);
+    var serviceProcesses = FindServiceProcesses();
+    var currentRuntimePath = (_paths.ResolveActiveRuntimeRoot() ?? _paths.RuntimeRoot).Trim();
+    var localAgentProcess = serviceProcesses.FirstOrDefault(static process =>
+      process.CommandLine.Contains("run-local-agent.mjs", StringComparison.OrdinalIgnoreCase));
+    var bridgeLauncherProcess = serviceProcesses.FirstOrDefault(static process =>
+      process.CommandLine.Contains("run-bridge.mjs", StringComparison.OrdinalIgnoreCase));
+    var adapterProcess = serviceProcesses.FirstOrDefault(static process =>
+      process.CommandLine.Contains(@"services\codex-adapter\src\index.js", StringComparison.OrdinalIgnoreCase));
+    var wsProcess = serviceProcesses.FirstOrDefault(IsWsAppServerProcess);
+    var adapterPorts = adapterProcess is null ? [] : FindListeningPortsForProcess(adapterProcess.ProcessId);
+    var wsPorts = wsProcess is null ? [] : FindListeningPortsForProcess(wsProcess.ProcessId);
+    var bridgeHealth = await TryReadBridgeHealthStatusAsync(_configuration, adapterPorts.FirstOrDefault());
+
+    return
+    [
+      new ServiceLaunchCheck
+      {
+        Passed = localAgentProcess is not null,
+        Message = "run-local-agent launch check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = bridgeLauncherProcess is not null,
+        Message = "run-bridge launch check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = adapterProcess is not null,
+        Message = "codex-adapter launch check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = wsProcess is not null,
+        Message = "WS app-server launch check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = localAgentProcess is not null &&
+          adapterProcess is not null &&
+          localAgentProcess.CommandLine.Contains(currentRuntimePath, StringComparison.OrdinalIgnoreCase) &&
+          adapterProcess.CommandLine.Contains(currentRuntimePath, StringComparison.OrdinalIgnoreCase),
+        Message = "current runtime path launch check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = adapterPorts.Count > 0,
+        Message = "bridge port listen check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = wsPorts.Count > 0,
+        Message = "WS app-server port listen check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = bridgeHealth?.AppServerConnected == true &&
+          bridgeHealth.AppServerInitialized,
+        Message = "WS connection check"
+      },
+      new ServiceLaunchCheck
+      {
+        Passed = bridgeHealth?.Ok == true &&
+          _runtimeState == AgentRuntimeState.Running &&
+          _processId is not null,
+        Message = "base runtime health check"
+      }
+    ];
   }
 
   private static IReadOnlyCollection<int> ResolveServicePorts(RuntimeConfiguration configuration)
@@ -1642,9 +1703,17 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return ports;
   }
 
-  private static async Task<BridgeHealthStatus?> TryReadBridgeHealthStatusAsync(RuntimeConfiguration configuration)
+  private static async Task<BridgeHealthStatus?> TryReadBridgeHealthStatusAsync(RuntimeConfiguration configuration, int? bridgePortOverride = null)
   {
-    if (!int.TryParse(configuration.BridgePort?.Trim(), out var bridgePort) || bridgePort is < 1 or > 65535)
+    var bridgePort = bridgePortOverride;
+    if (bridgePort is null &&
+        int.TryParse(configuration.BridgePort?.Trim(), out var configuredBridgePort) &&
+        configuredBridgePort is >= 1 and <= 65535)
+    {
+      bridgePort = configuredBridgePort;
+    }
+
+    if (bridgePort is not >= 1 and <= 65535)
     {
       return null;
     }
@@ -1653,8 +1722,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var ownerLoginId = string.IsNullOrWhiteSpace(configuration.OwnerLoginId)
       ? RuntimeConfiguration.GetCurrentUserLogin()
       : configuration.OwnerLoginId.Trim();
+    var resolvedBridgePort = bridgePort.GetValueOrDefault();
 
-    var uriBuilder = new UriBuilder(Uri.UriSchemeHttp, bridgeHost, bridgePort, "/health")
+    var uriBuilder = new UriBuilder(Uri.UriSchemeHttp, bridgeHost, resolvedBridgePort, "/health")
     {
       Query = $"user_id={Uri.EscapeDataString(ownerLoginId)}"
     };
@@ -1730,6 +1800,62 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
+  private List<ServiceProcessInfo> RunPowerShellProcessInspectionQuery(string command)
+  {
+    using var process = new Process
+    {
+      StartInfo = new ProcessStartInfo
+      {
+        FileName = "powershell.exe",
+        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8
+      }
+    };
+
+    try
+    {
+      if (!process.Start())
+      {
+        return [];
+      }
+
+      var output = process.StandardOutput.ReadToEnd();
+      process.WaitForExit(3000);
+      if (process.ExitCode != 0)
+      {
+        return [];
+      }
+
+      var results = new List<ServiceProcessInfo>();
+      foreach (var rawLine in output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+      {
+        var columns = rawLine.Split('\t', 3, StringSplitOptions.None);
+        if (columns.Length != 3 || !int.TryParse(columns[0], out var processId) || processId <= 0)
+        {
+          continue;
+        }
+
+        results.Add(new ServiceProcessInfo
+        {
+          ProcessId = processId,
+          Name = columns[1],
+          CommandLine = columns[2]
+        });
+      }
+
+      return results;
+    }
+    catch
+    {
+      return [];
+    }
+  }
+
   private static int? TryParsePort(string? rawValue)
   {
     return int.TryParse(rawValue?.Trim(), out var port) && port is >= 1 and <= 65535
@@ -1760,6 +1886,67 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private static string EscapePowerShellLikePattern(string? value)
   {
     return (value ?? string.Empty).Replace("'", "''");
+  }
+
+  private string BuildServiceProcessQuery()
+  {
+    var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
+      .Select(static path => path.Replace("'", "''"))
+      .ToList();
+    var runtimeRootCondition = runtimeRoots.Count == 0
+      ? "$false"
+      : "(" + string.Join(
+        " -or ",
+        runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'")) + ")";
+    var appServerListenTarget = EscapePowerShellLikePattern(_configuration.AppServerWsUrl?.Trim());
+    var appServerCondition = string.IsNullOrWhiteSpace(appServerListenTarget)
+      ? "$_.CommandLine -like '*codex*app-server*--listen*ws://*'"
+      : "$_.CommandLine -like '*app-server*--listen*" + appServerListenTarget + "*'";
+
+    return string.Join(
+      " ",
+      [
+        "Get-CimInstance Win32_Process |",
+        "Where-Object {",
+        "$_.CommandLine -and",
+        "(",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-local-agent.mjs*') -or",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-bridge.mjs*') -or",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*services\\codex-adapter\\src\\index.js*') -or",
+        "((($_.Name -eq 'node.exe') -or ($_.Name -eq 'cmd.exe') -or ($_.Name -eq 'codex.exe')) -and (" + appServerCondition + "))",
+        ")",
+        "}"
+      ]);
+  }
+
+  private bool IsWsAppServerProcess(ServiceProcessInfo process)
+  {
+    if (process.ProcessId <= 0 ||
+        string.IsNullOrWhiteSpace(process.Name) ||
+        string.IsNullOrWhiteSpace(process.CommandLine))
+    {
+      return false;
+    }
+
+    if (!string.Equals(process.Name, "node.exe", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(process.Name, "cmd.exe", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(process.Name, "codex.exe", StringComparison.OrdinalIgnoreCase))
+    {
+      return false;
+    }
+
+    var listenTarget = _configuration.AppServerWsUrl?.Trim();
+    if (string.IsNullOrWhiteSpace(listenTarget))
+    {
+      return process.CommandLine.Contains("codex", StringComparison.OrdinalIgnoreCase) &&
+        process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
+        process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
+        process.CommandLine.Contains("ws://", StringComparison.OrdinalIgnoreCase);
+    }
+
+    return process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
+      process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
+      process.CommandLine.Contains(listenTarget, StringComparison.OrdinalIgnoreCase);
   }
 
   private bool TryReadPersistedAgentProcessId(out int processId)

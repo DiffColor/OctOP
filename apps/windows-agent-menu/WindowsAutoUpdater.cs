@@ -100,7 +100,8 @@ sealed class WindowsAutoUpdater
       currentExecutablePath,
       paths.AppUpdateLaunchMarkerPath,
       Environment.ProcessId,
-      ResolveServicePorts(configuration));
+      ResolveServicePorts(configuration),
+      paths.EnumerateRuntimeProcessRoots());
 
     Process.Start(new ProcessStartInfo
     {
@@ -460,9 +461,15 @@ sealed class WindowsAutoUpdater
     string currentExecutablePath,
     string launchMarkerPath,
     int currentProcessId,
-    IReadOnlyList<int> servicePorts)
+    IReadOnlyList<int> servicePorts,
+    IReadOnlyList<string> runtimeRoots)
   {
     var portsLiteral = string.Join(",", servicePorts.OrderBy(static port => port));
+    var runtimeRootsLiteral = string.Join(
+      ",",
+      runtimeRoots
+        .Where(static value => !string.IsNullOrWhiteSpace(value))
+        .Select(static value => $"'{EscapePowerShellSingleQuotedString(Path.GetFullPath(value))}'"));
     var script = $$"""
     $ErrorActionPreference = "Stop"
     $source = "{{EscapePowerShellSingleQuotedString(downloadedExecutablePath)}}"
@@ -472,6 +479,7 @@ sealed class WindowsAutoUpdater
     $updateRoot = Split-Path -Parent "{{EscapePowerShellSingleQuotedString(scriptPath)}}"
     $launchMarker = "{{EscapePowerShellSingleQuotedString(launchMarkerPath)}}"
     $ports = @({{portsLiteral}})
+    $runtimeRoots = @({{runtimeRootsLiteral}})
 
     function Write-Log {
       param([string]$Message)
@@ -481,17 +489,138 @@ sealed class WindowsAutoUpdater
       }
     }
 
-    function Wait-ForPortsReleased {
-      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
-        $listeners = @()
-        if ($ports.Count -gt 0) {
-          $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ports -contains $_.LocalPort }
+    function Invoke-TaskKillTree {
+      param([int]$ProcessId)
+      if ($ProcessId -le 0 -or $ProcessId -eq $PID) {
+        return
+      }
+
+      try {
+        Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$ProcessId", "/T", "/F") -Wait -WindowStyle Hidden | Out-Null
+      } catch {
+        Write-Log("taskkill failed for pid=$ProcessId message=$($_.Exception.Message)")
+      }
+    }
+
+    function Get-SameExecutableProcessIds {
+      return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.ExecutablePath -and
+            [string]::Equals(
+              [System.IO.Path]::GetFullPath($_.ExecutablePath),
+              $target,
+              [System.StringComparison]::OrdinalIgnoreCase)
+          } |
+          Select-Object -ExpandProperty ProcessId -Unique
+      )
+    }
+
+    function Test-CommandContainsRuntimeRoot {
+      param([string]$CommandLine)
+      foreach ($runtimeRoot in $runtimeRoots) {
+        if (-not [string]::IsNullOrWhiteSpace($runtimeRoot) -and $CommandLine -like ("*" + $runtimeRoot + "*")) {
+          return $true
+        }
+      }
+
+      return $false
+    }
+
+    function Get-ManagedRuntimeProcessIds {
+      return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+          Where-Object {
+            $commandLine = $_.CommandLine
+            if ([string]::IsNullOrWhiteSpace($commandLine) -or $_.ProcessId -eq $PID) {
+              return $false
+            }
+
+            if (-not (Test-CommandContainsRuntimeRoot -CommandLine $commandLine)) {
+              return $false
+            }
+
+            return $_.Name -eq "node.exe" -and (
+              $commandLine -like "*run-local-agent.mjs*" -or
+              $commandLine -like "*run-bridge.mjs*" -or
+              $commandLine -like "*services\codex-adapter\src\index.js*"
+            )
+          } |
+          Select-Object -ExpandProperty ProcessId -Unique
+      )
+    }
+
+    function Get-ListeningProcessIds {
+      if ($ports.Count -eq 0) {
+        return @()
+      }
+
+      return @(
+        Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+          Where-Object { $ports -contains $_.LocalPort } |
+          Select-Object -ExpandProperty OwningProcess -Unique
+      )
+    }
+
+    function Stop-BlockingProcesses {
+      $processIds = @(
+        @(Get-SameExecutableProcessIds) +
+        @(Get-ManagedRuntimeProcessIds) +
+        @(Get-ListeningProcessIds) +
+        @($currentProcessId)
+      ) | Where-Object { $_ -is [int] -and $_ -gt 0 -and $_ -ne $PID } | Sort-Object -Unique
+
+      foreach ($processId in $processIds) {
+        Write-Log("terminating blocking process pid=$processId")
+        Invoke-TaskKillTree -ProcessId $processId
+      }
+    }
+
+    function Wait-ForCurrentAppExit {
+      for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
+        if (-not (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue)) {
+          return $true
         }
 
+        if ($attempt -ge 4) {
+          Stop-BlockingProcesses
+        }
+
+        Start-Sleep -Milliseconds 500
+      }
+
+      Stop-BlockingProcesses
+      Start-Sleep -Seconds 1
+      return -not (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue)
+    }
+
+    function Wait-ForMatchingProcessesReleased {
+      for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
+        $blockingProcesses = @(
+          @(Get-SameExecutableProcessIds) +
+          @(Get-ManagedRuntimeProcessIds)
+        ) | Where-Object { $_ -is [int] -and $_ -gt 0 -and $_ -ne $PID } | Sort-Object -Unique
+
+        if ($blockingProcesses.Count -eq 0) {
+          return $true
+        }
+
+        Stop-BlockingProcesses
+        Start-Sleep -Milliseconds 500
+      }
+
+      return $false
+    }
+
+    function Wait-ForPortsReleased {
+      for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+        $listeners = @(Get-ListeningProcessIds)
         if ($listeners.Count -eq 0) {
           return $true
         }
 
+        Stop-BlockingProcesses
         Start-Sleep -Seconds 1
       }
 
@@ -499,8 +628,12 @@ sealed class WindowsAutoUpdater
     }
 
     try {
-      while (Get-Process -Id $currentProcessId -ErrorAction SilentlyContinue) {
-        Start-Sleep -Milliseconds 500
+      if (-not (Wait-ForCurrentAppExit)) {
+        throw "current app process did not exit before update"
+      }
+
+      if (-not (Wait-ForMatchingProcessesReleased)) {
+        throw "matching app or runtime processes did not exit before update"
       }
 
       if (-not (Wait-ForPortsReleased)) {
