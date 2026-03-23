@@ -9,6 +9,7 @@ sealed class WindowsAutoUpdater
   private const int DownloadBufferSize = 1024 * 128;
   private const long DiskSafetyMarginBytes = 64L * 1024 * 1024;
   private static readonly TimeSpan UpdateCheckCacheDuration = TimeSpan.FromHours(6);
+  private static readonly TimeSpan NoUpdateCheckCacheDuration = TimeSpan.FromMinutes(5);
   private static readonly TimeSpan DownloadProgressLogInterval = TimeSpan.FromSeconds(2);
   private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromMinutes(2);
 
@@ -24,11 +25,12 @@ sealed class WindowsAutoUpdater
   {
     var normalizedVersionTag = AppMetadata.NormalizeVersionTag(currentVersionTag);
     var now = DateTimeOffset.UtcNow;
+    var cacheDuration = _cachedUpdate is null ? NoUpdateCheckCacheDuration : UpdateCheckCacheDuration;
 
     if (!force &&
         _cachedCheckedAt is not null &&
         string.Equals(_cachedVersionTag, normalizedVersionTag, StringComparison.OrdinalIgnoreCase) &&
-        now - _cachedCheckedAt.Value < UpdateCheckCacheDuration)
+        now - _cachedCheckedAt.Value < cacheDuration)
     {
       return _cachedUpdate;
     }

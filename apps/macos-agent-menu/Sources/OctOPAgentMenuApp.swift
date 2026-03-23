@@ -1063,6 +1063,7 @@ struct OctOPAgentMenuApp: App {
   @NSApplicationDelegateAdaptor(OctOPAgentMenuAppDelegate.self) private var appDelegate
   @StateObject private var model = AgentMenuModel()
   @StateObject private var bootstrap = AgentBootstrapStore()
+  @State private var appUpdateMonitorTask: Task<Void, Never>? = nil
   @State private var runtimeUpdateMonitorTask: Task<Void, Never>? = nil
   @State private var automaticServiceStartAttempted = false
 
@@ -1082,6 +1083,8 @@ struct OctOPAgentMenuApp: App {
           }
 
           appDelegate.onWillTerminate = {
+            appUpdateMonitorTask?.cancel()
+            appUpdateMonitorTask = nil
             runtimeUpdateMonitorTask?.cancel()
             runtimeUpdateMonitorTask = nil
             Task { @MainActor in
@@ -1116,6 +1119,19 @@ struct OctOPAgentMenuApp: App {
           await bootstrap.refreshAvailableRuntimeUpdate(
             log: model.appendInstallerLog
           )
+
+          if appUpdateMonitorTask == nil {
+            appUpdateMonitorTask = Task {
+              while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 300 * 1_000_000_000)
+                guard !Task.isCancelled else {
+                  break
+                }
+
+                await bootstrap.refreshAvailableAppUpdate(log: model.appendInstallerLog)
+              }
+            }
+          }
 
           if runtimeUpdateMonitorTask == nil {
             runtimeUpdateMonitorTask = Task {
