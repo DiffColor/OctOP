@@ -661,6 +661,17 @@ function areStringArrayRecordEqual(left = {}, right = {}) {
   return true;
 }
 
+function getFlexRowGapPx(node) {
+  if (!node || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return 0;
+  }
+
+  const style = window.getComputedStyle(node);
+  const rawGap = style.columnGap || style.gap || "0";
+  const parsedGap = Number.parseFloat(rawGap);
+  return Number.isFinite(parsedGap) ? parsedGap : 0;
+}
+
 function reorderProjectChipIdsByIndex(projectIds, draggedProjectId, targetIndex) {
   const normalizedProjectIds = normalizeProjectChipOrder(projectIds);
   const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
@@ -6157,7 +6168,11 @@ function ThreadListItem({
 
     clearPendingLongPress();
 
-    if (event.pointerType === "touch" || event.pointerType === "pen") {
+    if (
+      event.pointerType === "touch" ||
+      event.pointerType === "pen" ||
+      (event.pointerType === "mouse" && event.button === 0)
+    ) {
       longPressTimerRef.current = window.setTimeout(() => {
         longPressTimerRef.current = null;
         longPressTriggeredRef.current = true;
@@ -6299,7 +6314,12 @@ function ThreadListItem({
   const showRenameAction = offset < 0;
 
   return (
-    <div className="relative overflow-hidden border-b border-white/8">
+    <div
+      className={`relative border-b border-white/8 ${
+        reorderActive || reorderOffsetY !== 0 ? "overflow-visible" : "overflow-hidden"
+      }`}
+      style={{ zIndex: reorderActive ? 20 : reorderOffsetY !== 0 ? 10 : 0 }}
+    >
       <button
         type="button"
         onClick={() => {
@@ -6370,7 +6390,7 @@ function ThreadListItem({
         style={{
           transform: `translate3d(${offset}px, ${reorderOffsetY}px, 0) scale(${reorderActive ? 1.01 : 1})`,
           touchAction: selectionMode ? "auto" : reorderActive ? "none" : "pan-y",
-          zIndex: reorderActive ? 10 : 0,
+          zIndex: reorderActive ? 20 : 0,
           willChange: "transform"
         }}
       >
@@ -6379,7 +6399,7 @@ function ThreadListItem({
             highlighted
               ? "border-white/12 bg-white/[0.03]"
               : "border-transparent bg-transparent"
-          }`}
+          } ${reorderActive ? "shadow-[0_18px_42px_rgba(15,23,42,0.38)]" : ""}`}
         >
           <div className="flex items-start gap-3">
             {selectionMode ? (
@@ -8011,6 +8031,71 @@ function MainPage({
     return resolveOrderedProjects(projects, projectFilterUsage, projectChipOrder);
   }, [projectChipOrder, projectFilterUsage, projects]);
   const orderedProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
+  const draggingProjectChipDropIndex =
+    draggingProjectChipId && projectChipDragStateRef.current?.active ? projectChipDropIndexRef.current : -1;
+  const draggingProjectChipShiftDistance = useMemo(() => {
+    if (!draggingProjectChipId) {
+      return 0;
+    }
+
+    const draggingNode = projectChipNodesRef.current.get(draggingProjectChipId);
+
+    if (!draggingNode) {
+      return 0;
+    }
+
+    return draggingNode.offsetWidth + getFlexRowGapPx(projectChipRowRef.current);
+  }, [draggingProjectChipId, draggingProjectChipOffsetX, orderedProjectIds]);
+  const draggingProjectChipProjectedIds = useMemo(() => {
+    const activeDragState = projectChipDragStateRef.current;
+
+    if (
+      !draggingProjectChipId ||
+      !activeDragState?.active ||
+      !activeDragState.moved ||
+      draggingProjectChipDropIndex < 0
+    ) {
+      return orderedProjectIds;
+    }
+
+    return reorderProjectChipIdsByIndex(orderedProjectIds, draggingProjectChipId, draggingProjectChipDropIndex);
+  }, [draggingProjectChipDropIndex, draggingProjectChipId, draggingProjectChipOffsetX, orderedProjectIds]);
+  const resolveProjectChipSlideOffsetX = useCallback(
+    (projectId) => {
+      const normalizedProjectId = String(projectId ?? "").trim();
+      const activeDragState = projectChipDragStateRef.current;
+
+      if (
+        !normalizedProjectId ||
+        !draggingProjectChipId ||
+        normalizedProjectId === draggingProjectChipId ||
+        !activeDragState?.active ||
+        !activeDragState.moved ||
+        draggingProjectChipShiftDistance <= 0
+      ) {
+        return 0;
+      }
+
+      const fromIndex = orderedProjectIds.indexOf(draggingProjectChipId);
+      const toIndex = draggingProjectChipProjectedIds.indexOf(draggingProjectChipId);
+      const currentIndex = orderedProjectIds.indexOf(normalizedProjectId);
+
+      if (fromIndex < 0 || toIndex < 0 || currentIndex < 0 || fromIndex === toIndex) {
+        return 0;
+      }
+
+      if (toIndex > fromIndex && currentIndex > fromIndex && currentIndex <= toIndex) {
+        return -draggingProjectChipShiftDistance;
+      }
+
+      if (toIndex < fromIndex && currentIndex >= toIndex && currentIndex < fromIndex) {
+        return draggingProjectChipShiftDistance;
+      }
+
+      return 0;
+    },
+    [draggingProjectChipId, draggingProjectChipProjectedIds, draggingProjectChipShiftDistance, orderedProjectIds]
+  );
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const threadInstructionProject =
     projects.find((project) => project.id === threadInstructionTarget?.project_id) ??
@@ -8078,6 +8163,71 @@ function MainPage({
   }, [orderedThreads, searchKeyword, selectedProjectId]);
   const orderedThreadIds = useMemo(() => orderedThreads.map((thread) => thread.id), [orderedThreads]);
   const filteredThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
+  const draggingThreadDropIndex =
+    draggingThreadId && threadListDragStateRef.current?.active ? threadListDropIndexRef.current : -1;
+  const draggingThreadShiftDistance = useMemo(() => {
+    if (!draggingThreadId) {
+      return 0;
+    }
+
+    const draggingNode = threadListItemNodesRef.current.get(draggingThreadId);
+
+    if (!draggingNode) {
+      return 0;
+    }
+
+    return draggingNode.offsetHeight;
+  }, [draggingThreadId, draggingThreadOffsetY, filteredThreadIds]);
+  const draggingThreadProjectedIds = useMemo(() => {
+    const activeDragState = threadListDragStateRef.current;
+
+    if (
+      !draggingThreadId ||
+      !activeDragState?.active ||
+      !activeDragState.moved ||
+      draggingThreadDropIndex < 0
+    ) {
+      return filteredThreadIds;
+    }
+
+    return reorderThreadIdsByIndex(filteredThreadIds, draggingThreadId, draggingThreadDropIndex);
+  }, [draggingThreadDropIndex, draggingThreadId, draggingThreadOffsetY, filteredThreadIds]);
+  const resolveThreadListItemSlideOffsetY = useCallback(
+    (threadId) => {
+      const normalizedThreadId = String(threadId ?? "").trim();
+      const activeDragState = threadListDragStateRef.current;
+
+      if (
+        !normalizedThreadId ||
+        !draggingThreadId ||
+        normalizedThreadId === draggingThreadId ||
+        !activeDragState?.active ||
+        !activeDragState.moved ||
+        draggingThreadShiftDistance <= 0
+      ) {
+        return 0;
+      }
+
+      const fromIndex = filteredThreadIds.indexOf(draggingThreadId);
+      const toIndex = draggingThreadProjectedIds.indexOf(draggingThreadId);
+      const currentIndex = filteredThreadIds.indexOf(normalizedThreadId);
+
+      if (fromIndex < 0 || toIndex < 0 || currentIndex < 0 || fromIndex === toIndex) {
+        return 0;
+      }
+
+      if (toIndex > fromIndex && currentIndex > fromIndex && currentIndex <= toIndex) {
+        return -draggingThreadShiftDistance;
+      }
+
+      if (toIndex < fromIndex && currentIndex >= toIndex && currentIndex < fromIndex) {
+        return draggingThreadShiftDistance;
+      }
+
+      return 0;
+    },
+    [draggingThreadId, draggingThreadProjectedIds, draggingThreadShiftDistance, filteredThreadIds]
+  );
   const selectedProjectThreadIds = useMemo(
     () =>
       new Set(
@@ -8272,11 +8422,17 @@ function MainPage({
         return;
       }
 
-      if (event?.pointerType !== "touch" && event?.pointerType !== "pen") {
+      const isMousePointer = event?.pointerType === "mouse";
+      const isTouchPointer = event?.pointerType === "touch" || event?.pointerType === "pen";
+
+      if (!isTouchPointer && !(isMousePointer && event?.button === 0)) {
         return;
       }
 
-      event.preventDefault();
+      if (!isMousePointer) {
+        event.preventDefault();
+      }
+
       projectLongPressTriggeredRef.current = false;
       lastProjectChipTapRef.current = { projectId: "", at: 0 };
       clearPendingProjectLongPress();
@@ -8675,6 +8831,7 @@ function MainPage({
         </button>
         {orderedProjects.map((project) => {
           const isDraggingProjectChip = draggingProjectChipId === project.id;
+          const projectChipSlideOffsetX = resolveProjectChipSlideOffsetX(project.id);
 
           return (
             <button
@@ -8711,7 +8868,12 @@ function MainPage({
                       transition: "none",
                       touchAction: "none"
                     }
-                  : undefined
+                  : projectChipSlideOffsetX !== 0
+                    ? {
+                        transform: `translateX(${projectChipSlideOffsetX}px)`,
+                        transition: "transform 180ms ease-out"
+                      }
+                    : undefined
               }
             >
               {project.name}
@@ -8898,7 +9060,9 @@ function MainPage({
             signalNow={signalNow}
             registerNode={registerThreadListItemNode}
             reorderActive={draggingThreadId === thread.id}
-            reorderOffsetY={draggingThreadId === thread.id ? draggingThreadOffsetY : 0}
+            reorderOffsetY={
+              draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
+            }
             onStartReorder={handleThreadReorderStart}
             onMoveReorder={handleThreadReorderMove}
             onEndReorder={handleThreadReorderEnd}
@@ -9543,7 +9707,9 @@ function MainPage({
                       signalNow={signalNow}
                       registerNode={registerThreadListItemNode}
                       reorderActive={draggingThreadId === thread.id}
-                      reorderOffsetY={draggingThreadId === thread.id ? draggingThreadOffsetY : 0}
+                      reorderOffsetY={
+                        draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
+                      }
                       onStartReorder={handleThreadReorderStart}
                       onMoveReorder={handleThreadReorderMove}
                       onEndReorder={handleThreadReorderEnd}
