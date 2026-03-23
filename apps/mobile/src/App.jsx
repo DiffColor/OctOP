@@ -3484,23 +3484,43 @@ function InlineIssueComposer({
       return;
     }
 
-    const accepted = await onSubmit({
-      title: normalizedTitle,
-      prompt: normalizedPrompt,
-      project_id: selectedProject.id
-    });
+    setInternalPrompt("");
+    promptRef.current = "";
+    lastHydratedDraftRef.current = {
+      key: normalizedDraftKey,
+      value: ""
+    };
 
-    if (accepted !== false) {
-      setInternalPrompt("");
-      promptRef.current = "";
+    if (typeof onDraftPersist === "function" && normalizedDraftKey) {
+      onDraftPersist(normalizedDraftKey, "");
+    }
+
+    const restorePrompt = () => {
+      setInternalPrompt(normalizedPrompt);
+      promptRef.current = normalizedPrompt;
       lastHydratedDraftRef.current = {
         key: normalizedDraftKey,
-        value: ""
+        value: normalizedPrompt
       };
 
       if (typeof onDraftPersist === "function" && normalizedDraftKey) {
-        onDraftPersist(normalizedDraftKey, "");
+        onDraftPersist(normalizedDraftKey, normalizedPrompt);
       }
+    };
+
+    try {
+      const accepted = await onSubmit({
+        title: normalizedTitle,
+        prompt: normalizedPrompt,
+        project_id: selectedProject.id
+      });
+
+      if (accepted === false) {
+        restorePrompt();
+      }
+    } catch (error) {
+      restorePrompt();
+      throw error;
     }
   }, [disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
 
