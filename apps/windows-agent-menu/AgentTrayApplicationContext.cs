@@ -1224,28 +1224,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
       .Select(static path => path.Replace("'", "''"))
       .ToList();
-
-    if (runtimeRoots.Count == 0)
-    {
-      return [];
-    }
-
-    var rootConditions = string.Join(
-      " -or ",
-      runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'"));
+    var runtimeRootCondition = runtimeRoots.Count == 0
+      ? "$false"
+      : "(" + string.Join(
+        " -or ",
+        runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'")) + ")";
+    var appServerListenTarget = EscapePowerShellLikePattern(_configuration.AppServerWsUrl?.Trim());
+    var appServerCondition = string.IsNullOrWhiteSpace(appServerListenTarget)
+      ? "$_.CommandLine -like '*codex*app-server*--listen*ws://*'"
+      : "$_.CommandLine -like '*app-server*--listen*" + appServerListenTarget + "*'";
     var command = string.Join(
       " ",
       [
         "Get-CimInstance Win32_Process |",
         "Where-Object {",
-        "($_.Name -eq 'node.exe' -or $_.Name -eq 'cmd.exe' -or $_.Name -eq 'codex.exe') -and",
         "$_.CommandLine -and",
-        "(" + rootConditions + ") -and",
         "(",
-        "$_.CommandLine -like '*run-local-agent.mjs*' -or",
-        "$_.CommandLine -like '*run-bridge.mjs*' -or",
-        "$_.CommandLine -like '*services\\\\codex-adapter\\\\src\\\\index.js*' -or",
-        "($_.CommandLine -like '*codex*app-server*--listen*ws://*')",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-local-agent.mjs*') -or",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*run-bridge.mjs*') -or",
+        "(($_.Name -eq 'node.exe') -and " + runtimeRootCondition + " -and $_.CommandLine -like '*services\\codex-adapter\\src\\index.js*') -or",
+        "((($_.Name -eq 'node.exe') -or ($_.Name -eq 'cmd.exe') -or ($_.Name -eq 'codex.exe')) -and (" + appServerCondition + "))",
         ")",
         "} |",
         "Select-Object -ExpandProperty ProcessId"
@@ -1274,19 +1272,62 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     foreach (var processId in processIds.Where(static pid => pid > 0).Distinct())
     {
-      try
+      if (TryKillProcessTree(processId))
       {
-        using var process = Process.GetProcessById(processId);
-        if (process.HasExited)
-        {
-          continue;
-        }
+        continue;
+      }
 
-        process.Kill(entireProcessTree: true);
-      }
-      catch
+      TryForceKillProcessTreeWithTaskKill(processId);
+    }
+  }
+
+  private static bool TryKillProcessTree(int processId)
+  {
+    try
+    {
+      using var process = Process.GetProcessById(processId);
+      if (process.HasExited)
       {
+        return true;
       }
+
+      process.Kill(entireProcessTree: true);
+      return process.WaitForExit(1000);
+    }
+    catch
+    {
+      return false;
+    }
+  }
+
+  private static void TryForceKillProcessTreeWithTaskKill(int processId)
+  {
+    try
+    {
+      using var process = new Process
+      {
+        StartInfo = new ProcessStartInfo
+        {
+          FileName = "taskkill.exe",
+          Arguments = $"/PID {processId} /T /F",
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8
+        }
+      };
+
+      if (!process.Start())
+      {
+        return;
+      }
+
+      process.WaitForExit(3000);
+    }
+    catch
+    {
     }
   }
 
@@ -1651,6 +1692,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       "wss" => 443,
       _ => null
     };
+  }
+
+  private static string EscapePowerShellLikePattern(string? value)
+  {
+    return (value ?? string.Empty).Replace("'", "''");
   }
 
   private bool TryReadPersistedAgentProcessId(out int processId)
