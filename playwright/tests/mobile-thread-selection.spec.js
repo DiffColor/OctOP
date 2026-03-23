@@ -70,22 +70,26 @@ async function mockMobileApi(page, options = {}) {
   const nextThreads = Array.isArray(options.threads) ? options.threads : [thread];
   const nextIssues = Array.isArray(options.issues) ? options.issues : [issue];
   const nextIssueMessages = Array.isArray(options.issueMessages) ? options.issueMessages : issueMessages;
+  const primaryThreadId = String(nextThreads[0]?.id ?? threadId);
   const threadCount = Number.isFinite(options.threadCount) ? options.threadCount : nextThreads.length;
   const requestLog = Array.isArray(options.requestLog) ? options.requestLog : null;
+  const issueDetailRequestHandler =
+    typeof options.issueDetailRequestHandler === 'function' ? options.issueDetailRequestHandler : null;
   let currentThreads = [...nextThreads];
+  let issueDetailRequestCount = 0;
   const threadStateById = new Map(
     nextThreads.map((currentThread) => [
       currentThread.id,
       {
         thread: currentThread,
         issues:
-          currentThread.id === threadId
+          currentThread.id === primaryThreadId
             ? [...nextIssues]
             : Array.isArray(options.issuesByThreadId?.[currentThread.id])
               ? [...options.issuesByThreadId[currentThread.id]]
               : [],
         issueMessages:
-          currentThread.id === threadId
+          currentThread.id === primaryThreadId
             ? [...nextIssueMessages]
             : Array.isArray(options.issueMessagesByThreadId?.[currentThread.id])
               ? [...options.issueMessagesByThreadId[currentThread.id]]
@@ -333,16 +337,56 @@ async function mockMobileApi(page, options = {}) {
     if (pathname.startsWith('/api/issues/') && method === 'GET') {
       const requestedIssueId = pathname.split('/').pop();
       const currentState = findIssueState(requestedIssueId);
-      const requestedIssue =
+      issueDetailRequestCount += 1;
+
+      let requestedIssue =
         currentState?.issues.find((currentIssue) => currentIssue.id === requestedIssueId) ?? issue;
+      let responseThread = currentState?.thread ?? thread;
+      let responseMessages = currentState?.issueMessages ?? nextIssueMessages;
+
+      if (issueDetailRequestHandler) {
+        const override = await issueDetailRequestHandler({
+          currentState,
+          issue: requestedIssue,
+          messages: responseMessages,
+          requestCount: issueDetailRequestCount,
+          requestedIssueId
+        });
+
+        if (override?.thread) {
+          responseThread = override.thread;
+
+          if (currentState) {
+            currentState.thread = override.thread;
+          }
+        }
+
+        if (override?.issue) {
+          requestedIssue = override.issue;
+
+          if (currentState) {
+            currentState.issues = currentState.issues.map((currentIssue) =>
+              currentIssue.id === requestedIssueId ? override.issue : currentIssue
+            );
+          }
+        }
+
+        if (Array.isArray(override?.messages)) {
+          responseMessages = override.messages;
+
+          if (currentState) {
+            currentState.issueMessages = override.messages;
+          }
+        }
+      }
 
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          thread: currentState?.thread ?? thread,
+          thread: responseThread,
           issue: requestedIssue,
-          messages: currentState?.issueMessages ?? nextIssueMessages
+          messages: responseMessages
         })
       });
       return;
@@ -726,6 +770,171 @@ test.describe('wide mobile split layout', () => {
     expect(detailPaneAfter).not.toBeNull();
     expect(listPaneAfter.width - listPaneBefore.width).toBeGreaterThan(120);
     expect(detailPaneBefore.width - detailPaneAfter.width).toBeGreaterThan(120);
+  });
+
+  test('응답 스트림 중 위로 스크롤하면 자동 스크롤이 멈췄다가 하단 복귀 시 다시 시작된다', async ({ page }) => {
+    const runningThread = {
+      ...thread,
+      id: 'thread-stream-scroll',
+      title: 'Streaming Scroll Thread',
+      name: 'Streaming Scroll Thread',
+      status: 'running',
+      last_event: 'item.agentMessage.delta',
+      updated_at: '2026-03-18T10:10:00.000Z',
+      active_physical_thread_id: 'physical-stream-scroll'
+    };
+    const runningIssue = {
+      ...issue,
+      id: 'issue-stream-scroll',
+      thread_id: runningThread.id,
+      status: 'running',
+      created_at: '2026-03-18T10:05:00.000Z',
+      updated_at: '2026-03-18T10:10:00.000Z',
+      created_physical_thread_id: 'physical-stream-scroll',
+      executed_physical_thread_id: 'physical-stream-scroll'
+    };
+    const initialMessages = [
+      {
+        id: 'stream-user-intro',
+        role: 'user',
+        content: '스트리밍 응답 스크롤 동작을 확인합니다.',
+        timestamp: '2026-03-18T10:05:00.000Z'
+      },
+      ...Array.from({ length: 18 }, (_, index) => ({
+        id: `stream-history-${index + 1}`,
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content: `긴 히스토리 ${index + 1}\n${`세부 줄 ${index + 1}\n`.repeat(8)}`,
+        timestamp: `2026-03-18T10:${String(index + 6).padStart(2, '0')}:00.000Z`
+      })),
+      {
+        id: 'stream-live-message',
+        role: 'assistant',
+        content: '실시간 응답 시작',
+        timestamp: '2026-03-18T10:30:00.000Z'
+      }
+    ];
+
+    await mockMobileApi(page, {
+      threads: [runningThread],
+      issues: [runningIssue],
+      issueMessages: initialMessages,
+      issueDetailRequestHandler: ({ currentState, issue: currentIssue, messages, requestCount }) => {
+        if (!currentState || !currentIssue) {
+          return null;
+        }
+
+        const liveContent =
+          requestCount <= 1
+            ? '실시간 응답 시작'
+            : `실시간 응답 ${requestCount}\n${`추가 스트림 줄 ${requestCount}\n`.repeat(requestCount * 10)}`;
+        const nextMessages = messages.map((message) =>
+          message.id === 'stream-live-message'
+            ? {
+                ...message,
+                content: liveContent,
+                timestamp: `2026-03-18T10:${String(Math.min(59, 30 + requestCount)).padStart(2, '0')}:00.000Z`
+              }
+            : message
+        );
+        const nextUpdatedAt = `2026-03-18T10:${String(Math.min(59, 30 + requestCount)).padStart(2, '0')}:00.000Z`;
+
+        return {
+          thread: {
+            ...currentState.thread,
+            status: 'running',
+            last_event: 'item.agentMessage.delta',
+            updated_at: nextUpdatedAt
+          },
+          issue: {
+            ...currentIssue,
+            status: 'running',
+            updated_at: nextUpdatedAt
+          },
+          messages: nextMessages
+        };
+      }
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const detailScroll = page.getByTestId('thread-detail-scroll');
+    await expect(detailScroll).toBeVisible();
+    await expect(page.getByTestId('thread-detail-panel')).toContainText(runningThread.title);
+
+    await detailScroll.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await page.waitForTimeout(150);
+
+    const initialScrollHeight = await detailScroll.evaluate((node) => node.scrollHeight);
+    await expect
+      .poll(async () => detailScroll.evaluate((node) => node.scrollHeight), { timeout: 8_000 })
+      .toBeGreaterThan(initialScrollHeight);
+
+    const bottomWhileStreaming = await detailScroll.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      distanceFromBottom: Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop),
+      scrollHeight: node.scrollHeight
+    }));
+
+    expect(bottomWhileStreaming.scrollTop).toBeGreaterThan(0);
+    expect(bottomWhileStreaming.distanceFromBottom).toBeLessThanOrEqual(96);
+
+    const pausedBefore = await detailScroll.evaluate((node) => {
+      node.scrollTop = Math.max(0, node.scrollTop - 220);
+      return {
+        scrollTop: node.scrollTop,
+        scrollHeight: node.scrollHeight
+      };
+    });
+    await page.waitForTimeout(150);
+
+    expect(pausedBefore.scrollTop).toBeGreaterThan(0);
+
+    await expect
+      .poll(async () => detailScroll.evaluate((node) => node.scrollHeight), { timeout: 8_000 })
+      .toBeGreaterThan(pausedBefore.scrollHeight);
+
+    const pausedAfter = await detailScroll.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      distanceFromBottom: Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop),
+      scrollHeight: node.scrollHeight
+    }));
+
+    expect(pausedAfter.scrollHeight).toBeGreaterThan(pausedBefore.scrollHeight);
+    expect(Math.abs(pausedAfter.scrollTop - pausedBefore.scrollTop)).toBeLessThanOrEqual(4);
+    expect(pausedAfter.distanceFromBottom).toBeGreaterThan(96);
+
+    const resumedBefore = await detailScroll.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      return {
+        scrollTop: node.scrollTop,
+        scrollHeight: node.scrollHeight
+      };
+    });
+    await page.waitForTimeout(150);
+
+    await expect
+      .poll(async () => detailScroll.evaluate((node) => node.scrollHeight), { timeout: 8_000 })
+      .toBeGreaterThan(resumedBefore.scrollHeight);
+
+    const resumedAfter = await detailScroll.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      distanceFromBottom: Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop),
+      scrollHeight: node.scrollHeight
+    }));
+
+    expect(resumedAfter.scrollHeight).toBeGreaterThan(resumedBefore.scrollHeight);
+    expect(resumedAfter.scrollTop).toBeGreaterThan(resumedBefore.scrollTop);
+    expect(resumedAfter.distanceFromBottom).toBeLessThanOrEqual(96);
   });
 
   test('sends on Enter and preserves line breaks on Shift+Enter in the prompt composer', async ({ page }) => {
