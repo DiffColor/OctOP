@@ -647,13 +647,19 @@ const COPY = {
       bridgeDown: "Bridge Down",
       projectsChip: (count) => `Projects ${count}`,
       threadsChip: (count) => `Threads ${count}`,
+      toggleColumnSelectionHint: "Double-click to select or clear all cards in this column.",
       confirmationEyebrow: "Confirm",
       deleteProjectConfirm: (name) => `Delete ${name}? Its issues will be removed as well.`,
       deleteProject: "Delete Project",
       deleteBridge: "Delete Bridge",
       deletingBridge: "Deleting...",
       deleteBridgeConfirm: (name) =>
-        `Delete ${name}? Stored projects, threads, and issue history for this bridge will be removed.`
+        `Delete ${name}? Stored projects, threads, and issue history for this bridge will be removed.`,
+      archiveBasket: "Archive",
+      emptyArchive: "Empty",
+      emptyingArchive: "Emptying...",
+      emptyArchiveConfirm: (columnLabel, count) =>
+        `Delete ${count} archived item${count === 1 ? "" : "s"} from ${columnLabel}? This cannot be undone.`
     },
     notifications: {
       actionCompleted: "Done",
@@ -661,7 +667,11 @@ const COPY = {
       bridgeDeleted: (name) => `${name} has been deleted.`,
       bridgeDeleteFailed: (name) => `Failed to delete ${name}.`,
       projectDeleted: (name) => `${name} has been deleted.`,
-      projectDeleteFailed: (name) => `Failed to delete ${name}.`
+      projectDeleteFailed: (name) => `Failed to delete ${name}.`,
+      archivedIssuesDeleted: (count) => `Deleted ${count} archived item${count === 1 ? "" : "s"}.`,
+      archivedIssuesDeleteFailed: (count) => `Failed to delete ${count} archived item${count === 1 ? "" : "s"}.`,
+      archivedIssuesDeletePartial: (deletedCount, failedCount) =>
+        `Deleted ${deletedCount} archived item${deletedCount === 1 ? "" : "s"}, but ${failedCount} failed.`
     },
     footer: {
       languageKorean: "Korean",
@@ -867,13 +877,19 @@ const COPY = {
       bridgeDown: "브릿지 끊김",
       projectsChip: (count) => `프로젝트 ${count}`,
       threadsChip: (count) => `쓰레드 ${count}`,
+      toggleColumnSelectionHint: "더블클릭하면 이 컬럼의 카드를 전체선택/전체해제합니다.",
       confirmationEyebrow: "확인",
       deleteProjectConfirm: (name) => `${name} 프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.`,
       deleteProject: "프로젝트 삭제",
       deleteBridge: "브릿지 삭제",
       deletingBridge: "삭제 중...",
       deleteBridgeConfirm: (name) =>
-        `${name} 브릿지를 삭제하시겠습니까? 이 브릿지에 저장된 프로젝트, 쓰레드, 이슈 기록도 함께 제거됩니다.`
+        `${name} 브릿지를 삭제하시겠습니까? 이 브릿지에 저장된 프로젝트, 쓰레드, 이슈 기록도 함께 제거됩니다.`,
+      archiveBasket: "보관함",
+      emptyArchive: "비우기",
+      emptyingArchive: "비우는 중...",
+      emptyArchiveConfirm: (columnLabel, count) =>
+        `${columnLabel} 보관함의 항목 ${count}개를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`
     },
     notifications: {
       actionCompleted: "완료되었습니다",
@@ -881,7 +897,11 @@ const COPY = {
       bridgeDeleted: (name) => `${name} 브릿지를 삭제했습니다.`,
       bridgeDeleteFailed: (name) => `${name} 브릿지를 삭제하지 못했습니다.`,
       projectDeleted: (name) => `${name} 프로젝트를 삭제했습니다.`,
-      projectDeleteFailed: (name) => `${name} 프로젝트를 삭제하지 못했습니다.`
+      projectDeleteFailed: (name) => `${name} 프로젝트를 삭제하지 못했습니다.`,
+      archivedIssuesDeleted: (count) => `보관 항목 ${count}개를 삭제했습니다.`,
+      archivedIssuesDeleteFailed: (count) => `보관 항목 ${count}개를 삭제하지 못했습니다.`,
+      archivedIssuesDeletePartial: (deletedCount, failedCount) =>
+        `보관 항목 ${deletedCount}개를 삭제했고 ${failedCount}개는 삭제하지 못했습니다.`
     },
     footer: {
       languageKorean: "한국어",
@@ -5515,11 +5535,12 @@ function CompletedThreadCard({
   );
 }
 
-function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
+function ArchiveBasketButton({ active, count, title, onClick, onContextMenu, onDragOver, onDrop }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onDragOver={onDragOver}
       onDrop={onDrop}
       className={`relative inline-flex h-8 w-8 items-center justify-center rounded-lg border transition ${
@@ -5527,7 +5548,7 @@ function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
           ? "border-sky-400/40 bg-sky-500/10 text-sky-200"
           : "border-slate-800 bg-slate-900/80 text-slate-400 hover:border-slate-700 hover:text-white"
       }`}
-      title="보관함"
+      title={title}
     >
       <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path d="M4 7h16M9 7V5.5A1.5 1.5 0 0110.5 4h3A1.5 1.5 0 0115 5.5V7m-8 0l1 11a2 2 0 001.99 1.82h4.02A2 2 0 0016 18l1-11" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
@@ -5538,6 +5559,45 @@ function ArchiveBasketButton({ active, count, onClick, onDragOver, onDrop }) {
         </span>
       ) : null}
     </button>
+  );
+}
+
+function ArchiveContextMenu({
+  language,
+  menuState,
+  busy = false,
+  disabled = false,
+  onEmpty,
+  onClose
+}) {
+  const copy = getCopy(language);
+
+  if (!menuState.open) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="close archive menu"
+        className="fixed inset-0 z-40 cursor-default"
+        onClick={onClose}
+      />
+      <div
+        className="fixed z-50 min-w-[10rem] overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-1.5 shadow-[0_18px_60px_rgba(2,6,23,0.55)] ring-1 ring-black/20"
+        style={{ left: menuState.x, top: menuState.y }}
+      >
+        <button
+          type="button"
+          disabled={disabled || busy}
+          onClick={onEmpty}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-rose-300 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+        >
+          {busy ? copy.board.emptyingArchive : copy.board.emptyArchive}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -5583,6 +5643,7 @@ function MainPage({
   issueEditorOpen,
   issueEditorBusy,
   editingIssue,
+  archiveDeleteBusyColumnId,
   projectMenuState,
   threadMenuState,
   onSearchChange,
@@ -5595,6 +5656,7 @@ function MainPage({
   onToggleIssueSelection,
   onArchiveIssues,
   onRestoreArchivedIssues,
+  onDeleteArchivedIssues,
   onStartSelectedIssues,
   onOpenIssueDetail,
   onInterruptIssue,
@@ -5680,6 +5742,12 @@ function MainPage({
   });
   const archiveViewerRef = useRef(null);
   const [archiveViewerColumnId, setArchiveViewerColumnId] = useState("");
+  const [archiveMenuState, setArchiveMenuState] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+    columnId: ""
+  });
   const selectedBridge =
     bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? bridges[0] ?? null;
   const selectedProject =
@@ -5971,6 +6039,83 @@ function MainPage({
     },
     [onToggleIssueSelection]
   );
+  const handleToggleColumnSelection = useCallback(
+    (columnId, columnThreads = []) => {
+      const visibleThreadIds = (Array.isArray(columnThreads) ? columnThreads : [])
+        .map((thread) => String(thread?.id ?? "").trim())
+        .filter(Boolean);
+
+      if (!columnId || visibleThreadIds.length === 0) {
+        return;
+      }
+
+      const anchorThreadId = visibleThreadIds.at(-1) ?? "";
+      let computedSelection = [];
+
+      onUpdateIssueSelection((currentSelection) => {
+        const allSelected = visibleThreadIds.every((threadId) => currentSelection.includes(threadId));
+
+        if (allSelected) {
+          computedSelection = currentSelection.filter((threadId) => !visibleThreadIds.includes(threadId));
+          return computedSelection;
+        }
+
+        const nextSelection = [...currentSelection];
+
+        for (const threadId of visibleThreadIds) {
+          if (!nextSelection.includes(threadId)) {
+            nextSelection.push(threadId);
+          }
+        }
+
+        computedSelection = nextSelection;
+        return nextSelection;
+      });
+
+      if (computedSelection.length === 0) {
+        setSelectionAnchor({
+          threadId: "",
+          columnId: ""
+        });
+        onSelectIssue("");
+        return;
+      }
+
+      const selectedAnchorId = computedSelection.includes(anchorThreadId)
+        ? anchorThreadId
+        : computedSelection[computedSelection.length - 1] ?? "";
+      const selectedAnchorColumnId =
+        selectedAnchorId === anchorThreadId
+          ? columnId
+          : getStatusMeta(issues.find((thread) => thread.id === selectedAnchorId)?.status).column;
+
+      setSelectionAnchor({
+        threadId: selectedAnchorId,
+        columnId: selectedAnchorColumnId || ""
+      });
+      onSelectIssue(selectedAnchorId);
+    },
+    [issues, onSelectIssue, onUpdateIssueSelection]
+  );
+  const openArchiveMenu = useCallback((event, columnId) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    setArchiveMenuState({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      columnId: String(columnId ?? "").trim()
+    });
+  }, []);
+  const closeArchiveMenu = useCallback(() => {
+    setArchiveMenuState({
+      open: false,
+      x: 0,
+      y: 0,
+      columnId: ""
+    });
+  }, []);
   useEffect(() => {
     storeSidebarWidth(sidebarWidth);
   }, [sidebarWidth]);
@@ -6014,6 +6159,17 @@ function MainPage({
       setArchiveViewerColumnId("");
     }
   }, [archiveViewerColumnId, archiveViewerIssues.length]);
+  useEffect(() => {
+    if (!archiveMenuState.open) {
+      return;
+    }
+
+    const normalizedColumnId = String(archiveMenuState.columnId ?? "").trim();
+
+    if (!normalizedColumnId || !["review", "done"].includes(normalizedColumnId)) {
+      closeArchiveMenu();
+    }
+  }, [archiveMenuState, closeArchiveMenu]);
 
   useEffect(() => {
     markProjectsExpanded([selectedProjectId]);
@@ -6621,7 +6777,9 @@ function MainPage({
                   >
                     <div className="mb-4 flex items-center justify-between">
                       <h3
-                        className={`flex items-center text-sm font-bold uppercase tracking-widest ${getColumnAccentClassName(column.id)}`}
+                        onDoubleClick={() => handleToggleColumnSelection(column.id, column.threads)}
+                        title={copy.board.toggleColumnSelectionHint}
+                        className={`flex cursor-pointer select-none items-center text-sm font-bold uppercase tracking-widest ${getColumnAccentClassName(column.id)}`}
                       >
                         <span
                           className={`mr-2 h-2 w-2 rounded-full ${getColumnDotClassName(column.id)} ${column.id === "running" ? "animate-pulse" : ""}`}
@@ -6636,7 +6794,9 @@ function MainPage({
                           <ArchiveBasketButton
                             active={archiveViewerColumnId === column.id}
                             count={archivedCounts[column.id]}
+                            title={copy.board.archiveBasket}
                             onClick={() => setArchiveViewerColumnId((current) => (current === column.id ? "" : column.id))}
+                            onContextMenu={(event) => openArchiveMenu(event, column.id)}
                             onDragOver={(event) => {
                               event.preventDefault();
                             }}
@@ -7114,6 +7274,19 @@ function MainPage({
         }}
         onClose={onCloseProjectMenu}
       />
+      <ArchiveContextMenu
+        language={language}
+        menuState={archiveMenuState}
+        busy={archiveDeleteBusyColumnId === (archiveMenuState.columnId || "__all__")}
+        disabled={(archivedCounts[archiveMenuState.columnId] ?? 0) === 0}
+        onEmpty={() => {
+          const targetColumnId = archiveMenuState.columnId;
+          const targetIssueIds = (archivedIssuesByColumn[targetColumnId] ?? []).map((thread) => thread.id);
+          closeArchiveMenu();
+          onDeleteArchivedIssues(targetIssueIds, targetColumnId);
+        }}
+        onClose={closeArchiveMenu}
+      />
     </div>
   );
 }
@@ -7125,6 +7298,7 @@ export default function App() {
   const [bridges, setBridges] = useState([]);
   const [bridgeDeleteBusy, setBridgeDeleteBusy] = useState(false);
   const [projectDeleteBusyId, setProjectDeleteBusyId] = useState("");
+  const [archiveDeleteBusyColumnId, setArchiveDeleteBusyColumnId] = useState("");
   const [bridgeStatusById, setBridgeStatusById] = useState({});
   const [projects, setProjects] = useState([]);
   const [projectThreads, setProjectThreads] = useState([]);
@@ -9134,6 +9308,173 @@ export default function App() {
 
     syncArchivedIssuesState(session, nextArchivedState, { keepalive: true });
   };
+  const handleDeleteArchivedIssues = async (threadIds, columnId = "") => {
+    const normalizedColumnId = String(columnId ?? "").trim();
+    const normalizedThreadIds = [...new Set((threadIds ?? []).map((threadId) => String(threadId ?? "").trim()).filter(Boolean))];
+    const busyKey = normalizedColumnId || "__all__";
+
+    if (
+      !session?.loginId ||
+      !selectedBridgeId ||
+      !selectedProjectThreadId ||
+      normalizedThreadIds.length === 0 ||
+      archiveDeleteBusyColumnId === busyKey
+    ) {
+      return;
+    }
+
+    const archivedIssuesForScope =
+      selectedBridgeIdRef.current === selectedBridgeId && selectedProjectThreadIdRef.current === selectedProjectThreadId
+        ? archivedIssues
+        : (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
+    const deletableIssues = archivedIssuesForScope.filter((issue) => {
+      if (!normalizedThreadIds.includes(issue.id)) {
+        return false;
+      }
+
+      return !normalizedColumnId || getArchivedIssueColumnId(issue) === normalizedColumnId;
+    });
+
+    if (deletableIssues.length === 0) {
+      return;
+    }
+
+    const columnLabel = copy.columns[normalizedColumnId] ?? copy.board.archivedListTitle;
+    const accepted = await requestConfirmation({
+      title: copy.board.emptyArchive,
+      description: copy.board.emptyArchiveConfirm(columnLabel, deletableIssues.length),
+      confirmLabel: copy.board.emptyArchive,
+      cancelLabel: copy.projectComposer.cancel
+    });
+
+    if (!accepted) {
+      return;
+    }
+
+    const deletedIds = [];
+    let nextArchivedIds = getArchivedIssueIdsForScope(archivedIssuesStateRef.current, selectedBridgeId, selectedProjectThreadId);
+    let latestSourceIssues = null;
+    let failedCount = 0;
+    let lastErrorMessage = "";
+
+    setArchiveDeleteBusyColumnId(busyKey);
+
+    try {
+      for (const issue of deletableIssues) {
+        try {
+          const response = await apiRequest(
+            `/api/issues/${encodeURIComponent(issue.id)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+            {
+              method: "DELETE"
+            }
+          );
+
+          deletedIds.push(issue.id);
+          nextArchivedIds = nextArchivedIds.filter((archivedId) => archivedId !== issue.id);
+
+          if (Array.isArray(response?.issues)) {
+            latestSourceIssues = response.issues;
+          }
+        } catch (error) {
+          failedCount += 1;
+          lastErrorMessage = error.message ?? "";
+        }
+      }
+
+      if (deletedIds.length > 0) {
+        const nextArchivedState = replaceArchivedIssuesStateForScope(
+          archivedIssuesStateRef.current,
+          selectedBridgeId,
+          selectedProjectThreadId,
+          nextArchivedIds,
+          new Date().toISOString()
+        );
+
+        updateArchivedIssuesState(nextArchivedState);
+        syncArchivedIssuesState(session, nextArchivedState, { keepalive: true });
+
+        if (Array.isArray(latestSourceIssues)) {
+          const normalizedIssues = mergeIssues([], latestSourceIssues).filter((issue) => !deletedIds.includes(issue.id));
+          const { visibleIssues, archivedIssues: nextArchivedIssues } = partitionIssuesByArchiveState(
+            normalizedIssues,
+            nextArchivedState,
+            selectedBridgeId,
+            selectedProjectThreadId
+          );
+
+          replaceVisibleIssuesForCurrentScope(selectedBridgeId, selectedProjectThreadId, visibleIssues);
+          replaceArchivedIssuesForCurrentScope(selectedBridgeId, selectedProjectThreadId, nextArchivedIssues);
+        } else {
+          replaceVisibleIssuesForCurrentScope(
+            selectedBridgeId,
+            selectedProjectThreadId,
+            (visibleIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+              (issue) => !deletedIds.includes(issue.id)
+            )
+          );
+          replaceArchivedIssuesForCurrentScope(
+            selectedBridgeId,
+            selectedProjectThreadId,
+            (archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []).filter(
+              (issue) => !deletedIds.includes(issue.id)
+            )
+          );
+        }
+
+        setSelectedIssueIds((current) => current.filter((issueId) => !deletedIds.includes(issueId)));
+        setIssueQueueOrderIds((current) => current.filter((issueId) => !deletedIds.includes(issueId)));
+        setPrepIssueOrderIds((current) => current.filter((issueId) => !deletedIds.includes(issueId)));
+        setSelectedIssueId((current) => (deletedIds.includes(current) ? "" : current));
+        setDraggingArchiveIssueIds((current) => current.filter((issueId) => !deletedIds.includes(issueId)));
+      }
+
+      if (deletedIds.length > 0 && failedCount === 0) {
+        showNotification({
+          title: copy.notifications.actionCompleted,
+          message: copy.notifications.archivedIssuesDeleted(deletedIds.length),
+          tone: "success"
+        });
+        return;
+      }
+
+      if (deletedIds.length > 0) {
+        setRecentEvents((current) => [
+          {
+            id: createId(),
+            type: "archive.delete.partial_failed",
+            timestamp: new Date().toISOString(),
+            summary: lastErrorMessage || copy.notifications.archivedIssuesDeletePartial(deletedIds.length, failedCount)
+          },
+          ...current
+        ].slice(0, 20));
+        showNotification({
+          title: copy.notifications.actionFailed,
+          message: lastErrorMessage || copy.notifications.archivedIssuesDeletePartial(deletedIds.length, failedCount),
+          tone: "error",
+          durationMs: INSTANT_NOTIFICATION_ERROR_DURATION_MS
+        });
+        return;
+      }
+
+      setRecentEvents((current) => [
+        {
+          id: createId(),
+          type: "archive.delete.failed",
+          timestamp: new Date().toISOString(),
+          summary: lastErrorMessage || copy.notifications.archivedIssuesDeleteFailed(failedCount || deletableIssues.length)
+        },
+        ...current
+      ].slice(0, 20));
+      showNotification({
+        title: copy.notifications.actionFailed,
+        message: lastErrorMessage || copy.notifications.archivedIssuesDeleteFailed(failedCount || deletableIssues.length),
+        tone: "error",
+        durationMs: INSTANT_NOTIFICATION_ERROR_DURATION_MS
+      });
+    } finally {
+      setArchiveDeleteBusyColumnId((current) => (current === busyKey ? "" : current));
+    }
+  };
 
   const handleStartSelectedIssues = async () => {
     await movePrepIssuesToTodo(selectedIssueIds);
@@ -10621,6 +10962,7 @@ export default function App() {
         issueEditorOpen={issueEditorOpen}
         issueEditorBusy={issueEditorBusy}
         editingIssue={editingIssue}
+        archiveDeleteBusyColumnId={archiveDeleteBusyColumnId}
         projectMenuState={projectMenuState}
         threadMenuState={threadMenuState}
         onSearchChange={setSearch}
@@ -10637,6 +10979,7 @@ export default function App() {
         onToggleIssueSelection={handleToggleIssueSelection}
         onArchiveIssues={handleArchiveIssues}
         onRestoreArchivedIssues={handleRestoreArchivedIssues}
+        onDeleteArchivedIssues={(threadIds, columnId) => void handleDeleteArchivedIssues(threadIds, columnId)}
         onStartSelectedIssues={() => void handleStartSelectedIssues()}
         onOpenIssueDetail={(threadId) => void handleOpenIssueDetail(threadId)}
         onInterruptIssue={(threadId) => void handleInterruptIssue(threadId)}
