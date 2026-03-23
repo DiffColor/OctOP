@@ -904,6 +904,12 @@ sealed class RuntimeInstaller
       relativePath = ".";
     }
 
+    if (!string.IsNullOrWhiteSpace(repositoryBranch) &&
+        await IsShallowRepositoryAsync(repositoryRoot, cancellationToken))
+    {
+      await UnshallowRepositoryAsync(repositoryRoot, repositoryBranch, cancellationToken);
+    }
+
     var result = await RunCommandAsync(
       new ProcessStartInfo
       {
@@ -925,52 +931,7 @@ sealed class RuntimeInstaller
     }
 
     var revision = result.StandardOutput.Trim();
-    if (string.IsNullOrWhiteSpace(revision))
-    {
-      return null;
-    }
-
-    if (string.IsNullOrWhiteSpace(repositoryBranch))
-    {
-      return revision;
-    }
-
-    var headRevision = await ReadRepositoryHeadAsync(repositoryRoot, cancellationToken);
-    if (string.IsNullOrWhiteSpace(headRevision) ||
-        !string.Equals(revision, headRevision, StringComparison.OrdinalIgnoreCase) ||
-        !await IsShallowRepositoryAsync(repositoryRoot, cancellationToken) ||
-        await HeadTouchesPathAsync(repositoryRoot, relativePath, cancellationToken))
-    {
-      return revision;
-    }
-
-    if (!await UnshallowRepositoryAsync(repositoryRoot, repositoryBranch, cancellationToken))
-    {
-      return revision;
-    }
-
-    var unshallowedResult = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = $"log -1 --format=%H -- {QuoteArgument(relativePath)}"
-      },
-      cancellationToken: cancellationToken);
-
-    if (unshallowedResult.ExitCode != 0)
-    {
-      return revision;
-    }
-
-    var unshallowedRevision = unshallowedResult.StandardOutput.Trim();
-    return string.IsNullOrWhiteSpace(unshallowedRevision) ? revision : unshallowedRevision;
+    return string.IsNullOrWhiteSpace(revision) ? null : revision;
   }
 
   private static async Task<bool> IsShallowRepositoryAsync(string repositoryRoot, CancellationToken cancellationToken)

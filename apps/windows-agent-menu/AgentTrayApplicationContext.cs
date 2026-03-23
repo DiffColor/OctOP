@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Windows.Forms;
 using System.Windows.Forms.Integration;
 
@@ -14,7 +15,31 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 {
   private const int MaxLines = 2000;
   private static readonly string AppTitle = "OctOP Local Agent";
-  private static readonly HttpClient HealthcheckClient = new();
+  private static readonly HttpClient HealthcheckClient = new()
+  {
+    Timeout = TimeSpan.FromSeconds(1)
+  };
+
+  private sealed class BridgeHealthStatus
+  {
+    public bool Ok { get; init; }
+    public BridgeHealthPayload? Status { get; init; }
+
+    public bool AppServerConnected => Status?.AppServer?.Connected == true;
+    public bool AppServerInitialized => Status?.AppServer?.Initialized == true;
+  }
+
+  private sealed class BridgeHealthPayload
+  {
+    [JsonPropertyName("app_server")]
+    public BridgeAppServerHealth? AppServer { get; init; }
+  }
+
+  private sealed class BridgeAppServerHealth
+  {
+    public bool Connected { get; init; }
+    public bool Initialized { get; init; }
+  }
 
   private readonly SynchronizationContext _uiContext;
   private readonly NotifyIcon _notifyIcon;
@@ -1570,14 +1595,17 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return false;
       }
 
-      if (requiredPorts.Count == 0)
+      var portsReady = requiredPorts.Count == 0 ||
+        FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count;
+      if (portsReady)
       {
-        return true;
-      }
-
-      if (FindListeningProcessIds(requiredPorts).Count >= requiredPorts.Count)
-      {
-        return true;
+        var bridgeHealth = await TryReadBridgeHealthStatusAsync(_configuration);
+        if (bridgeHealth?.Ok == true &&
+            bridgeHealth.AppServerConnected &&
+            bridgeHealth.AppServerInitialized)
+        {
+          return true;
+        }
       }
 
       await Task.Delay(500);
@@ -1588,20 +1616,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private static IReadOnlyCollection<int> ResolveStartupValidationPorts(RuntimeConfiguration configuration)
   {
-    var ports = new List<int>();
-
-    if (Uri.TryCreate(configuration.AppServerWsUrl?.Trim(), UriKind.Absolute, out var appServerUrl))
-    {
-      var appServerPort = appServerUrl.IsDefaultPort
-        ? appServerUrl.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80
-        : appServerUrl.Port;
-      if (appServerPort is >= 1 and <= 65535)
-      {
-        ports.Add(appServerPort);
-      }
-    }
-
-    return ports;
+    return ResolveServicePorts(configuration);
   }
 
   private static IReadOnlyCollection<int> ResolveServicePorts(RuntimeConfiguration configuration)
@@ -1625,6 +1640,54 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     return ports;
+  }
+
+  private static async Task<BridgeHealthStatus?> TryReadBridgeHealthStatusAsync(RuntimeConfiguration configuration)
+  {
+    if (!int.TryParse(configuration.BridgePort?.Trim(), out var bridgePort) || bridgePort is < 1 or > 65535)
+    {
+      return null;
+    }
+
+    var bridgeHost = NormalizeBridgeProbeHost(configuration.BridgeHost);
+    var ownerLoginId = string.IsNullOrWhiteSpace(configuration.OwnerLoginId)
+      ? RuntimeConfiguration.GetCurrentUserLogin()
+      : configuration.OwnerLoginId.Trim();
+
+    var uriBuilder = new UriBuilder(Uri.UriSchemeHttp, bridgeHost, bridgePort, "/health")
+    {
+      Query = $"user_id={Uri.EscapeDataString(ownerLoginId)}"
+    };
+
+    using var request = new HttpRequestMessage(HttpMethod.Get, uriBuilder.Uri);
+    request.Headers.TryAddWithoutValidation("x-bridge-token", configuration.BridgeToken?.Trim() ?? string.Empty);
+
+    try
+    {
+      using var response = await HealthcheckClient.SendAsync(request);
+      if (!response.IsSuccessStatusCode)
+      {
+        return null;
+      }
+
+      await using var stream = await response.Content.ReadAsStreamAsync();
+      return await JsonSerializer.DeserializeAsync<BridgeHealthStatus>(stream);
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  private static string NormalizeBridgeProbeHost(string? host)
+  {
+    var trimmed = host?.Trim();
+    return string.IsNullOrWhiteSpace(trimmed) ||
+      string.Equals(trimmed, "0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+      string.Equals(trimmed, "::", StringComparison.OrdinalIgnoreCase) ||
+      string.Equals(trimmed, "[::]", StringComparison.OrdinalIgnoreCase)
+      ? "127.0.0.1"
+      : trimmed;
   }
 
   private List<int> RunPowerShellProcessQuery(string command)

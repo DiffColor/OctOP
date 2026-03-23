@@ -1878,18 +1878,13 @@ final class AgentBootstrapStore: ObservableObject {
     let relativePath = String(targetPath.dropFirst(repositoryPath.count))
       .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     let pathArgument = relativePath.isEmpty ? "." : relativePath
-    let initialRevision = gitLoggedRevisionForPathIfAvailable(at: repositoryURL, pathArgument: pathArgument)
 
-    guard let remoteBranch,
-          let headRevision = gitRevisionIfAvailable(at: repositoryURL),
-          initialRevision == headRevision,
-          gitIsShallowRepository(at: repositoryURL),
-          !gitHeadTouchesPath(at: repositoryURL, pathArgument: pathArgument),
-          gitUnshallowRepository(at: repositoryURL, branch: remoteBranch) else {
-      return initialRevision
+    if let remoteBranch,
+       gitIsShallowRepository(at: repositoryURL) {
+      _ = gitUnshallowRepository(at: repositoryURL, branch: remoteBranch)
     }
 
-    return gitLoggedRevisionForPathIfAvailable(at: repositoryURL, pathArgument: pathArgument) ?? initialRevision
+    return gitLoggedRevisionForPathIfAvailable(at: repositoryURL, pathArgument: pathArgument)
   }
 
   private func gitLoggedRevisionForPathIfAvailable(at repositoryURL: URL, pathArgument: String) -> String? {
@@ -1912,17 +1907,6 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     return result.output == "true"
-  }
-
-  private func gitHeadTouchesPath(at repositoryURL: URL, pathArgument: String) -> Bool {
-    guard let result = runGitCommand(
-      at: repositoryURL,
-      arguments: ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--", pathArgument]
-    ), result.status == 0 else {
-      return false
-    }
-
-    return !result.output.isEmpty
   }
 
   private func gitUnshallowRepository(at repositoryURL: URL, branch: String) -> Bool {
@@ -1962,20 +1946,21 @@ final class AgentBootstrapStore: ObservableObject {
     try ensureDirectory(runtimeSourceCacheURL)
     let repositoryURL = runtimeRepositoryCacheURL
     let branch = runtimeRepositoryBranch
+    let remoteTrackingRef = "refs/remotes/origin/\(branch)"
 
     if FileManager.default.fileExists(atPath: repositoryURL.appendingPathComponent(".git").path) {
       do {
         log?("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
         try await runProcess(
           executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "fetch", "origin", branch],
+          arguments: ["-C", repositoryURL.path, "fetch", "origin", "\(branch):\(remoteTrackingRef)"],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log ?? { _ in }
         )
         try await runProcess(
           executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "reset", "--hard", "FETCH_HEAD"],
+          arguments: ["-C", repositoryURL.path, "reset", "--hard", remoteTrackingRef],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log ?? { _ in }
