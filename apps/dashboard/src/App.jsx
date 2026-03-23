@@ -108,9 +108,6 @@ const THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const INSTANT_NOTIFICATION_DEFAULT_DURATION_MS = 3200;
 const INSTANT_NOTIFICATION_ERROR_DURATION_MS = 5200;
 const SIDEBAR_PROJECT_LONG_PRESS_MS = 220;
-const SIDEBAR_PROJECT_LONG_PRESS_CANCEL_TOLERANCE_PX = 8;
-const SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX = 40;
-const SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX = 18;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -5916,11 +5913,10 @@ function MainPage({
     columnId: ""
   });
   const languageMenuRef = useRef(null);
-  const projectListScrollRef = useRef(null);
   const projectRowNodesRef = useRef(new Map());
   const projectLongPressTimerRef = useRef(null);
-  const projectLongPressTriggeredRef = useRef(false);
-  const projectPointerDragStateRef = useRef(null);
+  const projectLongPressReadyIdRef = useRef("");
+  const projectDragPreviewRef = useRef(null);
   const boardScrollRef = useRef(null);
   const boardScrollbarTrackRef = useRef(null);
   const boardScrollbarDragRef = useRef({
@@ -5947,6 +5943,10 @@ function MainPage({
     orderedSidebarProjects[0] ??
     projects[0] ??
     null;
+  const draggingProjectGapHeight =
+    draggingProjectId && projectDropIndicator.projectId && projectDropIndicator.projectId !== draggingProjectId
+      ? projectRowNodesRef.current.get(draggingProjectId)?.offsetHeight ?? 0
+      : 0;
   const selectedProjectHasBaseInstructions = Boolean(selectedProject?.base_instructions?.trim());
   const selectedProjectHasDeveloperInstructions = Boolean(selectedProject?.developer_instructions?.trim());
   const bridgeUnavailableMessage =
@@ -6334,60 +6334,6 @@ function MainPage({
 
     projectRowNodesRef.current.delete(normalizedProjectId);
   }, []);
-
-  const maybeAutoScrollProjectList = useCallback((clientY) => {
-    const scrollNode = projectListScrollRef.current;
-
-    if (!scrollNode) {
-      return;
-    }
-
-    const rect = scrollNode.getBoundingClientRect();
-
-    if (clientY <= rect.top + SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX) {
-      scrollNode.scrollTop = Math.max(0, scrollNode.scrollTop - SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX);
-      return;
-    }
-
-    if (clientY >= rect.bottom - SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_EDGE_PX) {
-      scrollNode.scrollTop = Math.min(
-        scrollNode.scrollHeight - scrollNode.clientHeight,
-        scrollNode.scrollTop + SIDEBAR_PROJECT_DRAG_AUTO_SCROLL_STEP_PX
-      );
-    }
-  }, []);
-
-  const resolveProjectDropIndicatorFromClientY = useCallback(
-    (clientY, draggedProjectId) => {
-      const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
-      const draggableProjects = orderedSidebarProjects.filter((project) => project.id !== normalizedDraggedProjectId);
-      const fallbackProjectId =
-        draggableProjects[draggableProjects.length - 1]?.id ?? orderedSidebarProjects[orderedSidebarProjects.length - 1]?.id ?? "";
-
-      for (const project of draggableProjects) {
-        const node = projectRowNodesRef.current.get(project.id);
-
-        if (!node) {
-          continue;
-        }
-
-        const rect = node.getBoundingClientRect();
-
-        if (clientY < rect.top + rect.height / 2) {
-          return {
-            projectId: project.id,
-            position: "before"
-          };
-        }
-      }
-
-      return {
-        projectId: fallbackProjectId,
-        position: "after"
-      };
-    },
-    [orderedSidebarProjects]
-  );
   useEffect(() => {
     storeSidebarWidth(sidebarWidth);
   }, [sidebarWidth]);
@@ -6467,8 +6413,11 @@ function MainPage({
   useEffect(
     () => () => {
       clearPendingProjectLongPress();
-      projectPointerDragStateRef.current = null;
-      projectLongPressTriggeredRef.current = false;
+      projectLongPressReadyIdRef.current = "";
+      if (projectDragPreviewRef.current?.parentNode) {
+        projectDragPreviewRef.current.parentNode.removeChild(projectDragPreviewRef.current);
+      }
+      projectDragPreviewRef.current = null;
     },
     [clearPendingProjectLongPress]
   );
@@ -6722,12 +6671,21 @@ function MainPage({
     });
   }, []);
 
+  const resolveProjectDropPosition = useCallback((event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientY >= rect.top + rect.height / 2 ? "after" : "before";
+  }, []);
+
+  const clearProjectDragPreview = useCallback(() => {
+    if (projectDragPreviewRef.current?.parentNode) {
+      projectDragPreviewRef.current.parentNode.removeChild(projectDragPreviewRef.current);
+    }
+
+    projectDragPreviewRef.current = null;
+  }, []);
+
   const handleProjectDragActivatorPointerDown = useCallback(
     (projectId, event) => {
-      if (typeof window === "undefined") {
-        return;
-      }
-
       const normalizedProjectId = String(projectId ?? "").trim();
 
       if (!normalizedProjectId) {
@@ -6739,157 +6697,191 @@ function MainPage({
       }
 
       clearPendingProjectLongPress();
-      projectLongPressTriggeredRef.current = false;
-      projectPointerDragStateRef.current = {
-        active: false,
-        pointerId: event.pointerId,
-        projectId: normalizedProjectId,
-        startX: event.clientX,
-        startY: event.clientY
-      };
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      projectLongPressReadyIdRef.current = "";
 
       projectLongPressTimerRef.current = window.setTimeout(() => {
-        const activeDragState = projectPointerDragStateRef.current;
-
-        if (
-          !activeDragState ||
-          activeDragState.pointerId !== event.pointerId ||
-          activeDragState.projectId !== normalizedProjectId
-        ) {
-          projectLongPressTimerRef.current = null;
-          return;
-        }
-
         projectLongPressTimerRef.current = null;
-        activeDragState.active = true;
-        projectLongPressTriggeredRef.current = true;
-        setDraggingProjectId(normalizedProjectId);
-        setProjectDropIndicator(resolveProjectDropIndicatorFromClientY(event.clientY, normalizedProjectId));
+        projectLongPressReadyIdRef.current = normalizedProjectId;
       }, SIDEBAR_PROJECT_LONG_PRESS_MS);
     },
-    [clearPendingProjectLongPress, resolveProjectDropIndicatorFromClientY]
+    [clearPendingProjectLongPress]
   );
 
-  const handleProjectDragActivatorPointerMove = useCallback(
-    (event) => {
-      const activeDragState = projectPointerDragStateRef.current;
+  const handleProjectDragActivatorPointerRelease = useCallback(() => {
+    clearPendingProjectLongPress();
 
-      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+    if (!draggingProjectId) {
+      projectLongPressReadyIdRef.current = "";
+    }
+  }, [clearPendingProjectLongPress, draggingProjectId]);
+
+  const handleProjectDragStart = useCallback(
+    (projectId, event) => {
+      const normalizedProjectId = String(projectId ?? "").trim();
+
+      if (!normalizedProjectId || projectLongPressReadyIdRef.current !== normalizedProjectId) {
+        event.preventDefault();
         return;
       }
 
-      const deltaX = event.clientX - activeDragState.startX;
-      const deltaY = event.clientY - activeDragState.startY;
+      setDraggingProjectId(normalizedProjectId);
+      setProjectDropIndicator({
+        projectId: normalizedProjectId,
+        position: "before"
+      });
 
-      if (!activeDragState.active) {
-        if (Math.hypot(deltaX, deltaY) > SIDEBAR_PROJECT_LONG_PRESS_CANCEL_TOLERANCE_PX) {
-          clearPendingProjectLongPress();
-          projectPointerDragStateRef.current = null;
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+
+        try {
+          event.dataTransfer.setData("text/plain", normalizedProjectId);
+        } catch {
+          // ignore data transfer errors
         }
 
+        const previewNode = event.currentTarget.cloneNode(true);
+        previewNode.style.position = "fixed";
+        previewNode.style.top = "-1000px";
+        previewNode.style.left = "-1000px";
+        previewNode.style.width = `${event.currentTarget.getBoundingClientRect().width}px`;
+        previewNode.style.pointerEvents = "none";
+        previewNode.style.opacity = "0.96";
+        previewNode.style.boxSizing = "border-box";
+        previewNode.classList.add("shadow-2xl", "ring-1", "ring-sky-400/40");
+        document.body.appendChild(previewNode);
+        projectDragPreviewRef.current = previewNode;
+
+        try {
+          event.dataTransfer.setDragImage(previewNode, 24, 18);
+        } catch {
+          // ignore custom drag image errors
+        }
+      }
+    },
+    []
+  );
+
+  const handleProjectDragOver = useCallback(
+    (projectId, event) => {
+      if (!draggingProjectId) {
+        return;
+      }
+
+      const normalizedProjectId = String(projectId ?? "").trim();
+
+      if (!normalizedProjectId) {
         return;
       }
 
       event.preventDefault();
-      maybeAutoScrollProjectList(event.clientY);
-      setProjectDropIndicator((current) => {
-        const next = resolveProjectDropIndicatorFromClientY(event.clientY, activeDragState.projectId);
 
-        if (!next.projectId) {
-          return current;
-        }
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
 
-        return current.projectId === next.projectId && current.position === next.position ? current : next;
+      const position = resolveProjectDropPosition(event);
+      setProjectDropIndicator((current) =>
+        current.projectId === normalizedProjectId && current.position === position
+          ? current
+          : {
+              projectId: normalizedProjectId,
+              position
+            }
+      );
+    },
+    [draggingProjectId, resolveProjectDropPosition]
+  );
+
+  const handleProjectDrop = useCallback(
+    (projectId, event) => {
+      if (!draggingProjectId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const normalizedProjectId = String(projectId ?? "").trim();
+
+      if (!normalizedProjectId) {
+        clearProjectDragState();
+        return;
+      }
+
+      const position = resolveProjectDropPosition(event);
+      const nextProjectOrder = reorderIdsByPlacement(
+        orderedSidebarProjects.map((project) => project.id),
+        draggingProjectId,
+        normalizedProjectId,
+        position === "after"
+      );
+
+      setProjectOrderIds(nextProjectOrder);
+      clearProjectDragState();
+    },
+    [clearProjectDragState, draggingProjectId, orderedSidebarProjects, resolveProjectDropPosition]
+  );
+
+  const handleProjectListDragOver = useCallback(
+    (event) => {
+      if (!draggingProjectId) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+
+      const lastProjectId = orderedSidebarProjects[orderedSidebarProjects.length - 1]?.id ?? "";
+
+      if (!lastProjectId || event.target !== event.currentTarget) {
+        return;
+      }
+
+      setProjectDropIndicator({
+        projectId: lastProjectId,
+        position: "after"
       });
     },
-    [clearPendingProjectLongPress, maybeAutoScrollProjectList, resolveProjectDropIndicatorFromClientY]
+    [draggingProjectId, orderedSidebarProjects]
   );
 
-  const handleProjectDragActivatorPointerEnd = useCallback(
+  const handleProjectListDrop = useCallback(
     (event) => {
-      const activeDragState = projectPointerDragStateRef.current;
-
-      clearPendingProjectLongPress();
-      if (typeof event.currentTarget.releasePointerCapture === "function") {
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture release failures
-        }
-      }
-
-      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
-        projectLongPressTriggeredRef.current = false;
-        projectPointerDragStateRef.current = null;
-        return;
-      }
-
-      projectPointerDragStateRef.current = null;
-
-      if (!activeDragState.active) {
-        projectLongPressTriggeredRef.current = false;
+      if (!draggingProjectId) {
         return;
       }
 
       event.preventDefault();
 
-      const nextIndicator =
-        projectDropIndicator.projectId
-          ? projectDropIndicator
-          : resolveProjectDropIndicatorFromClientY(event.clientY, activeDragState.projectId);
+      const lastProjectId = orderedSidebarProjects[orderedSidebarProjects.length - 1]?.id ?? "";
 
-      if (nextIndicator.projectId) {
-        const nextProjectOrder = reorderIdsByPlacement(
-          orderedSidebarProjects.map((project) => project.id),
-          activeDragState.projectId,
-          nextIndicator.projectId,
-          nextIndicator.position === "after"
-        );
-
-        setProjectOrderIds(nextProjectOrder);
+      if (!lastProjectId || event.target !== event.currentTarget) {
+        clearProjectDragState();
+        return;
       }
 
-      clearProjectDragState();
-      window.setTimeout(() => {
-        projectLongPressTriggeredRef.current = false;
-      }, 0);
-    },
-    [
-      clearPendingProjectLongPress,
-      clearProjectDragState,
-      orderedSidebarProjects,
-      projectDropIndicator,
-      resolveProjectDropIndicatorFromClientY
-    ]
-  );
+      const nextProjectOrder = reorderIdsByPlacement(
+        orderedSidebarProjects.map((project) => project.id),
+        draggingProjectId,
+        lastProjectId,
+        true
+      );
 
-  const handleProjectDragActivatorPointerCancel = useCallback(
-    (event) => {
-      clearPendingProjectLongPress();
-      if (typeof event.currentTarget.releasePointerCapture === "function") {
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture release failures
-        }
-      }
-      projectPointerDragStateRef.current = null;
-      projectLongPressTriggeredRef.current = false;
+      setProjectOrderIds(nextProjectOrder);
       clearProjectDragState();
     },
-    [clearPendingProjectLongPress, clearProjectDragState]
+    [clearProjectDragState, draggingProjectId, orderedSidebarProjects]
   );
 
-  const handleProjectDragActivatorClickCapture = useCallback((event) => {
-    if (!projectLongPressTriggeredRef.current) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    projectLongPressTriggeredRef.current = false;
-  }, []);
+  const handleProjectDragEnd = useCallback(() => {
+    clearPendingProjectLongPress();
+    projectLongPressReadyIdRef.current = "";
+    clearProjectDragPreview();
+    clearProjectDragState();
+  }, [clearPendingProjectLongPress, clearProjectDragPreview, clearProjectDragState]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -6956,8 +6948,9 @@ function MainPage({
                   </div>
 
                   <div
-                    ref={projectListScrollRef}
                     className="custom-scrollbar max-h-[calc(100vh-11rem)] space-y-0.5 overflow-y-scroll px-1"
+                    onDragOver={handleProjectListDragOver}
+                    onDrop={handleProjectListDrop}
                   >
                     {projects.length === 0 ? (
                       <div className="rounded-md px-3 py-3 text-xs text-slate-500">{copy.board.noProjects}</div>
@@ -6968,24 +6961,38 @@ function MainPage({
                         const expanded = expandedProjectIds[project.id] ?? active;
                         const showDropBefore =
                           draggingProjectId &&
+                          project.id !== draggingProjectId &&
                           projectDropIndicator.projectId === project.id &&
                           projectDropIndicator.position === "before";
                         const showDropAfter =
                           draggingProjectId &&
+                          project.id !== draggingProjectId &&
                           projectDropIndicator.projectId === project.id &&
                           projectDropIndicator.position === "after";
+                        const dropGapStyle =
+                          showDropBefore && draggingProjectGapHeight > 0
+                            ? { marginTop: `${draggingProjectGapHeight}px` }
+                            : showDropAfter && draggingProjectGapHeight > 0
+                              ? { marginBottom: `${draggingProjectGapHeight}px` }
+                              : undefined;
+                        const draggingSelf = draggingProjectId === project.id;
 
                         return (
                           <div
                             key={project.id}
                             ref={(node) => registerSidebarProjectNode(project.id, node)}
-                            className="rounded-md px-0.5 py-0.5"
+                            className="rounded-md px-0.5 py-0.5 transition-all duration-180 ease-out"
+                            style={dropGapStyle}
                           >
                             {showDropBefore ? <div className="mb-1 h-0.5 rounded-full bg-sky-400" /> : null}
                             <div
                               className={`w-full rounded-md px-1.5 py-1.5 transition ${
                                 active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                              } ${
+                                draggingSelf ? "opacity-35 ring-1 ring-sky-400/35" : ""
                               }`}
+                              onDragOver={(event) => handleProjectDragOver(project.id, event)}
+                              onDrop={(event) => handleProjectDrop(project.id, event)}
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -6995,10 +7002,12 @@ function MainPage({
                                     }`}
                                     title={projectReorderLongPressTitle}
                                     onPointerDown={(event) => handleProjectDragActivatorPointerDown(project.id, event)}
-                                    onPointerMove={handleProjectDragActivatorPointerMove}
-                                    onPointerUp={handleProjectDragActivatorPointerEnd}
-                                    onPointerCancel={handleProjectDragActivatorPointerCancel}
-                                    onClickCapture={handleProjectDragActivatorClickCapture}
+                                    onPointerUp={handleProjectDragActivatorPointerRelease}
+                                    onPointerCancel={handleProjectDragActivatorPointerRelease}
+                                    onPointerLeave={handleProjectDragActivatorPointerRelease}
+                                    draggable
+                                    onDragStart={(event) => handleProjectDragStart(project.id, event)}
+                                    onDragEnd={handleProjectDragEnd}
                                   >
                                     <button
                                       type="button"
