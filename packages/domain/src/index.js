@@ -91,3 +91,63 @@ export function bridgeSubjects(userId, bridgeId = "local-bridge") {
     events: `octop.user.${uid}.bridge.${bid}.events`
   };
 }
+
+export function createBridgeDisconnectEvidence() {
+  return {
+    socketDisconnectedAt: 0,
+    transportFailureAt: 0,
+    confirmedAt: 0,
+    lastError: ""
+  };
+}
+
+export function normalizeBridgeDisconnectEvidence(evidence) {
+  const resolved = evidence && typeof evidence === "object" ? evidence : {};
+
+  return {
+    socketDisconnectedAt: Number.isFinite(Number(resolved.socketDisconnectedAt))
+      ? Number(resolved.socketDisconnectedAt)
+      : 0,
+    transportFailureAt: Number.isFinite(Number(resolved.transportFailureAt))
+      ? Number(resolved.transportFailureAt)
+      : 0,
+    confirmedAt: Number.isFinite(Number(resolved.confirmedAt))
+      ? Number(resolved.confirmedAt)
+      : 0,
+    lastError: String(resolved.lastError ?? "").trim()
+  };
+}
+
+export function reduceBridgeDisconnectEvidence(currentEvidence, event = {}) {
+  const current = normalizeBridgeDisconnectEvidence(currentEvidence);
+  const at = Number.isFinite(Number(event?.at)) ? Number(event.at) : Date.now();
+  const message = String(event?.message ?? "").trim();
+
+  if (event?.type === "socket_connected" || event?.type === "transport_success") {
+    return createBridgeDisconnectEvidence();
+  }
+
+  if (event?.type === "socket_disconnected") {
+    return {
+      ...current,
+      socketDisconnectedAt: at,
+      confirmedAt: current.transportFailureAt > 0 ? at : current.confirmedAt,
+      lastError: message || current.lastError
+    };
+  }
+
+  if (event?.type === "transport_failure") {
+    return {
+      ...current,
+      transportFailureAt: at,
+      confirmedAt: current.socketDisconnectedAt > 0 ? at : current.confirmedAt,
+      lastError: message || current.lastError
+    };
+  }
+
+  return current;
+}
+
+export function isBridgeDisconnectConfirmed(evidence) {
+  return normalizeBridgeDisconnectEvidence(evidence).confirmedAt > 0;
+}

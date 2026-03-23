@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  isBridgeDisconnectConfirmed,
+  normalizeBridgeDisconnectEvidence,
+  reduceBridgeDisconnectEvidence
+} from "../../../packages/domain/src/index.js";
+import {
   mergeIncomingIssueSnapshot,
   resolveRealtimeIssuePayloadScope,
   shouldApplyRealtimeIssueToSelectedThread
@@ -99,6 +104,7 @@ const ISSUE_ATTACHMENT_ACCEPT = [
   ...ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES
 ].join(",");
 const bridgeRequestFailureListeners = new Set();
+const bridgeRequestSuccessListeners = new Set();
 
 function createEmptyBridgeStatus() {
   return {
@@ -163,6 +169,27 @@ function subscribeBridgeRequestFailures(listener) {
 
 function notifyBridgeRequestFailure(event) {
   for (const listener of bridgeRequestFailureListeners) {
+    try {
+      listener(event);
+    } catch {
+      // ignore listener failures
+    }
+  }
+}
+
+function subscribeBridgeRequestSuccesses(listener) {
+  if (typeof listener !== "function") {
+    return () => {};
+  }
+
+  bridgeRequestSuccessListeners.add(listener);
+  return () => {
+    bridgeRequestSuccessListeners.delete(listener);
+  };
+}
+
+function notifyBridgeRequestSuccess(event) {
+  for (const listener of bridgeRequestSuccessListeners) {
     try {
       listener(event);
     } catch {
@@ -248,8 +275,17 @@ function formatBridgeSilentDuration(ms, language = "en") {
   return `${minutes}m ${seconds}s`;
 }
 
-function buildBridgeSignal({ connected, lastSocketActivityAt, statusUpdatedAt, now, language, connectedLabel, disconnectedLabel }) {
-  if (!connected) {
+function buildBridgeSignal({
+  socketConnected,
+  disconnectConfirmed,
+  lastSocketActivityAt,
+  statusUpdatedAt,
+  now,
+  language,
+  connectedLabel,
+  disconnectedLabel
+}) {
+  if (disconnectConfirmed) {
     return {
       label: disconnectedLabel,
       title: language === "ko" ? "브릿지 연결이 끊어졌습니다." : "Bridge connection is down.",
@@ -258,6 +294,22 @@ function buildBridgeSignal({ connected, lastSocketActivityAt, statusUpdatedAt, n
         backgroundColor: "rgba(244, 63, 94, 0.14)",
         borderColor: "rgba(244, 63, 94, 0.3)",
         color: "#fecdd3"
+      }
+    };
+  }
+
+  if (!socketConnected) {
+    return {
+      label: language === "ko" ? "연결 불안정" : "Unstable",
+      title:
+        language === "ko"
+          ? "웹소켓 연결이 잠시 끊겼지만 backfill/API 실패가 함께 확인되기 전까지는 오프라인으로 확정하지 않습니다."
+          : "The websocket looks unstable, but the bridge is not treated as offline until backfill/API checks fail too.",
+      dotColor: "#f59e0b",
+      chipStyle: {
+        backgroundColor: "rgba(245, 158, 11, 0.14)",
+        borderColor: "rgba(245, 158, 11, 0.3)",
+        color: "#fde68a"
       }
     };
   }
@@ -1867,6 +1919,13 @@ async function apiRequest(path, options = {}) {
         status: response.status,
         message
       });
+    } else if (bridgeId) {
+      notifyBridgeRequestSuccess({
+        path,
+        method,
+        bridgeId,
+        status: response.status
+      });
     }
     const requestError = new Error(message);
     requestError.status = response.status;
@@ -1875,6 +1934,15 @@ async function apiRequest(path, options = {}) {
     requestError.bridgeRevision = payload?.bridge_revision ?? null;
     requestError.payload = payload;
     throw requestError;
+  }
+
+  if (bridgeId) {
+    notifyBridgeRequestSuccess({
+      path,
+      method,
+      bridgeId,
+      status: response.status
+    });
   }
 
   return payload;
@@ -6749,8 +6817,13 @@ export default function App() {
     [bridgeStatusById, selectedBridgeId]
   );
   const threadInstructionSupported = bridgeSupportsThreadDeveloperInstructions(status);
-  const bridgeConnected = Boolean(status.app_server?.connected) &&
-    !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]);
+  const bridgeDisconnectEvidence = useMemo(
+    () => normalizeBridgeDisconnectEvidence(selectedBridgeId ? bridgeDisconnectOverrideById[selectedBridgeId] : null),
+    [bridgeDisconnectOverrideById, selectedBridgeId]
+  );
+  const bridgeDisconnectConfirmed = isBridgeDisconnectConfirmed(bridgeDisconnectEvidence);
+  const bridgeSocketConnected = Boolean(status.app_server?.connected);
+  const bridgeConnected = !bridgeDisconnectConfirmed;
   const bridgeAvailable = Boolean(selectedBridgeId) && bridgeConnected;
   const projectEditTargetProject = useMemo(
     () => projects.find((project) => project.id === projectEditProjectId) ?? null,
@@ -6759,7 +6832,8 @@ export default function App() {
   const bridgeSignal = useMemo(
     () =>
       buildBridgeSignal({
-        connected: bridgeConnected,
+        socketConnected: bridgeSocketConnected,
+        disconnectConfirmed: bridgeDisconnectConfirmed,
         lastSocketActivityAt: Date.parse(status.app_server?.last_socket_activity_at ?? ""),
         statusUpdatedAt: Date.parse(status.updated_at ?? ""),
         now: streamNow,
@@ -6768,8 +6842,9 @@ export default function App() {
         disconnectedLabel: copy.board.bridgeDown
       }),
     [
-      bridgeDisconnectOverrideById,
       bridgeConnected,
+      bridgeDisconnectConfirmed,
+      bridgeSocketConnected,
       copy.board.bridgeDown,
       copy.board.bridgeOk,
       language,
@@ -6781,19 +6856,7 @@ export default function App() {
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
-  const markBridgeDisconnectedOverride = useCallback((bridgeId) => {
-    const normalized = String(bridgeId ?? "").trim();
-
-    if (!normalized) {
-      return;
-    }
-
-    setBridgeDisconnectOverrideById((current) => ({
-      ...current,
-      [normalized]: Date.now()
-    }));
-  }, []);
-  const clearBridgeDisconnectedOverride = useCallback((bridgeId) => {
+  const updateBridgeDisconnectOverride = useCallback((bridgeId, event) => {
     const normalized = String(bridgeId ?? "").trim();
 
     if (!normalized) {
@@ -6801,15 +6864,51 @@ export default function App() {
     }
 
     setBridgeDisconnectOverrideById((current) => {
-      if (!current[normalized]) {
-        return current;
+      const nextEvidence = reduceBridgeDisconnectEvidence(current[normalized], event);
+
+      if (
+        nextEvidence.socketDisconnectedAt <= 0 &&
+        nextEvidence.transportFailureAt <= 0 &&
+        nextEvidence.confirmedAt <= 0 &&
+        !nextEvidence.lastError
+      ) {
+        if (!current[normalized]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[normalized];
+        return next;
       }
 
-      const next = { ...current };
-      delete next[normalized];
-      return next;
+      return {
+        ...current,
+        [normalized]: nextEvidence
+      };
     });
   }, []);
+  const markBridgeSocketDisconnected = useCallback((bridgeId, message = "") => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "socket_disconnected",
+      message
+    });
+  }, [updateBridgeDisconnectOverride]);
+  const markBridgeSocketConnected = useCallback((bridgeId) => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "socket_connected"
+    });
+  }, [updateBridgeDisconnectOverride]);
+  const markBridgeTransportFailure = useCallback((bridgeId, message = "") => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "transport_failure",
+      message
+    });
+  }, [updateBridgeDisconnectOverride]);
+  const markBridgeTransportSuccess = useCallback((bridgeId) => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "transport_success"
+    });
+  }, [updateBridgeDisconnectOverride]);
   const selectedProjectThread = useMemo(
     () => projectThreads.find((thread) => thread.id === selectedProjectThreadId) ?? null,
     [projectThreads, selectedProjectThreadId]
@@ -7206,31 +7305,12 @@ export default function App() {
       }
 
       if (nextStatus?.app_server?.connected) {
-        clearBridgeDisconnectedOverride(bridgeId);
+        markBridgeSocketConnected(bridgeId);
       } else {
-        markBridgeDisconnectedOverride(bridgeId);
+        markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
       }
       setBridgeStatus(bridgeId, nextStatus);
       markStreamActivity();
-
-      if (!nextStatus?.app_server?.connected) {
-        setProjects([]);
-        setProjectThreads([]);
-        loadedProjectThreadsRef.current = {};
-        pendingProjectThreadLoadsRef.current.clear();
-        setIssues([]);
-        archivedIssueSnapshotsRef.current = {};
-        visibleIssueSnapshotsRef.current = {};
-        setArchivedIssues([]);
-        setSelectedProjectId("");
-        setSelectedProjectThreadId("");
-        setSelectedIssueId("");
-        setSelectedIssueIds([]);
-        setIssueQueueOrderIds([]);
-        setPrepIssueOrderIds([]);
-        setLoadingState("ready");
-        return;
-      }
 
       const nextProjects = await apiRequest(
         `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
@@ -7261,13 +7341,11 @@ export default function App() {
         return;
       }
 
-      markBridgeDisconnectedOverride(bridgeId);
+      markBridgeTransportFailure(bridgeId, error.message);
       setBridgeStatus(bridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
-          connected: false,
-          initialized: false,
           last_error: error.message
         },
         updated_at: new Date().toISOString()
@@ -7662,9 +7740,9 @@ export default function App() {
         }
 
         if (nextStatus?.app_server?.connected) {
-          clearBridgeDisconnectedOverride(bridgeId);
+          markBridgeSocketConnected(bridgeId);
         } else {
-          markBridgeDisconnectedOverride(bridgeId);
+          markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
         setBridgeStatus(bridgeId, nextStatus);
         return true;
@@ -7673,13 +7751,11 @@ export default function App() {
           return false;
         }
 
-        markBridgeDisconnectedOverride(bridgeId);
+        markBridgeTransportFailure(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
-            connected: false,
-            initialized: false,
             last_error: error.message
           },
           updated_at: new Date().toISOString()
@@ -7687,7 +7763,7 @@ export default function App() {
         return false;
       }
     },
-    [selectedBridgeId, session, clearBridgeDisconnectedOverride, markBridgeDisconnectedOverride, setBridgeStatus]
+    [markBridgeSocketConnected, markBridgeSocketDisconnected, markBridgeTransportFailure, selectedBridgeId, session, setBridgeStatus]
   );
   useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
@@ -7695,19 +7771,26 @@ export default function App() {
         return;
       }
 
-      markBridgeDisconnectedOverride(event.bridgeId);
+      markBridgeTransportFailure(event.bridgeId, event.message ?? "bridge transport unavailable");
       setBridgeStatus(event.bridgeId, (current) => ({
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
-          connected: false,
-          initialized: false,
           last_error: event.message ?? "bridge transport unavailable"
         },
         updated_at: new Date().toISOString()
       }));
     });
-  }, [markBridgeDisconnectedOverride, setBridgeStatus]);
+  }, [markBridgeTransportFailure, setBridgeStatus]);
+  useEffect(() => {
+    return subscribeBridgeRequestSuccesses((event) => {
+      if (!event?.bridgeId || event.bridgeId !== selectedBridgeIdRef.current) {
+        return;
+      }
+
+      markBridgeTransportSuccess(event.bridgeId);
+    });
+  }, [markBridgeTransportSuccess]);
 
   useEffect(() => {
     if (!session?.loginId) {
@@ -7755,9 +7838,9 @@ export default function App() {
         const payload = JSON.parse(event.data);
         if (selectedBridgeIdRef.current) {
           if (payload?.app_server?.connected) {
-            clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            markBridgeSocketConnected(selectedBridgeIdRef.current);
           } else {
-            markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+            markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
           setBridgeStatus(selectedBridgeIdRef.current, payload);
         }
@@ -7787,9 +7870,9 @@ export default function App() {
         if (payload.type === "bridge.status.updated") {
           if (selectedBridgeIdRef.current) {
             if (payload.payload?.app_server?.connected) {
-              clearBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+              markBridgeSocketConnected(selectedBridgeIdRef.current);
             } else {
-              markBridgeDisconnectedOverride(selectedBridgeIdRef.current);
+              markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
             setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
           }
@@ -7969,7 +8052,7 @@ export default function App() {
     eventSource.addEventListener("error", () => {
       appendEvent("sse.error", copy.alerts.sseReconnect);
       setStreamActivityAt(null);
-      markBridgeDisconnectedOverride(selectedBridgeId);
+      markBridgeSocketDisconnected(selectedBridgeId, "event stream disconnected");
       setBridgeStatus(selectedBridgeId, (current) => ({
         ...current,
         app_server: {
@@ -7988,8 +8071,8 @@ export default function App() {
   }, [
     copy.alerts.sseReconnect,
     eventStreamReconnectToken,
-    clearBridgeDisconnectedOverride,
-    markBridgeDisconnectedOverride,
+    markBridgeSocketConnected,
+    markBridgeSocketDisconnected,
     markStreamActivity,
     refreshBridgeStatus,
     session,
