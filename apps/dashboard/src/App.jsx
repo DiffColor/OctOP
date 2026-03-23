@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   isBridgeDisconnectConfirmed,
   normalizeBridgeDisconnectEvidence,
@@ -1589,6 +1589,63 @@ function RichMessageContent({ content, tone = "dark" }) {
         );
       })}
     </div>
+  );
+}
+
+function AutoSizingReadOnlyTextarea({ id, value, placeholder, className = "", maxHeight = 320 }) {
+  const textareaRef = useRef(null);
+  const syncHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [maxHeight]);
+
+  useLayoutEffect(() => {
+    syncHeight();
+  }, [syncHeight, value]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return undefined;
+    }
+
+    if (typeof window === "undefined" || typeof window.ResizeObserver !== "function") {
+      window.addEventListener("resize", syncHeight);
+      return () => {
+        window.removeEventListener("resize", syncHeight);
+      };
+    }
+
+    const resizeObserver = new window.ResizeObserver(() => {
+      syncHeight();
+    });
+
+    resizeObserver.observe(textarea);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [syncHeight]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      id={id}
+      rows="1"
+      value={value}
+      readOnly
+      placeholder={placeholder}
+      className={className}
+    />
   );
 }
 
@@ -4297,13 +4354,11 @@ function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-project-developer-instructions">
                 {copy.footer.threadProjectDeveloperInstructionLabel}
               </label>
-              <textarea
+              <AutoSizingReadOnlyTextarea
                 id="thread-create-project-developer-instructions"
-                rows="8"
                 value={projectDeveloperInstructions}
-                readOnly
                 placeholder={copy.footer.threadProjectDeveloperInstructionPlaceholder}
-                className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
+                className="w-full min-w-0 resize-none rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
               />
               <p className="mt-2 text-xs leading-6 text-slate-400">
                 {copy.footer.threadProjectDeveloperInstructionHint}
@@ -4419,13 +4474,11 @@ function ThreadEditDialog({
               <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
                 {copy.footer.threadProjectDeveloperInstructionLabel}
               </label>
-              <textarea
+              <AutoSizingReadOnlyTextarea
                 id="thread-edit-project-developer-instructions"
-                rows="8"
                 value={projectDeveloperInstructions}
-                readOnly
                 placeholder={copy.footer.threadProjectDeveloperInstructionPlaceholder}
-                className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
+                className="w-full min-w-0 resize-none rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
               />
               <p className="mt-2 text-xs leading-6 text-slate-400">
                 {copy.footer.threadProjectDeveloperInstructionHint}

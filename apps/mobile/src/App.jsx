@@ -2345,6 +2345,63 @@ function RichMessageContent({ content, tone = "light" }) {
   );
 }
 
+function AutoSizingReadOnlyTextarea({ id, value, placeholder, className = "", maxHeight = 320 }) {
+  const textareaRef = useRef(null);
+  const syncHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [maxHeight]);
+
+  useLayoutEffect(() => {
+    syncHeight();
+  }, [syncHeight, value]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return undefined;
+    }
+
+    if (typeof window === "undefined" || typeof window.ResizeObserver !== "function") {
+      window.addEventListener("resize", syncHeight);
+      return () => {
+        window.removeEventListener("resize", syncHeight);
+      };
+    }
+
+    const resizeObserver = new window.ResizeObserver(() => {
+      syncHeight();
+    });
+
+    resizeObserver.observe(textarea);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [syncHeight]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      id={id}
+      rows="1"
+      value={value}
+      readOnly
+      placeholder={placeholder}
+      className={className}
+    />
+  );
+}
+
 function buildRunTimeline(thread) {
   if (!thread) {
     return [];
@@ -3676,13 +3733,11 @@ function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-project-developer-instructions">
               프로젝트 공통 개발지침
             </label>
-            <textarea
+            <AutoSizingReadOnlyTextarea
               id="thread-create-project-developer-instructions"
-              rows="8"
               value={projectDeveloperInstructions}
-              readOnly
               placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
-              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
+              className="w-full resize-none rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
             />
             <p className="mt-2 text-[11px] leading-5 text-slate-400">
               프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
@@ -4857,13 +4912,11 @@ function ThreadEditDialog({
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
               프로젝트 공통 개발지침
             </label>
-            <textarea
+            <AutoSizingReadOnlyTextarea
               id="thread-edit-project-developer-instructions"
-              rows="8"
               value={projectDeveloperInstructions}
-              readOnly
               placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
-              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
+              className="w-full resize-none rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
             />
             <p className="mt-2 text-[11px] leading-5 text-slate-400">
               프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
