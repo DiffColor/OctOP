@@ -5188,10 +5188,6 @@ function ThreadEditDialog({
                 비워 두고 저장하면 이 채팅창 전용 개발지침이 제거됩니다.
               </p>
             </div>
-
-            <div className="rounded-[1rem] border border-amber-400/15 bg-amber-500/5 px-4 py-3 text-[12px] leading-6 text-slate-300">
-              프로젝트 개발지침 뒤에 이어 붙여 다음 실행부터 app-server developerInstructions로 주입합니다.
-            </div>
           </>
         ) : (
           <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-[12px] leading-6 text-slate-300">
