@@ -8019,6 +8019,7 @@ function MainPage({
   const threadListItemNodesRef = useRef(new Map());
   const threadListDragStateRef = useRef(null);
   const threadListDropIndexRef = useRef(-1);
+  const threadListLayoutSnapshotRef = useRef(new Map());
   const wideThreadSplitLayoutRef = useRef(null);
   const wideThreadSplitResizePointerIdRef = useRef(null);
   const wideThreadSplitResizeStartXRef = useRef(0);
@@ -8284,6 +8285,7 @@ function MainPage({
   const resetThreadListDragInteraction = useCallback(() => {
     threadListDragStateRef.current = null;
     threadListDropIndexRef.current = -1;
+    threadListLayoutSnapshotRef.current = new Map();
     setDraggingThreadId("");
     setDraggingThreadOffsetY(0);
   }, []);
@@ -8314,6 +8316,26 @@ function MainPage({
     }
 
     threadListItemNodesRef.current.delete(normalizedThreadId);
+  }, []);
+  const captureThreadListLayoutSnapshot = useCallback((threadIds) => {
+    const snapshot = new Map();
+
+    normalizeThreadOrder(threadIds).forEach((threadId) => {
+      const node = threadListItemNodesRef.current.get(threadId);
+
+      if (!node) {
+        return;
+      }
+
+      const rect = node.getBoundingClientRect();
+      snapshot.set(threadId, {
+        top: rect.top,
+        height: rect.height
+      });
+    });
+
+    threadListLayoutSnapshotRef.current = snapshot;
+    return snapshot;
   }, []);
   const resolveProjectChipDropIndex = useCallback(
     (clientX, draggedProjectId) => {
@@ -8630,25 +8652,33 @@ function MainPage({
   );
   const resolveThreadDropIndex = useCallback(
     (clientY, draggedThreadId) => {
+      const activeDragState = threadListDragStateRef.current;
       const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
-      const draggableThreadIds = filteredThreadIds.filter((threadId) => threadId !== normalizedDraggedThreadId);
-      const draggedThreadIndex = filteredThreadIds.indexOf(normalizedDraggedThreadId);
+      const baseThreadIds = normalizeThreadOrder(activeDragState?.visibleThreadIds ?? filteredThreadIds);
+      const draggableThreadIds = baseThreadIds.filter((threadId) => threadId !== normalizedDraggedThreadId);
+      const draggedThreadIndex = baseThreadIds.indexOf(normalizedDraggedThreadId);
+      const layoutSnapshot = threadListLayoutSnapshotRef.current;
+      const draggedThreadLayout = layoutSnapshot.get(normalizedDraggedThreadId);
       const draggedNode = threadListItemNodesRef.current.get(normalizedDraggedThreadId);
-      const collapsedShiftDistance = draggedThreadIndex >= 0 && draggedNode ? draggedNode.offsetHeight : 0;
+      const collapsedShiftDistance =
+        draggedThreadIndex >= 0
+          ? draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0
+          : 0;
 
       for (let index = 0; index < draggableThreadIds.length; index += 1) {
         const threadId = draggableThreadIds[index];
+        const layout = layoutSnapshot.get(threadId);
         const node = threadListItemNodesRef.current.get(threadId);
 
-        if (!node) {
+        if (!layout && !node) {
           continue;
         }
 
-        const rect = node.getBoundingClientRect();
-        const currentThreadIndex = filteredThreadIds.indexOf(threadId);
+        const rect = layout ? null : node.getBoundingClientRect();
+        const currentThreadIndex = baseThreadIds.indexOf(threadId);
         const collapsedOffsetY =
           draggedThreadIndex >= 0 && currentThreadIndex > draggedThreadIndex ? -collapsedShiftDistance : 0;
-        const adjustedCenterY = rect.top + collapsedOffsetY + rect.height / 2;
+        const adjustedCenterY = (layout?.top ?? rect.top) + collapsedOffsetY + (layout?.height ?? rect.height) / 2;
 
         if (clientY < adjustedCenterY) {
           return index;
@@ -8665,20 +8695,24 @@ function MainPage({
         return;
       }
 
+      const visibleThreadIds = [...filteredThreadIds];
+
       setThreadSelectionMode(false);
       setSelectedThreadIds([]);
+      captureThreadListLayoutSnapshot(visibleThreadIds);
       threadListDragStateRef.current = {
         active: true,
         moved: false,
         pointerId,
         thread,
-        startY: clientY
+        startY: clientY,
+        visibleThreadIds
       };
       threadListDropIndexRef.current = resolveThreadDropIndex(clientY, thread.id);
       setDraggingThreadId(thread.id);
       setDraggingThreadOffsetY(0);
     },
-    [resolveThreadDropIndex, selectedProjectId]
+    [captureThreadListLayoutSnapshot, filteredThreadIds, resolveThreadDropIndex, selectedProjectId]
   );
   const handleThreadReorderMove = useCallback(
     ({ threadId, pointerId, clientY }) => {
