@@ -807,8 +807,12 @@ sealed class RuntimeInstaller
     }
 
     progress?.Report("윈도우 런타임 원본 저장소를 최신으로 갱신합니다.");
-    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["fetch", "origin", RuntimeRepositoryBranch], cancellationToken);
-    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", "FETCH_HEAD"], cancellationToken);
+    var remoteTrackingRef = $"refs/remotes/origin/{RuntimeRepositoryBranch}";
+    await RunGitCommandAsync(
+      paths.RuntimeRepositoryCacheRoot,
+      ["fetch", "origin", $"{RuntimeRepositoryBranch}:{remoteTrackingRef}"],
+      cancellationToken);
+    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", remoteTrackingRef], cancellationToken);
   }
 
   private static async Task<string?> ReadRepositoryHeadAsync(string repositoryRoot, CancellationToken cancellationToken)
