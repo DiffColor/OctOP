@@ -108,6 +108,8 @@ const THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const INSTANT_NOTIFICATION_DEFAULT_DURATION_MS = 3200;
 const INSTANT_NOTIFICATION_ERROR_DURATION_MS = 5200;
 const SIDEBAR_PROJECT_LONG_PRESS_MS = 220;
+const SIDEBAR_PROJECT_DROP_EDGE_RATIO = 0.34;
+const SIDEBAR_PROJECT_DROP_PADDING_PX = 10;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -5943,10 +5945,6 @@ function MainPage({
     orderedSidebarProjects[0] ??
     projects[0] ??
     null;
-  const draggingProjectGapHeight =
-    draggingProjectId && projectDropIndicator.projectId && projectDropIndicator.projectId !== draggingProjectId
-      ? projectRowNodesRef.current.get(draggingProjectId)?.offsetHeight ?? 0
-      : 0;
   const selectedProjectHasBaseInstructions = Boolean(selectedProject?.base_instructions?.trim());
   const selectedProjectHasDeveloperInstructions = Boolean(selectedProject?.developer_instructions?.trim());
   const bridgeUnavailableMessage =
@@ -6671,10 +6669,26 @@ function MainPage({
     });
   }, []);
 
-  const resolveProjectDropPosition = useCallback((event) => {
+  const resolveProjectDropPosition = useCallback((projectId, event) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
     const rect = event.currentTarget.getBoundingClientRect();
-    return event.clientY >= rect.top + rect.height / 2 ? "after" : "before";
-  }, []);
+    const relativeY = event.clientY - rect.top;
+    const edgeThreshold = rect.height * SIDEBAR_PROJECT_DROP_EDGE_RATIO;
+
+    if (relativeY <= edgeThreshold) {
+      return "before";
+    }
+
+    if (relativeY >= rect.height - edgeThreshold) {
+      return "after";
+    }
+
+    if (projectDropIndicator.projectId === normalizedProjectId) {
+      return projectDropIndicator.position;
+    }
+
+    return relativeY >= rect.height / 2 ? "after" : "before";
+  }, [projectDropIndicator]);
 
   const clearProjectDragPreview = useCallback(() => {
     if (projectDragPreviewRef.current?.parentNode) {
@@ -6779,7 +6793,7 @@ function MainPage({
         event.dataTransfer.dropEffect = "move";
       }
 
-      const position = resolveProjectDropPosition(event);
+      const position = resolveProjectDropPosition(normalizedProjectId, event);
       setProjectDropIndicator((current) =>
         current.projectId === normalizedProjectId && current.position === position
           ? current
@@ -6808,7 +6822,7 @@ function MainPage({
         return;
       }
 
-      const position = resolveProjectDropPosition(event);
+      const position = resolveProjectDropPosition(normalizedProjectId, event);
       const nextProjectOrder = reorderIdsByPlacement(
         orderedSidebarProjects.map((project) => project.id),
         draggingProjectId,
@@ -6959,6 +6973,12 @@ function MainPage({
                         const active = project.id === selectedProjectId;
                         const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
                         const expanded = expandedProjectIds[project.id] ?? active;
+                        const projectWrapperPaddingStyle = draggingProjectId
+                          ? {
+                              paddingTop: `${SIDEBAR_PROJECT_DROP_PADDING_PX}px`,
+                              paddingBottom: `${SIDEBAR_PROJECT_DROP_PADDING_PX}px`
+                            }
+                          : undefined;
                         const showDropBefore =
                           draggingProjectId &&
                           project.id !== draggingProjectId &&
@@ -6969,12 +6989,6 @@ function MainPage({
                           project.id !== draggingProjectId &&
                           projectDropIndicator.projectId === project.id &&
                           projectDropIndicator.position === "after";
-                        const dropGapStyle =
-                          showDropBefore && draggingProjectGapHeight > 0
-                            ? { marginTop: `${draggingProjectGapHeight}px` }
-                            : showDropAfter && draggingProjectGapHeight > 0
-                              ? { marginBottom: `${draggingProjectGapHeight}px` }
-                              : undefined;
                         const draggingSelf = draggingProjectId === project.id;
 
                         return (
@@ -6982,17 +6996,19 @@ function MainPage({
                             key={project.id}
                             ref={(node) => registerSidebarProjectNode(project.id, node)}
                             className="rounded-md px-0.5 py-0.5 transition-all duration-180 ease-out"
-                            style={dropGapStyle}
+                            style={projectWrapperPaddingStyle}
+                            onDragOver={(event) => handleProjectDragOver(project.id, event)}
+                            onDrop={(event) => handleProjectDrop(project.id, event)}
                           >
-                            {showDropBefore ? <div className="mb-1 h-0.5 rounded-full bg-sky-400" /> : null}
+                            {showDropBefore ? (
+                              <div className="mb-1.5 h-1.5 rounded-full bg-sky-400/90 shadow-[0_0_0_1px_rgba(56,189,248,0.2)]" />
+                            ) : null}
                             <div
                               className={`w-full rounded-md px-1.5 py-1.5 transition ${
                                 active ? "bg-slate-800 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
                               } ${
                                 draggingSelf ? "opacity-35 ring-1 ring-sky-400/35" : ""
                               }`}
-                              onDragOver={(event) => handleProjectDragOver(project.id, event)}
-                              onDrop={(event) => handleProjectDrop(project.id, event)}
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -7087,7 +7103,9 @@ function MainPage({
                               </div>
                             ) : null}
                           </div>
-                            {showDropAfter ? <div className="mt-1 h-0.5 rounded-full bg-sky-400" /> : null}
+                            {showDropAfter ? (
+                              <div className="mt-1.5 h-1.5 rounded-full bg-sky-400/90 shadow-[0_0_0_1px_rgba(56,189,248,0.2)]" />
+                            ) : null}
                           </div>
                         );
                       })
