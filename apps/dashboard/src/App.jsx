@@ -507,6 +507,18 @@ const COPY = {
       submit: "Create project",
       submitting: "Creating..."
     },
+    projectEditor: {
+      eyebrow: "Edit Project",
+      title: "Edit project",
+      subtitle: "Update the project name and the default developer instruction for this project.",
+      nameLabel: "Project name",
+      namePlaceholder: "Enter the project name.",
+      developerLabel: "Project Developer Instruction",
+      developerPlaceholder: "Enter the default developer guidance for this project.",
+      hint: "Saved on the project and injected into app-server developerInstructions when a thread starts.",
+      submit: "Save changes",
+      submitting: "Saving..."
+    },
     detail: {
       eyebrow: "Issue History",
       emptyTitle: "Completed issue",
@@ -553,6 +565,7 @@ const COPY = {
       interrupt: "Interrupt",
       interrupting: "Interrupting...",
       delete: "Delete",
+      edit: "Edit",
       rename: "Rename",
       thread: "Thread",
       newThread: "New Thread",
@@ -700,6 +713,18 @@ const COPY = {
       submit: "프로젝트 등록",
       submitting: "등록 중..."
     },
+    projectEditor: {
+      eyebrow: "프로젝트 편집",
+      title: "프로젝트 편집",
+      subtitle: "프로젝트 이름과 이 프로젝트의 기본 개발지침을 수정합니다.",
+      nameLabel: "프로젝트 이름",
+      namePlaceholder: "프로젝트 이름을 입력해 주세요.",
+      developerLabel: "프로젝트 개발지침",
+      developerPlaceholder: "이 프로젝트의 기본 개발지침을 입력해 주세요.",
+      hint: "프로젝트에 저장되며, thread 시작 시 app-server developerInstructions로 주입됩니다.",
+      submit: "변경 사항 저장",
+      submitting: "저장 중..."
+    },
     detail: {
       eyebrow: "이슈 기록",
       emptyTitle: "완료된 이슈",
@@ -746,6 +771,7 @@ const COPY = {
       interrupt: "중단",
       interrupting: "중단 중...",
       delete: "삭제",
+      edit: "편집",
       rename: "이름 변경",
       thread: "쓰레드",
       newThread: "새 쓰레드",
@@ -4015,6 +4041,113 @@ function ProjectInstructionDialog({ language, open, busy, project, instructionTy
   );
 }
 
+function ProjectEditDialog({ language, open, busy, project, onClose, onSubmit }) {
+  const copy = getCopy(language);
+  const [name, setName] = useState("");
+  const [developerInstructions, setDeveloperInstructions] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setDeveloperInstructions("");
+      return;
+    }
+
+    setName(project?.name ?? "");
+    setDeveloperInstructions(project?.developer_instructions ?? "");
+  }, [open, project]);
+
+  if (!open || !project) {
+    return null;
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    const accepted = await onSubmit({
+      projectId: project.id,
+      name,
+      developerInstructions
+    });
+
+    if (accepted !== false) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-[24px] border border-slate-800 bg-slate-950/98 p-5 shadow-2xl shadow-slate-950/60">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.projectEditor.eyebrow}</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">{copy.projectEditor.title}</h2>
+            <p className="mt-2 text-sm text-slate-400">{copy.projectEditor.subtitle}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-800 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            {copy.footer.instructionDialogClose}
+          </button>
+        </div>
+
+        <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-name">
+              {copy.projectEditor.nameLabel}
+            </label>
+            <input
+              id="project-edit-name"
+              type="text"
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={copy.projectEditor.namePlaceholder}
+              className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-developer-instructions">
+              {copy.projectEditor.developerLabel}
+            </label>
+            <textarea
+              id="project-edit-developer-instructions"
+              rows="12"
+              value={developerInstructions}
+              onChange={(event) => setDeveloperInstructions(event.target.value)}
+              placeholder={copy.projectEditor.developerPlaceholder}
+              className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-xs leading-6 text-slate-400">
+            {copy.projectEditor.hint}
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-800 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+            >
+              {copy.footer.instructionDialogCancel}
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? copy.projectEditor.submitting : copy.projectEditor.submit}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [name, setName] = useState("");
@@ -4275,6 +4408,50 @@ function ThreadContextMenu({
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-slate-800"
         >
           {copy.footer.threadEdit}
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-rose-300 transition hover:bg-rose-500/10"
+        >
+          {copy.board.delete}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ProjectContextMenu({
+  language,
+  menuState,
+  onEdit,
+  onDelete,
+  onClose
+}) {
+  const copy = getCopy(language);
+
+  if (!menuState.open) {
+    return null;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="close project menu"
+        className="fixed inset-0 z-40 cursor-default"
+        onClick={onClose}
+      />
+      <div
+        className="fixed z-50 min-w-[10rem] overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-1.5 shadow-[0_18px_60px_rgba(2,6,23,0.55)] ring-1 ring-black/20"
+        style={{ left: menuState.x, top: menuState.y }}
+      >
+        <button
+          type="button"
+          onClick={onEdit}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-slate-800"
+        >
+          {copy.board.edit}
         </button>
         <button
           type="button"
@@ -4932,6 +5109,7 @@ function MainPage({
   issueEditorOpen,
   issueEditorBusy,
   editingIssue,
+  projectMenuState,
   threadMenuState,
   onSearchChange,
   onSelectBridge,
@@ -4948,7 +5126,8 @@ function MainPage({
   onInterruptIssue,
   onDeleteIssue,
   onDeleteProject,
-  onRenameProject,
+  onOpenProjectMenu,
+  onCloseProjectMenu,
   onCreateThread,
   onCloseThreadCreateDialog,
   onSubmitThreadCreateDialog,
@@ -4983,6 +5162,12 @@ function MainPage({
   projectInstructionType,
   onCloseProjectInstructionDialog,
   onSubmitProjectInstruction,
+  projectEditDialogOpen,
+  projectEditBusy,
+  projectEditTargetProject,
+  onOpenProjectEditDialog,
+  onCloseProjectEditDialog,
+  onSubmitProjectEdit,
   threadInstructionDialogOpen,
   threadInstructionSupported,
   onCloseThreadInstructionDialog,
@@ -4994,8 +5179,6 @@ function MainPage({
   onCloseDetail
 }) {
   const copy = getCopy(language);
-  const [editingProjectId, setEditingProjectId] = useState("");
-  const [editingProjectName, setEditingProjectName] = useState("");
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     typeof window === "undefined" ? 272 : readStoredSidebarWidth()
   );
@@ -5381,6 +5564,38 @@ function MainPage({
   }, [projects]);
 
   useEffect(() => {
+    if (!projectEditDialogOpen) {
+      return;
+    }
+
+    if (!projectEditProjectId || projects.some((project) => project.id === projectEditProjectId)) {
+      return;
+    }
+
+    setProjectEditDialogOpen(false);
+    setProjectEditProjectId("");
+  }, [projectEditDialogOpen, projectEditProjectId, projects]);
+
+  useEffect(() => {
+    if (!projectMenuState.open) {
+      return;
+    }
+
+    const menuProjectId = String(projectMenuState.project?.id ?? "").trim();
+
+    if (!menuProjectId || projects.some((project) => project.id === menuProjectId)) {
+      return;
+    }
+
+    setProjectMenuState({
+      open: false,
+      x: 0,
+      y: 0,
+      project: null
+    });
+  }, [projectMenuState, projects]);
+
+  useEffect(() => {
     const syncBoardScrollbarState = () => {
       const scrollNode = boardScrollRef.current;
 
@@ -5539,31 +5754,6 @@ function MainPage({
     stopBoardScrollbarDrag(event.pointerId, event.currentTarget);
   };
 
-  const beginProjectRename = (project) => {
-    setEditingProjectId(project.id);
-    setEditingProjectName(project.name);
-  };
-
-  const cancelProjectRename = () => {
-    setEditingProjectId("");
-    setEditingProjectName("");
-  };
-
-  const submitProjectRename = async (project) => {
-    const nextName = editingProjectName.trim();
-
-    if (!nextName || nextName === project.name) {
-      cancelProjectRename();
-      return;
-    }
-
-    const accepted = await onRenameProject(project.id, nextName);
-
-    if (accepted) {
-      cancelProjectRename();
-    }
-  };
-
   const startSidebarResize = (event) => {
     event.preventDefault();
     const originX = event.clientX;
@@ -5706,47 +5896,18 @@ function MainPage({
                                       </svg>
                                     )}
                                   </button>
-                                  {editingProjectId === project.id ? (
-                                    <input
-                                      type="text"
-                                      autoFocus
-                                      value={editingProjectName}
-                                      onChange={(event) => setEditingProjectName(event.target.value)}
-                                      onBlur={() => void submitProjectRename(project)}
-                                      onKeyDown={(event) => {
-                                        if (event.key === "Enter") {
-                                          event.preventDefault();
-                                          void submitProjectRename(project);
-                                        }
-
-                                        if (event.key === "Escape") {
-                                          event.preventDefault();
-                                          cancelProjectRename();
-                                        }
-                                      }}
-                                      className="min-w-0 flex-1 rounded-md border border-sky-400/40 bg-slate-900 px-2 py-1 text-sm font-medium text-white outline-none ring-1 ring-sky-400/20"
-                                    />
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleSelectProject(project.id)}
-                                      onDoubleClick={() => beginProjectRename(project)}
-                                      className="min-w-0 flex-1 text-left"
-                                    >
-                                      <OverflowRevealText value={project.name} className="text-sm font-medium" />
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2">
                                   <button
                                     type="button"
-                                    onClick={(event) => {
+                                    onClick={() => handleSelectProject(project.id)}
+                                    onContextMenu={(event) => {
+                                      event.preventDefault();
                                       event.stopPropagation();
-                                      onDeleteProject(project.id);
+                                      handleSelectProject(project.id);
+                                      onOpenProjectMenu(event, project);
                                     }}
-                                    className="rounded-md border border-slate-800 px-1.5 py-1 text-[10px] text-slate-500 transition hover:border-rose-400/40 hover:text-rose-300"
+                                    className="min-w-0 flex-1 text-left"
                                   >
-                                    {copy.board.delete}
+                                    <OverflowRevealText value={project.name} className="text-sm font-medium" />
                                   </button>
                                 </div>
                               </div>
@@ -6268,7 +6429,7 @@ function MainPage({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onOpenProjectInstructionDialog("developer")}
+                    onClick={() => onOpenProjectEditDialog()}
                     disabled={!selectedProject}
                     title={selectedProject ? copy.footer.developerInstruction : copy.footer.instructionMissingProject}
                     className={`rounded-full border px-2.5 py-1 transition ${
@@ -6384,7 +6545,7 @@ function MainPage({
         onClose={onCloseProjectComposer}
         onSubmit={onSubmitProject}
       />
-	      <ProjectInstructionDialog
+      <ProjectInstructionDialog
 	        language={language}
 	        open={projectInstructionDialogOpen}
         busy={projectInstructionBusy}
@@ -6393,6 +6554,14 @@ function MainPage({
 	        onClose={onCloseProjectInstructionDialog}
 	        onSubmit={onSubmitProjectInstruction}
 	      />
+      <ProjectEditDialog
+        language={language}
+        open={projectEditDialogOpen}
+        busy={projectEditBusy}
+        project={projectEditTargetProject}
+        onClose={onCloseProjectEditDialog}
+        onSubmit={onSubmitProjectEdit}
+      />
       <ThreadEditDialog
         language={language}
         open={threadInstructionDialogOpen}
@@ -6453,6 +6622,24 @@ function MainPage({
           }
         }}
         onClose={onCloseThreadMenu}
+      />
+      <ProjectContextMenu
+        language={language}
+        menuState={projectMenuState}
+        onEdit={() => {
+          if (projectMenuState.project?.id) {
+            onOpenProjectEditDialog(projectMenuState.project.id);
+          }
+          onCloseProjectMenu();
+        }}
+        onDelete={() => {
+          const projectId = String(projectMenuState.project?.id ?? "").trim();
+          onCloseProjectMenu();
+          if (projectId) {
+            void onDeleteProject(projectId);
+          }
+        }}
+        onClose={onCloseProjectMenu}
       />
     </div>
   );
@@ -6516,6 +6703,15 @@ export default function App() {
   const [projectInstructionDialogOpen, setProjectInstructionDialogOpen] = useState(false);
   const [projectInstructionBusy, setProjectInstructionBusy] = useState(false);
   const [projectInstructionType, setProjectInstructionType] = useState("base");
+  const [projectEditDialogOpen, setProjectEditDialogOpen] = useState(false);
+  const [projectEditBusy, setProjectEditBusy] = useState(false);
+  const [projectEditProjectId, setProjectEditProjectId] = useState("");
+  const [projectMenuState, setProjectMenuState] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+    project: null
+  });
   const [threadInstructionDialogOpen, setThreadInstructionDialogOpen] = useState(false);
   const [threadInstructionBusy, setThreadInstructionBusy] = useState(false);
   const [threadInstructionError, setThreadInstructionError] = useState("");
@@ -6562,6 +6758,10 @@ export default function App() {
   const bridgeConnected = Boolean(status.app_server?.connected) &&
     !Boolean(selectedBridgeId && bridgeDisconnectOverrideById[selectedBridgeId]);
   const bridgeAvailable = Boolean(selectedBridgeId) && bridgeConnected;
+  const projectEditTargetProject = useMemo(
+    () => projects.find((project) => project.id === projectEditProjectId) ?? null,
+    [projectEditProjectId, projects]
+  );
   const bridgeSignal = useMemo(
     () =>
       buildBridgeSignal({
@@ -8993,6 +9193,48 @@ export default function App() {
     }
   };
 
+  const handleOpenProjectMenu = (event, project) => {
+    if (!project?.id) {
+      return;
+    }
+
+    setProjectMenuState({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      project
+    });
+  };
+
+  const handleCloseProjectMenu = () => {
+    setProjectMenuState({
+      open: false,
+      x: 0,
+      y: 0,
+      project: null
+    });
+  };
+
+  const handleOpenProjectEditDialog = (projectId = selectedProjectIdRef.current) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    if (!normalizedProjectId) {
+      return;
+    }
+
+    setProjectEditProjectId(normalizedProjectId);
+    setProjectEditDialogOpen(true);
+  };
+
+  const handleCloseProjectEditDialog = () => {
+    if (projectEditBusy) {
+      return;
+    }
+
+    setProjectEditDialogOpen(false);
+    setProjectEditProjectId("");
+  };
+
   const handleDeleteProject = async (projectId) => {
     if (!session?.loginId || !selectedBridgeId || !projectId) {
       return;
@@ -9000,6 +9242,14 @@ export default function App() {
 
     if (!window.confirm(copy.board.deleteProjectConfirm)) {
       return;
+    }
+
+    if (projectEditProjectId === projectId) {
+      setProjectEditDialogOpen(false);
+      setProjectEditProjectId("");
+    }
+    if (String(projectMenuState.project?.id ?? "").trim() === projectId) {
+      handleCloseProjectMenu();
     }
 
     const bridgeId = selectedBridgeId;
@@ -9053,10 +9303,30 @@ export default function App() {
     }
   };
 
-  const handleRenameProject = async (projectId, name) => {
+  const handleSubmitProjectEdit = async ({ projectId, name, developerInstructions }) => {
     if (!session?.loginId || !selectedBridgeId || !projectId) {
       return false;
     }
+
+    const nextName = String(name ?? "").trim();
+    const nextDeveloperInstructions = String(developerInstructions ?? "");
+    const currentProject = projects.find((project) => project.id === projectId) ?? null;
+
+    if (!nextName) {
+      return false;
+    }
+
+    if (
+      currentProject &&
+      currentProject.name === nextName &&
+      String(currentProject.developer_instructions ?? "") === nextDeveloperInstructions
+    ) {
+      setProjectEditDialogOpen(false);
+      setProjectEditProjectId("");
+      return true;
+    }
+
+    setProjectEditBusy(true);
 
     try {
       const response = await apiRequest(
@@ -9064,7 +9334,9 @@ export default function App() {
         {
           method: "PATCH",
           body: JSON.stringify({
-            name
+            name: nextName,
+            developer_instructions: nextDeveloperInstructions,
+            update_developer_instructions: true
           })
         }
       );
@@ -9077,18 +9349,22 @@ export default function App() {
         );
       }
 
+      setProjectEditDialogOpen(false);
+      setProjectEditProjectId("");
       return true;
     } catch (error) {
       setRecentEvents((current) => [
         {
           id: createId(),
-          type: "project.rename.failed",
+          type: "project.update.failed",
           timestamp: new Date().toISOString(),
           summary: error.message
         },
         ...current
       ].slice(0, 20));
       return false;
+    } finally {
+      setProjectEditBusy(false);
     }
   };
 
@@ -9733,6 +10009,7 @@ export default function App() {
       issueEditorOpen={issueEditorOpen}
       issueEditorBusy={issueEditorBusy}
       editingIssue={editingIssue}
+      projectMenuState={projectMenuState}
       threadMenuState={threadMenuState}
       onSearchChange={setSearch}
       onSelectBridge={setSelectedBridgeId}
@@ -9753,7 +10030,8 @@ export default function App() {
       onInterruptIssue={(threadId) => void handleInterruptIssue(threadId)}
       onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
       onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
-      onRenameProject={(projectId, name) => handleRenameProject(projectId, name)}
+      onOpenProjectMenu={handleOpenProjectMenu}
+      onCloseProjectMenu={handleCloseProjectMenu}
       onCreateThread={handleOpenThreadCreateDialog}
       onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
       onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
@@ -9802,6 +10080,12 @@ export default function App() {
       onSelectWorkspace={setSelectedWorkspacePath}
       onSubmitProject={handleCreateProject}
       onSubmitProjectInstruction={handleSubmitProjectInstruction}
+      projectEditDialogOpen={projectEditDialogOpen}
+      projectEditBusy={projectEditBusy}
+      projectEditTargetProject={projectEditTargetProject}
+      onOpenProjectEditDialog={handleOpenProjectEditDialog}
+      onCloseProjectEditDialog={handleCloseProjectEditDialog}
+      onSubmitProjectEdit={handleSubmitProjectEdit}
       onSubmitThreadInstruction={handleSubmitThreadInstruction}
       onSubmitIssue={handleCreateIssue}
       onSubmitIssueEdit={handleUpdateIssue}

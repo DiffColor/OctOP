@@ -475,6 +475,16 @@ function buildThreadComposerDraftKey({ threadId, projectId, isDraft = false } = 
   return "";
 }
 
+function buildTodoComposerDraftKey({ chatId } = {}) {
+  const normalizedChatId = String(chatId ?? "").trim();
+
+  if (!normalizedChatId) {
+    return "";
+  }
+
+  return `todo-chat:${normalizedChatId}`;
+}
+
 function normalizeComposerDraftValue(value) {
   if (value === null || value === undefined) {
     return "";
@@ -4302,6 +4312,9 @@ function TodoChatDetail({
   loading,
   error,
   submitBusy,
+  composerDraftKey = "",
+  composerDraft = "",
+  onPersistComposerDraft = null,
   onBack,
   onRefresh,
   onRename,
@@ -4427,6 +4440,9 @@ function TodoChatDetail({
             selectedProject={fakeProject}
             onSubmit={({ prompt }) => onSubmitMessage(prompt)}
             label="메모"
+            draftKey={composerDraftKey}
+            draftValue={composerDraft}
+            onDraftPersist={onPersistComposerDraft}
           />
         </div>
       </div>
@@ -6299,6 +6315,10 @@ function MainPage({
     isDraft: !selectedThread && !threadDetail?.thread
   });
   const threadComposerDraft = threadComposerDraftKey ? threadComposerDrafts[threadComposerDraftKey] ?? "" : "";
+  const todoComposerDraftKey = buildTodoComposerDraftKey({
+    chatId: selectedTodoChat?.id ?? todoChatDetail?.chat?.id ?? selectedTodoChatId
+  });
+  const todoComposerDraft = todoComposerDraftKey ? threadComposerDrafts[todoComposerDraftKey] ?? "" : "";
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
       const matchesSearch =
@@ -6988,6 +7008,9 @@ function MainPage({
           loading={todoChatLoading}
           error={todoChatError}
           submitBusy={todoBusy}
+          composerDraftKey={todoComposerDraftKey}
+          composerDraft={todoComposerDraft}
+          onPersistComposerDraft={onChangeThreadComposerDraft}
           onBack={onBackToInbox}
           onRefresh={onRefreshTodoChat}
           onRename={() => setTodoChatBeingEdited(selectedTodoChat ?? todoChatDetail?.chat ?? null)}
@@ -7131,6 +7154,9 @@ function MainPage({
                     loading={todoChatLoading}
                     error={todoChatError}
                     submitBusy={todoBusy}
+                    composerDraftKey={todoComposerDraftKey}
+                    composerDraft={todoComposerDraft}
+                    onPersistComposerDraft={onChangeThreadComposerDraft}
                     onBack={onBackToInbox}
                     onRefresh={onRefreshTodoChat}
                     onRename={() => setTodoChatBeingEdited(selectedTodoChat ?? todoChatDetail?.chat ?? null)}
@@ -9850,6 +9876,8 @@ export default function App() {
         selectTodoScope();
       }
 
+      removeThreadComposerDrafts([buildTodoComposerDraftKey({ chatId })]);
+
       return true;
     } catch (error) {
       if (typeof window !== "undefined") {
@@ -9857,7 +9885,7 @@ export default function App() {
       }
       return false;
     }
-  }, [selectedBridgeId, selectedTodoChatId, selectTodoScope, session]);
+  }, [removeThreadComposerDrafts, selectedBridgeId, selectedTodoChatId, selectTodoScope, session]);
 
   const handleEditTodoMessage = useCallback(async (messageId, content) => {
     if (!session?.loginId || !selectedBridgeId || !messageId || !selectedTodoChatId) {
