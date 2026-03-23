@@ -24,6 +24,7 @@ const LEGACY_SESSION_STORAGE_KEY = "octop.dashboard.session.ephemeral";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.mobile.selectedBridge";
 const MOBILE_WORKSPACE_LAYOUT_STORAGE_KEY = "octop.mobile.workspace.layout.v1";
 const THREAD_DETAIL_CACHE_STORAGE_KEY = "octop.mobile.threadDetails.cache.v1";
+const WORKSPACE_SNAPSHOT_CACHE_STORAGE_KEY = "octop.mobile.workspace.snapshot.v1";
 const ISSUE_SOURCE_APP_ID = "mobile-web";
 const createDefaultStatus = () => ({
   app_server: {
@@ -97,6 +98,9 @@ const VIEWPORT_STORAGE_REUSE_TOLERANCE_PX = 96;
 const MAX_CACHED_THREAD_DETAILS_PER_SCOPE = 6;
 const MAX_CACHED_THREAD_MESSAGES_PER_THREAD = 160;
 const MAX_CACHED_THREAD_ISSUES_PER_THREAD = 24;
+const MAX_CACHED_PROJECTS_PER_SCOPE = 40;
+const MAX_CACHED_THREADS_PER_PROJECT = 120;
+const MAX_CACHED_TODO_CHATS_PER_SCOPE = 80;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -642,6 +646,157 @@ function clearStoredMobileWorkspaceLayout() {
 
 function buildWorkspaceLayoutOwnerKey(loginId, bridgeId) {
   return `${String(loginId ?? "").trim()}::${String(bridgeId ?? "").trim()}`;
+}
+
+function createDefaultWorkspaceSnapshot() {
+  return {
+    projects: [],
+    todoChats: [],
+    threadListsByProjectId: {}
+  };
+}
+
+function createDefaultWorkspaceSnapshotCacheStore() {
+  return {
+    version: 1,
+    scopes: {}
+  };
+}
+
+function normalizeCachedProjects(projects = []) {
+  return projects
+    .map((project) => {
+      const id = String(project?.id ?? "").trim();
+
+      if (!id) {
+        return null;
+      }
+
+      return {
+        ...project,
+        id
+      };
+    })
+    .filter(Boolean)
+    .slice(0, MAX_CACHED_PROJECTS_PER_SCOPE);
+}
+
+function normalizeCachedThreadListsByProjectId(threadListsByProjectId = {}) {
+  if (!threadListsByProjectId || typeof threadListsByProjectId !== "object" || Array.isArray(threadListsByProjectId)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(threadListsByProjectId)
+      .map(([rawProjectId, threadList]) => {
+        const projectId = String(rawProjectId ?? "").trim();
+
+        if (!projectId || !Array.isArray(threadList)) {
+          return null;
+        }
+
+        const normalizedThreads = mergeThreads([], threadList).slice(0, MAX_CACHED_THREADS_PER_PROJECT);
+
+        if (normalizedThreads.length === 0) {
+          return null;
+        }
+
+        return [projectId, normalizedThreads];
+      })
+      .filter(Boolean)
+  );
+}
+
+function normalizeWorkspaceSnapshot(snapshot) {
+  const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+
+  return {
+    projects: normalizeCachedProjects(source.projects ?? []),
+    todoChats: mergeTodoChats([], source.todoChats ?? []).slice(0, MAX_CACHED_TODO_CHATS_PER_SCOPE),
+    threadListsByProjectId: normalizeCachedThreadListsByProjectId(source.threadListsByProjectId ?? {})
+  };
+}
+
+function resolveThreadsForScopeFromSnapshot(snapshot, scope) {
+  if (scope?.kind !== "project") {
+    return [];
+  }
+
+  const projectId = String(scope?.id ?? "").trim();
+
+  if (!projectId) {
+    return [];
+  }
+
+  return snapshot?.threadListsByProjectId?.[projectId] ?? [];
+}
+
+function readStoredWorkspaceSnapshot(filters = {}) {
+  if (typeof window === "undefined") {
+    return createDefaultWorkspaceSnapshot();
+  }
+
+  const ownerKey = buildWorkspaceLayoutOwnerKey(filters.loginId, filters.bridgeId);
+
+  if (!ownerKey || ownerKey === "::") {
+    return createDefaultWorkspaceSnapshot();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_SNAPSHOT_CACHE_STORAGE_KEY);
+
+    if (!raw) {
+      return createDefaultWorkspaceSnapshot();
+    }
+
+    const parsed = JSON.parse(raw);
+    const scopedSnapshot = parsed?.scopes?.[ownerKey]?.snapshot ?? null;
+    return normalizeWorkspaceSnapshot(scopedSnapshot);
+  } catch {
+    return createDefaultWorkspaceSnapshot();
+  }
+}
+
+function storeWorkspaceSnapshot(snapshot, filters = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const ownerKey = buildWorkspaceLayoutOwnerKey(filters.loginId, filters.bridgeId);
+
+  if (!ownerKey || ownerKey === "::") {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_SNAPSHOT_CACHE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : createDefaultWorkspaceSnapshotCacheStore();
+    const nextStore = {
+      ...createDefaultWorkspaceSnapshotCacheStore(),
+      ...(parsed && typeof parsed === "object" ? parsed : {}),
+      scopes: {
+        ...(parsed?.scopes ?? {})
+      }
+    };
+    const normalizedSnapshot = normalizeWorkspaceSnapshot(snapshot);
+
+    if (
+      normalizedSnapshot.projects.length === 0 &&
+      normalizedSnapshot.todoChats.length === 0 &&
+      Object.keys(normalizedSnapshot.threadListsByProjectId).length === 0
+    ) {
+      delete nextStore.scopes[ownerKey];
+    } else {
+      nextStore.scopes[ownerKey] = {
+        updatedAt: new Date().toISOString(),
+        snapshot: normalizedSnapshot
+      };
+    }
+
+    window.localStorage.setItem(WORKSPACE_SNAPSHOT_CACHE_STORAGE_KEY, JSON.stringify(nextStore));
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function createDefaultThreadDetailCacheStore() {
@@ -8025,6 +8180,7 @@ export default function App() {
   const initialSessionRef = useRef(undefined);
   const initialSelectedBridgeIdRef = useRef(undefined);
   const initialWorkspaceLayoutRef = useRef(undefined);
+  const initialWorkspaceSnapshotRef = useRef(undefined);
   const initialThreadDetailsRef = useRef(undefined);
 
   if (initialSessionRef.current === undefined) {
@@ -8034,6 +8190,10 @@ export default function App() {
     initialSessionRef.current = initialSession;
     initialSelectedBridgeIdRef.current = initialSelectedBridgeId;
     initialWorkspaceLayoutRef.current = readStoredMobileWorkspaceLayout({
+      loginId: initialSession?.loginId ?? "",
+      bridgeId: initialSelectedBridgeId
+    });
+    initialWorkspaceSnapshotRef.current = readStoredWorkspaceSnapshot({
       loginId: initialSession?.loginId ?? "",
       bridgeId: initialSelectedBridgeId
     });
@@ -8047,10 +8207,14 @@ export default function App() {
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
   const [bridgeStatusById, setBridgeStatusById] = useState({});
-  const [projects, setProjects] = useState([]);
-  const [threads, setThreads] = useState([]);
-  const [threadListsByProjectId, setThreadListsByProjectId] = useState({});
-  const [todoChats, setTodoChats] = useState([]);
+  const [projects, setProjects] = useState(() => initialWorkspaceSnapshotRef.current?.projects ?? []);
+  const [threads, setThreads] = useState(() =>
+    resolveThreadsForScopeFromSnapshot(initialWorkspaceSnapshotRef.current, initialWorkspaceLayoutRef.current?.selectedScope)
+  );
+  const [threadListsByProjectId, setThreadListsByProjectId] = useState(
+    () => initialWorkspaceSnapshotRef.current?.threadListsByProjectId ?? {}
+  );
+  const [todoChats, setTodoChats] = useState(() => initialWorkspaceSnapshotRef.current?.todoChats ?? []);
   const [threadDetails, setThreadDetails] = useState(() => initialThreadDetailsRef.current ?? {});
   const [todoChatDetails, setTodoChatDetails] = useState({});
   const [workspaceRoots, setWorkspaceRoots] = useState([]);
@@ -8478,6 +8642,24 @@ export default function App() {
       }
     };
   }, [selectedBridgeId, session?.loginId, threadDetails]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    storeWorkspaceSnapshot(
+      {
+        projects,
+        todoChats,
+        threadListsByProjectId
+      },
+      {
+        loginId: session.loginId,
+        bridgeId: selectedBridgeId
+      }
+    );
+  }, [projects, selectedBridgeId, session?.loginId, threadListsByProjectId, todoChats]);
 
   const handleAppForegroundResume = useCallback(async (reason = "foreground_resume") => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -9035,34 +9217,67 @@ export default function App() {
     const requestId = bridgeWorkspaceRequestIdRef.current + 1;
     bridgeWorkspaceRequestIdRef.current = requestId;
     setLoadingState("loading");
+    const prioritizeTodoScope = selectedScope.kind === "todo";
+
+    const statusPromise = apiRequest(
+      `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    )
+      .then((nextStatus) => {
+        if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+          return null;
+        }
+
+        if (nextStatus?.app_server?.connected) {
+          markBridgeSocketConnected(bridgeId);
+        } else {
+          markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
+        }
+        setBridgeStatus(bridgeId, nextStatus);
+        markStreamActivity();
+        return nextStatus;
+      })
+      .catch((error) => {
+        if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+          return null;
+        }
+
+        markBridgeTransportFailure(bridgeId, error.message);
+        setBridgeStatus(bridgeId, (current) => ({
+          ...current,
+          app_server: {
+            ...(current?.app_server ?? {}),
+            last_error: error.message
+          },
+          updated_at: new Date().toISOString()
+        }));
+        return null;
+      });
+
+    const todoChatsPromise = apiRequest(
+      `/api/todo/chats?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+    )
+      .then((nextTodoChats) => {
+        if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+          return [];
+        }
+
+        const resolvedTodoChats = mergeTodoChats([], nextTodoChats.chats ?? []);
+        setTodoChats(resolvedTodoChats);
+        setTodoChatDetails({});
+        return resolvedTodoChats;
+      })
+      .catch(() => []);
 
     try {
-      const [nextStatus, nextProjects, nextTodoChats] = await Promise.all([
-        apiRequest(
-          `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        ),
-        apiRequest(
-          `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        ),
-        apiRequest(
-          `/api/todo/chats?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-        )
-      ]);
+      const nextProjects = await apiRequest(
+        `/api/projects?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+      );
 
       if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
         return;
       }
 
-      if (nextStatus?.app_server?.connected) {
-        markBridgeSocketConnected(bridgeId);
-      } else {
-        markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
-      }
-      setBridgeStatus(bridgeId, nextStatus);
-      markStreamActivity();
       setProjects(nextProjects.projects ?? []);
-      setTodoChats(mergeTodoChats([], nextTodoChats.chats ?? []));
-      setTodoChatDetails({});
       const nextProjectId =
         selectedProjectId && nextProjects.projects?.some((project) => project.id === selectedProjectId)
           ? selectedProjectId
@@ -9079,9 +9294,15 @@ export default function App() {
         };
       });
 
-      setThreadListsByProjectId({});
+      if (prioritizeTodoScope) {
+        await todoChatsPromise;
 
-      if (nextProjectId) {
+        if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
+          return;
+        }
+
+        setLoadingState("ready");
+      } else if (nextProjectId) {
         const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, {
           applyToInbox: true,
           preferredThreadId: selectedThreadIdRef.current
@@ -9096,12 +9317,14 @@ export default function App() {
         }
 
         setSelectedThreadId(resolvedSelectedThreadId);
+        setLoadingState("ready");
       } else {
         setThreads([]);
         setSelectedThreadId("");
+        setLoadingState("ready");
       }
 
-      setLoadingState("ready");
+      void Promise.allSettled([statusPromise, todoChatsPromise]);
     } catch (error) {
       if (bridgeWorkspaceRequestIdRef.current !== requestId || selectedBridgeIdRef.current !== bridgeId) {
         return;
@@ -9871,6 +10094,14 @@ export default function App() {
       loginId: session?.loginId ?? "",
       bridgeId: selectedBridgeId
     });
+    const restoredLayout = readStoredMobileWorkspaceLayout({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    });
+    const restoredWorkspaceSnapshot = readStoredWorkspaceSnapshot({
+      loginId: session?.loginId ?? "",
+      bridgeId: selectedBridgeId
+    });
 
     if (!ownerChanged) {
       setLoadingState(selectedBridgeId && selectedBridgeKnown ? "loading" : "idle");
@@ -9890,21 +10121,16 @@ export default function App() {
       threadDetailsPersistTimerRef.current = null;
     }
 
-    const restoredLayout = readStoredMobileWorkspaceLayout({
-      loginId: session?.loginId ?? "",
-      bridgeId: selectedBridgeId
-    });
-
-    setProjects([]);
-    setThreads([]);
+    setProjects(restoredWorkspaceSnapshot.projects);
+    setThreads(resolveThreadsForScopeFromSnapshot(restoredWorkspaceSnapshot, restoredLayout.selectedScope));
     setStreamActivityAt(null);
     setSelectedScope(restoredLayout.selectedScope);
     setSelectedThreadId(restoredLayout.selectedThreadId);
     setSelectedTodoChatId(restoredLayout.selectedTodoChatId);
     setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
     setThreadComposerDrafts(restoredLayout.threadComposerDrafts);
-    setThreadListsByProjectId({});
-    setTodoChats([]);
+    setThreadListsByProjectId(restoredWorkspaceSnapshot.threadListsByProjectId);
+    setTodoChats(restoredWorkspaceSnapshot.todoChats);
     setTodoChatDetails({});
     setThreadDetails(restoredThreadDetails);
     setWorkspaceRoots([]);
@@ -9983,6 +10209,23 @@ export default function App() {
       preferredThreadId: selectedThreadIdRef.current
     });
   }, [selectedBridgeId, selectedProjectId, session]);
+
+  useEffect(() => {
+    if (selectedScope.kind !== "project") {
+      return;
+    }
+
+    if (!selectedProjectId) {
+      setThreads([]);
+      return;
+    }
+
+    const cachedThreads = threadListsByProjectId[selectedProjectId];
+
+    if (Array.isArray(cachedThreads)) {
+      setThreads(cachedThreads);
+    }
+  }, [selectedProjectId, selectedScope.kind, threadListsByProjectId]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !projectComposerOpen) {
