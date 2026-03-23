@@ -6131,6 +6131,7 @@ function ThreadListItem({
   const swipeAxisRef = useRef(null);
   const offsetRef = useRef(0);
   const movedRef = useRef(false);
+  const latestPointerPointRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
   const ACTION_WIDTH = 92;
@@ -6158,6 +6159,7 @@ function ThreadListItem({
     }
 
     startPointRef.current = { x: event.clientX, y: event.clientY };
+    latestPointerPointRef.current = { x: event.clientX, y: event.clientY };
     baseOffsetRef.current = offsetRef.current;
     pointerIdRef.current = event.pointerId;
     swipeAxisRef.current = null;
@@ -6180,7 +6182,7 @@ function ThreadListItem({
         onStartReorder?.({
           thread,
           pointerId: event.pointerId,
-          clientY: event.clientY
+          clientY: latestPointerPointRef.current?.y ?? event.clientY
         });
       }, THREAD_LIST_ITEM_LONG_PRESS_MS);
     }
@@ -6212,6 +6214,7 @@ function ThreadListItem({
       const deltaY = event.clientY - startPointRef.current.y;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
+      latestPointerPointRef.current = { x: event.clientX, y: event.clientY };
 
       if (Math.hypot(deltaX, deltaY) > THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX) {
         clearPendingLongPress();
@@ -6251,6 +6254,7 @@ function ThreadListItem({
       baseOffsetRef.current = 0;
       pointerIdRef.current = null;
       swipeAxisRef.current = null;
+      latestPointerPointRef.current = null;
       setDragging(false);
       onEndReorder?.({
         threadId: thread.id,
@@ -6278,6 +6282,7 @@ function ThreadListItem({
     baseOffsetRef.current = 0;
     pointerIdRef.current = null;
     swipeAxisRef.current = null;
+    latestPointerPointRef.current = null;
     setDragging(false);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }, [clearPendingLongPress, onEndReorder, reorderActive, setRevealOffset, thread.id]);
@@ -6297,6 +6302,7 @@ function ThreadListItem({
       baseOffsetRef.current = 0;
       pointerIdRef.current = null;
       swipeAxisRef.current = null;
+      latestPointerPointRef.current = null;
       setDragging(false);
 
       if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
@@ -8470,6 +8476,8 @@ function MainPage({
         project,
         startX: event.clientX,
         startY: event.clientY,
+        latestClientX: event.clientX,
+        latestClientY: event.clientY,
         startScrollLeft: projectChipRowRef.current?.scrollLeft ?? 0
       };
       event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -8485,8 +8493,13 @@ function MainPage({
         projectLongPressTimerRef.current = null;
         projectLongPressTriggeredRef.current = true;
         activeDragState.active = true;
+        activeDragState.startX = activeDragState.latestClientX ?? event.clientX;
+        activeDragState.startY = activeDragState.latestClientY ?? event.clientY;
         activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
-        projectChipDropIndexRef.current = resolveProjectChipDropIndex(event.clientX, project.id);
+        projectChipDropIndexRef.current = resolveProjectChipDropIndex(
+          activeDragState.startX,
+          project.id
+        );
         setDraggingProjectChipId(project.id);
         setDraggingProjectChipOffsetX(0);
       }, PROJECT_CHIP_LONG_PRESS_MS);
@@ -8503,6 +8516,8 @@ function MainPage({
 
       const deltaX = event.clientX - activeDragState.startX;
       const deltaY = event.clientY - activeDragState.startY;
+      activeDragState.latestClientX = event.clientX;
+      activeDragState.latestClientY = event.clientY;
 
       if (!activeDragState.active) {
         if (Math.hypot(deltaX, deltaY) > PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX) {
