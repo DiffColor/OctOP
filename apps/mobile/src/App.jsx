@@ -4907,6 +4907,22 @@ function ThreadEditDialog({
           });
         }}
       >
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-title">
+            제목
+          </label>
+          <input
+            id="thread-edit-title"
+            type="text"
+            value={title}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setDirty(true);
+            }}
+            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
+          />
+        </div>
+
         {hasProjectDeveloperInstructions ? (
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
@@ -4923,22 +4939,6 @@ function ThreadEditDialog({
             </p>
           </div>
         ) : null}
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-title">
-            제목
-          </label>
-          <input
-            id="thread-edit-title"
-            type="text"
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              setDirty(true);
-            }}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
 
         {threadInstructionSupported ? (
           <>
