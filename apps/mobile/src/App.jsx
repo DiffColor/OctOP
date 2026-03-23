@@ -101,6 +101,8 @@ const MAX_CACHED_THREAD_ISSUES_PER_THREAD = 24;
 const MAX_CACHED_PROJECTS_PER_SCOPE = 40;
 const MAX_CACHED_THREADS_PER_PROJECT = 120;
 const MAX_CACHED_TODO_CHATS_PER_SCOPE = 80;
+const THREAD_HISTORY_LAZY_PAGE_SIZE = 2;
+const THREAD_HISTORY_PRELOAD_SCROLL_TOP_PX = 480;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -415,6 +417,80 @@ function getDistanceFromBottom(node) {
   }
 
   return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop);
+}
+
+function getScrollAnchorElements(node) {
+  if (!node?.querySelectorAll) {
+    return [];
+  }
+
+  return [...node.querySelectorAll("[data-scroll-anchor-id]")].filter((element) => element instanceof HTMLElement);
+}
+
+function captureScrollAnchorSnapshot(node) {
+  if (!node) {
+    return null;
+  }
+
+  const containerRect = node.getBoundingClientRect();
+  const anchors = getScrollAnchorElements(node);
+
+  if (anchors.length === 0) {
+    return {
+      scrollTop: node.scrollTop,
+      scrollHeight: node.scrollHeight
+    };
+  }
+
+  const visibleAnchor =
+    anchors.find((anchor) => {
+      const rect = anchor.getBoundingClientRect();
+
+      return rect.bottom >= containerRect.top && rect.top <= containerRect.bottom;
+    }) ?? anchors[0];
+  const anchorRect = visibleAnchor.getBoundingClientRect();
+
+  return {
+    anchorId: String(visibleAnchor.dataset.scrollAnchorId ?? "").trim(),
+    anchorTop: anchorRect.top - containerRect.top,
+    scrollTop: node.scrollTop,
+    scrollHeight: node.scrollHeight
+  };
+}
+
+function restoreScrollAnchorSnapshot(node, snapshot) {
+  if (!node || !snapshot) {
+    return false;
+  }
+
+  const anchorId = String(snapshot.anchorId ?? "").trim();
+
+  if (anchorId) {
+    const targetAnchor = getScrollAnchorElements(node).find(
+      (element) => String(element.dataset.scrollAnchorId ?? "").trim() === anchorId
+    );
+
+    if (targetAnchor) {
+      const containerRect = node.getBoundingClientRect();
+      const targetRect = targetAnchor.getBoundingClientRect();
+      const deltaTop = targetRect.top - containerRect.top - Number(snapshot.anchorTop ?? 0);
+
+      if (deltaTop !== 0) {
+        node.scrollTop = Math.max(0, node.scrollTop + deltaTop);
+      }
+
+      return true;
+    }
+  }
+
+  const deltaHeight = node.scrollHeight - Number(snapshot.scrollHeight ?? node.scrollHeight);
+
+  if (deltaHeight !== 0) {
+    node.scrollTop = Math.max(0, Number(snapshot.scrollTop ?? node.scrollTop) + deltaHeight);
+    return true;
+  }
+
+  return false;
 }
 
 function clampWideThreadSplitRatio(ratio, containerWidth) {
@@ -2004,6 +2080,88 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
   return [...preservedMessages, ...normalizedMessages].sort(
     (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
   );
+}
+
+function collectLoadedIssueIdsFromMessages(messages = []) {
+  const ordered = [];
+  const seen = new Set();
+
+  (messages ?? []).forEach((message) => {
+    const issueId = String(message?.issue_id ?? "").trim();
+
+    if (!issueId || seen.has(issueId)) {
+      return;
+    }
+
+    seen.add(issueId);
+    ordered.push(issueId);
+  });
+
+  return ordered;
+}
+
+function normalizeIssueIdList(issueIds = [], issues = []) {
+  const validIssueIds = new Set(
+    (issues ?? [])
+      .map((issue) => String(issue?.id ?? "").trim())
+      .filter(Boolean)
+  );
+  const ordered = [];
+  const seen = new Set();
+
+  (issueIds ?? []).forEach((issueId) => {
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (
+      !normalizedIssueId ||
+      seen.has(normalizedIssueId) ||
+      (validIssueIds.size > 0 && !validIssueIds.has(normalizedIssueId))
+    ) {
+      return;
+    }
+
+    seen.add(normalizedIssueId);
+    ordered.push(normalizedIssueId);
+  });
+
+  return ordered;
+}
+
+function replaceIssueInList(issues = [], nextIssue = null, fallbackThreadId = null) {
+  const normalizedNextIssue = normalizeIssue(nextIssue, fallbackThreadId);
+
+  if (!normalizedNextIssue) {
+    return issues;
+  }
+
+  const nextIssues = [...issues];
+  const nextIndex = nextIssues.findIndex((issue) => issue?.id === normalizedNextIssue.id);
+
+  if (nextIndex >= 0) {
+    nextIssues[nextIndex] = normalizedNextIssue;
+  } else {
+    nextIssues.push(normalizedNextIssue);
+  }
+
+  return nextIssues.sort((left, right) => Date.parse(left.created_at ?? "") - Date.parse(right.created_at ?? ""));
+}
+
+function getLazyOlderIssueIds(issues = [], loadedIssueIds = [], activePhysicalThreadId = null) {
+  const normalizedIssues = (issues ?? [])
+    .map((issue) => normalizeIssue(issue))
+    .filter(Boolean);
+
+  if (normalizedIssues.length === 0) {
+    return [];
+  }
+
+  const activeIssueId = findActiveIssueForThread(normalizedIssues, activePhysicalThreadId)?.id ?? "";
+  const loadedIssueIdSet = new Set(normalizeIssueIdList(loadedIssueIds, normalizedIssues));
+
+  return [...normalizedIssues]
+    .sort((left, right) => Date.parse(right.created_at ?? "") - Date.parse(left.created_at ?? ""))
+    .map((issue) => issue.id)
+    .filter((issueId) => issueId && issueId !== activeIssueId && !loadedIssueIdSet.has(issueId));
 }
 
 function buildIssueReloadFingerprint(issues = [], fallbackThreadId = null) {
@@ -5798,7 +5956,7 @@ function ConversationTimeline({ entries }) {
   return (
     <ul className="mt-4 space-y-6 border-l border-white/10 pl-4">
       {entries.map((entry, index) => (
-        <li key={entry.id ?? index} className="relative pl-6">
+        <li key={entry.id ?? index} data-scroll-anchor-id={`conversation:${entry.id ?? index}`} className="relative pl-6">
           <span
             aria-hidden="true"
             className="absolute left-[-13px] top-3 flex h-6 w-6 items-center justify-center rounded-full border border-telegram-400 bg-slate-950 text-[10px] font-semibold text-white"
@@ -5846,7 +6004,7 @@ function RunTimeline({ entries }) {
   return (
     <ul className="space-y-3">
       {entries.map((entry) => (
-        <li key={entry.id} className="border-b border-white/8 px-1 pb-3">
+        <li key={entry.id} data-scroll-anchor-id={`run:${entry.id}`} className="border-b border-white/8 px-1 pb-3">
           <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
             <span>{entry.title}</span>
             <span>{formatRelativeTime(entry.timestamp)}</span>
@@ -5863,6 +6021,11 @@ function ThreadDetail({
   project,
   messages,
   issues = [],
+  historyLoading = false,
+  historyError = "",
+  hasOlderMessages = false,
+  remainingHistoryCount = 0,
+  onLoadOlderMessages = null,
   signalNow,
   messagesLoading,
   messagesError,
@@ -5895,6 +6058,7 @@ function ThreadDetail({
   const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
+  const historyScrollRestoreRef = useRef(null);
   const [refreshPending, setRefreshPending] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
   const [retryingIssueId, setRetryingIssueId] = useState("");
@@ -6110,6 +6274,77 @@ function ThreadDetail({
         .join("|"),
     [visibleChatTimeline]
   );
+  const visibleContentSignature = useMemo(() => {
+    if (messageFilter === "runs") {
+      return runTimeline.map((entry) => `${entry.id}:${entry.timestamp ?? ""}`).join("|");
+    }
+
+    if (viewMode === "chat") {
+      return visibleChatTimelineSignature;
+    }
+
+    if (messageFilter === "prompts") {
+      return promptTimeline.map((entry) => `${entry.id}:${entry.promptAt ?? ""}`).join("|");
+    }
+
+    if (messageFilter === "responses") {
+      return responseTimeline.map((entry) => `${entry.id}:${entry.timestamp ?? ""}`).join("|");
+    }
+
+    return conversationTimeline.map((entry) => `${entry.id}:${entry.promptAt ?? ""}:${entry.responses.length}`).join("|");
+  }, [
+    conversationTimeline,
+    messageFilter,
+    promptTimeline,
+    responseTimeline,
+    runTimeline,
+    viewMode,
+    visibleChatTimelineSignature
+  ]);
+
+  const requestOlderMessages = useCallback(() => {
+    if (!onLoadOlderMessages) {
+      return;
+    }
+
+    const scrollNode = scrollRef.current;
+    const restoreSnapshot = scrollNode ? captureScrollAnchorSnapshot(scrollNode) : null;
+
+    historyScrollRestoreRef.current = restoreSnapshot;
+
+    Promise.resolve(onLoadOlderMessages())
+      .then((didStart) => {
+        if (didStart === false && historyScrollRestoreRef.current === restoreSnapshot) {
+          historyScrollRestoreRef.current = null;
+        }
+      })
+      .catch(() => {
+        if (historyScrollRestoreRef.current === restoreSnapshot) {
+          historyScrollRestoreRef.current = null;
+        }
+      });
+  }, [onLoadOlderMessages]);
+
+  const maybeLoadOlderMessages = useCallback(() => {
+    if (
+      !onLoadOlderMessages ||
+      historyLoading ||
+      !hasOlderMessages ||
+      messagesLoading ||
+      Boolean(messagesError) ||
+      messageFilter === "runs"
+    ) {
+      return;
+    }
+
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode || scrollNode.scrollTop > THREAD_HISTORY_PRELOAD_SCROLL_TOP_PX) {
+      return;
+    }
+
+    requestOlderMessages();
+  }, [hasOlderMessages, historyLoading, messageFilter, messagesError, messagesLoading, onLoadOlderMessages, requestOlderMessages]);
 
   const recomputeScrollUiState = useCallback(() => {
     const scrollNode = scrollRef.current;
@@ -6136,6 +6371,7 @@ function ThreadDetail({
     setIsPinnedToLatest(true);
     setShowJumpToLatestButton(false);
     autoScrollingRef.current = false;
+    historyScrollRestoreRef.current = null;
     previousScrollTopRef.current = 0;
     setShowHeaderMenus(true);
     recomputeScrollUiState();
@@ -6188,6 +6424,7 @@ function ThreadDetail({
         }
 
         recomputeScrollUiState();
+        maybeLoadOlderMessages();
       });
     };
 
@@ -6201,10 +6438,31 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [recomputeScrollUiState, thread?.status, viewMode]);
+  }, [maybeLoadOlderMessages, recomputeScrollUiState, thread?.status, viewMode]);
 
   useLayoutEffect(() => {
-    if (viewMode !== "chat" || !isPinnedToLatest) {
+    const restoreTarget = historyScrollRestoreRef.current;
+    const scrollNode = scrollRef.current;
+
+    if (!restoreTarget || !scrollNode || historyLoading) {
+      return;
+    }
+
+    if (restoreScrollAnchorSnapshot(scrollNode, restoreTarget)) {
+      autoScrollingRef.current = true;
+      previousScrollTopRef.current = scrollNode.scrollTop;
+
+      window.requestAnimationFrame(() => {
+        autoScrollingRef.current = false;
+        recomputeScrollUiState();
+      });
+    }
+
+    historyScrollRestoreRef.current = null;
+  }, [historyLoading, recomputeScrollUiState, visibleContentSignature]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "chat" || !isPinnedToLatest || historyLoading || historyScrollRestoreRef.current) {
       return;
     }
 
@@ -6231,7 +6489,7 @@ function ThreadDetail({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, recomputeScrollUiState, thread?.id, viewMode, visibleChatTimelineSignature]);
+  }, [historyLoading, isPinnedToLatest, recomputeScrollUiState, thread?.id, viewMode, visibleChatTimelineSignature]);
 
   const handleJumpToLatest = useCallback(() => {
     const anchorNode = scrollAnchorRef.current;
@@ -6505,6 +6763,33 @@ function ThreadDetail({
           className="telegram-grid touch-scroll-boundary-lock min-h-0 h-full overflow-y-auto px-4 pb-5 pt-5"
         >
           <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
+          {historyLoading || historyError || hasOlderMessages ? (
+            <div className="flex justify-center">
+              <div className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300">
+                {historyLoading
+                  ? "이전 히스토리를 불러오는 중..."
+                  : historyError
+                    ? (
+                        <>
+                          <span>{historyError}</span>
+                          {onLoadOlderMessages ? (
+                            <button
+                              type="button"
+                              onClick={requestOlderMessages}
+                              className="ml-2 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-white transition hover:bg-white/10"
+                            >
+                              다시 시도
+                            </button>
+                          ) : null}
+                        </>
+                      )
+                    : remainingHistoryCount > 0
+                      ? `이전 히스토리 ${remainingHistoryCount}개가 더 있습니다. 위로 올리면 미리 불러옵니다.`
+                      : "이전 히스토리를 더 불러올 수 있습니다."}
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
               {formatDateTime(threadTimestamp)}
@@ -6534,44 +6819,45 @@ function ThreadDetail({
               const canOpenActionSheet = canCopy || canDelete || canRetry;
 
               return (
-                <MessageBubble
-                  key={message.id}
-                  align={message.align}
-                  tone={message.tone}
-                  title={message.title}
-                  meta={formatRelativeTime(message.timestamp)}
-                  onLongPress={
-                    canOpenActionSheet
-                      ? () =>
-                          setActiveMessageAction({
-                            id: message.id,
-                            title: message.title,
-                            content: message.content ?? "",
-                            meta: formatRelativeTime(message.timestamp),
-                            issueId: message.issueId,
-                            canCopy,
-                            canRetry,
-                            canDelete
-                          })
-                      : null
-                  }
-                  longPressTitle={canOpenActionSheet ? "길게 눌러 메시지 작업 열기" : ""}
-                >
-                  {message.replyTo ? (
-                    <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
-                      <p className="mt-1 break-words [overflow-wrap:anywhere] text-sm leading-5">
-                        {summarizeMessageContent(message.replyTo.content)}
-                      </p>
-                    </div>
-                  ) : null}
-                  <RichMessageContent
-                    content={
-                      message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")
-                    }
+                <div key={message.id} data-scroll-anchor-id={`chat:${message.id}`}>
+                  <MessageBubble
+                    align={message.align}
                     tone={message.tone}
-                  />
-                </MessageBubble>
+                    title={message.title}
+                    meta={formatRelativeTime(message.timestamp)}
+                    onLongPress={
+                      canOpenActionSheet
+                        ? () =>
+                            setActiveMessageAction({
+                              id: message.id,
+                              title: message.title,
+                              content: message.content ?? "",
+                              meta: formatRelativeTime(message.timestamp),
+                              issueId: message.issueId,
+                              canCopy,
+                              canRetry,
+                              canDelete
+                            })
+                        : null
+                    }
+                    longPressTitle={canOpenActionSheet ? "길게 눌러 메시지 작업 열기" : ""}
+                  >
+                    {message.replyTo ? (
+                      <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
+                        <p className="mt-1 break-words [overflow-wrap:anywhere] text-sm leading-5">
+                          {summarizeMessageContent(message.replyTo.content)}
+                        </p>
+                      </div>
+                    ) : null}
+                    <RichMessageContent
+                      content={
+                        message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")
+                      }
+                      tone={message.tone}
+                    />
+                  </MessageBubble>
+                </div>
               );
             })
           ) : messageFilter === "prompts" ? (
@@ -6579,7 +6865,7 @@ function ThreadDetail({
           ) : messageFilter === "responses" ? (
             <ul className="space-y-3">
               {responseTimeline.map((response) => (
-                <li key={response.id} className="border-b border-white/8 px-1 pb-3">
+                <li key={response.id} data-scroll-anchor-id={`response:${response.id}`} className="border-b border-white/8 px-1 pb-3">
                   <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
                     <span>응답</span>
                     <span>{formatRelativeTime(response.timestamp)}</span>
@@ -6850,6 +7136,7 @@ function MainPage({
   onEnsureProjectThreads,
   onRefreshTodoChat,
   onRefreshThreadDetail,
+  onLoadOlderMessages,
   onStopThreadExecution,
   onInterruptThreadIssue,
   onRetryThreadIssue,
@@ -6954,6 +7241,27 @@ function MainPage({
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
+  const loadedIssueIds = useMemo(
+    () =>
+      normalizeIssueIdList(
+        [
+          ...(threadDetail?.loaded_issue_ids ?? []),
+          ...collectLoadedIssueIdsFromMessages(threadDetailMessages)
+        ],
+        threadDetail?.issues ?? []
+      ),
+    [threadDetail?.issues, threadDetail?.loaded_issue_ids, threadDetailMessages]
+  );
+  const remainingHistoryCount = useMemo(
+    () =>
+      getLazyOlderIssueIds(
+        threadDetail?.issues ?? [],
+        loadedIssueIds,
+        resolvedThread?.active_physical_thread_id ?? null
+      ).length,
+    [loadedIssueIds, resolvedThread?.active_physical_thread_id, threadDetail?.issues]
+  );
+  const hasOlderMessages = remainingHistoryCount > 0;
   const todoChatMessages = todoChatDetail?.messages ?? [];
   const todoChatLoading = todoChatDetail?.loading ?? false;
   const todoChatError = todoChatDetail?.error ?? "";
@@ -7793,6 +8101,11 @@ function MainPage({
                   project={threadProject}
                   messages={resolvedThread ? threadDetailMessages : []}
                   issues={resolvedThread ? threadDetail?.issues ?? [] : []}
+                  historyLoading={threadDetail?.history_loading ?? false}
+                  historyError={threadDetail?.history_error ?? ""}
+                  hasOlderMessages={Boolean(resolvedThread?.id) && hasOlderMessages}
+                  remainingHistoryCount={remainingHistoryCount}
+                  onLoadOlderMessages={resolvedThread?.id ? () => onLoadOlderMessages?.(resolvedThread.id) : null}
                   signalNow={signalNow}
                   messagesLoading={threadDetailLoading}
                   messagesError={threadDetailError}
@@ -7838,6 +8151,11 @@ function MainPage({
           project={threadProject}
           messages={resolvedThread ? threadDetailMessages : []}
           issues={resolvedThread ? threadDetail?.issues ?? [] : []}
+          historyLoading={threadDetail?.history_loading ?? false}
+          historyError={threadDetail?.history_error ?? ""}
+          hasOlderMessages={Boolean(resolvedThread?.id) && hasOlderMessages}
+          remainingHistoryCount={remainingHistoryCount}
+          onLoadOlderMessages={resolvedThread?.id ? () => onLoadOlderMessages?.(resolvedThread.id) : null}
           signalNow={signalNow}
           messagesLoading={threadDetailLoading}
           messagesError={threadDetailError}
@@ -8278,6 +8596,8 @@ export default function App() {
   const threadReloadMetaByIdRef = useRef(new Map());
   const threadDetailsPersistTimerRef = useRef(null);
   const threadPreloadRunIdRef = useRef(0);
+  const threadHistoryLoadRequestIdByIdRef = useRef(new Map());
+  const projectThreadListPromiseByKeyRef = useRef(new Map());
   const threadLiveProgressAtByIdRef = useRef(new Map());
   const lastForegroundResumeAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
@@ -8813,7 +9133,10 @@ export default function App() {
             loading: shouldSuppressLoading ? currentEntry?.loading ?? false : true,
             error: "",
             messages: currentEntry?.messages ?? [],
-            version: currentEntry?.version ?? null
+            version: currentEntry?.version ?? null,
+            history_loading: currentEntry?.history_loading ?? false,
+            history_error: currentEntry?.history_error ?? "",
+            loaded_issue_ids: currentEntry?.loaded_issue_ids ?? collectLoadedIssueIdsFromMessages(currentEntry?.messages ?? [])
           }
         };
       });
@@ -8825,25 +9148,26 @@ export default function App() {
           .map((issue) => normalizeIssue(issue, threadId))
           .filter(Boolean)
           .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+        const cachedLoadedIssueIds = normalizeIssueIdList(
+          [
+            ...(cachedEntry?.loaded_issue_ids ?? []),
+            ...collectLoadedIssueIdsFromMessages(cachedEntry?.messages ?? [])
+          ],
+          cachedIssues
+        );
         const activeIssue = findActiveIssueForThread(cachedIssues, cachedThread?.active_physical_thread_id ?? null);
         const shouldLoadActiveIssueOnly = mode === "active" && Boolean(activeIssue);
         let issues = cachedIssues;
         let messages = cachedEntry?.messages ?? [];
         let normalizedThread = normalizeThread(cachedThread);
+        let loadedIssueIds = cachedLoadedIssueIds;
 
         if (shouldLoadActiveIssueOnly) {
           const detail = await apiRequest(
             `/api/issues/${activeIssue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
           );
           const nextIssue = normalizeIssue(detail?.issue, threadId) ?? activeIssue;
-          const nextIssueIndex = issues.findIndex((issue) => issue.id === nextIssue.id);
-
-          if (nextIssueIndex >= 0) {
-            issues = [...issues];
-            issues[nextIssueIndex] = nextIssue;
-          } else {
-            issues = [...issues, nextIssue].sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
-          }
+          issues = replaceIssueInList(issues, nextIssue, threadId);
 
           messages = mergeIssueMessages(
             cachedEntry?.messages ?? [],
@@ -8852,6 +9176,7 @@ export default function App() {
             nextIssue.updated_at ?? nextIssue.created_at ?? new Date().toISOString()
           );
           normalizedThread = normalizeThread(detail?.thread) ?? normalizedThread;
+          loadedIssueIds = normalizeIssueIdList([...cachedLoadedIssueIds, nextIssue.id], issues);
         } else {
           const issueList = await apiRequest(
             `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
@@ -8860,27 +9185,33 @@ export default function App() {
             .map((issue) => normalizeIssue(issue, threadId))
             .filter(Boolean)
             .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
-          const details = await Promise.all(
-            issues.map((issue) =>
-              apiRequest(
-                `/api/issues/${issue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
-              )
-            )
+          const nextIssueIdSet = new Set(issues.map((issue) => issue.id));
+          const nextActiveIssue = findActiveIssueForThread(issues, cachedThread?.active_physical_thread_id ?? null);
+
+          messages = (cachedEntry?.messages ?? []).filter((message) => {
+            const issueId = String(message?.issue_id ?? "").trim();
+            return !issueId || nextIssueIdSet.has(issueId);
+          });
+          loadedIssueIds = normalizeIssueIdList(
+            [...cachedLoadedIssueIds, ...collectLoadedIssueIdsFromMessages(messages)],
+            issues
           );
-          messages = details.flatMap((detail, issueIndex) =>
-            (detail?.messages ?? []).map((message, messageIndex) => ({
-              ...message,
-              id: message.id ?? `${detail?.issue?.id ?? issues[issueIndex]?.id}-${messageIndex}`,
-              issue_id: detail?.issue?.id ?? issues[issueIndex]?.id ?? null,
-              issue_title: detail?.issue?.title ?? issues[issueIndex]?.title ?? "",
-              issue_status: detail?.issue?.status ?? issues[issueIndex]?.status ?? "staged"
-            }))
-          );
-          const latestThread =
-            details.at(-1)?.thread ??
-            threads.find((thread) => thread.id === threadId) ??
-            null;
-          normalizedThread = normalizeThread(latestThread);
+
+          if (nextActiveIssue?.id) {
+            const detail = await apiRequest(
+              `/api/issues/${nextActiveIssue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+            );
+            const resolvedActiveIssue = normalizeIssue(detail?.issue, threadId) ?? nextActiveIssue;
+            issues = replaceIssueInList(issues, resolvedActiveIssue, threadId);
+            messages = mergeIssueMessages(
+              messages,
+              detail?.messages ?? [],
+              resolvedActiveIssue,
+              resolvedActiveIssue.updated_at ?? resolvedActiveIssue.created_at ?? new Date().toISOString()
+            );
+            normalizedThread = normalizeThread(detail?.thread) ?? normalizedThread;
+            loadedIssueIds = normalizeIssueIdList([...loadedIssueIds, resolvedActiveIssue.id], issues);
+          }
         }
 
         if (threadLoadRequestIdByIdRef.current.get(threadId) !== nextRequestId) {
@@ -8891,11 +9222,15 @@ export default function App() {
         setThreadDetails((current) => ({
           ...current,
           [threadId]: {
+            ...(current[threadId] ?? {}),
             loading: false,
             error: "",
             messages,
             issues,
             thread: normalizedThread ?? current[threadId]?.thread ?? null,
+            loaded_issue_ids: loadedIssueIds,
+            history_loading: false,
+            history_error: "",
             fetchedAt: Date.now(),
             version:
               version ??
@@ -8957,6 +9292,150 @@ export default function App() {
       }
     },
     [selectedBridgeId, session?.loginId, threads]
+  );
+
+  const loadOlderThreadHistory = useCallback(
+    async (threadId = selectedThreadIdRef.current) => {
+      const normalizedThreadId = String(threadId ?? "").trim();
+
+      if (!session?.loginId || !selectedBridgeId || !normalizedThreadId) {
+        return false;
+      }
+
+      const currentEntry = threadDetailsRef.current?.[normalizedThreadId] ?? null;
+      const issues = (currentEntry?.issues ?? [])
+        .map((issue) => normalizeIssue(issue, normalizedThreadId))
+        .filter(Boolean)
+        .sort((left, right) => Date.parse(left.created_at ?? "") - Date.parse(right.created_at ?? ""));
+
+      if (currentEntry?.history_loading || issues.length === 0) {
+        return false;
+      }
+
+      const loadedIssueIds = normalizeIssueIdList(
+        [
+          ...(currentEntry?.loaded_issue_ids ?? []),
+          ...collectLoadedIssueIdsFromMessages(currentEntry?.messages ?? [])
+        ],
+        issues
+      );
+      const remainingIssueIds = getLazyOlderIssueIds(
+        issues,
+        loadedIssueIds,
+        currentEntry?.thread?.active_physical_thread_id ?? null
+      );
+
+      if (remainingIssueIds.length === 0) {
+        return false;
+      }
+
+      const targetIssueIds = remainingIssueIds.slice(0, THREAD_HISTORY_LAZY_PAGE_SIZE);
+      const nextRequestId = (threadHistoryLoadRequestIdByIdRef.current.get(normalizedThreadId) ?? 0) + 1;
+      threadHistoryLoadRequestIdByIdRef.current.set(normalizedThreadId, nextRequestId);
+
+      setThreadDetails((current) => ({
+        ...current,
+        [normalizedThreadId]: {
+          ...(current[normalizedThreadId] ?? {}),
+          history_loading: true,
+          history_error: ""
+        }
+      }));
+
+      try {
+        const details = await Promise.all(
+          targetIssueIds.map((issueId) =>
+            apiRequest(
+              `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
+            )
+          )
+        );
+
+        if (
+          threadHistoryLoadRequestIdByIdRef.current.get(normalizedThreadId) !== nextRequestId ||
+          selectedBridgeIdRef.current !== selectedBridgeId
+        ) {
+          return false;
+        }
+
+        const latestEntry = threadDetailsRef.current?.[normalizedThreadId] ?? currentEntry;
+        let nextIssues = (latestEntry?.issues ?? issues)
+          .map((issue) => normalizeIssue(issue, normalizedThreadId))
+          .filter(Boolean)
+          .sort((left, right) => Date.parse(left.created_at ?? "") - Date.parse(right.created_at ?? ""));
+        let nextMessages = latestEntry?.messages ?? [];
+        let nextThread = normalizeThread(latestEntry?.thread);
+
+        details.forEach((detail, index) => {
+          const fallbackIssue = issues.find((issue) => issue.id === targetIssueIds[index]) ?? null;
+          const nextIssue = normalizeIssue(detail?.issue, normalizedThreadId) ?? fallbackIssue;
+
+          if (!nextIssue) {
+            return;
+          }
+
+          nextIssues = replaceIssueInList(nextIssues, nextIssue, normalizedThreadId);
+          nextMessages = mergeIssueMessages(
+            nextMessages,
+            detail?.messages ?? [],
+            nextIssue,
+            nextIssue.updated_at ?? nextIssue.created_at ?? new Date().toISOString()
+          );
+          nextThread = normalizeThread(detail?.thread) ?? nextThread;
+        });
+
+        const nextLoadedIssueIds = normalizeIssueIdList(
+          [
+            ...(latestEntry?.loaded_issue_ids ?? loadedIssueIds),
+            ...collectLoadedIssueIdsFromMessages(nextMessages),
+            ...targetIssueIds
+          ],
+          nextIssues
+        );
+
+        setThreadDetails((current) => ({
+          ...current,
+          [normalizedThreadId]: {
+            ...(current[normalizedThreadId] ?? {}),
+            thread: nextThread ?? current[normalizedThreadId]?.thread ?? null,
+            issues: nextIssues,
+            messages: nextMessages,
+            loaded_issue_ids: nextLoadedIssueIds,
+            history_loading: false,
+            history_error: "",
+            fetchedAt: Date.now()
+          }
+        }));
+
+        if (nextThread) {
+          setThreads((current) => upsertThread(current, nextThread));
+
+          if (nextThread.project_id) {
+            setThreadListsByProjectId((current) => ({
+              ...current,
+              [nextThread.project_id]: upsertThread(current[nextThread.project_id] ?? [], nextThread)
+            }));
+          }
+        }
+
+        return true;
+      } catch (error) {
+        if (threadHistoryLoadRequestIdByIdRef.current.get(normalizedThreadId) !== nextRequestId) {
+          return false;
+        }
+
+        setThreadDetails((current) => ({
+          ...current,
+          [normalizedThreadId]: {
+            ...(current[normalizedThreadId] ?? {}),
+            history_loading: false,
+            history_error: error.message ?? "이전 히스토리를 불러오지 못했습니다."
+          }
+        }));
+        return false;
+      }
+    },
+    [selectedBridgeId, session?.loginId]
   );
 
   const loadTodoChatMessages = useCallback(
@@ -9218,6 +9697,14 @@ export default function App() {
     bridgeWorkspaceRequestIdRef.current = requestId;
     setLoadingState("loading");
     const prioritizeTodoScope = selectedScope.kind === "todo";
+    const preferredProjectId = prioritizeTodoScope ? "" : String(selectedProjectIdRef.current ?? "").trim();
+    const preferredProjectThreadsPromise = preferredProjectId
+      ? loadProjectThreads(sessionArg, bridgeId, preferredProjectId, {
+          applyToInbox: true,
+          preferredThreadId: selectedThreadIdRef.current,
+          preload: false
+        })
+      : null;
 
     const statusPromise = apiRequest(
       `/api/bridge/status?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
@@ -9303,10 +9790,13 @@ export default function App() {
 
         setLoadingState("ready");
       } else if (nextProjectId) {
-        const nextThreads = await loadProjectThreads(sessionArg, bridgeId, nextProjectId, {
-          applyToInbox: true,
-          preferredThreadId: selectedThreadIdRef.current
-        });
+        const nextThreads =
+          preferredProjectThreadsPromise && preferredProjectId === nextProjectId
+            ? await preferredProjectThreadsPromise
+            : await loadProjectThreads(sessionArg, bridgeId, nextProjectId, {
+                applyToInbox: true,
+                preferredThreadId: selectedThreadIdRef.current
+              });
         const resolvedSelectedThreadId =
           selectedThreadIdRef.current && nextThreads.some((thread) => thread.id === selectedThreadIdRef.current)
             ? selectedThreadIdRef.current
@@ -9317,6 +9807,9 @@ export default function App() {
         }
 
         setSelectedThreadId(resolvedSelectedThreadId);
+        if (preferredProjectId === nextProjectId) {
+          preloadThreadDetailsInBackground(nextThreads, [resolvedSelectedThreadId]);
+        }
         setLoadingState("ready");
       } else {
         setThreads([]);
@@ -9407,10 +9900,23 @@ export default function App() {
       return [];
     }
 
-    const payload = await apiRequest(
-      `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
-    );
-    const nextThreads = mergeThreads([], payload?.threads ?? []);
+    const requestKey = `${String(bridgeId ?? "").trim()}::${String(projectId ?? "").trim()}`;
+    let requestPromise = projectThreadListPromiseByKeyRef.current.get(requestKey);
+
+    if (!requestPromise) {
+      requestPromise = apiRequest(
+        `/api/projects/${projectId}/threads?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+      )
+        .then((payload) => mergeThreads([], payload?.threads ?? []))
+        .finally(() => {
+          if (projectThreadListPromiseByKeyRef.current.get(requestKey) === requestPromise) {
+            projectThreadListPromiseByKeyRef.current.delete(requestKey);
+          }
+        });
+      projectThreadListPromiseByKeyRef.current.set(requestKey, requestPromise);
+    }
+
+    const nextThreads = await requestPromise;
 
     if (selectedBridgeIdRef.current !== bridgeId) {
       return [];
@@ -9418,7 +9924,7 @@ export default function App() {
 
     updateThreadCache(projectId, nextThreads);
 
-    if (options.applyToInbox !== false) {
+    if (options.applyToInbox !== false && selectedProjectIdRef.current === projectId) {
       setThreads(nextThreads);
     }
 
@@ -12210,7 +12716,14 @@ export default function App() {
     );
   }
 
-  const currentThreadDetailState = threadDetails[selectedThreadId] ?? { messages: [], loading: false, error: "" };
+  const currentThreadDetailState = threadDetails[selectedThreadId] ?? {
+    messages: [],
+    loading: false,
+    error: "",
+    history_loading: false,
+    history_error: "",
+    loaded_issue_ids: []
+  };
 
   return (
     <>
@@ -12318,6 +12831,7 @@ export default function App() {
         onEnsureProjectThreads={ensureProjectThreadsLoaded}
         onRefreshTodoChat={handleRefreshTodoChat}
         onRefreshThreadDetail={handleRefreshThreadDetail}
+        onLoadOlderMessages={loadOlderThreadHistory}
         onStopThreadExecution={handleStopThreadExecution}
         onInterruptThreadIssue={handleInterruptThreadIssue}
         onRetryThreadIssue={handleRetryThreadIssue}
