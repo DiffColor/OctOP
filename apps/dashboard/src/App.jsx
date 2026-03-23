@@ -5568,13 +5568,12 @@ function MainPage({
       return;
     }
 
-    if (!projectEditProjectId || projects.some((project) => project.id === projectEditProjectId)) {
+    if (projectEditTargetProject) {
       return;
     }
 
-    setProjectEditDialogOpen(false);
-    setProjectEditProjectId("");
-  }, [projectEditDialogOpen, projectEditProjectId, projects]);
+    onCloseProjectEditDialog();
+  }, [onCloseProjectEditDialog, projectEditDialogOpen, projectEditTargetProject]);
 
   useEffect(() => {
     if (!projectMenuState.open) {
@@ -5587,13 +5586,8 @@ function MainPage({
       return;
     }
 
-    setProjectMenuState({
-      open: false,
-      x: 0,
-      y: 0,
-      project: null
-    });
-  }, [projectMenuState, projects]);
+    onCloseProjectMenu();
+  }, [onCloseProjectMenu, projectMenuState, projects]);
 
   useEffect(() => {
     const syncBoardScrollbarState = () => {
