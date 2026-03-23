@@ -407,6 +407,7 @@ const MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX = Math.max(
 );
 const MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX = MOBILE_BASE_PAGE_MIN_WIDTH_PX * 2;
 const MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX = 320;
+const MAX_TRACKED_PROJECT_FILTER_USAGE = 120;
 
 function getMaxScrollTop(node) {
   if (!node) {
@@ -570,6 +571,7 @@ function createDefaultMobileWorkspaceLayout() {
     selectedTodoChatId: "",
     draftThreadProjectId: "",
     threadComposerDrafts: {},
+    projectFilterUsage: {},
     activeView: "inbox",
     wideThreadSplitRatio: DEFAULT_WIDE_THREAD_SPLIT_RATIO
   };
@@ -646,6 +648,49 @@ function normalizeMobileWorkspaceLayoutScope(scope) {
   };
 }
 
+function normalizeProjectFilterUsage(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([rawProjectId, rawUsage]) => {
+        const projectId = String(rawProjectId ?? "").trim();
+
+        if (!projectId || !rawUsage || typeof rawUsage !== "object" || Array.isArray(rawUsage)) {
+          return null;
+        }
+
+        const usageCount = Math.max(0, Math.round(Number(rawUsage.usageCount ?? 0) || 0));
+        const lastUsedAt = Math.max(0, Math.round(Number(rawUsage.lastUsedAt ?? 0) || 0));
+
+        if (usageCount <= 0 && lastUsedAt <= 0) {
+          return null;
+        }
+
+        return [
+          projectId,
+          {
+            usageCount,
+            lastUsedAt
+          }
+        ];
+      })
+      .filter(Boolean)
+      .sort(([, left], [, right]) => {
+        const lastUsedDelta = Number(right?.lastUsedAt ?? 0) - Number(left?.lastUsedAt ?? 0);
+
+        if (lastUsedDelta !== 0) {
+          return lastUsedDelta;
+        }
+
+        return Number(right?.usageCount ?? 0) - Number(left?.usageCount ?? 0);
+      })
+      .slice(0, MAX_TRACKED_PROJECT_FILTER_USAGE)
+  );
+}
+
 function normalizeMobileWorkspaceLayout(layout, filters = {}) {
   const base = createDefaultMobileWorkspaceLayout();
   const source = layout && typeof layout === "object" ? layout : {};
@@ -664,6 +709,7 @@ function normalizeMobileWorkspaceLayout(layout, filters = {}) {
     selectedTodoChatId: String(source.selectedTodoChatId ?? "").trim(),
     draftThreadProjectId: String(source.draftThreadProjectId ?? "").trim(),
     threadComposerDrafts: normalizeThreadComposerDrafts(source.threadComposerDrafts),
+    projectFilterUsage: normalizeProjectFilterUsage(source.projectFilterUsage),
     activeView,
     wideThreadSplitRatio:
       Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_WIDE_THREAD_SPLIT_RATIO
@@ -7495,6 +7541,7 @@ function MainPage({
   selectedTodoChatId,
   draftThreadProjectId,
   threadComposerDrafts,
+  projectFilterUsage,
   search,
   loadingState,
   projectBusy,
@@ -7606,6 +7653,33 @@ function MainPage({
   const viewportWidth = useVisualViewportWidth();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
+  const orderedProjects = useMemo(() => {
+    const usageByProjectId = projectFilterUsage && typeof projectFilterUsage === "object" ? projectFilterUsage : {};
+
+    return [...projects]
+      .map((project, index) => ({
+        project,
+        index,
+        usageCount: Math.max(0, Math.round(Number(usageByProjectId[project.id]?.usageCount ?? 0) || 0)),
+        lastUsedAt: Math.max(0, Math.round(Number(usageByProjectId[project.id]?.lastUsedAt ?? 0) || 0))
+      }))
+      .sort((left, right) => {
+        const lastUsedDelta = right.lastUsedAt - left.lastUsedAt;
+
+        if (lastUsedDelta !== 0) {
+          return lastUsedDelta;
+        }
+
+        const usageCountDelta = right.usageCount - left.usageCount;
+
+        if (usageCountDelta !== 0) {
+          return usageCountDelta;
+        }
+
+        return left.index - right.index;
+      })
+      .map((entry) => entry.project);
+  }, [projectFilterUsage, projects]);
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const threadInstructionProject =
     projects.find((project) => project.id === threadInstructionTarget?.project_id) ??
@@ -8179,7 +8253,7 @@ function MainPage({
           >
             ToDo
           </button>
-          {projects.map((project) => (
+          {orderedProjects.map((project) => (
             <button
               key={project.id}
               type="button"
@@ -8702,7 +8776,7 @@ function MainPage({
               >
                 ToDo
               </button>
-              {projects.map((project) => (
+              {orderedProjects.map((project) => (
                 <button
                   key={project.id}
                   type="button"
@@ -8987,6 +9061,9 @@ export default function App() {
   const [draftThreadProjectId, setDraftThreadProjectId] = useState(() => initialWorkspaceLayoutRef.current.draftThreadProjectId);
   const [threadComposerDrafts, setThreadComposerDrafts] = useState(
     () => initialWorkspaceLayoutRef.current.threadComposerDrafts
+  );
+  const [projectFilterUsage, setProjectFilterUsage] = useState(
+    () => initialWorkspaceLayoutRef.current.projectFilterUsage ?? {}
   );
   const [search, setSearch] = useState("");
   const [loadingState, setLoadingState] = useState("idle");
@@ -9447,9 +9524,32 @@ export default function App() {
       resolver(accepted);
     }
   }, []);
-  const selectProjectScope = useCallback((projectId) => {
-    setSelectedScope({ kind: "project", id: projectId });
+  const markProjectFilterUsed = useCallback((projectId) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    if (!normalizedProjectId) {
+      return;
+    }
+
+    setProjectFilterUsage((current) =>
+      normalizeProjectFilterUsage({
+        ...current,
+        [normalizedProjectId]: {
+          usageCount: Math.max(0, Math.round(Number(current?.[normalizedProjectId]?.usageCount ?? 0) || 0)) + 1,
+          lastUsedAt: Date.now()
+        }
+      })
+    );
   }, []);
+  const selectProjectScope = useCallback((projectId, options = {}) => {
+    const normalizedProjectId = String(projectId ?? "").trim();
+
+    setSelectedScope({ kind: "project", id: normalizedProjectId });
+
+    if (options.recordUsage !== false) {
+      markProjectFilterUsed(normalizedProjectId);
+    }
+  }, [markProjectFilterUsed]);
   const selectTodoScope = useCallback(() => {
     setSelectedScope({ kind: "todo", id: TODO_SCOPE_ID });
   }, []);
@@ -11202,6 +11302,7 @@ export default function App() {
     setSelectedTodoChatId(restoredLayout.selectedTodoChatId);
     setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
     setThreadComposerDrafts(restoredLayout.threadComposerDrafts);
+    setProjectFilterUsage(restoredLayout.projectFilterUsage ?? {});
     setThreadListsByProjectId(restoredWorkspaceSnapshot.threadListsByProjectId);
     setTodoChats(restoredWorkspaceSnapshot.todoChats);
     setTodoChatDetails({});
@@ -11225,6 +11326,7 @@ export default function App() {
         selectedTodoChatId,
         draftThreadProjectId,
         threadComposerDrafts,
+        projectFilterUsage,
         activeView
       },
       {
@@ -11240,6 +11342,7 @@ export default function App() {
     selectedThreadId,
     selectedTodoChatId,
     threadComposerDrafts,
+    projectFilterUsage,
     session?.loginId
   ]);
 
@@ -11400,7 +11503,7 @@ export default function App() {
     }
 
     if (!selectedProjectId && projects.length > 0) {
-      selectProjectScope(projects[0].id);
+      selectProjectScope(projects[0].id, { recordUsage: false });
     }
   }, [projects, selectProjectScope, selectedProjectId, selectedScope.kind]);
 
@@ -11553,6 +11656,7 @@ export default function App() {
     setSelectedTodoChatId("");
     setDraftThreadProjectId("");
     setThreadComposerDrafts({});
+    setProjectFilterUsage({});
     setSearch("");
     setUtilityOpen(false);
     setProjectComposerOpen(false);
@@ -12706,6 +12810,16 @@ export default function App() {
         setActiveView("inbox");
       }
 
+      setProjectFilterUsage((current) => {
+        if (!current || !current[projectId]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[projectId];
+        return next;
+      });
+
       setDraftThreadProjectId((current) => (current === projectId ? "" : current));
       if (projectEditTargetId === projectId) {
         setProjectEditDialogOpen(false);
@@ -13319,6 +13433,7 @@ export default function App() {
         selectedTodoChatId={selectedTodoChatId}
         draftThreadProjectId={draftThreadProjectId}
         threadComposerDrafts={threadComposerDrafts}
+        projectFilterUsage={projectFilterUsage}
         search={search}
         loadingState={loadingState}
         utilityOpen={utilityOpen}
