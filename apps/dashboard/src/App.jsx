@@ -2515,12 +2515,47 @@ function IssueAttachmentBadge({ attachment, compact = false }) {
   );
 }
 
+function IssueAttachmentTooltip({ attachment }) {
+  const fileName = String(attachment?.name ?? "").trim();
+  const hasPreview = attachment?.kind === "image" && attachment?.preview_url;
+
+  if (!fileName) {
+    return null;
+  }
+
+  return (
+    <div
+      role="tooltip"
+      className={`pointer-events-none absolute left-1/2 top-full z-30 mt-2 hidden -translate-x-1/2 group-hover:block group-focus-within:block ${
+        hasPreview ? "w-56" : "max-w-[18rem] min-w-[10rem]"
+      }`}
+    >
+      <div className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/98 shadow-[0_18px_40px_rgba(2,6,23,0.52)] backdrop-blur-sm">
+        {hasPreview ? (
+          <>
+            <div className="aspect-[4/3] w-full bg-slate-900">
+              <img src={attachment.preview_url} alt={fileName} className="h-full w-full object-cover" />
+            </div>
+            <div className="border-t border-slate-800 px-3 py-2.5">
+              <p className="break-all text-xs font-medium leading-5 text-slate-100">{fileName}</p>
+            </div>
+          </>
+        ) : (
+          <div className="px-3 py-2.5">
+            <p className="break-all text-xs font-medium leading-5 text-slate-100">{fileName}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function IssueAttachmentChip({ attachment, language, onRemoveAttachment }) {
   const badge = resolveIssueAttachmentBadge(attachment?.name, attachment?.mime_type);
   const hasPreview = attachment?.kind === "image" && attachment?.preview_url;
 
   return (
-    <div className="group flex min-w-0 items-center gap-2.5 rounded-2xl border border-slate-800 bg-slate-950/85 px-2.5 py-2.5 text-slate-200 shadow-[0_8px_24px_rgba(2,6,23,0.24)]">
+    <div className="group relative flex min-w-0 items-center gap-2.5 rounded-2xl border border-slate-800 bg-slate-950/85 px-2.5 py-2.5 text-slate-200 shadow-[0_8px_24px_rgba(2,6,23,0.24)]">
       <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/90">
         {hasPreview ? (
           <img src={attachment.preview_url} alt={attachment.name} className="h-full w-full object-cover" />
@@ -2559,6 +2594,8 @@ function IssueAttachmentChip({ attachment, language, onRemoveAttachment }) {
       >
         ×
       </button>
+
+      <IssueAttachmentTooltip attachment={attachment} />
     </div>
   );
 }
