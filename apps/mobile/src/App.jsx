@@ -8006,7 +8006,6 @@ function MainPage({
   );
   const projectLongPressTimerRef = useRef(null);
   const projectLongPressTriggeredRef = useRef(false);
-  const lastProjectChipTapRef = useRef({ projectId: "", at: 0 });
   const projectChipRowRef = useRef(null);
   const projectChipNodesRef = useRef(new Map());
   const projectChipDragStateRef = useRef(null);
@@ -8312,7 +8311,14 @@ function MainPage({
   }, []);
   const resolveProjectChipDropIndex = useCallback(
     (clientX, draggedProjectId) => {
-      const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== draggedProjectId);
+      const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
+      const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== normalizedDraggedProjectId);
+      const draggedProjectIndex = orderedProjectIds.indexOf(normalizedDraggedProjectId);
+      const draggedNode = projectChipNodesRef.current.get(normalizedDraggedProjectId);
+      const collapsedShiftDistance =
+        draggedProjectIndex >= 0 && draggedNode
+          ? draggedNode.offsetWidth + getFlexRowGapPx(projectChipRowRef.current)
+          : 0;
 
       for (let index = 0; index < draggableProjectIds.length; index += 1) {
         const projectId = draggableProjectIds[index];
@@ -8323,8 +8329,12 @@ function MainPage({
         }
 
         const rect = node.getBoundingClientRect();
+        const currentProjectIndex = orderedProjectIds.indexOf(projectId);
+        const collapsedOffsetX =
+          draggedProjectIndex >= 0 && currentProjectIndex > draggedProjectIndex ? -collapsedShiftDistance : 0;
+        const adjustedCenterX = rect.left + collapsedOffsetX + rect.width / 2;
 
-        if (clientX < rect.left + rect.width / 2) {
+        if (clientX < adjustedCenterX) {
           return index;
         }
       }
@@ -8360,6 +8370,23 @@ function MainPage({
     },
     [clearPendingProjectLongPress, resetProjectChipDragInteraction, resetThreadListDragInteraction]
   );
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const handleTouchMove = (event) => {
+      if (projectChipDragStateRef.current?.active || threadListDragStateRef.current?.active) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+
+    return () => {
+      window.removeEventListener("touchmove", handleTouchMove);
+    };
+  }, []);
   useEffect(() => {
     setSelectedThreadIds((current) => current.filter((threadId) => selectedProjectThreadIds.has(threadId)));
   }, [selectedProjectThreadIds]);
@@ -8434,7 +8461,6 @@ function MainPage({
       }
 
       projectLongPressTriggeredRef.current = false;
-      lastProjectChipTapRef.current = { projectId: "", at: 0 };
       clearPendingProjectLongPress();
       resetProjectChipDragInteraction();
       projectChipDragStateRef.current = {
@@ -8458,7 +8484,6 @@ function MainPage({
 
         projectLongPressTimerRef.current = null;
         projectLongPressTriggeredRef.current = true;
-        lastProjectChipTapRef.current = { projectId: "", at: 0 };
         activeDragState.active = true;
         activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
         projectChipDropIndexRef.current = resolveProjectChipDropIndex(event.clientX, project.id);
@@ -8542,12 +8567,15 @@ function MainPage({
         return;
       }
 
+      onOpenProjectEditDialog(project);
+
       window.setTimeout(() => {
         projectLongPressTriggeredRef.current = false;
       }, 0);
     },
     [
       clearPendingProjectLongPress,
+      onOpenProjectEditDialog,
       onChangeProjectChipOrder,
       orderedProjectIds,
       resetProjectChipDragInteraction
@@ -8578,49 +8606,20 @@ function MainPage({
       }
 
       const normalizedProjectId = String(projectId ?? "").trim();
-      const now = Date.now();
-
-      if (
-        normalizedProjectId &&
-        lastProjectChipTapRef.current.projectId === normalizedProjectId &&
-        now - lastProjectChipTapRef.current.at <= 320
-      ) {
-        lastProjectChipTapRef.current = { projectId: "", at: 0 };
-        const targetProject = projects.find((project) => project.id === normalizedProjectId) ?? null;
-
-        if (targetProject) {
-          clearPendingProjectLongPress();
-          resetProjectChipDragInteraction();
-          onOpenProjectEditDialog(targetProject);
-          return;
-        }
-      }
-
-      lastProjectChipTapRef.current = {
-        projectId: normalizedProjectId,
-        at: now
-      };
 
       setThreadSelectionMode(false);
       setSelectedThreadIds([]);
       onSelectProject(normalizedProjectId);
     },
-    [clearPendingProjectLongPress, onOpenProjectEditDialog, onSelectProject, projects, resetProjectChipDragInteraction]
-  );
-  const handleProjectChipDoubleClick = useCallback(
-    (event, project) => {
-      event.preventDefault();
-      clearPendingProjectLongPress();
-      projectLongPressTriggeredRef.current = false;
-      lastProjectChipTapRef.current = { projectId: "", at: 0 };
-      resetProjectChipDragInteraction();
-      onOpenProjectEditDialog(project);
-    },
-    [clearPendingProjectLongPress, onOpenProjectEditDialog, resetProjectChipDragInteraction]
+    [onSelectProject]
   );
   const resolveThreadDropIndex = useCallback(
     (clientY, draggedThreadId) => {
-      const draggableThreadIds = filteredThreadIds.filter((threadId) => threadId !== draggedThreadId);
+      const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
+      const draggableThreadIds = filteredThreadIds.filter((threadId) => threadId !== normalizedDraggedThreadId);
+      const draggedThreadIndex = filteredThreadIds.indexOf(normalizedDraggedThreadId);
+      const draggedNode = threadListItemNodesRef.current.get(normalizedDraggedThreadId);
+      const collapsedShiftDistance = draggedThreadIndex >= 0 && draggedNode ? draggedNode.offsetHeight : 0;
 
       for (let index = 0; index < draggableThreadIds.length; index += 1) {
         const threadId = draggableThreadIds[index];
@@ -8631,8 +8630,12 @@ function MainPage({
         }
 
         const rect = node.getBoundingClientRect();
+        const currentThreadIndex = filteredThreadIds.indexOf(threadId);
+        const collapsedOffsetY =
+          draggedThreadIndex >= 0 && currentThreadIndex > draggedThreadIndex ? -collapsedShiftDistance : 0;
+        const adjustedCenterY = rect.top + collapsedOffsetY + rect.height / 2;
 
-        if (clientY < rect.top + rect.height / 2) {
+        if (clientY < adjustedCenterY) {
           return index;
         }
       }
@@ -8839,7 +8842,6 @@ function MainPage({
               ref={(node) => registerProjectChipNode(project.id, node)}
               type="button"
               onClick={() => handleProjectChipClick(project.id)}
-              onDoubleClick={(event) => handleProjectChipDoubleClick(event, project)}
               onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
               onPointerMove={handleProjectChipPointerMove}
               onPointerUp={handleProjectChipPointerEnd}
@@ -8848,7 +8850,6 @@ function MainPage({
                 event.preventDefault();
                 clearPendingProjectLongPress();
                 projectLongPressTriggeredRef.current = false;
-                lastProjectChipTapRef.current = { projectId: "", at: 0 };
                 resetProjectChipDragInteraction();
                 openProjectActionSheet(project);
               }}
