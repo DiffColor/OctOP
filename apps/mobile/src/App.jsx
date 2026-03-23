@@ -386,6 +386,7 @@ const THREAD_CONTENT_FILTERS = [
 ];
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const CHAT_MANUAL_SCROLL_UNPIN_DELTA_PX = 2;
 const CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const HEADER_MENU_VIEWPORT_SETTLE_MS = 320;
@@ -6942,6 +6943,13 @@ function ThreadDetail({
     visibleChatTimelineSignature
   ]);
 
+  const syncPinnedToLatestState = useCallback((shouldPin) => {
+    if (shouldPin !== pinnedToLatestRef.current) {
+      pinnedToLatestRef.current = shouldPin;
+      setIsPinnedToLatest(shouldPin);
+    }
+  }, []);
+
   const requestOlderMessages = useCallback(() => {
     if (!onLoadOlderMessages) {
       return;
@@ -6986,25 +6994,24 @@ function ThreadDetail({
     requestOlderMessages();
   }, [hasOlderMessages, historyLoading, messageFilter, messagesError, messagesLoading, onLoadOlderMessages, requestOlderMessages]);
 
-  const recomputeScrollUiState = useCallback(() => {
+  const recomputeScrollUiState = useCallback((options = {}) => {
+    const { nextPinnedToLatest = null } = options;
     const scrollNode = scrollRef.current;
 
     if (!scrollNode) {
+      syncPinnedToLatestState(false);
       setShowJumpToLatestButton(false);
       return;
     }
 
     const distanceFromBottom = getDistanceFromBottom(scrollNode);
-    const shouldPin = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+    const shouldPin =
+      typeof nextPinnedToLatest === "boolean" ? nextPinnedToLatest : distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
     const shouldShowJumpButton = distanceFromBottom >= CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX;
 
-    if (shouldPin !== pinnedToLatestRef.current) {
-      pinnedToLatestRef.current = shouldPin;
-      setIsPinnedToLatest(shouldPin);
-    }
-
+    syncPinnedToLatestState(shouldPin);
     setShowJumpToLatestButton((current) => (current === shouldShowJumpButton ? current : shouldShowJumpButton));
-  }, []);
+  }, [syncPinnedToLatestState]);
 
   const alignScrollToLatest = useCallback((options = {}) => {
     const { updatePreviousScrollTop = false } = options;
@@ -7065,8 +7072,7 @@ function ThreadDetail({
   }, [alignScrollToLatest, recomputeScrollUiState]);
 
   useEffect(() => {
-    pinnedToLatestRef.current = true;
-    setIsPinnedToLatest(true);
+    syncPinnedToLatestState(true);
     setShowJumpToLatestButton(false);
     autoScrollingRef.current = false;
     historyScrollRestoreRef.current = null;
@@ -7074,7 +7080,7 @@ function ThreadDetail({
     previousScrollTopRef.current = 0;
     setShowHeaderMenus(true);
     recomputeScrollUiState();
-  }, [recomputeScrollUiState, thread?.id, viewMode]);
+  }, [recomputeScrollUiState, syncPinnedToLatestState, thread?.id, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat" || typeof window === "undefined") {
@@ -7166,6 +7172,7 @@ function ThreadDetail({
 
       rafId = window.requestAnimationFrame(() => {
         const node = scrollRef.current;
+        let nextPinnedToLatest = pinnedToLatestRef.current;
 
         if (node && !autoScrollingRef.current) {
           const nextScrollTop = Math.max(0, node.scrollTop);
@@ -7177,12 +7184,19 @@ function ThreadDetail({
             isBottomBoundaryMomentumLocked(node) ||
             isHeaderMenuViewportLocked;
 
+          if (delta <= -CHAT_MANUAL_SCROLL_UNPIN_DELTA_PX) {
+            nextPinnedToLatest = false;
+            keyboardPinnedToBottomRef.current = false;
+          } else if (distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX) {
+            nextPinnedToLatest = true;
+          }
+
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
           } else if (shouldGuardHeaderVisibility) {
             setShowHeaderMenus(true);
             previousScrollTopRef.current = nextScrollTop;
-            recomputeScrollUiState();
+            recomputeScrollUiState({ nextPinnedToLatest });
             return;
           } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(false);
@@ -7193,7 +7207,7 @@ function ThreadDetail({
           previousScrollTopRef.current = nextScrollTop;
         }
 
-        recomputeScrollUiState();
+        recomputeScrollUiState({ nextPinnedToLatest });
         maybeLoadOlderMessages();
       });
     };
@@ -7308,6 +7322,7 @@ function ThreadDetail({
       return;
     }
 
+    syncPinnedToLatestState(true);
     autoScrollingRef.current = true;
 
     window.requestAnimationFrame(() => {
@@ -7315,7 +7330,7 @@ function ThreadDetail({
       autoScrollingRef.current = false;
       recomputeScrollUiState();
     });
-  }, [alignScrollToLatest, recomputeScrollUiState]);
+  }, [alignScrollToLatest, recomputeScrollUiState, syncPinnedToLatestState]);
 
   const handleComposerFocus = useCallback(() => {
     const scrollNode = scrollRef.current;
@@ -7332,8 +7347,7 @@ function ThreadDetail({
       return;
     }
 
-    pinnedToLatestRef.current = true;
-    setIsPinnedToLatest(true);
+    syncPinnedToLatestState(true);
     setShowJumpToLatestButton(false);
     keepKeyboardPinnedToBottom();
     lockHeaderMenusForViewportShift();
@@ -7342,7 +7356,7 @@ function ThreadDetail({
         keepKeyboardPinnedToBottom();
       }
     }, 120);
-  }, [keepKeyboardPinnedToBottom, lockHeaderMenusForViewportShift]);
+  }, [keepKeyboardPinnedToBottom, lockHeaderMenusForViewportShift, syncPinnedToLatestState]);
 
   const handleComposerBlur = useCallback(() => {
     window.setTimeout(() => {
@@ -10290,6 +10304,12 @@ export default function App() {
       type: "socket_connected"
     });
   }, [updateBridgeDisconnectOverride]);
+  const markBridgeStatusDisconnected = useCallback((bridgeId, message = "") => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "status_disconnected",
+      message
+    });
+  }, [updateBridgeDisconnectOverride]);
   const markBridgeTransportFailure = useCallback((bridgeId, message = "") => {
     updateBridgeDisconnectOverride(bridgeId, {
       type: "transport_failure",
@@ -11326,7 +11346,7 @@ export default function App() {
         if (nextStatus?.app_server?.connected) {
           markBridgeSocketConnected(bridgeId);
         } else {
-          markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
+          markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
         setBridgeStatus(bridgeId, nextStatus);
         markStreamActivity();
@@ -11338,10 +11358,13 @@ export default function App() {
         }
 
         markBridgeTransportFailure(bridgeId, error.message);
+        markBridgeSocketDisconnected(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
+            connected: false,
+            initialized: false,
             last_error: error.message
           },
           updated_at: new Date().toISOString()
@@ -11454,7 +11477,7 @@ export default function App() {
         if (nextStatus?.app_server?.connected) {
           markBridgeSocketConnected(bridgeId);
         } else {
-          markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
+          markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
         setBridgeStatus(bridgeId, nextStatus);
         return true;
@@ -11464,10 +11487,13 @@ export default function App() {
         }
 
         markBridgeTransportFailure(bridgeId, error.message);
+        markBridgeSocketDisconnected(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
+            connected: false,
+            initialized: false,
             last_error: error.message
           },
           updated_at: new Date().toISOString()
@@ -11475,7 +11501,15 @@ export default function App() {
         return false;
       }
     },
-    [markBridgeSocketConnected, markBridgeSocketDisconnected, markBridgeTransportFailure, selectedBridgeId, session, setBridgeStatus]
+    [
+      markBridgeSocketConnected,
+      markBridgeSocketDisconnected,
+      markBridgeStatusDisconnected,
+      markBridgeTransportFailure,
+      selectedBridgeId,
+      session,
+      setBridgeStatus
+    ]
   );
   useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
@@ -11488,6 +11522,8 @@ export default function App() {
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
+          connected: false,
+          initialized: false,
           last_error: event.message ?? "bridge transport unavailable"
         },
         updated_at: new Date().toISOString()
@@ -11827,7 +11863,7 @@ export default function App() {
           if (payload?.app_server?.connected) {
             markBridgeSocketConnected(selectedBridgeIdRef.current);
           } else {
-            markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
+            markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
           setBridgeStatus(selectedBridgeIdRef.current, payload);
         }
@@ -11952,7 +11988,7 @@ export default function App() {
             if (payload.payload?.app_server?.connected) {
               markBridgeSocketConnected(selectedBridgeIdRef.current);
             } else {
-              markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
+              markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
             setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
           }
@@ -12152,6 +12188,7 @@ export default function App() {
     eventStreamReconnectToken,
     markBridgeSocketConnected,
     markBridgeSocketDisconnected,
+    markBridgeStatusDisconnected,
     markStreamActivity,
     refreshBridgeStatus,
     setBridgeStatus,

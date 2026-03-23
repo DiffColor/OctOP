@@ -123,8 +123,21 @@ export function reduceBridgeDisconnectEvidence(currentEvidence, event = {}) {
   const at = Number.isFinite(Number(event?.at)) ? Number(event.at) : Date.now();
   const message = String(event?.message ?? "").trim();
 
-  if (event?.type === "socket_connected" || event?.type === "transport_success") {
+  if (
+    event?.type === "socket_connected" ||
+    event?.type === "transport_success" ||
+    event?.type === "status_connected"
+  ) {
     return createBridgeDisconnectEvidence();
+  }
+
+  if (event?.type === "status_disconnected") {
+    return {
+      socketDisconnectedAt: at,
+      transportFailureAt: at,
+      confirmedAt: at,
+      lastError: message || current.lastError
+    };
   }
 
   if (event?.type === "socket_disconnected") {

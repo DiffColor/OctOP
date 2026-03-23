@@ -8082,6 +8082,12 @@ export default function App() {
       type: "socket_connected"
     });
   }, [updateBridgeDisconnectOverride]);
+  const markBridgeStatusDisconnected = useCallback((bridgeId, message = "") => {
+    updateBridgeDisconnectOverride(bridgeId, {
+      type: "status_disconnected",
+      message
+    });
+  }, [updateBridgeDisconnectOverride]);
   const markBridgeTransportFailure = useCallback((bridgeId, message = "") => {
     updateBridgeDisconnectOverride(bridgeId, {
       type: "transport_failure",
@@ -8959,7 +8965,7 @@ export default function App() {
         if (nextStatus?.app_server?.connected) {
           markBridgeSocketConnected(bridgeId);
         } else {
-          markBridgeSocketDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
+          markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
         setBridgeStatus(bridgeId, nextStatus);
         return true;
@@ -8969,10 +8975,13 @@ export default function App() {
         }
 
         markBridgeTransportFailure(bridgeId, error.message);
+        markBridgeSocketDisconnected(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
+            connected: false,
+            initialized: false,
             last_error: error.message
           },
           updated_at: new Date().toISOString()
@@ -8980,7 +8989,15 @@ export default function App() {
         return false;
       }
     },
-    [markBridgeSocketConnected, markBridgeSocketDisconnected, markBridgeTransportFailure, selectedBridgeId, session, setBridgeStatus]
+    [
+      markBridgeSocketConnected,
+      markBridgeSocketDisconnected,
+      markBridgeStatusDisconnected,
+      markBridgeTransportFailure,
+      selectedBridgeId,
+      session,
+      setBridgeStatus
+    ]
   );
   useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
@@ -8993,6 +9010,8 @@ export default function App() {
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
+          connected: false,
+          initialized: false,
           last_error: event.message ?? "bridge transport unavailable"
         },
         updated_at: new Date().toISOString()
@@ -9057,7 +9076,7 @@ export default function App() {
           if (payload?.app_server?.connected) {
             markBridgeSocketConnected(selectedBridgeIdRef.current);
           } else {
-            markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
+            markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
           setBridgeStatus(selectedBridgeIdRef.current, payload);
         }
@@ -9089,7 +9108,7 @@ export default function App() {
             if (payload.payload?.app_server?.connected) {
               markBridgeSocketConnected(selectedBridgeIdRef.current);
             } else {
-              markBridgeSocketDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
+              markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
             setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
           }
@@ -9295,6 +9314,7 @@ export default function App() {
     eventStreamReconnectToken,
     markBridgeSocketConnected,
     markBridgeSocketDisconnected,
+    markBridgeStatusDisconnected,
     markStreamActivity,
     refreshBridgeStatus,
     session,

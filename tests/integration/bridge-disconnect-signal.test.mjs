@@ -54,6 +54,20 @@ test("transport 실패가 먼저 와도 이후 ws 끊김이 오면 브릿지 끊
   assert.equal(isBridgeDisconnectConfirmed(confirmed), true);
 });
 
+test("브릿지 상태가 명시적으로 disconnected 이면 즉시 끊김을 확정한다", () => {
+  const confirmed = reduceBridgeDisconnectEvidence(createBridgeDisconnectEvidence(), {
+    type: "status_disconnected",
+    at: 1000,
+    message: "app-server not connected"
+  });
+
+  assert.equal(confirmed.socketDisconnectedAt, 1000);
+  assert.equal(confirmed.transportFailureAt, 1000);
+  assert.equal(confirmed.confirmedAt, 1000);
+  assert.equal(confirmed.lastError, "app-server not connected");
+  assert.equal(isBridgeDisconnectConfirmed(confirmed), true);
+});
+
 test("성공한 bridge 요청은 누적된 끊김 증거를 해제한다", () => {
   const confirmed = reduceBridgeDisconnectEvidence(
     reduceBridgeDisconnectEvidence(createBridgeDisconnectEvidence(), {
