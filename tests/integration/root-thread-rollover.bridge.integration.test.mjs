@@ -194,10 +194,11 @@ class FakeAppServer {
       Array.isArray(options.zombieAfterMethods) ? options.zombieAfterMethods : []
     );
     this.zombieSockets = new WeakSet();
+    this.port = Number.isFinite(Number(options.port)) ? Number(options.port) : null;
   }
 
   async start() {
-    const port = await getFreePort();
+    const port = this.port ?? await getFreePort();
     this.server = createHttpServer();
     this.server.on("upgrade", (request, socket) => {
       const key = request.headers["sec-websocket-key"];
@@ -264,7 +265,6 @@ class FakeAppServer {
       });
     });
 
-    this.port = port;
     this.url = `ws://127.0.0.1:${port}`;
     return this.url;
   }
@@ -293,7 +293,9 @@ class FakeAppServer {
 
     const server = this.server;
     this.server = null;
-    server.close();
+    await new Promise((resolve) => {
+      server.close(() => resolve());
+    });
   }
 
   send(payload) {
@@ -1183,6 +1185,60 @@ test("브리지 app-server 1006 close 후 자동 재연결", { timeout: 60000 },
     timeoutMs: 15000,
     intervalMs: 250,
     label: "app-server auto reconnect"
+  });
+
+  const health = await bridge.request("/health");
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+});
+
+test("브리지 app-server 장시간 단절 뒤에도 capped reconnect delay 안에 자동 복구한다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-long-disconnect-reconnect-int-"));
+  const appServerPort = await getFreePort();
+  const fakeAppServer = new FakeAppServer({
+    port: appServerPort
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-long-disconnect-reconnect-token",
+    userId: "long-disconnect-reconnect-user",
+    bridgeId: `long-disconnect-reconnect-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS: "150",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS: "600"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  assert.equal(fakeAppServer.connectionCount, 1);
+
+  fakeAppServer.destroyActiveSocket();
+  await fakeAppServer.stop();
+
+  await sleep(4500);
+
+  await fakeAppServer.start();
+
+  await waitFor(async () => {
+    assert.equal(fakeAppServer.connectionCount >= 2, true);
+    assert.equal(fakeAppServer.getRequests("initialize").length >= 2, true);
+  }, {
+    timeoutMs: 1500,
+    intervalMs: 100,
+    label: "app-server capped reconnect after long disconnect"
   });
 
   const health = await bridge.request("/health");

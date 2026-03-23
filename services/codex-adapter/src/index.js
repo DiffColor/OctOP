@@ -87,6 +87,9 @@ const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
 const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
 );
+const APP_SERVER_RECONNECT_MAX_DELAY_MS = Number(
+  process.env.OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS ?? 15000
+);
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
@@ -551,7 +554,11 @@ async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified
         if (activeSocket && appServer.connected && appServer.initialized && activeSocket.readyState === WebSocket.OPEN) {
           void appServer.checkLastKnownState(`system_network_restored:${trigger}`);
         } else {
-          appServer.scheduleReconnect(`system_network_restored:${trigger}`);
+          appServer.scheduleReconnect(`system_network_restored:${trigger}`, {
+            replaceExisting: true,
+            resetAttempt: true,
+            delayMs: 100
+          });
         }
         return true;
       } catch {
@@ -8748,7 +8755,11 @@ class AppServerClient {
         message: error.message
       });
     });
-    this.scheduleReconnect(`forced:${trigger}`);
+    this.scheduleReconnect(`forced:${trigger}`, {
+      replaceExisting: true,
+      resetAttempt: true,
+      delayMs: 100
+    });
 
     try {
       if (typeof ws.terminate === "function") {
@@ -8766,7 +8777,20 @@ class AppServerClient {
     return true;
   }
 
-  scheduleReconnect(trigger = "unspecified") {
+  scheduleReconnect(trigger = "unspecified", options = {}) {
+    const replaceExisting = options?.replaceExisting === true;
+    const resetAttempt = options?.resetAttempt === true;
+    const hasDelayOverride = Number.isFinite(Number(options?.delayMs));
+    const delayOverrideMs = hasDelayOverride ? Math.max(0, Number(options.delayMs)) : null;
+
+    if (replaceExisting) {
+      this.clearReconnectTimer();
+    }
+
+    if (resetAttempt) {
+      this.reconnectAttempt = 0;
+    }
+
     if (this.reconnectTimer || this.readyPromise) {
       return;
     }
@@ -8776,12 +8800,19 @@ class AppServerClient {
     }
 
     const attempt = this.reconnectAttempt + 1;
-    const delayMs = Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt);
+    const cappedDelayMs = Math.min(
+      Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt),
+      Math.max(100, APP_SERVER_RECONNECT_MAX_DELAY_MS)
+    );
+    const delayMs = delayOverrideMs ?? cappedDelayMs;
     this.reconnectAttempt = attempt;
     console.warn("[OctOP bridge] scheduling app-server reconnect", {
       trigger,
       attempt,
-      delay_ms: delayMs
+      delay_ms: delayMs,
+      capped_delay_ms: cappedDelayMs,
+      replace_existing: replaceExisting,
+      reset_attempt: resetAttempt
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
