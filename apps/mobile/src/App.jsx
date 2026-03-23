@@ -148,6 +148,16 @@ function extractBridgeIdFromPath(path) {
   return String(params.get("bridge_id") ?? "").trim();
 }
 
+function shouldInferBridgeTransportFailure(path, method = "GET") {
+  const normalizedMethod = String(method ?? "GET").trim().toUpperCase();
+
+  if (normalizedMethod !== "GET") {
+    return false;
+  }
+
+  return Boolean(extractBridgeIdFromPath(path));
+}
+
 function readPushDeepLink() {
   if (typeof window === "undefined") {
     return null;
@@ -1453,7 +1463,7 @@ async function apiRequest(path, options = {}) {
       }
     });
   } catch (error) {
-    if (bridgeId) {
+    if (bridgeId && shouldInferBridgeTransportFailure(path, method)) {
       notifyBridgeRequestFailure({
         path,
         method,
@@ -1474,7 +1484,7 @@ async function apiRequest(path, options = {}) {
       payload?.message ??
       payload?.title ??
       `요청에 실패했습니다. (${response.status})`;
-    if (bridgeId && BRIDGE_TRANSPORT_ERROR_STATUS_CODES.has(response.status)) {
+    if (bridgeId && shouldInferBridgeTransportFailure(path, method) && BRIDGE_TRANSPORT_ERROR_STATUS_CODES.has(response.status)) {
       notifyBridgeRequestFailure({
         path,
         method,
