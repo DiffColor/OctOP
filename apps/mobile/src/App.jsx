@@ -356,6 +356,16 @@ function getDistanceFromBottom(node) {
   return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop);
 }
 
+function scrollNodeToLatest(node) {
+  if (!node) {
+    return 0;
+  }
+
+  const maxScrollTop = getMaxScrollTop(node);
+  node.scrollTop = maxScrollTop;
+  return maxScrollTop;
+}
+
 function clampWideThreadSplitRatio(ratio, containerWidth) {
   const safeContainerWidth = Math.max(containerWidth ?? 0, MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX);
   const minRatio = Math.min(0.45, MOBILE_WIDE_THREAD_SPLIT_MIN_PANE_WIDTH_PX / safeContainerWidth);
@@ -5339,7 +5349,6 @@ function ThreadDetail({
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
   const scrollRef = useRef(null);
-  const scrollAnchorRef = useRef(null);
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
@@ -5612,11 +5621,12 @@ function ThreadDetail({
           const delta = nextScrollTop - previousScrollTopRef.current;
           const distanceFromBottom = getDistanceFromBottom(node);
           const shouldGuardHeaderAtBottom =
-            distanceFromBottom <= BOTTOM_BOUNDARY_HEADER_GUARD_PX || isBottomBoundaryMomentumLocked(node);
+            pinnedToLatestRef.current ||
+            distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX ||
+            isBottomBoundaryMomentumLocked(node);
 
-          if (nextScrollTop <= 8) {
+          if (nextScrollTop <= 8 || shouldGuardHeaderAtBottom) {
             setShowHeaderMenus(true);
-          } else if (shouldGuardHeaderAtBottom) {
             previousScrollTopRef.current = nextScrollTop;
             recomputePinnedState();
             return;
@@ -5650,29 +5660,31 @@ function ThreadDetail({
       return;
     }
 
+    let settleFrame = 0;
+
     const frame = window.requestAnimationFrame(() => {
-      const anchorNode = scrollAnchorRef.current;
       const containerNode = scrollRef.current;
 
-      if (!anchorNode && !containerNode) {
+      if (!containerNode) {
         return;
       }
 
       autoScrollingRef.current = true;
+      previousScrollTopRef.current = scrollNodeToLatest(containerNode);
 
-      if (anchorNode) {
-        anchorNode.scrollIntoView({ block: "end" });
-      } else if (containerNode) {
-        containerNode.scrollTop = containerNode.scrollHeight;
-      }
-
-      window.requestAnimationFrame(() => {
+      settleFrame = window.requestAnimationFrame(() => {
+        previousScrollTopRef.current = scrollNodeToLatest(containerNode);
         autoScrollingRef.current = false;
         recomputePinnedState();
       });
     });
 
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (settleFrame) {
+        window.cancelAnimationFrame(settleFrame);
+      }
+    };
   }, [isPinnedToLatest, recomputePinnedState, thread?.id, viewMode, visibleChatTimelineSignature]);
 
   const handleRefreshMessages = async () => {
@@ -5893,12 +5905,13 @@ function ThreadDetail({
           </button>
         </div>
 
-        <div
-          className={`overflow-hidden transition-all duration-200 ease-out ${
-            showHeaderMenus ? "mt-3 max-h-32 opacity-100" : "max-h-0 opacity-0"
-          }`}
-        >
-          <div className="flex gap-2 overflow-x-auto pb-1">
+        <div className="mt-3 h-10 overflow-hidden">
+          <div
+            aria-hidden={!showHeaderMenus}
+            className={`flex h-full gap-2 overflow-x-auto pb-1 transition-all duration-200 ease-out ${
+              showHeaderMenus ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0 pointer-events-none"
+            }`}
+          >
             {THREAD_CONTENT_FILTERS.map((filter) => (
               <button
                 key={filter.id}
@@ -5921,7 +5934,7 @@ function ThreadDetail({
       <div
         ref={scrollRef}
         data-testid="thread-detail-scroll"
-        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
+        className="telegram-grid touch-scroll-boundary-lock chat-scroll-stable min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
       >
         <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           <div className="flex justify-center">
@@ -6072,7 +6085,6 @@ function ThreadDetail({
               </div>
             </div>
           ) : null}
-          <div ref={scrollAnchorRef} />
         </div>
       </div>
 

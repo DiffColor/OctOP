@@ -108,6 +108,10 @@ svg {
   overscroll-behavior-x: none;
 }
 
+.chat-scroll-stable {
+  overflow-anchor: none;
+}
+
 .thread-title {
   display: -webkit-box;
   overflow: hidden;
