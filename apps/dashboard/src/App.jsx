@@ -104,6 +104,8 @@ const ISSUE_ATTACHMENT_ACCEPT = [
   ...ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES
 ].join(",");
 const THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
+const INSTANT_NOTIFICATION_DEFAULT_DURATION_MS = 3200;
+const INSTANT_NOTIFICATION_ERROR_DURATION_MS = 5200;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -645,11 +647,21 @@ const COPY = {
       bridgeDown: "Bridge Down",
       projectsChip: (count) => `Projects ${count}`,
       threadsChip: (count) => `Threads ${count}`,
-      deleteProjectConfirm: "Delete this project? Its issues will be removed as well.",
+      confirmationEyebrow: "Confirm",
+      deleteProjectConfirm: (name) => `Delete ${name}? Its issues will be removed as well.`,
+      deleteProject: "Delete Project",
       deleteBridge: "Delete Bridge",
       deletingBridge: "Deleting...",
       deleteBridgeConfirm: (name) =>
         `Delete ${name}? Stored projects, threads, and issue history for this bridge will be removed.`
+    },
+    notifications: {
+      actionCompleted: "Done",
+      actionFailed: "Action failed",
+      bridgeDeleted: (name) => `${name} has been deleted.`,
+      bridgeDeleteFailed: (name) => `Failed to delete ${name}.`,
+      projectDeleted: (name) => `${name} has been deleted.`,
+      projectDeleteFailed: (name) => `Failed to delete ${name}.`
     },
     footer: {
       languageKorean: "Korean",
@@ -855,11 +867,21 @@ const COPY = {
       bridgeDown: "브릿지 끊김",
       projectsChip: (count) => `프로젝트 ${count}`,
       threadsChip: (count) => `쓰레드 ${count}`,
-      deleteProjectConfirm: "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.",
+      confirmationEyebrow: "확인",
+      deleteProjectConfirm: (name) => `${name} 프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.`,
+      deleteProject: "프로젝트 삭제",
       deleteBridge: "브릿지 삭제",
       deletingBridge: "삭제 중...",
       deleteBridgeConfirm: (name) =>
         `${name} 브릿지를 삭제하시겠습니까? 이 브릿지에 저장된 프로젝트, 쓰레드, 이슈 기록도 함께 제거됩니다.`
+    },
+    notifications: {
+      actionCompleted: "완료되었습니다",
+      actionFailed: "작업을 완료하지 못했습니다",
+      bridgeDeleted: (name) => `${name} 브릿지를 삭제했습니다.`,
+      bridgeDeleteFailed: (name) => `${name} 브릿지를 삭제하지 못했습니다.`,
+      projectDeleted: (name) => `${name} 프로젝트를 삭제했습니다.`,
+      projectDeleteFailed: (name) => `${name} 프로젝트를 삭제하지 못했습니다.`
     },
     footer: {
       languageKorean: "한국어",
@@ -4972,6 +4994,182 @@ function SettingsDialog({ open, session, bridgeSignal, selectedBridge, pushNotif
   );
 }
 
+function getInstantNotificationToneClassNames(tone) {
+  switch (tone) {
+    case "success":
+      return {
+        frame: "border-emerald-400/20 bg-[rgba(6,18,18,0.9)] shadow-[0_24px_80px_rgba(6,78,59,0.28)]",
+        badge: "bg-emerald-400/14 text-emerald-200",
+        icon: "bg-emerald-400"
+      };
+    case "error":
+      return {
+        frame: "border-rose-400/20 bg-[rgba(24,10,17,0.92)] shadow-[0_24px_80px_rgba(136,19,55,0.32)]",
+        badge: "bg-rose-400/14 text-rose-100",
+        icon: "bg-rose-400"
+      };
+    case "warning":
+      return {
+        frame: "border-amber-300/20 bg-[rgba(24,18,7,0.92)] shadow-[0_24px_80px_rgba(146,64,14,0.28)]",
+        badge: "bg-amber-300/14 text-amber-100",
+        icon: "bg-amber-300"
+      };
+    default:
+      return {
+        frame: "border-sky-400/20 bg-[rgba(7,14,28,0.92)] shadow-[0_24px_80px_rgba(14,165,233,0.2)]",
+        badge: "bg-sky-400/14 text-sky-100",
+        icon: "bg-sky-300"
+      };
+  }
+}
+
+function InstantNotificationCard({ notification, closeLabel, onDismiss }) {
+  const timeoutMs =
+    Number.isFinite(Number(notification.durationMs)) && Number(notification.durationMs) > 0
+      ? Number(notification.durationMs)
+      : INSTANT_NOTIFICATION_DEFAULT_DURATION_MS;
+  const toneClassNames = getInstantNotificationToneClassNames(notification.tone);
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      onDismiss(notification.id);
+    }, timeoutMs);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [notification.id, onDismiss, timeoutMs]);
+
+  return (
+    <div
+      className={`instant-notification-enter pointer-events-auto relative overflow-hidden rounded-[1.4rem] border px-4 py-3 text-left backdrop-blur-2xl ${toneClassNames.frame}`}
+      role={notification.tone === "error" ? "alert" : "status"}
+    >
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${toneClassNames.badge}`}>
+          <span className={`h-2.5 w-2.5 rounded-full ${toneClassNames.icon}`} />
+        </div>
+        <div className="min-w-0 flex-1 pr-8">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-semibold text-white">{notification.title}</p>
+            <span className="text-[10px] uppercase tracking-[0.24em] text-slate-500">OctOP</span>
+          </div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-slate-300">
+            {notification.message}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onDismiss(notification.id)}
+          className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+          aria-label={closeLabel}
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InstantNotificationViewport({ notifications, closeLabel, onDismiss }) {
+  if (!Array.isArray(notifications) || notifications.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="pointer-events-none fixed inset-x-0 top-4 z-[90] flex justify-end px-4 md:px-6 lg:px-8">
+      <div className="flex w-full max-w-sm flex-col gap-3">
+        {notifications.map((notification) => (
+          <InstantNotificationCard
+            key={notification.id}
+            notification={notification}
+            closeLabel={closeLabel}
+            onDismiss={onDismiss}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConfirmationDialog({
+  open,
+  eyebrow,
+  title,
+  description,
+  confirmLabel,
+  cancelLabel,
+  closeLabel,
+  onConfirm,
+  onClose
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/78 px-4 backdrop-blur-sm"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div className="w-full max-w-md rounded-[2rem] border border-rose-400/20 bg-slate-950/95 p-6 shadow-2xl shadow-slate-950/70">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-rose-500/12 text-rose-200">
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  d="M12 9v4m0 4h.01M10.3 3.9l-7 12.1A2 2 0 005 19h14a2 2 0 001.7-3l-7-12.1a2 2 0 00-3.4 0z"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{eyebrow}</p>
+              <h2 className="mt-2 text-xl font-semibold text-white">{title}</h2>
+              <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">{description}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+            aria-label={closeLabel}
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-2xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-2xl bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PrepThreadCard({
   language,
   thread,
@@ -6926,6 +7124,7 @@ export default function App() {
   const [loginState, setLoginState] = useState({ loading: false, error: "" });
   const [bridges, setBridges] = useState([]);
   const [bridgeDeleteBusy, setBridgeDeleteBusy] = useState(false);
+  const [projectDeleteBusyId, setProjectDeleteBusyId] = useState("");
   const [bridgeStatusById, setBridgeStatusById] = useState({});
   const [projects, setProjects] = useState([]);
   const [projectThreads, setProjectThreads] = useState([]);
@@ -6998,6 +7197,14 @@ export default function App() {
   const [issueEditorOpen, setIssueEditorOpen] = useState(false);
   const [issueEditorBusy, setIssueEditorBusy] = useState(false);
   const [editingIssueId, setEditingIssueId] = useState("");
+  const [notifications, setNotifications] = useState([]);
+  const [confirmationDialog, setConfirmationDialog] = useState({
+    open: false,
+    title: "",
+    description: "",
+    confirmLabel: "",
+    cancelLabel: ""
+  });
   const issuesRef = useRef([]);
   const issueLoadRequestIdRef = useRef(0);
   const loadedProjectThreadsRef = useRef({});
@@ -7018,6 +7225,7 @@ export default function App() {
   const foregroundResumeEnabledAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
+  const confirmationResolverRef = useRef(null);
   const detailStateRef = useRef({
     open: false,
     loading: false,
@@ -7025,6 +7233,67 @@ export default function App() {
     messages: []
   });
   const copy = getCopy(language);
+  const dismissNotification = useCallback((notificationId) => {
+    const normalizedNotificationId = String(notificationId ?? "").trim();
+
+    if (!normalizedNotificationId) {
+      return;
+    }
+
+    setNotifications((current) => current.filter((notification) => notification.id !== normalizedNotificationId));
+  }, []);
+  const showNotification = useCallback(
+    ({ title, message, tone = "info", durationMs = INSTANT_NOTIFICATION_DEFAULT_DURATION_MS }) => {
+      const resolvedTitle = String(title ?? "").trim();
+      const resolvedMessage = String(message ?? "").trim();
+
+      if (!resolvedTitle && !resolvedMessage) {
+        return;
+      }
+
+      const nextNotification = {
+        id: createId(),
+        title: resolvedTitle || resolvedMessage,
+        message: resolvedTitle && resolvedMessage ? resolvedMessage : "",
+        tone,
+        durationMs
+      };
+
+      setNotifications((current) => [...current.slice(-2), nextNotification]);
+    },
+    []
+  );
+  const requestConfirmation = useCallback(
+    ({ title, description, confirmLabel, cancelLabel }) =>
+      new Promise((resolve) => {
+        if (typeof confirmationResolverRef.current === "function") {
+          confirmationResolverRef.current(false);
+        }
+
+        confirmationResolverRef.current = resolve;
+        setConfirmationDialog({
+          open: true,
+          title: String(title ?? "").trim(),
+          description: String(description ?? "").trim(),
+          confirmLabel: String(confirmLabel ?? "").trim(),
+          cancelLabel: String(cancelLabel ?? "").trim()
+        });
+      }),
+    []
+  );
+  const closeConfirmationDialog = useCallback((accepted = false) => {
+    const resolver = confirmationResolverRef.current;
+
+    confirmationResolverRef.current = null;
+    setConfirmationDialog((current) => ({
+      ...current,
+      open: false
+    }));
+
+    if (typeof resolver === "function") {
+      resolver(accepted);
+    }
+  }, []);
   const status = useMemo(
     () => normalizeBridgeStatus(selectedBridgeId ? bridgeStatusById[selectedBridgeId] : null),
     [bridgeStatusById, selectedBridgeId]
@@ -7436,6 +7705,16 @@ export default function App() {
     selectedProjectThreadIdRef.current = selectedProjectThreadId;
   }, [selectedProjectThreadId]);
 
+  useEffect(
+    () => () => {
+      if (typeof confirmationResolverRef.current === "function") {
+        confirmationResolverRef.current(false);
+        confirmationResolverRef.current = null;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     setIssues(visibleIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
     setArchivedIssues(archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []);
@@ -7598,7 +7877,14 @@ export default function App() {
     const bridgeLabel =
       bridges.find((bridge) => bridge.bridge_id === selectedBridgeId)?.device_name ?? selectedBridgeId;
 
-    if (!window.confirm(copy.board.deleteBridgeConfirm(bridgeLabel))) {
+    const accepted = await requestConfirmation({
+      title: copy.board.deleteBridge,
+      description: copy.board.deleteBridgeConfirm(bridgeLabel),
+      confirmLabel: copy.board.deleteBridge,
+      cancelLabel: copy.projectComposer.cancel
+    });
+
+    if (!accepted) {
       return;
     }
 
@@ -7657,7 +7943,18 @@ export default function App() {
       setComposerOpen(false);
       setIssueEditorOpen(false);
       setEditingIssueId("");
+      showNotification({
+        title: copy.notifications.actionCompleted,
+        message: copy.notifications.bridgeDeleted(bridgeLabel),
+        tone: "success"
+      });
     } catch (error) {
+      showNotification({
+        title: copy.notifications.actionFailed,
+        message: error.message ?? copy.notifications.bridgeDeleteFailed(bridgeLabel),
+        tone: "error",
+        durationMs: INSTANT_NOTIFICATION_ERROR_DURATION_MS
+      });
       setRecentEvents((current) => [
         {
           id: createId(),
@@ -9526,13 +9823,23 @@ export default function App() {
   };
 
   const handleDeleteProject = async (projectId) => {
-    if (!session?.loginId || !selectedBridgeId || !projectId) {
+    if (!session?.loginId || !selectedBridgeId || !projectId || projectDeleteBusyId === projectId) {
       return;
     }
 
-    if (!window.confirm(copy.board.deleteProjectConfirm)) {
+    const projectLabel = projects.find((project) => project.id === projectId)?.name ?? projectId;
+    const accepted = await requestConfirmation({
+      title: copy.board.deleteProject,
+      description: copy.board.deleteProjectConfirm(projectLabel),
+      confirmLabel: copy.board.deleteProject,
+      cancelLabel: copy.projectComposer.cancel
+    });
+
+    if (!accepted) {
       return;
     }
+
+    setProjectDeleteBusyId(projectId);
 
     if (projectEditProjectId === projectId) {
       setProjectEditDialogOpen(false);
@@ -9580,7 +9887,19 @@ export default function App() {
         setSelectedProjectThreadId("");
         setIssues([]);
       }
+
+      showNotification({
+        title: copy.notifications.actionCompleted,
+        message: copy.notifications.projectDeleted(projectLabel),
+        tone: "success"
+      });
     } catch (error) {
+      showNotification({
+        title: copy.notifications.actionFailed,
+        message: error.message ?? copy.notifications.projectDeleteFailed(projectLabel),
+        tone: "error",
+        durationMs: INSTANT_NOTIFICATION_ERROR_DURATION_MS
+      });
       setRecentEvents((current) => [
         {
           id: createId(),
@@ -9590,6 +9909,8 @@ export default function App() {
         },
         ...current
       ].slice(0, 20));
+    } finally {
+      setProjectDeleteBusyId((current) => (current === projectId ? "" : current));
     }
   };
 
@@ -10257,138 +10578,156 @@ export default function App() {
   }
 
   return (
-    <MainPage
-      language={language}
-      onChangeLanguage={setLanguage}
-      session={session}
-      bridges={bridges}
-      status={status}
-      bridgeAvailable={bridgeAvailable}
-      bridgeSignal={bridgeSignal}
-      signalNow={streamNow}
-      projects={projects}
-      projectThreads={projectThreads}
-      issues={issues}
-      workspaceRoots={workspaceRoots}
-      folderState={folderState}
-      folderLoading={folderLoading}
-      selectedWorkspacePath={selectedWorkspacePath}
-      selectedBridgeId={selectedBridgeId}
-      selectedProjectId={selectedProjectId}
-      selectedProjectThreadId={selectedProjectThreadId}
-      selectedIssueId={selectedIssueId}
-      search={search}
-      recentEvents={recentEvents}
-      issueQueueOrderIds={issueQueueOrderIds}
-      prepIssueOrderIds={orderedPrepIssueIds}
-      loadingState={loadingState}
-      projectBusy={projectBusy}
-      threadBusy={threadBusy}
-      threadCreateDialogOpen={threadCreateDialogOpen}
-      projectInstructionBusy={projectInstructionBusy}
-      threadInstructionBusy={threadInstructionBusy}
-      issueBusy={issueBusy}
-      interruptingIssueId={interruptingIssueId}
-      startBusy={startBusy}
-      projectComposerOpen={projectComposerOpen}
-      projectInstructionDialogOpen={projectInstructionDialogOpen}
-      projectInstructionType={projectInstructionType}
-      threadInstructionDialogOpen={threadInstructionDialogOpen}
-      threadInstructionSupported={threadInstructionSupported}
-      composerOpen={composerOpen}
-      issueEditorOpen={issueEditorOpen}
-      issueEditorBusy={issueEditorBusy}
-      editingIssue={editingIssue}
-      projectMenuState={projectMenuState}
-      threadMenuState={threadMenuState}
-      onSearchChange={setSearch}
-      onSelectBridge={setSelectedBridgeId}
-      onDeleteBridge={() => void handleDeleteBridge()}
-      onSelectProject={setSelectedProjectId}
-      onExpandProject={(projectId) => ensureProjectThreadsLoaded(session, selectedBridgeId, projectId)}
-      onSelectProjectThread={setSelectedProjectThreadId}
-      onSelectIssue={setSelectedIssueId}
-      onUpdateIssueSelection={setSelectedIssueIds}
-      selectedIssueIds={selectedIssueIds}
-      archivedIssues={archivedIssues}
-      detailState={detailState}
-      onToggleIssueSelection={handleToggleIssueSelection}
-      onArchiveIssues={handleArchiveIssues}
-      onRestoreArchivedIssues={handleRestoreArchivedIssues}
-      onStartSelectedIssues={() => void handleStartSelectedIssues()}
-      onOpenIssueDetail={(threadId) => void handleOpenIssueDetail(threadId)}
-      onInterruptIssue={(threadId) => void handleInterruptIssue(threadId)}
-      onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
-      onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
-      onOpenProjectMenu={handleOpenProjectMenu}
-      onCloseProjectMenu={handleCloseProjectMenu}
-      onCreateThread={handleOpenThreadCreateDialog}
-      onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
-      onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
-      onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
-      onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
-      onOpenThreadMenu={(event, thread) => {
-        event.preventDefault();
-        setThreadMenuState({
-          open: true,
-          x: event.clientX,
-          y: event.clientY,
-          thread
-        });
-      }}
-      onCloseThreadMenu={() =>
-        setThreadMenuState({
-          open: false,
-          x: 0,
-          y: 0,
-          thread: null
-        })
-      }
-      onDragQueueIssue={handleDragQueueIssue}
-      onDragPrepIssues={handleDragPrepIssues}
-      onDragMovableIssue={handleDragMovableIssue}
-      onDragRetryIssues={handleDragRetryIssues}
-      draggingMovableIssueIds={draggingMovableIssueIds}
-      draggingRetryIssueIds={draggingRetryIssueIds}
-      issueMoveTargetThreadId={issueMoveTargetThreadId}
-      onIssueMoveTargetOver={handleIssueMoveTargetOver}
-      onIssueMoveTargetLeave={handleIssueMoveTargetLeave}
-      onMoveIssuesToThread={(threadId) => void handleMoveIssuesToThread(threadId)}
-      onDragArchiveIssues={handleDragArchiveIssues}
-      onInterruptIssueToPrep={(threadId) => void handleInterruptIssueToPrep(threadId)}
-      onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}
-      onOpenProjectComposer={() => void handleOpenProjectComposer()}
-      onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
-      onOpenComposer={() => setComposerOpen(true)}
-      onCloseProjectComposer={handleCloseProjectComposer}
-      onCloseProjectInstructionDialog={handleCloseProjectInstructionDialog}
-      onCloseThreadInstructionDialog={handleCloseThreadInstructionDialog}
-      onCloseComposer={() => setComposerOpen(false)}
-      onCloseIssueEditor={handleCloseIssueEditor}
-      onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
-      onBrowseFolder={(path) => browseWorkspacePath(path)}
-      onSelectWorkspace={setSelectedWorkspacePath}
-      onSubmitProject={handleCreateProject}
-      onSubmitProjectInstruction={handleSubmitProjectInstruction}
-      projectEditDialogOpen={projectEditDialogOpen}
-      projectEditBusy={projectEditBusy}
-      projectEditTargetProject={projectEditTargetProject}
-      onOpenProjectEditDialog={handleOpenProjectEditDialog}
-      onCloseProjectEditDialog={handleCloseProjectEditDialog}
-      onSubmitProjectEdit={handleSubmitProjectEdit}
-      onSubmitThreadInstruction={handleSubmitThreadInstruction}
-      onSubmitIssue={handleCreateIssue}
-      onSubmitIssueEdit={handleUpdateIssue}
-      onRefresh={() => void handleRefresh()}
-      onLogout={handleLogout}
-      onCloseDetail={() =>
-        setDetailState({
-          open: false,
-          loading: false,
-          thread: null,
-          messages: []
-        })
-      }
-    />
+    <>
+      <MainPage
+        language={language}
+        onChangeLanguage={setLanguage}
+        session={session}
+        bridges={bridges}
+        status={status}
+        bridgeAvailable={bridgeAvailable}
+        bridgeSignal={bridgeSignal}
+        signalNow={streamNow}
+        projects={projects}
+        projectThreads={projectThreads}
+        issues={issues}
+        workspaceRoots={workspaceRoots}
+        folderState={folderState}
+        folderLoading={folderLoading}
+        selectedWorkspacePath={selectedWorkspacePath}
+        selectedBridgeId={selectedBridgeId}
+        selectedProjectId={selectedProjectId}
+        selectedProjectThreadId={selectedProjectThreadId}
+        selectedIssueId={selectedIssueId}
+        search={search}
+        recentEvents={recentEvents}
+        issueQueueOrderIds={issueQueueOrderIds}
+        prepIssueOrderIds={orderedPrepIssueIds}
+        loadingState={loadingState}
+        projectBusy={projectBusy}
+        threadBusy={threadBusy}
+        threadCreateDialogOpen={threadCreateDialogOpen}
+        projectInstructionBusy={projectInstructionBusy}
+        threadInstructionBusy={threadInstructionBusy}
+        issueBusy={issueBusy}
+        interruptingIssueId={interruptingIssueId}
+        startBusy={startBusy}
+        projectComposerOpen={projectComposerOpen}
+        projectInstructionDialogOpen={projectInstructionDialogOpen}
+        projectInstructionType={projectInstructionType}
+        threadInstructionDialogOpen={threadInstructionDialogOpen}
+        threadInstructionSupported={threadInstructionSupported}
+        composerOpen={composerOpen}
+        issueEditorOpen={issueEditorOpen}
+        issueEditorBusy={issueEditorBusy}
+        editingIssue={editingIssue}
+        projectMenuState={projectMenuState}
+        threadMenuState={threadMenuState}
+        onSearchChange={setSearch}
+        onSelectBridge={setSelectedBridgeId}
+        onDeleteBridge={() => void handleDeleteBridge()}
+        onSelectProject={setSelectedProjectId}
+        onExpandProject={(projectId) => ensureProjectThreadsLoaded(session, selectedBridgeId, projectId)}
+        onSelectProjectThread={setSelectedProjectThreadId}
+        onSelectIssue={setSelectedIssueId}
+        onUpdateIssueSelection={setSelectedIssueIds}
+        selectedIssueIds={selectedIssueIds}
+        archivedIssues={archivedIssues}
+        detailState={detailState}
+        onToggleIssueSelection={handleToggleIssueSelection}
+        onArchiveIssues={handleArchiveIssues}
+        onRestoreArchivedIssues={handleRestoreArchivedIssues}
+        onStartSelectedIssues={() => void handleStartSelectedIssues()}
+        onOpenIssueDetail={(threadId) => void handleOpenIssueDetail(threadId)}
+        onInterruptIssue={(threadId) => void handleInterruptIssue(threadId)}
+        onDeleteIssue={(threadId) => void handleDeleteIssue(threadId)}
+        onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
+        onOpenProjectMenu={handleOpenProjectMenu}
+        onCloseProjectMenu={handleCloseProjectMenu}
+        onCreateThread={handleOpenThreadCreateDialog}
+        onCloseThreadCreateDialog={handleCloseThreadCreateDialog}
+        onSubmitThreadCreateDialog={handleSubmitThreadCreateDialog}
+        onOpenThreadInstructionDialog={handleOpenThreadInstructionDialog}
+        onDeleteThread={(threadId) => void handleDeleteThread(threadId)}
+        onOpenThreadMenu={(event, thread) => {
+          event.preventDefault();
+          setThreadMenuState({
+            open: true,
+            x: event.clientX,
+            y: event.clientY,
+            thread
+          });
+        }}
+        onCloseThreadMenu={() =>
+          setThreadMenuState({
+            open: false,
+            x: 0,
+            y: 0,
+            thread: null
+          })
+        }
+        onDragQueueIssue={handleDragQueueIssue}
+        onDragPrepIssues={handleDragPrepIssues}
+        onDragMovableIssue={handleDragMovableIssue}
+        onDragRetryIssues={handleDragRetryIssues}
+        draggingMovableIssueIds={draggingMovableIssueIds}
+        draggingRetryIssueIds={draggingRetryIssueIds}
+        issueMoveTargetThreadId={issueMoveTargetThreadId}
+        onIssueMoveTargetOver={handleIssueMoveTargetOver}
+        onIssueMoveTargetLeave={handleIssueMoveTargetLeave}
+        onMoveIssuesToThread={(threadId) => void handleMoveIssuesToThread(threadId)}
+        onDragArchiveIssues={handleDragArchiveIssues}
+        onInterruptIssueToPrep={(threadId) => void handleInterruptIssueToPrep(threadId)}
+        onEditPrepIssue={(threadId) => handleOpenIssueEditor(threadId)}
+        onOpenProjectComposer={() => void handleOpenProjectComposer()}
+        onOpenProjectInstructionDialog={handleOpenProjectInstructionDialog}
+        onOpenComposer={() => setComposerOpen(true)}
+        onCloseProjectComposer={handleCloseProjectComposer}
+        onCloseProjectInstructionDialog={handleCloseProjectInstructionDialog}
+        onCloseThreadInstructionDialog={handleCloseThreadInstructionDialog}
+        onCloseComposer={() => setComposerOpen(false)}
+        onCloseIssueEditor={handleCloseIssueEditor}
+        onBrowseWorkspaceRoot={(path) => browseWorkspacePath(path)}
+        onBrowseFolder={(path) => browseWorkspacePath(path)}
+        onSelectWorkspace={setSelectedWorkspacePath}
+        onSubmitProject={handleCreateProject}
+        onSubmitProjectInstruction={handleSubmitProjectInstruction}
+        projectEditDialogOpen={projectEditDialogOpen}
+        projectEditBusy={projectEditBusy}
+        projectEditTargetProject={projectEditTargetProject}
+        onOpenProjectEditDialog={handleOpenProjectEditDialog}
+        onCloseProjectEditDialog={handleCloseProjectEditDialog}
+        onSubmitProjectEdit={handleSubmitProjectEdit}
+        onSubmitThreadInstruction={handleSubmitThreadInstruction}
+        onSubmitIssue={handleCreateIssue}
+        onSubmitIssueEdit={handleUpdateIssue}
+        onRefresh={() => void handleRefresh()}
+        onLogout={handleLogout}
+        onCloseDetail={() =>
+          setDetailState({
+            open: false,
+            loading: false,
+            thread: null,
+            messages: []
+          })
+        }
+      />
+      <ConfirmationDialog
+        open={confirmationDialog.open}
+        eyebrow={copy.board.confirmationEyebrow}
+        title={confirmationDialog.title}
+        description={confirmationDialog.description}
+        confirmLabel={confirmationDialog.confirmLabel}
+        cancelLabel={confirmationDialog.cancelLabel || copy.projectComposer.cancel}
+        closeLabel={copy.detail.close}
+        onConfirm={() => closeConfirmationDialog(true)}
+        onClose={() => closeConfirmationDialog(false)}
+      />
+      <InstantNotificationViewport
+        notifications={notifications}
+        closeLabel={copy.detail.close}
+        onDismiss={dismissNotification}
+      />
+    </>
   );
 }
