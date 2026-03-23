@@ -629,7 +629,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     _stopInProgress = true;
-    _runtimeState = AgentRuntimeState.Stopped;
+    _runtimeState = AgentRuntimeState.Stopping;
     _lastUpdatedAt = DateTimeOffset.Now;
     AppendLog("서비스 정지를 요청합니다.");
     RefreshUi();
@@ -641,41 +641,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     try
     {
-      var servicePorts = ResolveServicePorts(_configuration);
-      var stopResult = await Task.Run(() =>
-      {
-        var targetProcessIds = CollectStopTargetProcessIds(includeStdioSessions: true, servicePorts);
-        if (targetProcessIds.Count == 0)
-        {
-          return targetProcessIds;
-        }
-
-        ForceKillProcesses(targetProcessIds);
-        return targetProcessIds;
-      });
-
-      if (stopResult.Count == 0)
-      {
-        DeleteAgentPidFile();
-        DisposeProcess();
-        _processId = null;
-        _runtimeState = AgentRuntimeState.Stopped;
-        _lastError = null;
-        _lastUpdatedAt = DateTimeOffset.Now;
-        AppendLog("중지할 서비스가 없습니다.");
-        return;
-      }
-
-      AppendLog($"서비스 관련 프로세스를 강제 종료합니다. pids={string.Join(",", stopResult)}");
-      await ForceKillListeningProcessesUntilReleasedAsync(servicePorts);
-      DeleteAgentPidFile();
-      DisposeProcess();
-      _processId = null;
-      _runtimeState = AgentRuntimeState.Stopped;
-      _lastError = null;
-      _lastUpdatedAt = DateTimeOffset.Now;
-      AppendLog("서비스와 보조 세션 종료가 완료되었습니다.");
-      return;
+      await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: true);
     }
     catch (Exception error)
     {
@@ -1186,8 +1152,19 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     AppendLog($"서비스 관련 프로세스를 종료합니다. pids={string.Join(",", allProcessIds)}");
     ForceKillProcesses(allProcessIds);
-    await WaitForProcessGroupExitAsync(includeStdioSessions);
+    await ForceKillManagedProcessesUntilExitedAsync(includeStdioSessions);
     await ForceKillListeningProcessesUntilReleasedAsync(servicePorts);
+
+    var remainingProcessIds = CollectManagedProcessIds(includeStdioSessions);
+    var remainingListeningProcessIds = FindListeningProcessIds(servicePorts);
+    if (remainingProcessIds.Count > 0 || remainingListeningProcessIds.Count > 0)
+    {
+      throw BuildServiceStopFailure(
+        remainingProcessIds,
+        remainingListeningProcessIds,
+        servicePorts);
+    }
+
     DeleteAgentPidFile();
     DisposeProcess();
     _processId = null;
@@ -1427,20 +1404,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
-  private async Task<bool> WaitForProcessGroupExitAsync(bool includeStdioSessions, int timeoutMs = 15000)
+  private async Task ForceKillManagedProcessesUntilExitedAsync(bool includeStdioSessions, int timeoutMs = 15000)
   {
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
     while (DateTimeOffset.UtcNow < deadline)
     {
-      if (CollectManagedProcessIds(includeStdioSessions).Count == 0)
+      var remainingProcessIds = CollectManagedProcessIds(includeStdioSessions);
+      if (remainingProcessIds.Count == 0)
       {
-        return true;
+        return;
       }
 
+      ForceKillProcesses(remainingProcessIds);
       await Task.Delay(250);
     }
 
-    return false;
+    var finalRemainingProcessIds = CollectManagedProcessIds(includeStdioSessions);
+    if (finalRemainingProcessIds.Count > 0)
+    {
+      AppendLog($"서비스 프로세스가 남아 있어 재강제 종료를 시도했지만 완전히 내려가지 않았습니다. pids={string.Join(",", finalRemainingProcessIds)}");
+    }
   }
 
   private List<int> CollectManagedProcessIds(bool includeStdioSessions)
@@ -1503,6 +1486,28 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     return processIds.ToList();
+  }
+
+  private static InvalidOperationException BuildServiceStopFailure(
+    IReadOnlyCollection<int> remainingProcessIds,
+    IReadOnlyCollection<int> remainingListeningProcessIds,
+    IReadOnlyCollection<int> servicePorts)
+  {
+    var details = new List<string>();
+
+    if (remainingProcessIds.Count > 0)
+    {
+      details.Add($"remainingPids={string.Join(",", remainingProcessIds.OrderBy(static pid => pid))}");
+    }
+
+    if (remainingListeningProcessIds.Count > 0)
+    {
+      details.Add(
+        $"remainingListeners={string.Join(",", remainingListeningProcessIds.OrderBy(static pid => pid))} on ports={string.Join(",", servicePorts.OrderBy(static port => port))}");
+    }
+
+    var suffix = details.Count == 0 ? string.Empty : $" ({string.Join("; ", details)})";
+    return new InvalidOperationException($"서비스 프로세스 정리가 완료되지 않았습니다.{suffix}");
   }
 
   private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 15000)
