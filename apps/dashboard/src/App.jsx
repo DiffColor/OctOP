@@ -103,6 +103,7 @@ const ISSUE_ATTACHMENT_ACCEPT = [
   ...ISSUE_ATTACHMENT_SUPPORTED_EXTENSIONS.map((extension) => `.${extension}`),
   ...ISSUE_ATTACHMENT_SPECIAL_FILE_NAMES
 ].join(",");
+const THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -196,6 +197,14 @@ function notifyBridgeRequestSuccess(event) {
       // ignore listener failures
     }
   }
+}
+
+function getScrollDistanceFromBottom(node) {
+  if (!node) {
+    return 0;
+  }
+
+  return Math.max(0, node.scrollHeight - node.clientHeight - node.scrollTop);
 }
 
 function extractBridgeIdFromPath(path) {
@@ -4651,6 +4660,78 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
   const contextUsage = getThreadContextUsage(thread);
   const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
   const interruptible = ["running", "awaiting_input"].includes(String(thread?.status ?? "").trim());
+  const scrollRef = useRef(null);
+  const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
+  const recomputeJumpButtonVisibility = useCallback(() => {
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      setShowJumpToLatestButton(false);
+      return;
+    }
+
+    const shouldShowButton = getScrollDistanceFromBottom(scrollNode) >= THREAD_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX;
+    setShowJumpToLatestButton((current) => (current === shouldShowButton ? current : shouldShowButton));
+  }, []);
+  const handleJumpToLatest = useCallback(() => {
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    scrollNode.scrollTop = scrollNode.scrollHeight;
+    setShowJumpToLatestButton(false);
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    let rafId = null;
+    const handleScroll = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+
+      rafId = window.requestAnimationFrame(() => {
+        recomputeJumpButtonVisibility();
+      });
+    };
+
+    recomputeJumpButtonVisibility();
+    scrollNode.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      scrollNode.removeEventListener("scroll", handleScroll);
+
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [open, recomputeJumpButtonVisibility, thread?.id]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      recomputeJumpButtonVisibility();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [loading, messages, open, recomputeJumpButtonVisibility, thread?.id]);
+
   if (!open) {
     return null;
   }
@@ -4705,44 +4786,62 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
           </div>
         </div>
 
-        <div className="custom-scrollbar flex-1 overflow-y-scroll px-6 py-5">
-          {loading ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
-              {copy.detail.loading}
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
-              {copy.detail.empty}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {messages.map((message) => {
-                const userMessage = message.role === "user";
+        <div className="relative min-h-0 flex-1">
+          <div ref={scrollRef} className="custom-scrollbar h-full overflow-y-scroll px-6 py-5">
+            {loading ? (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
+                {copy.detail.loading}
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
+                {copy.detail.empty}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {messages.map((message) => {
+                  const userMessage = message.role === "user";
 
-                return (
-                  <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[85%] rounded-3xl px-4 py-3 ${
-                        userMessage
-                          ? "bg-sky-500 text-slate-950"
-                          : "border border-slate-800 bg-slate-900 text-slate-100"
-                      }`}
-                    >
-                      <div className="mb-2 flex items-center gap-2 text-[11px]">
-                        <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
-                          {userMessage ? copy.detail.request : copy.detail.response}
-                        </span>
-                        <span className={userMessage ? "text-slate-950/60" : "text-slate-500"}>
-                          {formatDateTime(message.timestamp, language)}
-                        </span>
+                  return (
+                    <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className={`max-w-[85%] rounded-3xl px-4 py-3 ${
+                          userMessage
+                            ? "bg-sky-500 text-slate-950"
+                            : "border border-slate-800 bg-slate-900 text-slate-100"
+                        }`}
+                      >
+                        <div className="mb-2 flex items-center gap-2 text-[11px]">
+                          <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
+                            {userMessage ? copy.detail.request : copy.detail.response}
+                          </span>
+                          <span className={userMessage ? "text-slate-950/60" : "text-slate-500"}>
+                            {formatDateTime(message.timestamp, language)}
+                          </span>
+                        </div>
+                        <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
                       </div>
-                      <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {showJumpToLatestButton ? (
+            <div className="pointer-events-none absolute bottom-6 right-6 z-10">
+              <button
+                type="button"
+                onClick={handleJumpToLatest}
+                aria-label="대화 맨 아래로 이동"
+                title="대화 맨 아래로 이동"
+                className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 text-sky-200 shadow-[0_18px_44px_rgba(15,23,42,0.5)] backdrop-blur transition hover:border-sky-300/60 hover:bg-slate-900"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M7 10l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+                </svg>
+              </button>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

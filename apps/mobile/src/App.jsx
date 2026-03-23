@@ -362,6 +362,7 @@ const THREAD_CONTENT_FILTERS = [
 ];
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
+const CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 const BOTTOM_BOUNDARY_HEADER_GUARD_PX = 24;
@@ -5440,6 +5441,7 @@ function ThreadDetail({
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
+  const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
   const [refreshPending, setRefreshPending] = useState(false);
@@ -5658,30 +5660,35 @@ function ThreadDetail({
     [visibleChatTimeline]
   );
 
-  const recomputePinnedState = useCallback(() => {
+  const recomputeScrollUiState = useCallback(() => {
     const scrollNode = scrollRef.current;
 
     if (!scrollNode) {
+      setShowJumpToLatestButton(false);
       return;
     }
 
     const distanceFromBottom = getDistanceFromBottom(scrollNode);
     const shouldPin = distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+    const shouldShowJumpButton = distanceFromBottom >= CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX;
 
     if (shouldPin !== pinnedToLatestRef.current) {
       pinnedToLatestRef.current = shouldPin;
       setIsPinnedToLatest(shouldPin);
     }
+
+    setShowJumpToLatestButton((current) => (current === shouldShowJumpButton ? current : shouldShowJumpButton));
   }, []);
 
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
+    setShowJumpToLatestButton(false);
     autoScrollingRef.current = false;
     previousScrollTopRef.current = 0;
     setShowHeaderMenus(true);
-    recomputePinnedState();
-  }, [recomputePinnedState, thread?.id, viewMode]);
+    recomputeScrollUiState();
+  }, [recomputeScrollUiState, thread?.id, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat") {
@@ -5718,7 +5725,7 @@ function ThreadDetail({
             setShowHeaderMenus(true);
           } else if (shouldGuardHeaderAtBottom) {
             previousScrollTopRef.current = nextScrollTop;
-            recomputePinnedState();
+            recomputeScrollUiState();
             return;
           } else if (delta >= HEADER_MENU_SCROLL_DELTA_PX) {
             setShowHeaderMenus(false);
@@ -5729,11 +5736,11 @@ function ThreadDetail({
           previousScrollTopRef.current = nextScrollTop;
         }
 
-        recomputePinnedState();
+        recomputeScrollUiState();
       });
     };
 
-    recomputePinnedState();
+    recomputeScrollUiState();
     scrollNode.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
@@ -5743,7 +5750,7 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [recomputePinnedState, viewMode]);
+  }, [recomputeScrollUiState, thread?.status, viewMode]);
 
   useLayoutEffect(() => {
     if (viewMode !== "chat" || !isPinnedToLatest) {
@@ -5768,12 +5775,34 @@ function ThreadDetail({
 
       window.requestAnimationFrame(() => {
         autoScrollingRef.current = false;
-        recomputePinnedState();
+        recomputeScrollUiState();
       });
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [isPinnedToLatest, recomputePinnedState, thread?.id, viewMode, visibleChatTimelineSignature]);
+  }, [isPinnedToLatest, recomputeScrollUiState, thread?.id, viewMode, visibleChatTimelineSignature]);
+
+  const handleJumpToLatest = useCallback(() => {
+    const anchorNode = scrollAnchorRef.current;
+    const containerNode = scrollRef.current;
+
+    if (!anchorNode && !containerNode) {
+      return;
+    }
+
+    autoScrollingRef.current = true;
+
+    if (anchorNode) {
+      anchorNode.scrollIntoView({ block: "end" });
+    } else if (containerNode) {
+      containerNode.scrollTop = containerNode.scrollHeight;
+    }
+
+    window.requestAnimationFrame(() => {
+      autoScrollingRef.current = false;
+      recomputeScrollUiState();
+    });
+  }, [recomputeScrollUiState]);
 
   const handleRefreshMessages = async () => {
     if (!onRefreshMessages || refreshPending) {
@@ -6018,12 +6047,13 @@ function ThreadDetail({
         </div>
       </header>
 
-      <div
-        ref={scrollRef}
-        data-testid="thread-detail-scroll"
-        className="telegram-grid touch-scroll-boundary-lock min-h-0 flex-1 overflow-y-auto px-4 pb-5 pt-5"
-      >
-        <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          data-testid="thread-detail-scroll"
+          className="telegram-grid touch-scroll-boundary-lock min-h-0 h-full overflow-y-auto px-4 pb-5 pt-5"
+        >
+          <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           <div className="flex justify-center">
             <span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[11px] text-slate-300">
               {formatDateTime(threadTimestamp)}
@@ -6172,8 +6202,25 @@ function ThreadDetail({
               </div>
             </div>
           ) : null}
-          <div ref={scrollAnchorRef} />
+            <div ref={scrollAnchorRef} />
+          </div>
         </div>
+
+        {showJumpToLatestButton ? (
+          <div className="pointer-events-none absolute bottom-4 right-4 z-10">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              aria-label="대화 맨 아래로 이동"
+              title="대화 맨 아래로 이동"
+              className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 text-sky-200 shadow-[0_16px_40px_rgba(15,23,42,0.45)] backdrop-blur transition hover:border-sky-300/60 hover:bg-slate-900"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M7 10l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+              </svg>
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <ThreadMessageActionSheet
