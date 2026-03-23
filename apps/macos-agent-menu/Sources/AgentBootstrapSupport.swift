@@ -1691,7 +1691,11 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     let sourceContentRevision = try computeCodexAdapterContentRevision(from: codexAdapterURL)
-    let sourceRevision = gitRevisionForPathIfAvailable(at: repositoryURL, path: codexAdapterURL)
+    let sourceRevision = gitRevisionForPathIfAvailable(
+      at: repositoryURL,
+      path: codexAdapterURL,
+      remoteBranch: runtimeRepositoryBranch
+    )
 
     return AgentPreparedCodexAdapterSource(
       sourceURL: codexAdapterURL,
@@ -1770,7 +1774,11 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     let sourceContentRevision = try computeCodexAdapterContentRevision(from: codexAdapterURL)
-    let sourceRevision = gitRevisionForPathIfAvailable(at: repositoryURL, path: codexAdapterURL) ?? sourceContentRevision
+    let sourceRevision = gitRevisionForPathIfAvailable(
+      at: repositoryURL,
+      path: codexAdapterURL,
+      remoteBranch: runtimeRepositoryBranch
+    ) ?? sourceContentRevision
     return RuntimeUpdateDescriptor(
       sourceRevision: sourceRevision,
       currentSourceRevision: nil,
@@ -1855,7 +1863,11 @@ final class AgentBootstrapStore: ObservableObject {
     return value.isEmpty ? nil : value
   }
 
-  private func gitRevisionForPathIfAvailable(at repositoryURL: URL, path targetURL: URL) -> String? {
+  private func gitRevisionForPathIfAvailable(
+    at repositoryURL: URL,
+    path targetURL: URL,
+    remoteBranch: String? = nil
+  ) -> String? {
     let repositoryPath = repositoryURL.standardizedFileURL.path
     let targetPath = targetURL.standardizedFileURL.path
 
@@ -1866,10 +1878,69 @@ final class AgentBootstrapStore: ObservableObject {
     let relativePath = String(targetPath.dropFirst(repositoryPath.count))
       .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     let pathArgument = relativePath.isEmpty ? "." : relativePath
+    let initialRevision = gitLoggedRevisionForPathIfAvailable(at: repositoryURL, pathArgument: pathArgument)
+
+    guard let remoteBranch,
+          let headRevision = gitRevisionIfAvailable(at: repositoryURL),
+          initialRevision == headRevision,
+          gitIsShallowRepository(at: repositoryURL),
+          !gitHeadTouchesPath(at: repositoryURL, pathArgument: pathArgument),
+          gitUnshallowRepository(at: repositoryURL, branch: remoteBranch) else {
+      return initialRevision
+    }
+
+    return gitLoggedRevisionForPathIfAvailable(at: repositoryURL, pathArgument: pathArgument) ?? initialRevision
+  }
+
+  private func gitLoggedRevisionForPathIfAvailable(at repositoryURL: URL, pathArgument: String) -> String? {
+    guard let result = runGitCommand(
+      at: repositoryURL,
+      arguments: ["log", "-1", "--format=%H", "--", pathArgument]
+    ), result.status == 0 else {
+      return nil
+    }
+
+    return result.output.isEmpty ? nil : result.output
+  }
+
+  private func gitIsShallowRepository(at repositoryURL: URL) -> Bool {
+    guard let result = runGitCommand(
+      at: repositoryURL,
+      arguments: ["rev-parse", "--is-shallow-repository"]
+    ), result.status == 0 else {
+      return false
+    }
+
+    return result.output == "true"
+  }
+
+  private func gitHeadTouchesPath(at repositoryURL: URL, pathArgument: String) -> Bool {
+    guard let result = runGitCommand(
+      at: repositoryURL,
+      arguments: ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--", pathArgument]
+    ), result.status == 0 else {
+      return false
+    }
+
+    return !result.output.isEmpty
+  }
+
+  private func gitUnshallowRepository(at repositoryURL: URL, branch: String) -> Bool {
+    guard let result = runGitCommand(
+      at: repositoryURL,
+      arguments: ["fetch", "--unshallow", "origin", branch]
+    ) else {
+      return false
+    }
+
+    return result.status == 0
+  }
+
+  private func runGitCommand(at repositoryURL: URL, arguments: [String]) -> (status: Int32, output: String)? {
     let process = Process()
     let output = Pipe()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-    process.arguments = ["-C", repositoryURL.path, "log", "-1", "--format=%H", "--", pathArgument]
+    process.arguments = ["-C", repositoryURL.path] + arguments
     process.standardOutput = output
     process.standardError = Pipe()
 
@@ -1880,13 +1951,9 @@ final class AgentBootstrapStore: ObservableObject {
       return nil
     }
 
-    guard process.terminationStatus == 0 else {
-      return nil
-    }
-
     let data = output.fileHandleForReading.readDataToEndOfFile()
     let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.isEmpty ? nil : value
+    return (process.terminationStatus, value)
   }
 
   private func ensureLatestCodexAdapterRepository(
@@ -1901,7 +1968,7 @@ final class AgentBootstrapStore: ObservableObject {
         log?("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
         try await runProcess(
           executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "fetch", "--depth", "1", "origin", branch],
+          arguments: ["-C", repositoryURL.path, "fetch", "origin", branch],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log ?? { _ in }

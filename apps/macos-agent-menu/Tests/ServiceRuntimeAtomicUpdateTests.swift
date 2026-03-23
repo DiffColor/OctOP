@@ -15,6 +15,8 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   private var originalCodexAdapterOverride: String?
   private var originalLaunchAgentOverride: String?
   private var originalSkipLoginOverride: String?
+  private var originalRuntimeRepoURLOverride: String?
+  private var originalRuntimeRepoBranchOverride: String?
 
   override func setUpWithError() throws {
     try super.setUpWithError()
@@ -36,6 +38,8 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
     originalCodexAdapterOverride = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH"]
     originalLaunchAgentOverride = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_LAUNCH_AGENT_PATH"]
     originalSkipLoginOverride = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_SKIP_LOGIN_CHECKS"]
+    originalRuntimeRepoURLOverride = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_RUNTIME_REPO_URL"]
+    originalRuntimeRepoBranchOverride = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH"]
 
     setenv("OCTOP_AGENT_MENU_APP_SUPPORT_PATH", appSupportURL.path, 1)
     setenv("OCTOP_AGENT_MENU_BOOTSTRAP_PATH", bootstrapSourceURL.path, 1)
@@ -68,6 +72,12 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
     restoreEnvironmentVariable(
       "OCTOP_AGENT_MENU_SKIP_LOGIN_CHECKS",
       originalValue: originalSkipLoginOverride)
+    restoreEnvironmentVariable(
+      "OCTOP_AGENT_MENU_RUNTIME_REPO_URL",
+      originalValue: originalRuntimeRepoURLOverride)
+    restoreEnvironmentVariable(
+      "OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH",
+      originalValue: originalRuntimeRepoBranchOverride)
 
     if let sandboxURL {
       try? FileManager.default.removeItem(at: sandboxURL)
@@ -285,6 +295,100 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       message: "update adapter"
     )
     try "unrelated head advance\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let unrelatedHeadRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "docs only"
+    )
+
+    await bootstrap.refreshAvailableRuntimeUpdate(log: { _ in })
+
+    XCTAssertNotEqual(adapterRevision, unrelatedHeadRevision)
+    XCTAssertEqual(bootstrap.availableRuntimeUpdate?.sourceRevision, adapterRevision)
+    XCTAssertEqual(bootstrap.runtimeUpdateStatusDisplay, "업데이트 \(String(adapterRevision.prefix(12)))")
+  }
+
+  @MainActor
+  func testPrepareRuntimeReleaseUsesLastCodexAdapterRevisionFromShallowRuntimeRepositoryCache() async throws {
+    let repositoryURL = sandboxURL.appendingPathComponent("remote-repository", isDirectory: true)
+    let adapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try createFakeCodexAdapterSource(at: adapterURL)
+    try "seed\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let adapterRevision = try initializeGitRepository(at: repositoryURL)
+    try renameGitBranch(at: repositoryURL, name: "main")
+    try "docs only\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let unrelatedHeadRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "docs only"
+    )
+
+    unsetenv("OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH")
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_URL", repositoryURL.absoluteString, 1)
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH", "main", 1)
+
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    let buildInfoData = try Data(contentsOf: releaseURL.appendingPathComponent("build-info.json"))
+    let buildInfoObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: buildInfoData) as? [String: Any]
+    )
+    let runtimeID = try XCTUnwrap(buildInfoObject["runtimeID"] as? String)
+
+    XCTAssertNotEqual(adapterRevision, unrelatedHeadRevision)
+    XCTAssertEqual(buildInfoObject["sourceRevision"] as? String, adapterRevision)
+    XCTAssertTrue(runtimeID.hasPrefix("runtime-\(String(adapterRevision.prefix(12)))-"))
+  }
+
+  @MainActor
+  func testRefreshAvailableRuntimeUpdateUsesLastCodexAdapterRevisionFromShallowRuntimeRepositoryCache() async throws {
+    let repositoryURL = sandboxURL.appendingPathComponent("remote-update-repository", isDirectory: true)
+    let adapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try createFakeCodexAdapterSource(at: adapterURL)
+    try "seed\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    _ = try initializeGitRepository(at: repositoryURL)
+    try renameGitBranch(at: repositoryURL, name: "main")
+
+    unsetenv("OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH")
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_URL", repositoryURL.absoluteString, 1)
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH", "main", 1)
+
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    try bootstrap.activateRuntimeRelease(releaseURL, log: { _ in })
+
+    try "export const domain = \"updated-from-remote\";\n".write(
+      to: adapterURL.appendingPathComponent("src/domain.js"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let adapterRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "update adapter"
+    )
+    try "remote docs only\n".write(
       to: repositoryURL.appendingPathComponent("README.md"),
       atomically: true,
       encoding: .utf8
@@ -1056,5 +1160,16 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
 
     XCTAssertEqual(revision.count, 40)
     return revision
+  }
+
+  private func renameGitBranch(at repositoryURL: URL, name: String) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["-C", repositoryURL.path, "branch", "-M", name]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(process.terminationStatus, 0, "git branch rename failed: \(name)")
   }
 }
