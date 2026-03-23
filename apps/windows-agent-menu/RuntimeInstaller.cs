@@ -762,7 +762,7 @@ sealed class RuntimeInstaller
       return new PreparedCodexAdapterSource
       {
         SourceRoot = fullOverrideRoot,
-        SourceRevision = null
+        SourceRevision = await ReadPathRevisionIfAvailableAsync(fullOverrideRoot, cancellationToken)
       };
     }
 
@@ -776,7 +776,7 @@ sealed class RuntimeInstaller
     return new PreparedCodexAdapterSource
     {
       SourceRoot = sourceRoot,
-      SourceRevision = await ReadRepositoryHeadAsync(paths.RuntimeRepositoryCacheRoot, cancellationToken)
+      SourceRevision = await ReadRepositoryRevisionForPathAsync(paths.RuntimeRepositoryCacheRoot, sourceRoot, cancellationToken)
     };
   }
 
@@ -831,6 +831,92 @@ sealed class RuntimeInstaller
 
     var revision = result.StandardOutput.Trim();
     return string.IsNullOrWhiteSpace(revision) ? null : revision;
+  }
+
+  private static async Task<string?> ReadPathRevisionIfAvailableAsync(string sourceRoot, CancellationToken cancellationToken)
+  {
+    var repositoryRoot = await ResolveRepositoryRootAsync(sourceRoot, cancellationToken);
+    if (string.IsNullOrWhiteSpace(repositoryRoot))
+    {
+      return null;
+    }
+
+    return await ReadRepositoryRevisionForPathAsync(repositoryRoot, sourceRoot, cancellationToken);
+  }
+
+  private static async Task<string?> ResolveRepositoryRootAsync(string workingDirectory, CancellationToken cancellationToken)
+  {
+    var result = await RunCommandAsync(
+      new ProcessStartInfo
+      {
+        FileName = "git",
+        WorkingDirectory = workingDirectory,
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
+        Arguments = "rev-parse --show-toplevel"
+      },
+      cancellationToken: cancellationToken);
+
+    if (result.ExitCode != 0)
+    {
+      return null;
+    }
+
+    var repositoryRoot = result.StandardOutput.Trim();
+    return string.IsNullOrWhiteSpace(repositoryRoot) ? null : repositoryRoot;
+  }
+
+  private static async Task<string?> ReadRepositoryRevisionForPathAsync(string repositoryRoot, string targetPath, CancellationToken cancellationToken)
+  {
+    var relativePath = Path.GetRelativePath(repositoryRoot, targetPath)
+      .Replace('\\', '/');
+
+    if (relativePath.StartsWith("..", StringComparison.Ordinal))
+    {
+      return null;
+    }
+
+    if (string.IsNullOrWhiteSpace(relativePath))
+    {
+      relativePath = ".";
+    }
+
+    var result = await RunCommandAsync(
+      new ProcessStartInfo
+      {
+        FileName = "git",
+        WorkingDirectory = repositoryRoot,
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
+        Arguments = $"log -1 --format=%H -- {QuoteArgument(relativePath)}"
+      },
+      cancellationToken: cancellationToken);
+
+    if (result.ExitCode != 0)
+    {
+      return null;
+    }
+
+    var revision = result.StandardOutput.Trim();
+    return string.IsNullOrWhiteSpace(revision) ? null : revision;
+  }
+
+  private static string QuoteArgument(string value)
+  {
+    if (string.IsNullOrEmpty(value))
+    {
+      return "\"\"";
+    }
+
+    return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
   }
 
   private static async Task RunGitCommandAsync(string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)

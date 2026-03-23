@@ -215,6 +215,93 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testPrepareRuntimeReleaseUsesLastCodexAdapterRevisionInsteadOfRepositoryHead() async throws {
+    let repositoryURL = sandboxURL.appendingPathComponent("override-repository", isDirectory: true)
+    let adapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try createFakeCodexAdapterSource(at: adapterURL)
+    try "seed\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let adapterRevision = try initializeGitRepository(at: repositoryURL)
+    try "unrelated change\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let unrelatedHeadRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "docs only"
+    )
+
+    setenv("OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH", adapterURL.path, 1)
+
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    let buildInfoData = try Data(contentsOf: releaseURL.appendingPathComponent("build-info.json"))
+    let buildInfoObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: buildInfoData) as? [String: Any]
+    )
+    let runtimeID = try XCTUnwrap(buildInfoObject["runtimeID"] as? String)
+
+    XCTAssertNotEqual(adapterRevision, unrelatedHeadRevision)
+    XCTAssertEqual(buildInfoObject["sourceRevision"] as? String, adapterRevision)
+    XCTAssertTrue(runtimeID.hasPrefix("runtime-\(String(adapterRevision.prefix(12)))-"))
+  }
+
+  @MainActor
+  func testRefreshAvailableRuntimeUpdateUsesLastCodexAdapterRevisionInsteadOfRepositoryHead() async throws {
+    let repositoryURL = sandboxURL.appendingPathComponent("update-repository", isDirectory: true)
+    let adapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try createFakeCodexAdapterSource(at: adapterURL)
+    try "seed\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    _ = try initializeGitRepository(at: repositoryURL)
+    setenv("OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH", adapterURL.path, 1)
+
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    try bootstrap.activateRuntimeRelease(releaseURL, log: { _ in })
+
+    try "export const domain = \"updated-source\";\n".write(
+      to: adapterURL.appendingPathComponent("src/domain.js"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let adapterRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "update adapter"
+    )
+    try "unrelated head advance\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let unrelatedHeadRevision = try commitGitChanges(
+      at: repositoryURL,
+      message: "docs only"
+    )
+
+    await bootstrap.refreshAvailableRuntimeUpdate(log: { _ in })
+
+    XCTAssertNotEqual(adapterRevision, unrelatedHeadRevision)
+    XCTAssertEqual(bootstrap.availableRuntimeUpdate?.sourceRevision, adapterRevision)
+    XCTAssertEqual(bootstrap.runtimeUpdateStatusDisplay, "업데이트 \(String(adapterRevision.prefix(12)))")
+  }
+
+  @MainActor
   func testRefreshAvailableRuntimeUpdateIgnoresRuntimeNodeModulesDifferences() async throws {
     _ = try initializeGitRepository(at: codexAdapterSourceURL)
     let bootstrap = makeBootstrap()
@@ -911,6 +998,38 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       ["config", "user.email", "octop-tests@example.com"],
       ["add", "."],
       ["commit", "-m", "seed codex adapter"]
+    ]
+
+    for arguments in commands {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      process.arguments = ["-C", repositoryURL.path] + arguments
+      process.standardOutput = Pipe()
+      process.standardError = Pipe()
+      try process.run()
+      process.waitUntilExit()
+      XCTAssertEqual(process.terminationStatus, 0, "git command failed: \(arguments.joined(separator: " "))")
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["-C", repositoryURL.path, "rev-parse", "HEAD"]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    let revision = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    XCTAssertEqual(revision.count, 40)
+    return revision
+  }
+
+  private func commitGitChanges(at repositoryURL: URL, message: String) throws -> String {
+    let commands: [[String]] = [
+      ["add", "."],
+      ["commit", "-m", message]
     ]
 
     for arguments in commands {

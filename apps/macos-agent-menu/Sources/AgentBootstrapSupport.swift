@@ -406,6 +406,7 @@ private struct AgentRuntimeReleaseBuildInfo: Codable {
   let sourceHash: String
   let configurationHash: String
   let sourceRevision: String?
+  let sourceContentRevision: String?
   let appVersion: String
   let createdAt: Date
 }
@@ -437,11 +438,13 @@ private struct PendingLoginState: Codable {
 private struct AgentPreparedRuntimeSource {
   let rootURL: URL
   let sourceRevision: String?
+  let sourceContentRevision: String
 }
 
 private struct AgentPreparedCodexAdapterSource {
   let sourceURL: URL
   let sourceRevision: String?
+  let sourceContentRevision: String
 }
 
 struct AgentDiagnosticItem: Identifiable {
@@ -1079,11 +1082,19 @@ final class AgentBootstrapStore: ObservableObject {
 
   var runtimeVersionDisplay: String {
     if let activeRuntimeURL = currentRuntimeReleaseURL(),
-       let buildInfo = loadRuntimeBuildInfo(at: activeRuntimeURL),
-       let sourceRevision = buildInfo.sourceRevision?
-         .trimmingCharacters(in: .whitespacesAndNewlines),
-       !sourceRevision.isEmpty {
-      return String(sourceRevision.prefix(12))
+       let buildInfo = loadRuntimeBuildInfo(at: activeRuntimeURL) {
+      let sourceToken = buildInfo.sourceRevision?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let contentToken = buildInfo.sourceContentRevision?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+      if let sourceToken, !sourceToken.isEmpty {
+        return String(sourceToken.prefix(12))
+      }
+
+      if let contentToken, !contentToken.isEmpty {
+        return String(contentToken.prefix(12))
+      }
     }
 
     guard FileManager.default.fileExists(atPath: runtimeVersionURL.path),
@@ -1533,11 +1544,13 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     let sourceHash = try computeRuntimeSourceHash(from: preparedSource.rootURL)
+    let sourceContentRevision = preparedSource.sourceContentRevision
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     let configurationHash = try computeRuntimeConfigurationHash()
     let runtimeRevisionLabel = preparedSource.sourceRevision?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .prefix(12)
-    let runtimeID = "runtime-\(runtimeRevisionLabel.map(String.init) ?? String(sourceHash.prefix(12)))-\(String(configurationHash.prefix(12)))"
+    let runtimeID = "runtime-\(runtimeRevisionLabel.map(String.init) ?? String(sourceContentRevision.prefix(12)))-\(String(configurationHash.prefix(12)))"
     let candidateReleaseURL = runtimeReleasesURL.appendingPathComponent(runtimeID, isDirectory: true)
 
     if let activeReleaseURL = currentRuntimeReleaseURL(),
@@ -1568,6 +1581,7 @@ final class AgentBootstrapStore: ObservableObject {
           sourceHash: sourceHash,
           configurationHash: configurationHash,
           sourceRevision: preparedSource.sourceRevision,
+          sourceContentRevision: sourceContentRevision,
           appVersion: currentAppVersionTag,
           createdAt: Date()
         ),
@@ -1630,21 +1644,36 @@ final class AgentBootstrapStore: ObservableObject {
 
       return AgentPreparedRuntimeSource(
         rootURL: stagingSourceURL,
-        sourceRevision: preparedCodexAdapter.sourceRevision
+        sourceRevision: preparedCodexAdapter.sourceRevision,
+        sourceContentRevision: preparedCodexAdapter.sourceContentRevision
       )
     }
 
+    let bundledCodexAdapterURL = stagingSourceURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    let bundledContentRevision = try computeCodexAdapterContentRevision(from: bundledCodexAdapterURL)
+
     log("원격 codex-adapter 소스를 가져오지 못해 앱 번들 런타임을 사용합니다.")
-    return AgentPreparedRuntimeSource(rootURL: stagingSourceURL, sourceRevision: nil)
+    return AgentPreparedRuntimeSource(
+      rootURL: stagingSourceURL,
+      sourceRevision: nil,
+      sourceContentRevision: bundledContentRevision
+    )
   }
 
   private func prepareLatestCodexAdapterSource(
     log: @escaping @MainActor (String) -> Void
   ) async throws -> AgentPreparedCodexAdapterSource? {
     if let overrideURL = codexAdapterSourceOverrideURL() {
+      let sourceContentRevision = try computeCodexAdapterContentRevision(from: overrideURL)
+      let sourceRevision = gitRepositoryURL(containing: overrideURL)
+        .flatMap { gitRevisionForPathIfAvailable(at: $0, path: overrideURL) }
+
       return AgentPreparedCodexAdapterSource(
         sourceURL: overrideURL,
-        sourceRevision: gitRepositoryURL(containing: overrideURL).flatMap { gitRevisionIfAvailable(at: $0) }
+        sourceRevision: sourceRevision,
+        sourceContentRevision: sourceContentRevision
       )
     }
 
@@ -1661,9 +1690,13 @@ final class AgentBootstrapStore: ObservableObject {
       return nil
     }
 
+    let sourceContentRevision = try computeCodexAdapterContentRevision(from: codexAdapterURL)
+    let sourceRevision = gitRevisionForPathIfAvailable(at: repositoryURL, path: codexAdapterURL)
+
     return AgentPreparedCodexAdapterSource(
       sourceURL: codexAdapterURL,
-      sourceRevision: gitRevisionIfAvailable(at: repositoryURL)
+      sourceRevision: sourceRevision,
+      sourceContentRevision: sourceContentRevision
     )
   }
 
@@ -1715,7 +1748,7 @@ final class AgentBootstrapStore: ObservableObject {
     if let overrideURL = codexAdapterSourceOverrideURL() {
       let sourceContentRevision = try computeCodexAdapterContentRevision(from: overrideURL)
       let sourceRevision = gitRepositoryURL(containing: overrideURL)
-        .flatMap { gitRevisionIfAvailable(at: $0) } ?? sourceContentRevision
+        .flatMap { gitRevisionForPathIfAvailable(at: $0, path: overrideURL) } ?? sourceContentRevision
       return RuntimeUpdateDescriptor(
         sourceRevision: sourceRevision,
         currentSourceRevision: nil,
@@ -1737,7 +1770,7 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     let sourceContentRevision = try computeCodexAdapterContentRevision(from: codexAdapterURL)
-    let sourceRevision = gitRevisionIfAvailable(at: repositoryURL) ?? sourceContentRevision
+    let sourceRevision = gitRevisionForPathIfAvailable(at: repositoryURL, path: codexAdapterURL) ?? sourceContentRevision
     return RuntimeUpdateDescriptor(
       sourceRevision: sourceRevision,
       currentSourceRevision: nil,
@@ -1803,6 +1836,40 @@ final class AgentBootstrapStore: ObservableObject {
     let output = Pipe()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
     process.arguments = ["-C", repositoryURL.path, "rev-parse", "HEAD"]
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+      return nil
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+  }
+
+  private func gitRevisionForPathIfAvailable(at repositoryURL: URL, path targetURL: URL) -> String? {
+    let repositoryPath = repositoryURL.standardizedFileURL.path
+    let targetPath = targetURL.standardizedFileURL.path
+
+    guard targetPath.hasPrefix(repositoryPath) else {
+      return gitRevisionIfAvailable(at: repositoryURL)
+    }
+
+    let relativePath = String(targetPath.dropFirst(repositoryPath.count))
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let pathArgument = relativePath.isEmpty ? "." : relativePath
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["-C", repositoryURL.path, "log", "-1", "--format=%H", "--", pathArgument]
     process.standardOutput = output
     process.standardError = Pipe()
 
