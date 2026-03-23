@@ -414,6 +414,7 @@ const PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX = 10;
 const THREAD_LIST_ITEM_LONG_PRESS_MS = 420;
 const THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX = 10;
 const THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX = 8;
+const REORDER_POSITION_LOCK_FRAME_COUNT = 2;
 
 function getMaxScrollTop(node) {
   if (!node) {
@@ -6113,6 +6114,7 @@ function ThreadListItem({
   registerNode,
   reorderActive = false,
   reorderOffsetY = 0,
+  transitionLocked = false,
   onStartReorder,
   onMoveReorder,
   onEndReorder,
@@ -6390,12 +6392,13 @@ function ThreadListItem({
           }
         }}
         className={`thread-list-item-touch-target relative w-full px-3 py-3 text-left ${
-          dragging || reorderActive ? "" : "transition-transform duration-180 ease-out"
+          dragging || reorderActive || transitionLocked ? "" : "transition-transform duration-180 ease-out"
         } ${highlighted ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
         aria-pressed={selectionMode ? selected : undefined}
         aria-label={selectionMode ? `${thread.title} 선택` : undefined}
         style={{
           transform: `translate3d(${offset}px, ${reorderOffsetY}px, 0) scale(${reorderActive ? 1.01 : 1})`,
+          transition: transitionLocked ? "none" : undefined,
           touchAction: selectionMode ? "auto" : reorderActive ? "none" : "pan-y",
           zIndex: reorderActive ? 20 : 0,
           willChange: "transform"
@@ -8042,14 +8045,26 @@ function MainPage({
   const [draggingProjectChipOffsetX, setDraggingProjectChipOffsetX] = useState(0);
   const [draggingThreadId, setDraggingThreadId] = useState("");
   const [draggingThreadOffsetY, setDraggingThreadOffsetY] = useState(0);
+  const [optimisticProjectChipOrder, setOptimisticProjectChipOrder] = useState(null);
+  const [optimisticThreadOrderByProjectId, setOptimisticThreadOrderByProjectId] = useState({});
+  const [lockProjectChipDropLayout, setLockProjectChipDropLayout] = useState(false);
+  const [lockThreadListDropLayout, setLockThreadListDropLayout] = useState(false);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
+  const effectiveProjectChipOrder = optimisticProjectChipOrder ?? projectChipOrder;
+  const effectiveThreadOrderByProjectId = useMemo(
+    () => ({
+      ...threadOrderByProjectId,
+      ...optimisticThreadOrderByProjectId
+    }),
+    [optimisticThreadOrderByProjectId, threadOrderByProjectId]
+  );
   const orderedProjects = useMemo(() => {
-    return resolveOrderedProjects(projects, projectFilterUsage, projectChipOrder);
-  }, [projectChipOrder, projectFilterUsage, projects]);
+    return resolveOrderedProjects(projects, projectFilterUsage, effectiveProjectChipOrder);
+  }, [effectiveProjectChipOrder, projectFilterUsage, projects]);
   const orderedProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
   const draggingProjectChipDropIndex =
     draggingProjectChipId && projectChipDragStateRef.current?.active ? projectChipDropIndexRef.current : -1;
@@ -8168,8 +8183,8 @@ function MainPage({
       return [];
     }
 
-    return resolveOrderedThreads(threads, threadOrderByProjectId[selectedProjectId] ?? []);
-  }, [selectedProjectId, selectedScope?.kind, threadOrderByProjectId, threads]);
+    return resolveOrderedThreads(threads, effectiveThreadOrderByProjectId[selectedProjectId] ?? []);
+  }, [effectiveThreadOrderByProjectId, selectedProjectId, selectedScope?.kind, threads]);
   const filteredThreads = useMemo(() => {
     return orderedThreads.filter((thread) => {
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
@@ -8302,6 +8317,29 @@ function MainPage({
     threadListLayoutSnapshotRef.current = new Map();
     setDraggingThreadId("");
     setDraggingThreadOffsetY(0);
+  }, []);
+  const holdReorderedLayout = useCallback((setter) => {
+    setter(true);
+
+    if (typeof window === "undefined") {
+      setter(false);
+      return;
+    }
+
+    let remainingFrames = REORDER_POSITION_LOCK_FRAME_COUNT;
+
+    const release = () => {
+      remainingFrames -= 1;
+
+      if (remainingFrames <= 0) {
+        setter(false);
+        return;
+      }
+
+      window.requestAnimationFrame(release);
+    };
+
+    window.requestAnimationFrame(release);
   }, []);
   const registerProjectChipNode = useCallback((projectId, node) => {
     const normalizedProjectId = String(projectId ?? "").trim();
@@ -8603,10 +8641,9 @@ function MainPage({
       const { active, moved, project } = activeDragState;
       const dropIndex = projectChipDropIndexRef.current;
 
-      resetProjectChipDragInteraction();
-
       if (!active) {
         projectLongPressTriggeredRef.current = false;
+        resetProjectChipDragInteraction();
         return;
       }
 
@@ -8616,15 +8653,19 @@ function MainPage({
         const nextProjectOrder = reorderProjectChipIdsByIndex(orderedProjectIds, project.id, dropIndex);
 
         if (!areStringArraysEqual(nextProjectOrder, orderedProjectIds)) {
+          holdReorderedLayout(setLockProjectChipDropLayout);
+          setOptimisticProjectChipOrder(nextProjectOrder);
           onChangeProjectChipOrder(nextProjectOrder);
         }
 
+        resetProjectChipDragInteraction();
         window.setTimeout(() => {
           projectLongPressTriggeredRef.current = false;
         }, 0);
         return;
       }
 
+      resetProjectChipDragInteraction();
       onOpenProjectEditDialog(project);
 
       window.setTimeout(() => {
@@ -8633,6 +8674,7 @@ function MainPage({
     },
     [
       clearPendingProjectLongPress,
+      holdReorderedLayout,
       onOpenProjectEditDialog,
       onChangeProjectChipOrder,
       orderedProjectIds,
@@ -8781,9 +8823,9 @@ function MainPage({
 
       const { moved, thread } = activeDragState;
       const dropIndex = threadListDropIndexRef.current;
-      resetThreadListDragInteraction();
 
       if (!moved || !selectedProjectId) {
+        resetThreadListDragInteraction();
         return true;
       }
 
@@ -8791,12 +8833,25 @@ function MainPage({
       const nextThreadOrder = applySubsetThreadOrder(orderedThreadIds, filteredThreadIds, reorderedVisibleThreadIds);
 
       if (!areStringArraysEqual(nextThreadOrder, orderedThreadIds)) {
+        holdReorderedLayout(setLockThreadListDropLayout);
+        setOptimisticThreadOrderByProjectId((current) => ({
+          ...current,
+          [selectedProjectId]: nextThreadOrder
+        }));
         onChangeThreadOrder(selectedProjectId, nextThreadOrder);
       }
 
+      resetThreadListDragInteraction();
       return true;
     },
-    [filteredThreadIds, onChangeThreadOrder, orderedThreadIds, resetThreadListDragInteraction, selectedProjectId]
+    [
+      filteredThreadIds,
+      holdReorderedLayout,
+      onChangeThreadOrder,
+      orderedThreadIds,
+      resetThreadListDragInteraction,
+      selectedProjectId
+    ]
   );
   const handleThreadReorderCancel = useCallback(
     ({ threadId, pointerId }) => {
@@ -8815,6 +8870,43 @@ function MainPage({
     },
     [resetThreadListDragInteraction]
   );
+  useEffect(() => {
+    if (!optimisticProjectChipOrder) {
+      return;
+    }
+
+    const normalizedAvailableProjectIds = projects.map((project) => project.id);
+    const normalizedOptimisticOrder = normalizeProjectChipOrder(optimisticProjectChipOrder, normalizedAvailableProjectIds);
+    const normalizedCommittedOrder = normalizeProjectChipOrder(projectChipOrder, normalizedAvailableProjectIds);
+
+    if (areStringArraysEqual(normalizedOptimisticOrder, normalizedCommittedOrder)) {
+      setOptimisticProjectChipOrder(null);
+    }
+  }, [optimisticProjectChipOrder, projectChipOrder, projects]);
+  useEffect(() => {
+    const optimisticProjectIds = Object.keys(optimisticThreadOrderByProjectId);
+
+    if (optimisticProjectIds.length === 0) {
+      return;
+    }
+
+    setOptimisticThreadOrderByProjectId((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      optimisticProjectIds.forEach((projectId) => {
+        const normalizedOptimisticOrder = normalizeThreadOrder(current[projectId] ?? []);
+        const normalizedCommittedOrder = normalizeThreadOrder(threadOrderByProjectId[projectId] ?? []);
+
+        if (areStringArraysEqual(normalizedOptimisticOrder, normalizedCommittedOrder)) {
+          delete next[projectId];
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [optimisticThreadOrderByProjectId, threadOrderByProjectId]);
   const handleEnterThreadSelectionMode = useCallback((threadId = "") => {
     const normalizedThreadId = String(threadId ?? "").trim();
 
@@ -8912,6 +9004,7 @@ function MainPage({
         {orderedProjects.map((project) => {
           const isDraggingProjectChip = draggingProjectChipId === project.id;
           const projectChipSlideOffsetX = resolveProjectChipSlideOffsetX(project.id);
+          const disableProjectChipTransition = lockProjectChipDropLayout || Boolean(optimisticProjectChipOrder);
 
           return (
             <button
@@ -8930,7 +9023,9 @@ function MainPage({
                 resetProjectChipDragInteraction();
                 openProjectActionSheet(project);
               }}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
+                disableProjectChipTransition ? "" : "transition"
+              } ${
                 isDraggingProjectChip
                   ? "bg-white text-slate-900 shadow-[0_12px_24px_rgba(15,23,42,0.35)]"
                   : !isTodoScope && project.id === selectedProjectId
@@ -8946,12 +9041,14 @@ function MainPage({
                       transition: "none",
                       touchAction: "none"
                     }
-                  : projectChipSlideOffsetX !== 0
+                    : projectChipSlideOffsetX !== 0
                     ? {
                         transform: `translateX(${projectChipSlideOffsetX}px)`,
-                        transition: "transform 180ms ease-out"
+                        transition: disableProjectChipTransition ? "none" : "transform 180ms ease-out"
                       }
-                    : undefined
+                    : disableProjectChipTransition
+                      ? { transition: "none" }
+                      : undefined
               }
             >
               {project.name}
@@ -9138,6 +9235,7 @@ function MainPage({
             signalNow={signalNow}
             registerNode={registerThreadListItemNode}
             reorderActive={draggingThreadId === thread.id}
+            transitionLocked={lockThreadListDropLayout || Boolean(optimisticThreadOrderByProjectId[selectedProjectId])}
             reorderOffsetY={
               draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
             }
@@ -9776,18 +9874,19 @@ function MainPage({
                   </div>
                 ) : (
                   filteredThreads.map((thread) => (
-                    <ThreadListItem
-                      key={thread.id}
+                      <ThreadListItem
+                        key={thread.id}
                       thread={thread}
                       active={thread.id === selectedThreadId}
                       selected={selectedThreadIds.includes(thread.id)}
                       selectionMode={threadSelectionMode}
                       signalNow={signalNow}
-                      registerNode={registerThreadListItemNode}
-                      reorderActive={draggingThreadId === thread.id}
-                      reorderOffsetY={
-                        draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
-                      }
+                        registerNode={registerThreadListItemNode}
+                        reorderActive={draggingThreadId === thread.id}
+                        transitionLocked={lockThreadListDropLayout || Boolean(optimisticThreadOrderByProjectId[selectedProjectId])}
+                        reorderOffsetY={
+                          draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
+                        }
                       onStartReorder={handleThreadReorderStart}
                       onMoveReorder={handleThreadReorderMove}
                       onEndReorder={handleThreadReorderEnd}

@@ -250,6 +250,80 @@ async function seedMobileSession(page) {
   );
 }
 
+async function collectProjectChipPositionFrames(page, labels, frameCount = 6) {
+  return page.evaluate(
+    async ({ nextLabels, nextFrameCount }) => {
+      const readPositions = () => {
+        const nodes = Array.from(document.querySelectorAll('button')).filter((node) =>
+          nextLabels.includes(node.textContent?.trim() ?? '')
+        );
+
+        return nodes
+          .map((node) => {
+            const label = node.textContent?.trim() ?? '';
+            const rect = node.getBoundingClientRect();
+            return {
+              label,
+              x: rect.left,
+              y: rect.top
+            };
+          })
+          .sort((left, right) => left.x - right.x);
+      };
+
+      const frames = [];
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+      for (let index = 0; index < nextFrameCount; index += 1) {
+        frames.push(readPositions());
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      }
+
+      return frames;
+    },
+    { nextLabels: labels, nextFrameCount: frameCount }
+  );
+}
+
+async function collectThreadItemPositionFrames(page, threadIds, frameCount = 6) {
+  return page.evaluate(
+    async ({ nextThreadIds, nextFrameCount }) => {
+      const readPositions = () =>
+        nextThreadIds
+          .map((threadId) => {
+            const node = document.querySelector(`[data-testid="thread-list-item-${threadId}"]`);
+
+            if (!(node instanceof HTMLElement)) {
+              return null;
+            }
+
+            const titleNode = node.querySelector('.thread-title');
+            const rect = node.getBoundingClientRect();
+
+            return {
+              threadId,
+              title: titleNode?.textContent?.trim() ?? '',
+              x: rect.left,
+              y: rect.top
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => left.y - right.y);
+
+      const frames = [];
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+      for (let index = 0; index < nextFrameCount; index += 1) {
+        frames.push(readPositions());
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      }
+
+      return frames;
+    },
+    { nextThreadIds: threadIds, nextFrameCount: frameCount }
+  );
+}
+
 test.describe('mobile reorder interactions', () => {
   let server;
   let baseUrl;
@@ -317,6 +391,8 @@ test.describe('mobile reorder interactions', () => {
       clientY: pressY
     });
 
+    const chipFrames = await collectProjectChipPositionFrames(page, ['Alpha Workspace', 'Beta Project Long Name']);
+
     await expect.poll(async () => {
       return page.evaluate(() =>
         Array.from(document.querySelectorAll('button'))
@@ -331,6 +407,15 @@ test.describe('mobile reorder interactions', () => {
     });
 
     expect(storedOrder).toEqual([projectBetaId, projectAlphaId]);
+    expect(chipFrames[0].map((entry) => entry.label)).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+
+    const baselineChipFrame = chipFrames[0];
+    chipFrames.slice(1).forEach((frame) => {
+      expect(frame.map((entry) => entry.label)).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+      frame.forEach((entry, index) => {
+        expect(Math.abs(entry.x - baselineChipFrame[index].x)).toBeLessThanOrEqual(1);
+      });
+    });
   });
 
   test('쓰레드 리스트는 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {
@@ -385,6 +470,12 @@ test.describe('mobile reorder interactions', () => {
       clientY: releaseY
     });
 
+    const threadFrames = await collectThreadItemPositionFrames(page, [
+      'thread-alpha-1',
+      'thread-alpha-2',
+      'thread-alpha-3'
+    ]);
+
     await expect.poll(async () => {
       return page.locator('[data-testid^="thread-list-item-"] .thread-title').evaluateAll((nodes) =>
         nodes.map((node) => node.textContent?.trim()).filter(Boolean)
@@ -397,5 +488,14 @@ test.describe('mobile reorder interactions', () => {
     }, projectAlphaId);
 
     expect(storedThreadOrder).toEqual(['thread-alpha-1', 'thread-alpha-3', 'thread-alpha-2']);
+    expect(threadFrames[0].map((entry) => entry.title)).toEqual(['Alpha First', 'Alpha Third', 'Alpha Second']);
+
+    const baselineThreadFrame = threadFrames[0];
+    threadFrames.slice(1).forEach((frame) => {
+      expect(frame.map((entry) => entry.title)).toEqual(['Alpha First', 'Alpha Third', 'Alpha Second']);
+      frame.forEach((entry, index) => {
+        expect(Math.abs(entry.y - baselineThreadFrame[index].y)).toBeLessThanOrEqual(1);
+      });
+    });
   });
 });
