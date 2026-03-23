@@ -8338,7 +8338,7 @@ function MainPage({
     return snapshot;
   }, []);
   const resolveProjectChipDropIndex = useCallback(
-    (clientX, draggedProjectId) => {
+    (draggedCenterX, draggedProjectId) => {
       const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
       const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== normalizedDraggedProjectId);
       const draggedProjectIndex = orderedProjectIds.indexOf(normalizedDraggedProjectId);
@@ -8362,7 +8362,7 @@ function MainPage({
           draggedProjectIndex >= 0 && currentProjectIndex > draggedProjectIndex ? -collapsedShiftDistance : 0;
         const adjustedCenterX = rect.left + collapsedOffsetX + rect.width / 2;
 
-        if (clientX < adjustedCenterX) {
+        if (draggedCenterX < adjustedCenterX) {
           return index;
         }
       }
@@ -8500,6 +8500,7 @@ function MainPage({
         startY: event.clientY,
         latestClientX: event.clientX,
         latestClientY: event.clientY,
+        dragOriginCenterX: event.clientX,
         startScrollLeft: projectChipRowRef.current?.scrollLeft ?? 0
       };
       event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -8518,8 +8519,13 @@ function MainPage({
         activeDragState.startX = activeDragState.latestClientX ?? event.clientX;
         activeDragState.startY = activeDragState.latestClientY ?? event.clientY;
         activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
+        const draggedNode = projectChipNodesRef.current.get(project.id);
+        const draggedRect = draggedNode?.getBoundingClientRect?.();
+        activeDragState.dragOriginCenterX = draggedRect
+          ? draggedRect.left + draggedRect.width / 2
+          : activeDragState.startX;
         projectChipDropIndexRef.current = resolveProjectChipDropIndex(
-          activeDragState.startX,
+          activeDragState.dragOriginCenterX,
           project.id
         );
         setDraggingProjectChipId(project.id);
@@ -8554,12 +8560,13 @@ function MainPage({
 
       const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
       const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
+      const draggedCenterX = activeDragState.dragOriginCenterX + dragOffsetX;
 
       if (!activeDragState.moved && Math.hypot(dragOffsetX, deltaY) > PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      projectChipDropIndexRef.current = resolveProjectChipDropIndex(event.clientX, activeDragState.project.id);
+      projectChipDropIndexRef.current = resolveProjectChipDropIndex(draggedCenterX, activeDragState.project.id);
       setDraggingProjectChipOffsetX(dragOffsetX);
       event.preventDefault();
     },
@@ -8651,7 +8658,7 @@ function MainPage({
     [onSelectProject]
   );
   const resolveThreadDropIndex = useCallback(
-    (clientY, draggedThreadId) => {
+    (draggedCenterY, draggedThreadId) => {
       const activeDragState = threadListDragStateRef.current;
       const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
       const baseThreadIds = normalizeThreadOrder(activeDragState?.visibleThreadIds ?? filteredThreadIds);
@@ -8680,7 +8687,7 @@ function MainPage({
           draggedThreadIndex >= 0 && currentThreadIndex > draggedThreadIndex ? -collapsedShiftDistance : 0;
         const adjustedCenterY = (layout?.top ?? rect.top) + collapsedOffsetY + (layout?.height ?? rect.height) / 2;
 
-        if (clientY < adjustedCenterY) {
+        if (draggedCenterY < adjustedCenterY) {
           return index;
         }
       }
@@ -8696,19 +8703,25 @@ function MainPage({
       }
 
       const visibleThreadIds = [...filteredThreadIds];
+      const layoutSnapshot = captureThreadListLayoutSnapshot(visibleThreadIds);
+      const draggedLayout = layoutSnapshot.get(thread.id);
+      const draggedNode = threadListItemNodesRef.current.get(thread.id);
+      const dragOriginCenterY = draggedLayout
+        ? draggedLayout.top + draggedLayout.height / 2
+        : ((draggedNode?.getBoundingClientRect?.().top ?? clientY) + (draggedNode?.offsetHeight ?? 0) / 2);
 
       setThreadSelectionMode(false);
       setSelectedThreadIds([]);
-      captureThreadListLayoutSnapshot(visibleThreadIds);
       threadListDragStateRef.current = {
         active: true,
         moved: false,
         pointerId,
         thread,
         startY: clientY,
+        dragOriginCenterY,
         visibleThreadIds
       };
-      threadListDropIndexRef.current = resolveThreadDropIndex(clientY, thread.id);
+      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id);
       setDraggingThreadId(thread.id);
       setDraggingThreadOffsetY(0);
     },
@@ -8727,12 +8740,13 @@ function MainPage({
       }
 
       const dragOffsetY = clientY - activeDragState.startY;
+      const draggedCenterY = activeDragState.dragOriginCenterY + dragOffsetY;
 
       if (!activeDragState.moved && Math.abs(dragOffsetY) > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      threadListDropIndexRef.current = resolveThreadDropIndex(clientY, activeDragState.thread.id);
+      threadListDropIndexRef.current = resolveThreadDropIndex(draggedCenterY, activeDragState.thread.id);
       setDraggingThreadOffsetY(dragOffsetY);
       return true;
     },
