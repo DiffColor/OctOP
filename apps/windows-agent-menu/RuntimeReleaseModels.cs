@@ -49,6 +49,17 @@ sealed class AppUpdateDescriptor
   public Uri DownloadUrl { get; init; } = new("https://example.com");
 }
 
+sealed class AppUpdateProgressInfo
+{
+  public string Stage { get; init; } = string.Empty;
+  public string Summary { get; init; } = string.Empty;
+  public double? Percent { get; init; }
+  public long DownloadedBytes { get; init; }
+  public long TotalBytes { get; init; }
+  public bool IsIndeterminate { get; init; }
+  public bool IsCompleted { get; init; }
+}
+
 sealed class PendingAppUpdateState
 {
   public string TargetTag { get; init; } = string.Empty;

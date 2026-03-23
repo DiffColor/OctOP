@@ -60,6 +60,7 @@ sealed class WindowsAutoUpdater
     OctopPaths paths,
     RuntimeConfiguration configuration,
     Action<string> log,
+    Action<AppUpdateProgressInfo>? reportProgress,
     CancellationToken cancellationToken)
   {
     if (!AppMetadata.CanSelfUpdate() || AppMetadata.CurrentExecutablePath is not { } currentExecutablePath)
@@ -76,7 +77,25 @@ sealed class WindowsAutoUpdater
     var logPath = Path.Combine(updateRoot, "apply-update.log");
 
     log($"새 앱 번들을 다운로드합니다. tag={updateDescriptor.Tag}");
-    await DownloadAsync(updateDescriptor.DownloadUrl, downloadPath, currentExecutablePath, log, cancellationToken);
+    reportProgress?.Invoke(new AppUpdateProgressInfo
+    {
+      Stage = "prepare",
+      Summary = $"앱 업데이트 {updateDescriptor.Tag} 다운로드를 준비합니다.",
+      Percent = 0,
+      DownloadedBytes = 0,
+      TotalBytes = 0,
+      IsIndeterminate = true
+    });
+    await DownloadAsync(updateDescriptor.DownloadUrl, downloadPath, currentExecutablePath, log, reportProgress, cancellationToken);
+    reportProgress?.Invoke(new AppUpdateProgressInfo
+    {
+      Stage = "validate",
+      Summary = $"앱 업데이트 {updateDescriptor.Tag} 파일을 검증하는 중입니다.",
+      Percent = 100,
+      DownloadedBytes = 0,
+      TotalBytes = 0,
+      IsIndeterminate = true
+    });
     ValidateDownloadedExecutable(downloadPath);
 
     var pendingState = new PendingAppUpdateState
@@ -93,6 +112,16 @@ sealed class WindowsAutoUpdater
       File.Delete(paths.AppUpdateLaunchMarkerPath);
     }
 
+    reportProgress?.Invoke(new AppUpdateProgressInfo
+    {
+      Stage = "apply",
+      Summary = $"앱 업데이트 {updateDescriptor.Tag}를 적용하는 중입니다.",
+      Percent = 100,
+      DownloadedBytes = 0,
+      TotalBytes = 0,
+      IsIndeterminate = true,
+      IsCompleted = true
+    });
     WriteUpdateScript(
       scriptPath,
       logPath,
@@ -184,6 +213,7 @@ sealed class WindowsAutoUpdater
     string destinationPath,
     string currentExecutablePath,
     Action<string> log,
+    Action<AppUpdateProgressInfo>? reportProgress,
     CancellationToken cancellationToken)
   {
     Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? Path.GetTempPath());
@@ -201,6 +231,15 @@ sealed class WindowsAutoUpdater
     LogDiskSpaceCheck(destinationPath, currentExecutablePath, packageSizeBytes.Value, log);
     EnsureSufficientDiskSpace(destinationPath, currentExecutablePath, packageSizeBytes.Value);
     log($"앱 업데이트 다운로드를 시작합니다. 크기={FormatBytes(packageSizeBytes.Value)}");
+    reportProgress?.Invoke(new AppUpdateProgressInfo
+    {
+      Stage = "download",
+      Summary = $"앱 업데이트 다운로드 준비 중 · 0.0% (0 B / {FormatBytes(packageSizeBytes.Value)})",
+      Percent = 0,
+      DownloadedBytes = 0,
+      TotalBytes = packageSizeBytes.Value,
+      IsIndeterminate = false
+    });
 
     try
     {
@@ -250,7 +289,17 @@ sealed class WindowsAutoUpdater
         var progressPercent = totalRead * 100d / packageSizeBytes.Value;
         if (stopwatch.Elapsed >= nextLogAt || progressPercent >= nextLogPercent)
         {
-          log(BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed));
+          var progressMessage = BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed);
+          log(progressMessage);
+          reportProgress?.Invoke(new AppUpdateProgressInfo
+          {
+            Stage = "download",
+            Summary = progressMessage,
+            Percent = Math.Clamp(progressPercent, 0d, 100d),
+            DownloadedBytes = totalRead,
+            TotalBytes = packageSizeBytes.Value,
+            IsIndeterminate = false
+          });
           while (nextLogAt <= stopwatch.Elapsed)
           {
             nextLogAt += DownloadProgressLogInterval;
@@ -264,7 +313,18 @@ sealed class WindowsAutoUpdater
       }
 
       await fileStream.FlushAsync(cancellationToken);
-      log(BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed, completed: true));
+      var completedMessage = BuildDownloadProgressMessage(totalRead, packageSizeBytes.Value, stopwatch.Elapsed, completed: true);
+      log(completedMessage);
+      reportProgress?.Invoke(new AppUpdateProgressInfo
+      {
+        Stage = "download",
+        Summary = completedMessage,
+        Percent = 100,
+        DownloadedBytes = totalRead,
+        TotalBytes = packageSizeBytes.Value,
+        IsIndeterminate = false,
+        IsCompleted = true
+      });
     }
     catch
     {

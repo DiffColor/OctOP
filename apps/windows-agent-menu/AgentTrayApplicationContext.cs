@@ -59,6 +59,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private readonly ContextMenuStrip _menu;
   private readonly ToolStripMenuItem _titleItem;
   private readonly ToolStripMenuItem _appVersionItem;
+  private readonly ToolStripMenuItem _appUpdateProgressItem;
   private readonly HighlightTextToolStripHost _runtimeVersionItem;
   private readonly ToolStripMenuItem _statusItem;
   private readonly ToolStripMenuItem _environmentItem;
@@ -91,6 +92,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private bool _exitInProgress;
   private bool _stopInProgress;
   private bool _startInProgress;
+  private bool _appUpdateInProgress;
+  private string? _appUpdateTargetTag;
+  private AppUpdateProgressInfo? _appUpdateProgress;
 
   public AgentTrayApplicationContext()
   {
@@ -130,6 +134,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     _titleItem = new ToolStripMenuItem(AppTitle) { Enabled = false };
     _appVersionItem = new ToolStripMenuItem() { Enabled = false };
+    _appUpdateProgressItem = new ToolStripMenuItem() { Enabled = false, Visible = false };
     _runtimeVersionItem = new HighlightTextToolStripHost();
     _statusItem = new ToolStripMenuItem() { Enabled = false };
     _environmentItem = new ToolStripMenuItem("환경 확인 중") { Enabled = false };
@@ -147,6 +152,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     [
       _titleItem,
       _appVersionItem,
+      _appUpdateProgressItem,
       _runtimeVersionItem,
       _statusItem,
       _environmentItem,
@@ -865,7 +871,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void RefreshMenuState()
   {
-    _appVersionItem.Text = $"앱 버전 {AppMetadata.CurrentVersionTag}";
+    _appVersionItem.Text = _appUpdateInProgress && !string.IsNullOrWhiteSpace(_appUpdateTargetTag)
+      ? $"앱 버전 {AppMetadata.CurrentVersionTag} → {_appUpdateTargetTag}"
+      : $"앱 버전 {AppMetadata.CurrentVersionTag}";
+    _appUpdateProgressItem.Visible = _appUpdateInProgress && !string.IsNullOrWhiteSpace(_appUpdateProgress?.Summary);
+    _appUpdateProgressItem.Text = _appUpdateProgress?.Summary ?? string.Empty;
+    _appUpdateProgressItem.ForeColor = Color.RoyalBlue;
     _runtimeVersionItem.SetSegments(
       ResolveRuntimeVersionDisplayPrefix(),
       _availableRuntimeUpdate?.DisplayRevision);
@@ -883,10 +894,14 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var running = _runtimeState is AgentRuntimeState.Running or AgentRuntimeState.Starting;
     _toggleItem.Text = running ? "서비스 정지" : "서비스 시작";
     _toggleItem.Enabled = (_runtimeStatus?.ReadyToRun == true || running) && !_setupWindow.InstallationInProgress && !_stopInProgress;
-    _appUpdateItem.Visible = _availableAppUpdate is not null && AppMetadata.CanSelfUpdate();
-    _appUpdateItem.Enabled = _availableAppUpdate is not null && !_setupWindow.InstallationInProgress;
-    _appUpdateItem.Text = _availableAppUpdate is null ? "앱 업데이트" : $"앱 업데이트 {_availableAppUpdate.Tag}";
-    _appUpdateItem.ForeColor = _availableAppUpdate is null ? SystemColors.ControlText : Color.RoyalBlue;
+    _appUpdateItem.Visible = (_availableAppUpdate is not null || _appUpdateInProgress) && AppMetadata.CanSelfUpdate();
+    _appUpdateItem.Enabled = _availableAppUpdate is not null && !_setupWindow.InstallationInProgress && !_appUpdateInProgress;
+    _appUpdateItem.Text = _appUpdateInProgress
+      ? BuildAppUpdateActionText()
+      : _availableAppUpdate is null
+        ? "앱 업데이트"
+        : $"앱 업데이트 {_availableAppUpdate.Tag}";
+    _appUpdateItem.ForeColor = _availableAppUpdate is null && !_appUpdateInProgress ? SystemColors.ControlText : Color.RoyalBlue;
   }
 
   private string ResolveRuntimeVersionDisplayPrefix()
@@ -924,6 +939,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private string BuildTrayText()
   {
+    if (_appUpdateInProgress)
+    {
+      var progressPercent = _appUpdateProgress?.Percent;
+      var progressLabel = progressPercent is double value
+        ? $"{Math.Clamp(value, 0d, 100d):0.0}%"
+        : "준비 중";
+      var updateText = $"{AppTitle} - 앱 업데이트 {progressLabel}";
+      return updateText.Length <= 63 ? updateText : AppTitle;
+    }
+
     var stateText = GetRuntimeStateLabel(_runtimeState);
     var suffix = _runtimeStatus?.ReadyToRun == true ? stateText : "환경설정 필요";
     var text = $"{AppTitle} - {suffix}";
@@ -968,6 +993,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task BeginAppUpdateAsync()
   {
+    if (_appUpdateInProgress)
+    {
+      RefreshUi();
+      return;
+    }
+
     await RefreshAvailableAppUpdateAsync(force: true);
     if (_availableAppUpdate is null)
     {
@@ -977,6 +1008,17 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     try
     {
+      _appUpdateInProgress = true;
+      _appUpdateTargetTag = _availableAppUpdate.Tag;
+      UpdateAppUpdateProgress(new AppUpdateProgressInfo
+      {
+        Stage = "prepare",
+        Summary = $"앱 업데이트 {_availableAppUpdate.Tag} 준비 중",
+        Percent = 0,
+        DownloadedBytes = 0,
+        TotalBytes = 0,
+        IsIndeterminate = true
+      });
       AppendLog($"앱 업데이트를 시작합니다. target={_availableAppUpdate.Tag}");
       await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
 
@@ -985,10 +1027,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         _paths,
         _configuration,
         AppendLog,
+        progress => PostToUi(() => UpdateAppUpdateProgress(progress)),
         CancellationToken.None);
       if (!updateApplied)
       {
         AppendLog("앱 업데이트를 적용하지 않았습니다.");
+        ClearAppUpdateProgress();
         return;
       }
 
@@ -997,9 +1041,40 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
     catch (Exception error)
     {
+      ClearAppUpdateProgress();
       AppendLog($"앱 업데이트 시작 실패: {error.Message}");
       RefreshUi();
     }
+  }
+
+  private void UpdateAppUpdateProgress(AppUpdateProgressInfo progress)
+  {
+    _appUpdateInProgress = true;
+    _appUpdateProgress = progress;
+    RefreshUi();
+  }
+
+  private void ClearAppUpdateProgress()
+  {
+    _appUpdateInProgress = false;
+    _appUpdateTargetTag = null;
+    _appUpdateProgress = null;
+    RefreshUi();
+  }
+
+  private string BuildAppUpdateActionText()
+  {
+    var targetTag = !string.IsNullOrWhiteSpace(_appUpdateTargetTag)
+      ? _appUpdateTargetTag
+      : _availableAppUpdate?.Tag;
+    var progressPercent = _appUpdateProgress?.Percent;
+    var progressLabel = progressPercent is double value
+      ? $"{Math.Clamp(value, 0d, 100d):0.0}%"
+      : "준비 중";
+
+    return string.IsNullOrWhiteSpace(targetTag)
+      ? $"앱 업데이트 다운로드 중... {progressLabel}"
+      : $"앱 업데이트 {targetTag} 다운로드 중... {progressLabel}";
   }
 
   private void PostToUi(Action action)
