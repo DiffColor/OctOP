@@ -658,6 +658,10 @@ const COPY = {
         "Saved on the selected project and injected into app-server developerInstructions when a thread starts.",
       instructionDialogHintThreadDeveloper:
         "Saved only on this thread and appended after the project developerInstructions on the next run for this thread.",
+      threadProjectDeveloperInstructionLabel: "Project Developer Instruction",
+      threadProjectDeveloperInstructionPlaceholder: "No project developer instruction has been saved.",
+      threadProjectDeveloperInstructionHint:
+        "This is the project-level developer instruction and is shown here as read-only.",
       threadEditDialogTitle: "Edit Thread",
       threadEditDialogNameLabel: "Title",
       threadEditDialogNamePlaceholder: "Enter the thread title.",
@@ -864,6 +868,10 @@ const COPY = {
         "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다.",
       instructionDialogHintThreadDeveloper:
         "현재 쓰레드에만 저장되며, 다음 실행 흐름부터 프로젝트 개발지침 뒤에 이어 붙여 app-server developerInstructions로 주입됩니다.",
+      threadProjectDeveloperInstructionLabel: "프로젝트 공통 개발지침",
+      threadProjectDeveloperInstructionPlaceholder: "저장된 프로젝트 공통 개발지침이 없습니다.",
+      threadProjectDeveloperInstructionHint:
+        "프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.",
       threadEditDialogTitle: "쓰레드 편집",
       threadEditDialogNameLabel: "제목",
       threadEditDialogNamePlaceholder: "쓰레드 제목을 입력해 주세요.",
@@ -3627,7 +3635,6 @@ function IssueEditor({ language, open, busy, selectedBridgeId, issue, onClose, o
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-slate-500">{copy.issueEditor.eyebrow}</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">{copy.issueEditor.title}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">{copy.issueEditor.subtitle}</p>
           </div>
           <button
             type="button"
@@ -4063,7 +4070,6 @@ function ProjectInstructionDialog({ language, open, busy, project, instructionTy
           <div>
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.instructionDialogProject}</p>
             <h2 className="mt-2 text-xl font-semibold text-white">{title}</h2>
-            <p className="mt-2 text-sm text-slate-400">{project.name}</p>
           </div>
           <button
             type="button"
@@ -4149,7 +4155,6 @@ function ProjectEditDialog({ language, open, busy, project, onClose, onSubmit })
           <div>
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.projectEditor.eyebrow}</p>
             <h2 className="mt-2 text-xl font-semibold text-white">{copy.projectEditor.title}</h2>
-            <p className="mt-2 text-sm text-slate-400">{copy.projectEditor.subtitle}</p>
           </div>
           <button
             type="button"
@@ -4220,6 +4225,8 @@ function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }
   const copy = getCopy(language);
   const [name, setName] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
+  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
+  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
 
   useEffect(() => {
     if (!open) {
@@ -4276,6 +4283,25 @@ function ThreadCreateDialog({ language, open, busy, project, onClose, onSubmit }
             />
           </div>
 
+          {hasProjectDeveloperInstructions ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-project-developer-instructions">
+                {copy.footer.threadProjectDeveloperInstructionLabel}
+              </label>
+              <textarea
+                id="thread-create-project-developer-instructions"
+                rows="8"
+                value={projectDeveloperInstructions}
+                readOnly
+                placeholder={copy.footer.threadProjectDeveloperInstructionPlaceholder}
+                className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
+              />
+              <p className="mt-2 text-xs leading-6 text-slate-400">
+                {copy.footer.threadProjectDeveloperInstructionHint}
+              </p>
+            </div>
+          ) : null}
+
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-developer-instructions">
               {copy.footer.threadCreateDialogDeveloperLabel}
@@ -4321,6 +4347,7 @@ function ThreadEditDialog({
   open,
   busy,
   thread,
+  project,
   threadInstructionSupported = false,
   errorMessage,
   onClose,
@@ -4329,6 +4356,8 @@ function ThreadEditDialog({
   const copy = getCopy(language);
   const [name, setName] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
+  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
+  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
 
   useEffect(() => {
     if (!open) {
@@ -4365,7 +4394,6 @@ function ThreadEditDialog({
           <div>
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.footer.instructionDialogThread}</p>
             <h2 className="mt-2 text-xl font-semibold text-white">{copy.footer.threadEditDialogTitle}</h2>
-            <p className="mt-2 text-sm text-slate-400">{thread.name}</p>
           </div>
           <button
             type="button"
@@ -4377,6 +4405,25 @@ function ThreadEditDialog({
         </div>
 
         <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+          {hasProjectDeveloperInstructions ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
+                {copy.footer.threadProjectDeveloperInstructionLabel}
+              </label>
+              <textarea
+                id="thread-edit-project-developer-instructions"
+                rows="8"
+                value={projectDeveloperInstructions}
+                readOnly
+                placeholder={copy.footer.threadProjectDeveloperInstructionPlaceholder}
+                className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm leading-6 text-slate-200 outline-none"
+              />
+              <p className="mt-2 text-xs leading-6 text-slate-400">
+                {copy.footer.threadProjectDeveloperInstructionHint}
+              </p>
+            </div>
+          ) : null}
+
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-name">
               {copy.footer.threadEditDialogNameLabel}
@@ -4721,7 +4768,6 @@ function SettingsDialog({ open, session, bridgeSignal, selectedBridge, pushNotif
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Workspace</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">설정</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">현재 브릿지 기준 푸시 알림과 계정 상태를 확인할 수 있습니다.</p>
           </div>
           <button
             type="button"
@@ -5328,6 +5374,10 @@ function MainPage({
   const selectedProjectThread =
   scopedProjectThreads.find((thread) => thread.id === selectedProjectThreadId) ??
   null;
+  const selectedThreadProject =
+    projects.find((project) => project.id === selectedProjectThread?.project_id) ??
+    selectedProject ??
+    null;
   const selectedThreadContextUsage = getThreadContextUsage(selectedProjectThread);
   const selectedThreadUsageLabel =
     selectedThreadContextUsage?.percent != null
@@ -6629,6 +6679,7 @@ function MainPage({
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={selectedProjectThread}
+        project={selectedThreadProject}
         threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}

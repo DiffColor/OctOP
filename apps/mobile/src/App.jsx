@@ -2419,7 +2419,6 @@ function BottomSheet({
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold text-white">{title}</h2>
-              {description ? <p className="mt-1 text-sm leading-6 text-slate-400">{description}</p> : null}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {headerActions}
@@ -3622,7 +3621,8 @@ function ProjectComposerSheet({
 function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
   const [title, setTitle] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
-  const projectDeveloperInstructions = String(project?.developer_instructions ?? "").trim();
+  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
+  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
 
   useEffect(() => {
     if (!open) {
@@ -3670,6 +3670,25 @@ function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
           />
         </div>
 
+        {hasProjectDeveloperInstructions ? (
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-project-developer-instructions">
+              프로젝트 공통 개발지침
+            </label>
+            <textarea
+              id="thread-create-project-developer-instructions"
+              rows="8"
+              value={projectDeveloperInstructions}
+              readOnly
+              placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
+              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
+            />
+            <p className="mt-2 text-[11px] leading-5 text-slate-400">
+              프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
+            </p>
+          </div>
+        ) : null}
+
         <div>
           <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-developer-instructions">
             개발지침
@@ -3682,7 +3701,7 @@ function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
             placeholder="이 채팅창에서만 추가로 적용할 개발지침이 있으면 입력해 주세요."
             className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
           />
-          {projectDeveloperInstructions ? (
+          {hasProjectDeveloperInstructions ? (
             <div className="mt-3 rounded-[1rem] border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-[12px] leading-6 text-emerald-50">
               이 프로젝트의 공통 개발지침이 새 채팅창 기본 지침으로 자동 적용됩니다. 여기 입력한 채팅창 개발지침은 그 뒤에 이어 붙습니다.
             </div>
@@ -4768,6 +4787,7 @@ function ThreadEditDialog({
   open,
   busy,
   thread,
+  project,
   threadInstructionSupported = false,
   errorMessage,
   onClose,
@@ -4778,6 +4798,8 @@ function ThreadEditDialog({
   const [dirty, setDirty] = useState(false);
   const draftThreadIdRef = useRef("");
   const instructionValue = thread?.developer_instructions ?? "";
+  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
+  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
   const draftThreadId = open && thread ? thread.id : "";
 
   useEffect(() => {
@@ -4818,8 +4840,8 @@ function ThreadEditDialog({
       description={`${thread.title ?? "채팅창"}의 제목을 수정하고, 필요하면 이 채팅창 전용 개발지침도 함께 저장합니다.`}
       onClose={onClose}
       variant="center"
-    >
-      <form
+      >
+        <form
         className="space-y-5 px-5 py-5"
         onSubmit={async (event) => {
           event.preventDefault();
@@ -4829,6 +4851,25 @@ function ThreadEditDialog({
           });
         }}
       >
+        {hasProjectDeveloperInstructions ? (
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
+              프로젝트 공통 개발지침
+            </label>
+            <textarea
+              id="thread-edit-project-developer-instructions"
+              rows="8"
+              value={projectDeveloperInstructions}
+              readOnly
+              placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
+              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
+            />
+            <p className="mt-2 text-[11px] leading-5 text-slate-400">
+              프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
+            </p>
+          </div>
+        ) : null}
+
         <div>
           <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-title">
             제목
@@ -6346,6 +6387,10 @@ function MainPage({
   const isTodoScope = selectedScope?.kind === "todo";
   const selectedProjectId = selectedScope?.kind === "project" ? selectedScope.id : "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const threadInstructionProject =
+    projects.find((project) => project.id === threadInstructionTarget?.project_id) ??
+    selectedProject ??
+    null;
   const draftProject = projects.find((project) => project.id === draftThreadProjectId) ?? null;
   const projectActionTarget = projects.find((project) => project.id === projectActionProjectId) ?? null;
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
@@ -7050,6 +7095,7 @@ function MainPage({
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={threadInstructionTarget}
+        project={threadInstructionProject}
         threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}
@@ -7621,6 +7667,7 @@ function MainPage({
         open={threadInstructionDialogOpen}
         busy={threadInstructionBusy}
         thread={threadInstructionTarget}
+        project={threadInstructionProject}
         threadInstructionSupported={threadInstructionSupported}
         errorMessage={threadInstructionError}
         onClose={onCloseThreadInstructionDialog}
