@@ -1,6 +1,8 @@
 import {
+  createContext,
   startTransition,
   useCallback,
+  useContext,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -386,6 +388,9 @@ const THREAD_CONTENT_FILTERS = [
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 96;
 const CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
+const HEADER_MENU_VIEWPORT_SETTLE_MS = 320;
+const MOBILE_NOTICE_AUTO_DISMISS_MS = 4_000;
+const MOBILE_NOTICE_ERROR_DISMISS_MS = 6_000;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 const BOTTOM_BOUNDARY_HEADER_GUARD_PX = 24;
 const BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS = 180;
@@ -3038,6 +3043,123 @@ function BottomSheet({
   );
 }
 
+const MobileFeedbackContext = createContext({
+  alert: () => {},
+  confirm: async () => false
+});
+
+function useMobileFeedback() {
+  return useContext(MobileFeedbackContext);
+}
+
+function MobileNoticeCenter({ notices, onDismiss }) {
+  if (typeof document === "undefined" || !Array.isArray(notices) || notices.length === 0) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="pointer-events-none fixed inset-x-0 top-3 z-[120] flex flex-col items-center gap-3 px-3 pt-[max(env(safe-area-inset-top),0px)]">
+      {notices.map((notice) => {
+        const isError = notice.tone === "error";
+        const cardClassName = isError
+          ? "border-rose-400/35 bg-[rgba(33,12,18,0.92)] text-rose-50 shadow-[0_18px_40px_rgba(127,29,29,0.28)]"
+          : "border-white/15 bg-[rgba(15,23,42,0.88)] text-slate-50 shadow-[0_18px_40px_rgba(15,23,42,0.38)]";
+        const iconClassName = isError
+          ? "bg-rose-400/20 text-rose-100"
+          : "bg-sky-400/18 text-sky-100";
+
+        return (
+          <div
+            key={notice.id}
+            className={`pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-[1.15rem] border px-4 py-3 backdrop-blur-xl ${cardClassName}`}
+          >
+            <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconClassName}`}>
+              {isError ? (
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 9v4m0 4h.01M10.29 3.86l-8.09 14A2 2 0 004 21h16a2 2 0 001.8-3.14l-8.09-14a2 2 0 00-3.42 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 8h.01M11 12h1v4h1m-6 4h10a2 2 0 002-2V6a2 2 0 00-2-2H7a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                </svg>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[12px] font-semibold tracking-[0.04em] text-white/90">
+                {notice.title || (isError ? "오류" : "알림")}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-white/90">
+                {notice.message}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onDismiss(notice.id)}
+              aria-label="알림 닫기"
+              title="닫기"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+              </svg>
+            </button>
+          </div>
+        );
+      })}
+    </div>,
+    document.body
+  );
+}
+
+function MobileConfirmDialog({ state, onResolve }) {
+  if (!state?.open) {
+    return null;
+  }
+
+  const isDanger = state.tone === "danger";
+
+  return (
+    <BottomSheet
+      open={state.open}
+      title={state.title || "확인"}
+      description={state.message || ""}
+      onClose={() => onResolve(false)}
+      variant="center"
+      panelTestId="mobile-confirm-dialog"
+    >
+      <div className="space-y-4 px-5 py-5">
+        <div
+          className={`rounded-[1.25rem] border px-4 py-4 text-sm leading-6 ${
+            isDanger
+              ? "border-rose-400/20 bg-rose-500/10 text-rose-50"
+              : "border-white/10 bg-white/[0.04] text-slate-100"
+          }`}
+        >
+          {state.message}
+        </div>
+        <div className="flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => onResolve(false)}
+            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10"
+          >
+            {state.cancelLabel || "취소"}
+          </button>
+          <button
+            type="button"
+            onClick={() => onResolve(true)}
+            className={`rounded-full px-4 py-2 text-sm font-semibold text-white transition ${
+              isDanger ? "bg-rose-500 hover:bg-rose-400" : "bg-telegram-500 hover:bg-telegram-400"
+            }`}
+          >
+            {state.confirmLabel || "확인"}
+          </button>
+        </div>
+      </div>
+    </BottomSheet>
+  );
+}
+
 function InstallPromptBanner({ visible, installing, onInstall, onDismiss }) {
   if (!visible) {
     return null;
@@ -3474,7 +3596,9 @@ function InlineIssueComposer({
   onDraftPersist = null,
   onStop = null,
   stopBusy = false,
-  stopLabel = "중단"
+  stopLabel = "중단",
+  onInputFocus = null,
+  onInputBlur = null
 }) {
   const LONG_PRESS_THRESHOLD_MS = 650;
   const normalizedDraftKey = String(draftKey ?? "").trim();
@@ -3492,6 +3616,7 @@ function InlineIssueComposer({
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
   const lastFinalTranscriptRef = useRef("");
+  const { alert: showAlert } = useMobileFeedback();
   const supportsSpeechRecognition =
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
   const prompt = internalPrompt;
@@ -3847,11 +3972,15 @@ function InlineIssueComposer({
 
   const handlePromptKeyDown = useCallback(
     (event) => {
-      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
+      if (event.key !== "Enter") {
         return;
       }
 
       if (event.nativeEvent?.isComposing || isPromptComposingRef.current) {
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey) {
         return;
       }
 
@@ -3873,14 +4002,15 @@ function InlineIssueComposer({
     }
 
     if (!supportsSpeechRecognition) {
-      if (typeof window !== "undefined") {
-        window.alert("이 브라우저에서는 음성 입력을 지원하지 않습니다.");
-      }
+      showAlert("이 브라우저에서는 음성 입력을 지원하지 않습니다.", {
+        tone: "error",
+        title: "음성 입력"
+      });
       return;
     }
 
     startVoiceCapture();
-  }, [startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
+  }, [showAlert, startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
 
   const handleSendPointerDown = useCallback(
     (event) => {
@@ -3969,9 +4099,11 @@ function InlineIssueComposer({
               onCompositionEnd={() => {
                 isPromptComposingRef.current = false;
               }}
+              onFocus={onInputFocus ?? undefined}
+              onBlur={onInputBlur ?? undefined}
               placeholder=""
               disabled={!selectedProject || busy || disabled}
-              enterKeyHint="send"
+              enterKeyHint="enter"
               className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
             />
           </div>
@@ -6051,19 +6183,24 @@ function ThreadDetail({
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
   const scrollRef = useRef(null);
+  const scrollContentRef = useRef(null);
   const scrollAnchorRef = useRef(null);
+  const footerRef = useRef(null);
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
   const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
   const autoScrollingRef = useRef(false);
   const [showHeaderMenus, setShowHeaderMenus] = useState(true);
+  const headerMenuViewportLockUntilRef = useRef(0);
+  const keyboardPinnedToBottomRef = useRef(false);
   const historyScrollRestoreRef = useRef(null);
   const [refreshPending, setRefreshPending] = useState(false);
   const [interruptingIssueId, setInterruptingIssueId] = useState("");
   const [retryingIssueId, setRetryingIssueId] = useState("");
   const [deletingIssueId, setDeletingIssueId] = useState("");
   const [activeMessageAction, setActiveMessageAction] = useState(null);
+  const { alert: showAlert } = useMobileFeedback();
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -6366,16 +6503,131 @@ function ThreadDetail({
     setShowJumpToLatestButton((current) => (current === shouldShowJumpButton ? current : shouldShowJumpButton));
   }, []);
 
+  const alignScrollToLatest = useCallback((options = {}) => {
+    const { updatePreviousScrollTop = false } = options;
+    const containerNode = scrollRef.current;
+    const anchorNode = scrollAnchorRef.current;
+
+    if (!containerNode && !anchorNode) {
+      return false;
+    }
+
+    if (containerNode) {
+      containerNode.scrollTop = containerNode.scrollHeight;
+    }
+
+    if (anchorNode) {
+      anchorNode.scrollIntoView({ block: "end", inline: "nearest" });
+    } else if (containerNode) {
+      containerNode.scrollTop = containerNode.scrollHeight;
+    }
+
+    const nextContainerNode = scrollRef.current ?? containerNode;
+
+    if (updatePreviousScrollTop && nextContainerNode) {
+      previousScrollTopRef.current = Math.max(0, nextContainerNode.scrollTop);
+    }
+
+    return true;
+  }, []);
+
+  const lockHeaderMenusForViewportShift = useCallback(() => {
+    headerMenuViewportLockUntilRef.current = Date.now() + HEADER_MENU_VIEWPORT_SETTLE_MS;
+
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      return;
+    }
+
+    previousScrollTopRef.current = Math.max(0, scrollNode.scrollTop);
+
+    if (getDistanceFromBottom(scrollNode) <= CHAT_AUTO_SCROLL_THRESHOLD_PX) {
+      setShowHeaderMenus(true);
+    }
+  }, []);
+
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
     setShowJumpToLatestButton(false);
     autoScrollingRef.current = false;
     historyScrollRestoreRef.current = null;
+    keyboardPinnedToBottomRef.current = false;
     previousScrollTopRef.current = 0;
     setShowHeaderMenus(true);
     recomputeScrollUiState();
   }, [recomputeScrollUiState, thread?.id, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "chat" || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const viewport = window.visualViewport;
+    const handleViewportShift = () => {
+      lockHeaderMenusForViewportShift();
+    };
+
+    if (!viewport) {
+      window.addEventListener("resize", handleViewportShift);
+
+      return () => {
+        window.removeEventListener("resize", handleViewportShift);
+      };
+    }
+
+    viewport.addEventListener("resize", handleViewportShift);
+    viewport.addEventListener("scroll", handleViewportShift);
+    window.addEventListener("resize", handleViewportShift);
+
+    return () => {
+      viewport.removeEventListener("resize", handleViewportShift);
+      viewport.removeEventListener("scroll", handleViewportShift);
+      window.removeEventListener("resize", handleViewportShift);
+    };
+  }, [lockHeaderMenusForViewportShift, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "chat" || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const viewport = window.visualViewport;
+    const handleKeyboardViewportChange = () => {
+      if (!keyboardPinnedToBottomRef.current) {
+        return;
+      }
+
+      const activeElement = document.activeElement;
+
+      if (!footerRef.current?.contains(activeElement) || !isTextInputElement(activeElement)) {
+        keyboardPinnedToBottomRef.current = false;
+        return;
+      }
+
+      keepKeyboardPinnedToBottom();
+      lockHeaderMenusForViewportShift();
+    };
+
+    if (!viewport) {
+      window.addEventListener("resize", handleKeyboardViewportChange);
+
+      return () => {
+        window.removeEventListener("resize", handleKeyboardViewportChange);
+      };
+    }
+
+    viewport.addEventListener("resize", handleKeyboardViewportChange);
+    viewport.addEventListener("scroll", handleKeyboardViewportChange);
+    window.addEventListener("resize", handleKeyboardViewportChange);
+
+    return () => {
+      viewport.removeEventListener("resize", handleKeyboardViewportChange);
+      viewport.removeEventListener("scroll", handleKeyboardViewportChange);
+      window.removeEventListener("resize", handleKeyboardViewportChange);
+    };
+  }, [keepKeyboardPinnedToBottom, lockHeaderMenusForViewportShift, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "chat") {
@@ -6402,15 +6654,16 @@ function ThreadDetail({
           const nextScrollTop = Math.max(0, node.scrollTop);
           const delta = nextScrollTop - previousScrollTopRef.current;
           const distanceFromBottom = getDistanceFromBottom(node);
-          const shouldLockHeaderForStreaming =
-            thread?.status === "running" && distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-          const shouldGuardHeaderAtBottom =
-            shouldLockHeaderForStreaming ||
-            isBottomBoundaryMomentumLocked(node);
+          const isHeaderMenuViewportLocked = headerMenuViewportLockUntilRef.current > Date.now();
+          const shouldGuardHeaderVisibility =
+            distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX ||
+            isBottomBoundaryMomentumLocked(node) ||
+            isHeaderMenuViewportLocked;
 
           if (nextScrollTop <= 8) {
             setShowHeaderMenus(true);
-          } else if (shouldGuardHeaderAtBottom) {
+          } else if (shouldGuardHeaderVisibility) {
+            setShowHeaderMenus(true);
             previousScrollTopRef.current = nextScrollTop;
             recomputeScrollUiState();
             return;
@@ -6438,7 +6691,7 @@ function ThreadDetail({
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [maybeLoadOlderMessages, recomputeScrollUiState, thread?.status, viewMode]);
+  }, [maybeLoadOlderMessages, recomputeScrollUiState, viewMode]);
 
   useLayoutEffect(() => {
     const restoreTarget = historyScrollRestoreRef.current;
@@ -6466,52 +6719,137 @@ function ThreadDetail({
       return;
     }
 
-    const frame = window.requestAnimationFrame(() => {
-      const anchorNode = scrollAnchorRef.current;
-      const containerNode = scrollRef.current;
+    autoScrollingRef.current = true;
+    alignScrollToLatest({ updatePreviousScrollTop: true });
 
-      if (!anchorNode && !containerNode) {
+    const frame = window.requestAnimationFrame(() => {
+      alignScrollToLatest({ updatePreviousScrollTop: true });
+      autoScrollingRef.current = false;
+      recomputeScrollUiState();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    alignScrollToLatest,
+    historyLoading,
+    isPinnedToLatest,
+    recomputeScrollUiState,
+    thread?.id,
+    viewMode,
+    visibleChatTimelineSignature
+  ]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "chat" || historyLoading || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const contentNode = scrollContentRef.current;
+
+    if (!contentNode) {
+      return undefined;
+    }
+
+    let frameId = 0;
+    const handleContentResize = () => {
+      if (historyScrollRestoreRef.current) {
+        return;
+      }
+
+      if (!pinnedToLatestRef.current && !keyboardPinnedToBottomRef.current) {
         return;
       }
 
       autoScrollingRef.current = true;
+      alignScrollToLatest({ updatePreviousScrollTop: true });
 
-      if (anchorNode) {
-        anchorNode.scrollIntoView({ block: "end" });
-      } else if (containerNode) {
-        containerNode.scrollTop = containerNode.scrollHeight;
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
       }
 
-      window.requestAnimationFrame(() => {
+      frameId = window.requestAnimationFrame(() => {
+        alignScrollToLatest({ updatePreviousScrollTop: true });
         autoScrollingRef.current = false;
         recomputeScrollUiState();
       });
-    });
+    };
 
-    return () => window.cancelAnimationFrame(frame);
-  }, [historyLoading, isPinnedToLatest, recomputeScrollUiState, thread?.id, viewMode, visibleChatTimelineSignature]);
+    const observer = new ResizeObserver(handleContentResize);
+    observer.observe(contentNode);
+
+    return () => {
+      observer.disconnect();
+
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [alignScrollToLatest, historyLoading, recomputeScrollUiState, viewMode]);
 
   const handleJumpToLatest = useCallback(() => {
-    const anchorNode = scrollAnchorRef.current;
-    const containerNode = scrollRef.current;
-
-    if (!anchorNode && !containerNode) {
+    if (!alignScrollToLatest({ updatePreviousScrollTop: true })) {
       return;
     }
 
     autoScrollingRef.current = true;
 
-    if (anchorNode) {
-      anchorNode.scrollIntoView({ block: "end" });
-    } else if (containerNode) {
-      containerNode.scrollTop = containerNode.scrollHeight;
-    }
-
     window.requestAnimationFrame(() => {
+      alignScrollToLatest({ updatePreviousScrollTop: true });
       autoScrollingRef.current = false;
       recomputeScrollUiState();
     });
-  }, [recomputeScrollUiState]);
+  }, [alignScrollToLatest, recomputeScrollUiState]);
+
+  const keepKeyboardPinnedToBottom = useCallback(() => {
+    if (!alignScrollToLatest({ updatePreviousScrollTop: true })) {
+      return;
+    }
+
+    autoScrollingRef.current = true;
+
+    window.requestAnimationFrame(() => {
+      alignScrollToLatest({ updatePreviousScrollTop: true });
+      autoScrollingRef.current = false;
+      recomputeScrollUiState();
+    });
+  }, [alignScrollToLatest, recomputeScrollUiState]);
+
+  const handleComposerFocus = useCallback(() => {
+    const scrollNode = scrollRef.current;
+
+    if (!scrollNode) {
+      keyboardPinnedToBottomRef.current = false;
+      return;
+    }
+
+    const shouldStickBottom = getDistanceFromBottom(scrollNode) <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+    keyboardPinnedToBottomRef.current = shouldStickBottom;
+
+    if (!shouldStickBottom) {
+      return;
+    }
+
+    pinnedToLatestRef.current = true;
+    setIsPinnedToLatest(true);
+    setShowJumpToLatestButton(false);
+    keepKeyboardPinnedToBottom();
+    lockHeaderMenusForViewportShift();
+    window.setTimeout(() => {
+      if (keyboardPinnedToBottomRef.current) {
+        keepKeyboardPinnedToBottom();
+      }
+    }, 120);
+  }, [keepKeyboardPinnedToBottom, lockHeaderMenusForViewportShift]);
+
+  const handleComposerBlur = useCallback(() => {
+    window.setTimeout(() => {
+      const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+
+      if (!footerRef.current?.contains(activeElement)) {
+        keyboardPinnedToBottomRef.current = false;
+      }
+    }, 0);
+  }, []);
 
   const handleRefreshMessages = async () => {
     if (!onRefreshMessages || refreshPending) {
@@ -6621,20 +6959,20 @@ function ThreadDetail({
   const handleCopyMessage = useCallback(async (content) => {
     try {
       await copyTextToClipboard(content);
-
-      if (typeof window !== "undefined") {
-        window.alert("텍스트를 복사했습니다.");
-      }
+      showAlert("텍스트를 복사했습니다.", {
+        title: "복사 완료"
+      });
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message ?? "텍스트를 복사하지 못했습니다.");
-      }
+      showAlert(error.message ?? "텍스트를 복사하지 못했습니다.", {
+        tone: "error",
+        title: "복사 실패"
+      });
 
       return false;
     }
-  }, []);
+  }, [showAlert]);
 
   useEffect(() => {
     setActiveMessageAction(null);
@@ -6762,7 +7100,7 @@ function ThreadDetail({
           data-testid="thread-detail-scroll"
           className="telegram-grid touch-scroll-boundary-lock min-h-0 h-full overflow-y-auto px-4 pb-5 pt-5"
         >
-          <div className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
+          <div ref={scrollContentRef} className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           {historyLoading || historyError || hasOlderMessages ? (
             <div className="flex justify-center">
               <div className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300">
@@ -7014,6 +7352,7 @@ function ThreadDetail({
       />
 
       <div
+        ref={footerRef}
         data-testid="thread-detail-footer"
         className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur"
       >
@@ -7030,6 +7369,8 @@ function ThreadDetail({
             onStop={interruptibleIssue ? handleStopCurrentExecution : null}
             stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
             stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
+            onInputFocus={handleComposerFocus}
+            onInputBlur={handleComposerBlur}
           />
         </div>
       </div>
@@ -7146,6 +7487,7 @@ function MainPage({
   onLogout,
   onBackToInbox
 }) {
+  const { confirm: confirmMobileAction } = useMobileFeedback();
   const [searchOpen, setSearchOpen] = useState(false);
   const [threadSelectionMode, setThreadSelectionMode] = useState(false);
   const [projectActionProjectId, setProjectActionProjectId] = useState("");
@@ -7301,25 +7643,30 @@ function MainPage({
     }
   }, [selectedThreadIds.length, threadSelectionMode]);
   const requestProjectDeletion = useCallback(
-    (project) => {
+    async (project) => {
       if (!project?.id || !onDeleteProject) {
         return;
       }
 
-      if (typeof window !== "undefined") {
-        const confirmMessage = project?.name
-          ? `\"${project.name}\" 프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.`
-          : PROJECT_DELETE_CONFIRM_MESSAGE;
+      const confirmMessage = project?.name
+        ? `\"${project.name}\" 프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.`
+        : PROJECT_DELETE_CONFIRM_MESSAGE;
+      const confirmed = await confirmMobileAction({
+        title: "프로젝트 삭제",
+        message: confirmMessage,
+        confirmLabel: "삭제",
+        cancelLabel: "취소",
+        tone: "danger"
+      });
 
-        if (!window.confirm(confirmMessage)) {
-          return;
-        }
+      if (!confirmed) {
+        return;
       }
 
       setProjectActionProjectId("");
       void onDeleteProject(project.id);
     },
-    [onDeleteProject]
+    [confirmMobileAction, onDeleteProject]
   );
   const openProjectActionSheet = useCallback((project) => {
     if (!project?.id) {
@@ -8586,6 +8933,15 @@ export default function App() {
   const [installBusy, setInstallBusy] = useState(false);
   const [pwaUpdateVisible, setPwaUpdateVisible] = useState(false);
   const [pwaUpdateBusy, setPwaUpdateBusy] = useState(false);
+  const [mobileNotices, setMobileNotices] = useState([]);
+  const [mobileConfirmState, setMobileConfirmState] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "확인",
+    cancelLabel: "취소",
+    tone: "default"
+  });
   const [bridgeDisconnectOverrideById, setBridgeDisconnectOverrideById] = useState({});
   const viewportWidth = useVisualViewportWidth();
   const activeViewRef = useRef(activeView);
@@ -8603,11 +8959,131 @@ export default function App() {
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
   const threadDeleteDialogResolverRef = useRef(null);
+  const mobileNoticeTimersRef = useRef(new Map());
+  const mobileConfirmResolverRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const bridgeListSyncPromiseRef = useRef(null);
+  const dismissMobileNotice = useCallback((noticeId) => {
+    const normalizedNoticeId = String(noticeId ?? "").trim();
+
+    if (!normalizedNoticeId) {
+      return;
+    }
+
+    const timer = mobileNoticeTimersRef.current.get(normalizedNoticeId);
+
+    if (timer) {
+      window.clearTimeout(timer);
+      mobileNoticeTimersRef.current.delete(normalizedNoticeId);
+    }
+
+    setMobileNotices((current) => current.filter((notice) => notice.id !== normalizedNoticeId));
+  }, []);
+  const showMobileAlert = useCallback(
+    (message, options = {}) => {
+      const normalizedMessage = String(message ?? "").trim();
+
+      if (!normalizedMessage) {
+        return "";
+      }
+
+      const tone = options.tone === "error" ? "error" : "info";
+      const noticeId = createId();
+      const durationMs =
+        Number(options.durationMs) > 0
+          ? Number(options.durationMs)
+          : tone === "error"
+            ? MOBILE_NOTICE_ERROR_DISMISS_MS
+            : MOBILE_NOTICE_AUTO_DISMISS_MS;
+
+      setMobileNotices((current) => [
+        ...current,
+        {
+          id: noticeId,
+          title: String(options.title ?? "").trim(),
+          message: normalizedMessage,
+          tone
+        }
+      ]);
+
+      const timer = window.setTimeout(() => {
+        dismissMobileNotice(noticeId);
+      }, durationMs);
+
+      mobileNoticeTimersRef.current.set(noticeId, timer);
+      return noticeId;
+    },
+    [dismissMobileNotice]
+  );
+  const resolveMobileConfirm = useCallback((accepted) => {
+    const resolver = mobileConfirmResolverRef.current;
+    mobileConfirmResolverRef.current = null;
+    setMobileConfirmState((current) => ({
+      ...current,
+      open: false
+    }));
+    resolver?.(accepted === true);
+  }, []);
+  const confirmMobileAction = useCallback((options = {}) => {
+    const message = String(options.message ?? "").trim();
+
+    if (!message) {
+      return Promise.resolve(false);
+    }
+
+    if (mobileConfirmResolverRef.current) {
+      mobileConfirmResolverRef.current(false);
+      mobileConfirmResolverRef.current = null;
+    }
+
+    setMobileConfirmState({
+      open: true,
+      title: String(options.title ?? "확인").trim() || "확인",
+      message,
+      confirmLabel: String(options.confirmLabel ?? "확인").trim() || "확인",
+      cancelLabel: String(options.cancelLabel ?? "취소").trim() || "취소",
+      tone: options.tone === "danger" ? "danger" : "default"
+    });
+
+    return new Promise((resolve) => {
+      mobileConfirmResolverRef.current = resolve;
+    });
+  }, []);
+  const mobileFeedbackValue = useMemo(
+    () => ({
+      alert: showMobileAlert,
+      confirm: confirmMobileAction
+    }),
+    [confirmMobileAction, showMobileAlert]
+  );
+  const notifyError = useCallback(
+    (error, fallbackMessage = "요청을 처리하지 못했습니다.") => {
+      showMobileAlert(error?.message ?? fallbackMessage, {
+        tone: "error",
+        title: "오류"
+      });
+    },
+    [showMobileAlert]
+  );
   const selectedBridgeKnown = !selectedBridgeId || bridges.some((bridge) => bridge.bridge_id === selectedBridgeId);
+
+  useEffect(
+    () => () => {
+      mobileNoticeTimersRef.current.forEach((timer) => {
+        window.clearTimeout(timer);
+      });
+      mobileNoticeTimersRef.current.clear();
+
+      if (mobileConfirmResolverRef.current) {
+        mobileConfirmResolverRef.current(false);
+        mobileConfirmResolverRef.current = null;
+      }
+    },
+    []
+  );
+
   const status = useMemo(
     () => normalizeBridgeStatus(selectedBridgeId ? bridgeStatusById[selectedBridgeId] : null),
     [bridgeStatusById, selectedBridgeId]
@@ -9677,11 +10153,9 @@ export default function App() {
 
   const handleOpenBridgeDropdown = useCallback(() => {
     void syncBridgeList().catch((error) => {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
     });
-  }, [syncBridgeList]);
+  }, [notifyError, syncBridgeList]);
 
   async function loadBridgeWorkspace(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
@@ -11098,14 +11572,12 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setTodoBusy(false);
     }
-  }, [selectedBridgeId, selectTodoScope, session, todoChats]);
+  }, [notifyError, selectedBridgeId, selectTodoScope, session, todoChats]);
 
   const handleSubmitTodoMessage = useCallback(async (content) => {
     if (!session?.loginId || !selectedBridgeId || !selectedTodoChatId) {
@@ -11131,14 +11603,12 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setTodoBusy(false);
     }
-  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+  }, [notifyError, selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
 
   const handleRenameTodoChat = useCallback(async (chatId, title) => {
     if (!session?.loginId || !selectedBridgeId || !chatId) {
@@ -11174,21 +11644,27 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setTodoRenameBusy(false);
     }
-  }, [selectedBridgeId, session]);
+  }, [notifyError, selectedBridgeId, session]);
 
   const handleDeleteTodoChat = useCallback(async (chatId) => {
     if (!session?.loginId || !selectedBridgeId || !chatId) {
       return false;
     }
 
-    if (typeof window !== "undefined" && !window.confirm("이 ToDo 채팅을 삭제하시겠습니까?")) {
+    const confirmed = await confirmMobileAction({
+      title: "ToDo 채팅 삭제",
+      message: "이 ToDo 채팅을 삭제하시겠습니까?",
+      confirmLabel: "삭제",
+      cancelLabel: "취소",
+      tone: "danger"
+    });
+
+    if (!confirmed) {
       return false;
     }
 
@@ -11222,12 +11698,10 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [removeThreadComposerDrafts, selectedBridgeId, selectedTodoChatId, selectTodoScope, session]);
+  }, [confirmMobileAction, notifyError, removeThreadComposerDrafts, selectedBridgeId, selectedTodoChatId, selectTodoScope, session]);
 
   const handleEditTodoMessage = useCallback(async (messageId, content) => {
     if (!session?.loginId || !selectedBridgeId || !messageId || !selectedTodoChatId) {
@@ -11248,21 +11722,27 @@ export default function App() {
       syncTodoChatPayload(response, selectedTodoChatId);
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setTodoBusy(false);
     }
-  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+  }, [notifyError, selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
 
   const handleDeleteTodoMessage = useCallback(async (messageId) => {
     if (!session?.loginId || !selectedBridgeId || !messageId || !selectedTodoChatId) {
       return false;
     }
 
-    if (typeof window !== "undefined" && !window.confirm("이 메모를 삭제하시겠습니까?")) {
+    const confirmed = await confirmMobileAction({
+      title: "메모 삭제",
+      message: "이 메모를 삭제하시겠습니까?",
+      confirmLabel: "삭제",
+      cancelLabel: "취소",
+      tone: "danger"
+    });
+
+    if (!confirmed) {
       return false;
     }
 
@@ -11277,12 +11757,10 @@ export default function App() {
       syncTodoChatPayload(response, selectedTodoChatId);
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
+  }, [confirmMobileAction, notifyError, selectedBridgeId, selectedTodoChatId, session, syncTodoChatPayload]);
 
   const handleTransferTodoMessage = useCallback(async (messageId, payload) => {
     if (!session?.loginId || !selectedBridgeId || !messageId) {
@@ -11323,14 +11801,12 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setTodoTransferBusy(false);
     }
-  }, [ensureProjectThreadsLoaded, loadTodoChatMessages, selectedBridgeId, selectedProjectId, selectedScope.kind, selectedTodoChatId, session]);
+  }, [ensureProjectThreadsLoaded, loadTodoChatMessages, notifyError, selectedBridgeId, selectedProjectId, selectedScope.kind, selectedTodoChatId, session]);
 
   const handleRefreshTodoChat = useCallback(() => {
     if (!selectedTodoChatId) {
@@ -11389,11 +11865,9 @@ export default function App() {
 
       await loadThreadMessages(selectedThreadId, { force: true });
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
     }
-  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session?.loginId]);
+  }, [loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, session?.loginId]);
 
   const handleDeleteThreadIssue = useCallback(async (issueId) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
@@ -11412,13 +11886,22 @@ export default function App() {
     const targetPhysicalThreadId = targetIssue.executed_physical_thread_id ?? targetIssue.created_physical_thread_id ?? null;
 
     if (targetPhysicalThreadId !== activePhysicalThreadId) {
-      if (typeof window !== "undefined") {
-        window.alert("현재 active thread에 속한 이슈만 삭제할 수 있습니다.");
-      }
+      showMobileAlert("현재 active thread에 속한 이슈만 삭제할 수 있습니다.", {
+        tone: "error",
+        title: "이슈 삭제"
+      });
       return false;
     }
 
-    if (typeof window !== "undefined" && !window.confirm("이 이슈를 삭제하시겠습니까? 관련 메시지도 함께 목록에서 사라집니다.")) {
+    const confirmed = await confirmMobileAction({
+      title: "이슈 삭제",
+      message: "이 이슈를 삭제하시겠습니까? 관련 메시지도 함께 목록에서 사라집니다.",
+      confirmLabel: "삭제",
+      cancelLabel: "취소",
+      tone: "danger"
+    });
+
+    if (!confirmed) {
       return false;
     }
 
@@ -11443,12 +11926,10 @@ export default function App() {
       await loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
+  }, [confirmMobileAction, currentThreadDetail?.issues, loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session, showMobileAlert]);
 
   const handleRetryThreadIssue = useCallback(async (issueId) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
@@ -11464,9 +11945,10 @@ export default function App() {
     }
 
     if (!isRetryableIssueStatus(targetIssue.status)) {
-      if (typeof window !== "undefined") {
-        window.alert("실패한 이슈만 다시 진행할 수 있습니다.");
-      }
+      showMobileAlert("실패한 이슈만 다시 진행할 수 있습니다.", {
+        tone: "error",
+        title: "이슈 재시도"
+      });
       return false;
     }
 
@@ -11514,12 +11996,10 @@ export default function App() {
       await loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, session]);
+  }, [currentThreadDetail?.issues, loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, session, showMobileAlert]);
 
   const handleInterruptThreadIssue = useCallback(async (issueId, options = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId || !issueId) {
@@ -11536,18 +12016,20 @@ export default function App() {
     }
 
     if (!["running", "awaiting_input"].includes(targetIssue.status)) {
-      if (typeof window !== "undefined") {
-        window.alert("실행 중이거나 입력 대기 상태인 이슈만 중단할 수 있습니다.");
-      }
+      showMobileAlert("실행 중이거나 입력 대기 상태인 이슈만 중단할 수 있습니다.", {
+        tone: "error",
+        title: "이슈 중단"
+      });
       return false;
     }
 
     const targetPhysicalThreadId = targetIssue.executed_physical_thread_id ?? targetIssue.created_physical_thread_id ?? null;
 
     if (targetPhysicalThreadId !== activePhysicalThreadId) {
-      if (typeof window !== "undefined") {
-        window.alert("현재 active thread에 속한 이슈만 중단할 수 있습니다.");
-      }
+      showMobileAlert("현재 active thread에 속한 이슈만 중단할 수 있습니다.", {
+        tone: "error",
+        title: "이슈 중단"
+      });
       return false;
     }
 
@@ -11575,12 +12057,10 @@ export default function App() {
       await loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [currentThreadDetail?.issues, loadThreadMessages, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session]);
+  }, [currentThreadDetail?.issues, loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session, showMobileAlert]);
 
   const handleStopThreadExecution = useCallback(async (options = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId) {
@@ -11644,12 +12124,10 @@ export default function App() {
       await loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
-  }, [loadThreadMessages, selectedBridgeId, selectedThreadId, session?.loginId]);
+  }, [loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, session?.loginId]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -11814,9 +12292,7 @@ export default function App() {
       }
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setThreadBusy(false);
@@ -11953,9 +12429,7 @@ export default function App() {
       });
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setThreadBusy(false);
@@ -12025,14 +12499,16 @@ export default function App() {
       }
 
       if (failedThreadIds.length > 0) {
-        if (typeof window !== "undefined") {
-          const firstFailure = failedThreadIds[0];
-          const partialDeleteMessage =
-            deletedThreadIds.length > 0
-              ? `${deletedThreadIds.length}개를 삭제했고 ${failedThreadIds.length}개는 실패했습니다.\n첫 실패: ${firstFailure.message}`
-              : firstFailure.message;
-          window.alert(partialDeleteMessage);
-        }
+        const firstFailure = failedThreadIds[0];
+        const partialDeleteMessage =
+          deletedThreadIds.length > 0
+            ? `${deletedThreadIds.length}개를 삭제했고 ${failedThreadIds.length}개는 실패했습니다.\n첫 실패: ${firstFailure.message}`
+            : firstFailure.message;
+        showMobileAlert(partialDeleteMessage, {
+          tone: "error",
+          title: "삭제 일부 실패",
+          durationMs: MOBILE_NOTICE_ERROR_DISMISS_MS + 1000
+        });
 
         return {
           accepted: false,
@@ -12049,7 +12525,7 @@ export default function App() {
     } finally {
       setThreadBusy(false);
     }
-  }, [removeDeletedThreadsFromState, requestThreadDeleteConfirmation, selectedBridgeId, session?.loginId]);
+  }, [removeDeletedThreadsFromState, requestThreadDeleteConfirmation, selectedBridgeId, session?.loginId, showMobileAlert]);
 
   const handleDeleteThread = useCallback(
     async (threadId) => {
@@ -12152,9 +12628,7 @@ export default function App() {
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     }
   };
@@ -12194,9 +12668,7 @@ export default function App() {
       setSelectedWorkspacePath("");
       setProjectComposerOpen(false);
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
     } finally {
       setProjectBusy(false);
     }
@@ -12325,15 +12797,17 @@ export default function App() {
       setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
       setThreadCreateDialogOpen(false);
 
-      if (postCreateWarning && typeof window !== "undefined") {
-        window.alert(postCreateWarning);
+      if (postCreateWarning) {
+        showMobileAlert(postCreateWarning, {
+          tone: "error",
+          title: "개발지침 저장 실패",
+          durationMs: MOBILE_NOTICE_ERROR_DISMISS_MS + 1000
+        });
       }
 
       return true;
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
       return false;
     } finally {
       setThreadBusy(false);
@@ -12416,9 +12890,7 @@ export default function App() {
 
       setProjectInstructionDialogOpen(false);
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
     } finally {
       setProjectInstructionBusy(false);
     }
@@ -12601,9 +13073,7 @@ export default function App() {
         await loadBridgeWorkspace(session, targetBridgeId);
       }
     } catch (error) {
-      if (typeof window !== "undefined") {
-        window.alert(error.message);
-      }
+      notifyError(error);
     }
   };
 
@@ -12726,7 +13196,7 @@ export default function App() {
   };
 
   return (
-    <>
+    <MobileFeedbackContext.Provider value={mobileFeedbackValue}>
       <MainPage
         pushNotificationCard={
           <PushNotificationCard
@@ -12842,6 +13312,8 @@ export default function App() {
         onBackToInbox={handleBackToInbox}
       />
       <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
-    </>
+      <MobileNoticeCenter notices={mobileNotices} onDismiss={dismissMobileNotice} />
+      <MobileConfirmDialog state={mobileConfirmState} onResolve={resolveMobileConfirm} />
+    </MobileFeedbackContext.Provider>
   );
 }
