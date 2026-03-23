@@ -6547,6 +6547,20 @@ function ThreadDetail({
     }
   }, []);
 
+  const keepKeyboardPinnedToBottom = useCallback(() => {
+    if (!alignScrollToLatest({ updatePreviousScrollTop: true })) {
+      return;
+    }
+
+    autoScrollingRef.current = true;
+
+    window.requestAnimationFrame(() => {
+      alignScrollToLatest({ updatePreviousScrollTop: true });
+      autoScrollingRef.current = false;
+      recomputeScrollUiState();
+    });
+  }, [alignScrollToLatest, recomputeScrollUiState]);
+
   useEffect(() => {
     pinnedToLatestRef.current = true;
     setIsPinnedToLatest(true);
@@ -6787,20 +6801,6 @@ function ThreadDetail({
   }, [alignScrollToLatest, historyLoading, recomputeScrollUiState, viewMode]);
 
   const handleJumpToLatest = useCallback(() => {
-    if (!alignScrollToLatest({ updatePreviousScrollTop: true })) {
-      return;
-    }
-
-    autoScrollingRef.current = true;
-
-    window.requestAnimationFrame(() => {
-      alignScrollToLatest({ updatePreviousScrollTop: true });
-      autoScrollingRef.current = false;
-      recomputeScrollUiState();
-    });
-  }, [alignScrollToLatest, recomputeScrollUiState]);
-
-  const keepKeyboardPinnedToBottom = useCallback(() => {
     if (!alignScrollToLatest({ updatePreviousScrollTop: true })) {
       return;
     }
