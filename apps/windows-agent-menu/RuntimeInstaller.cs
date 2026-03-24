@@ -570,6 +570,24 @@ sealed class RuntimeInstaller
     progress?.Report($"활성 런타임 포인터를 전환했습니다. current={preparedRelease.RuntimeId}");
   }
 
+  public void RestoreCurrentRuntimeRelease(OctopPaths paths, string runtimeReleaseId, IProgress<string>? progress = null)
+  {
+    Directory.CreateDirectory(paths.InstallRoot);
+    File.WriteAllText(paths.RuntimeCurrentPointerPath, runtimeReleaseId, new UTF8Encoding(false));
+    progress?.Report($"활성 런타임 포인터를 복구했습니다. current={runtimeReleaseId}");
+  }
+
+  public void ClearCurrentRuntimeRelease(OctopPaths paths, IProgress<string>? progress = null)
+  {
+    Directory.CreateDirectory(paths.InstallRoot);
+    if (File.Exists(paths.RuntimeCurrentPointerPath))
+    {
+      File.Delete(paths.RuntimeCurrentPointerPath);
+    }
+
+    progress?.Report("활성 런타임 포인터를 제거했습니다.");
+  }
+
   public void CleanupStaleRuntimeReleases(OctopPaths paths, IProgress<string>? progress = null, int retentionLimit = 3)
   {
     if (!Directory.Exists(paths.RuntimeReleasesRoot))

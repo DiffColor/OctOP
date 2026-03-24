@@ -327,13 +327,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     var currentReleaseId = _paths.ReadCurrentRuntimeReleaseId();
     var runtimeChanged = !string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase);
-    if (!string.Equals(currentReleaseId, preparedRelease.RuntimeId, StringComparison.OrdinalIgnoreCase))
+    if (runtimeChanged)
     {
-      _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
-      _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
+      AppendLog($"새 런타임 릴리즈 준비를 완료했습니다. 활성 전환은 기동 검증 후 진행합니다. target={preparedRelease.RuntimeId}");
     }
 
-    _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
     await RefreshRuntimeStatusAsync();
     await RefreshAvailableRuntimeUpdateAsync();
     return runtimeChanged;
@@ -497,9 +495,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task LaunchPreparedRuntimeReleaseAsync(PreparedRuntimeRelease preparedRelease, bool allowRollback)
   {
-    _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
-    _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
-
     var nodeExecutablePath = _paths.GetNodeExecutablePath();
     if (nodeExecutablePath is null || !File.Exists(nodeExecutablePath))
     {
@@ -545,6 +540,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       StartInfo = startInfo,
       EnableRaisingEvents = true
     };
+    var processStarted = false;
 
     process.OutputDataReceived += (_, eventArgs) =>
     {
@@ -575,6 +571,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     try
     {
       process.Start();
+      processStarted = true;
       process.BeginOutputReadLine();
       process.BeginErrorReadLine();
       _process = process;
@@ -585,30 +582,18 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       AppendLog($"서비스가 시작되었습니다. pid={process.Id}");
       RefreshUi();
 
-      var launchValidated = await WaitForServiceReadyAsync(process);
+      var launchValidated = await WaitForServiceReadyAsync(process, preparedRelease.ReleaseRoot);
       if (!launchValidated)
       {
         AppendLog("새 런타임 기동 검증에 실패했습니다. 이전 런타임으로 롤백합니다.");
         await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+        RestoreRuntimePointerAfterFailedLaunch(preparedRelease.RuntimeId);
 
-        if (allowRollback && _paths.ReadPreviousRuntimeReleaseId() is { Length: > 0 } previousReleaseId)
+        var rollbackRelease = ResolveRollbackPreparedRuntimeRelease(preparedRelease.RuntimeId);
+        if (allowRollback && rollbackRelease is not null)
         {
-          var previousRoot = _paths.GetRuntimeReleaseRoot(previousReleaseId);
-          if (Directory.Exists(previousRoot))
-          {
-            await LaunchPreparedRuntimeReleaseAsync(
-              new PreparedRuntimeRelease
-              {
-                RuntimeId = previousReleaseId,
-                ReleaseRoot = previousRoot,
-                BuildInfo = _runtimeInstaller.LoadRuntimeBuildInfo(previousRoot) ?? new RuntimeReleaseBuildInfo
-                {
-                  RuntimeId = previousReleaseId
-                }
-              },
-              allowRollback: false);
-            return;
-          }
+          await LaunchPreparedRuntimeReleaseAsync(rollbackRelease, allowRollback: false);
+          return;
         }
 
         _runtimeState = AgentRuntimeState.Failed;
@@ -617,11 +602,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return;
       }
 
+      _runtimeInstaller.ActivateRuntimeRelease(_paths, preparedRelease, new Progress<string>(AppendLog));
+      _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
       _runtimeInstaller.CleanupStaleRuntimeReleases(_paths, new Progress<string>(AppendLog));
       _ = RefreshAvailableRuntimeUpdateAsync();
     }
     catch (Exception error)
     {
+      if (processStarted)
+      {
+        try
+        {
+          await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
+        }
+        catch
+        {
+        }
+
+        RestoreRuntimePointerAfterFailedLaunch(preparedRelease.RuntimeId);
+      }
+
       process.Dispose();
       _runtimeState = AgentRuntimeState.Failed;
       _lastError = error.Message;
@@ -1880,7 +1880,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return new InvalidOperationException($"서비스 프로세스 정리가 완료되지 않았습니다.{suffix}");
   }
 
-  private async Task<bool> WaitForServiceReadyAsync(Process process, int timeoutMs = 10000)
+  private async Task<bool> WaitForServiceReadyAsync(Process process, string expectedRuntimeRoot, int timeoutMs = 10000)
   {
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
 
@@ -1898,7 +1898,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return false;
       }
 
-      var checks = await BuildServiceLaunchChecksAsync();
+      var checks = await BuildServiceLaunchChecksAsync(expectedRuntimeRoot);
       if (checks.All(static check => check.Passed))
       {
         return true;
@@ -1910,10 +1910,10 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return false;
   }
 
-  private async Task<IReadOnlyList<ServiceLaunchCheck>> BuildServiceLaunchChecksAsync()
+  private async Task<IReadOnlyList<ServiceLaunchCheck>> BuildServiceLaunchChecksAsync(string expectedRuntimeRoot)
   {
     var serviceProcesses = FindServiceProcesses();
-    var currentRuntimePath = (_paths.ResolveActiveRuntimeRoot() ?? _paths.RuntimeRoot).Trim();
+    var currentRuntimePath = expectedRuntimeRoot.Trim();
     var localAgentProcess = serviceProcesses.FirstOrDefault(static process =>
       process.CommandLine.Contains("run-local-agent.mjs", StringComparison.OrdinalIgnoreCase));
     var bridgeLauncherProcess = serviceProcesses.FirstOrDefault(static process =>
@@ -1979,6 +1979,61 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         Message = "base runtime health check"
       }
     ];
+  }
+
+  private PreparedRuntimeRelease? ResolveRollbackPreparedRuntimeRelease(string failedRuntimeId)
+  {
+    var rollbackReleaseId = _paths.ReadCurrentRuntimeReleaseId();
+    if (string.IsNullOrWhiteSpace(rollbackReleaseId) ||
+        string.Equals(rollbackReleaseId, failedRuntimeId, StringComparison.OrdinalIgnoreCase))
+    {
+      rollbackReleaseId = _paths.ReadPreviousRuntimeReleaseId();
+    }
+
+    if (string.IsNullOrWhiteSpace(rollbackReleaseId) ||
+        string.Equals(rollbackReleaseId, failedRuntimeId, StringComparison.OrdinalIgnoreCase))
+    {
+      return null;
+    }
+
+    var rollbackRoot = _paths.GetRuntimeReleaseRoot(rollbackReleaseId);
+    if (!Directory.Exists(rollbackRoot))
+    {
+      return null;
+    }
+
+    return new PreparedRuntimeRelease
+    {
+      RuntimeId = rollbackReleaseId,
+      ReleaseRoot = rollbackRoot,
+      BuildInfo = _runtimeInstaller.LoadRuntimeBuildInfo(rollbackRoot) ?? new RuntimeReleaseBuildInfo
+      {
+        RuntimeId = rollbackReleaseId
+      }
+    };
+  }
+
+  private void RestoreRuntimePointerAfterFailedLaunch(string failedRuntimeId)
+  {
+    var currentReleaseId = _paths.ReadCurrentRuntimeReleaseId();
+    if (!string.Equals(currentReleaseId, failedRuntimeId, StringComparison.OrdinalIgnoreCase))
+    {
+      return;
+    }
+
+    if (_paths.ReadPreviousRuntimeReleaseId() is { Length: > 0 } previousReleaseId)
+    {
+      var previousRoot = _paths.GetRuntimeReleaseRoot(previousReleaseId);
+      if (Directory.Exists(previousRoot))
+      {
+        _runtimeInstaller.RestoreCurrentRuntimeRelease(_paths, previousReleaseId, new Progress<string>(AppendLog));
+        _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
+        return;
+      }
+    }
+
+    _runtimeInstaller.ClearCurrentRuntimeRelease(_paths, new Progress<string>(AppendLog));
+    _paths = new OctopPaths(OctopPaths.ResolvePreferredInstallRoot());
   }
 
   private static IReadOnlyCollection<int> ResolveServicePorts(RuntimeConfiguration configuration)
