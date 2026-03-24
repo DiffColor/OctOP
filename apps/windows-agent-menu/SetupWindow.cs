@@ -16,6 +16,23 @@ using WpfCursors = System.Windows.Input.Cursors;
 
 sealed class SetupWindow : Window
 {
+  private static readonly string[] KnownCodexModelOptions =
+  [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5-codex",
+    "gpt-5-codex-mini",
+    "gpt-5"
+  ];
+
   private readonly RuntimeInstaller _installer;
   private readonly Dictionary<string, DiagnosticRowView> _diagnosticRows = [];
   private TextBox _natsUrlTextBox = null!;
@@ -336,7 +353,7 @@ sealed class SetupWindow : Window
   private Border CreateExecutionPolicyCard()
   {
     var stack = CreateSectionStack();
-    stack.Children.Add(CreateLabeledComboField("모델", _codexModelComboBox = CreateComboBox(["gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-mini"])));
+    stack.Children.Add(CreateLabeledComboField("모델", _codexModelComboBox = CreateComboBox(KnownCodexModelOptions)));
     stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(["none", "low", "medium", "high", "xhigh"])));
     stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(["never", "on-request", "untrusted"])));
     stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(["workspace-write", "read-only", "danger-full-access"])));
@@ -874,7 +891,14 @@ sealed class SetupWindow : Window
 
     var selectedItem = comboBox.Items.Cast<object>()
       .FirstOrDefault(item => string.Equals(Convert.ToString(item), value, StringComparison.OrdinalIgnoreCase));
-    comboBox.SelectedItem = selectedItem ?? (comboBox.Items.Count > 0 ? comboBox.Items[0] : null);
+    if (selectedItem is null)
+    {
+      comboBox.Items.Insert(0, value);
+      comboBox.SelectedItem = value;
+      return;
+    }
+
+    comboBox.SelectedItem = selectedItem;
   }
 
   private static Border CreateCard(string title, UIElement content)

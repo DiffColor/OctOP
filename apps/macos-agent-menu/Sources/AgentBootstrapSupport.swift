@@ -697,6 +697,22 @@ private final class BrowserLoginHelperState: @unchecked Sendable {
 
 @MainActor
 final class AgentBootstrapStore: ObservableObject {
+  private static let knownModelOptions = [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5-codex",
+    "gpt-5-codex-mini",
+    "gpt-5"
+  ]
+
   @Published var configuration: AgentBootstrapConfiguration
   @Published var diagnostics: [AgentDiagnosticItem] = []
   @Published var bootstrapInProgress = false
@@ -726,11 +742,23 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   let appServerModeOptions = ["ws-local"]
-  let modelOptions = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-mini"]
   let reasoningOptions = ["none", "low", "medium", "high", "xhigh"]
   let approvalOptions = ["on-request", "never", "untrusted"]
   let sandboxOptions = ["danger-full-access", "workspace-write", "read-only"]
   let authModeOptions = [AgentBootstrapConfiguration.authModeDeviceAuth]
+
+  var modelOptions: [String] {
+    let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !selectedModel.isEmpty else {
+      return Self.knownModelOptions
+    }
+
+    if Self.knownModelOptions.contains(selectedModel) {
+      return Self.knownModelOptions
+    }
+
+    return [selectedModel] + Self.knownModelOptions
+  }
 
   var appSupportURL: URL {
     octopAgentMenuAppSupportURL()
