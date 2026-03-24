@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO.Compression;
 using System.IO;
 using System.Linq;
@@ -819,52 +820,132 @@ sealed class RuntimeInstaller
 
     if (!Directory.Exists(Path.Combine(paths.RuntimeRepositoryCacheRoot, ".git")))
     {
-      if (Directory.Exists(paths.RuntimeRepositoryCacheRoot))
-      {
-        Directory.Delete(paths.RuntimeRepositoryCacheRoot, recursive: true);
-      }
-
-      progress?.Report("윈도우 런타임 원본 저장소를 clone 합니다.");
-      await RunGitCommandAsync(
-        paths.RuntimeSourceCacheRoot,
-        ["clone", "--depth", "1", "--branch", RuntimeRepositoryBranch, RuntimeRepositoryRemoteUrl, paths.RuntimeRepositoryCacheRoot],
-        cancellationToken);
+      await ReinitializeRuntimeRepositoryCacheAsync(paths, progress, cancellationToken);
       return;
     }
 
     progress?.Report("윈도우 런타임 원본 저장소를 최신으로 갱신합니다.");
     var remoteTrackingRef = $"refs/remotes/origin/{RuntimeRepositoryBranch}";
+    try
+    {
+      await RunGitCommandAsync(
+        paths.RuntimeRepositoryCacheRoot,
+        ["fetch", "origin", $"{RuntimeRepositoryBranch}:{remoteTrackingRef}"],
+        cancellationToken);
+      await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", remoteTrackingRef], cancellationToken);
+    }
+    catch (Exception error) when (CanContinueWithCachedRuntimeRepository(paths, error))
+    {
+      progress?.Report($"윈도우 런타임 원본 저장소 갱신에 실패해 마지막 캐시를 사용합니다. message={error.Message}");
+    }
+    catch (Exception error) when (IsRecoverableRuntimeRepositoryAccessError(error))
+    {
+      progress?.Report($"윈도우 런타임 원본 저장소 접근이 꼬여 캐시를 다시 초기화합니다. message={error.Message}");
+      await ReinitializeRuntimeRepositoryCacheAsync(paths, progress, cancellationToken);
+    }
+  }
+
+  private async Task ReinitializeRuntimeRepositoryCacheAsync(
+    OctopPaths paths,
+    IProgress<string>? progress,
+    CancellationToken cancellationToken)
+  {
+    if (Directory.Exists(paths.RuntimeRepositoryCacheRoot))
+    {
+      DeleteDirectoryIfExists(paths.RuntimeRepositoryCacheRoot);
+    }
+
+    progress?.Report("윈도우 런타임 원본 저장소를 clone 합니다.");
     await RunGitCommandAsync(
-      paths.RuntimeRepositoryCacheRoot,
-      ["fetch", "origin", $"{RuntimeRepositoryBranch}:{remoteTrackingRef}"],
+      paths.RuntimeSourceCacheRoot,
+      ["clone", "--depth", "1", "--branch", RuntimeRepositoryBranch, RuntimeRepositoryRemoteUrl, paths.RuntimeRepositoryCacheRoot],
       cancellationToken);
-    await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", remoteTrackingRef], cancellationToken);
+  }
+
+  private static bool CanContinueWithCachedRuntimeRepository(OctopPaths paths, Exception error)
+  {
+    return HasUsableRuntimeRepositoryCache(paths) &&
+      !IsRecoverableRuntimeRepositoryAccessError(error);
+  }
+
+  private static bool HasUsableRuntimeRepositoryCache(OctopPaths paths)
+  {
+    return File.Exists(Path.Combine(paths.RuntimeRepositoryCacheRoot, "services", "codex-adapter", "package.json"));
+  }
+
+  private static bool IsRecoverableRuntimeRepositoryAccessError(Exception error)
+  {
+    return error is UnauthorizedAccessException ||
+      error is DirectoryNotFoundException ||
+      error is IOException ||
+      error is Win32Exception;
+  }
+
+  private static void DeleteDirectoryIfExists(string directoryPath)
+  {
+    if (!Directory.Exists(directoryPath))
+    {
+      return;
+    }
+
+    foreach (var filePath in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
+    {
+      try
+      {
+        File.SetAttributes(filePath, FileAttributes.Normal);
+      }
+      catch
+      {
+      }
+    }
+
+    foreach (var childDirectory in Directory.EnumerateDirectories(directoryPath, "*", SearchOption.AllDirectories)
+      .OrderByDescending(static path => path.Length))
+    {
+      try
+      {
+        File.SetAttributes(childDirectory, FileAttributes.Normal);
+      }
+      catch
+      {
+      }
+    }
+
+    File.SetAttributes(directoryPath, FileAttributes.Normal);
+    Directory.Delete(directoryPath, recursive: true);
   }
 
   private static async Task<string?> ReadRepositoryHeadAsync(string repositoryRoot, CancellationToken cancellationToken)
   {
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = "rev-parse HEAD"
-      },
-      cancellationToken: cancellationToken);
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = repositoryRoot,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = "rev-parse HEAD"
+        },
+        cancellationToken: cancellationToken);
 
-    if (result.ExitCode != 0)
+      if (result.ExitCode != 0)
+      {
+        return null;
+      }
+
+      var revision = result.StandardOutput.Trim();
+      return string.IsNullOrWhiteSpace(revision) ? null : revision;
+    }
+    catch
     {
       return null;
     }
-
-    var revision = result.StandardOutput.Trim();
-    return string.IsNullOrWhiteSpace(revision) ? null : revision;
   }
 
   private static async Task<string?> ReadPathRevisionIfAvailableAsync(
@@ -887,28 +968,35 @@ sealed class RuntimeInstaller
 
   private static async Task<string?> ResolveRepositoryRootAsync(string workingDirectory, CancellationToken cancellationToken)
   {
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = workingDirectory,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = "rev-parse --show-toplevel"
-      },
-      cancellationToken: cancellationToken);
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = workingDirectory,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = "rev-parse --show-toplevel"
+        },
+        cancellationToken: cancellationToken);
 
-    if (result.ExitCode != 0)
+      if (result.ExitCode != 0)
+      {
+        return null;
+      }
+
+      var repositoryRoot = result.StandardOutput.Trim();
+      return string.IsNullOrWhiteSpace(repositoryRoot) ? null : repositoryRoot;
+    }
+    catch
     {
       return null;
     }
-
-    var repositoryRoot = result.StandardOutput.Trim();
-    return string.IsNullOrWhiteSpace(repositoryRoot) ? null : repositoryRoot;
   }
 
   private static async Task<string?> ReadRepositoryRevisionForPathAsync(
@@ -930,75 +1018,96 @@ sealed class RuntimeInstaller
       relativePath = ".";
     }
 
-    if (!string.IsNullOrWhiteSpace(repositoryBranch) &&
-        await IsShallowRepositoryAsync(repositoryRoot, cancellationToken))
+    try
     {
-      await UnshallowRepositoryAsync(repositoryRoot, repositoryBranch, cancellationToken);
-    }
-
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
+      if (!string.IsNullOrWhiteSpace(repositoryBranch) &&
+          await IsShallowRepositoryAsync(repositoryRoot, cancellationToken))
       {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = $"log -1 --format=%H -- {QuoteArgument(relativePath)}"
-      },
-      cancellationToken: cancellationToken);
+        await UnshallowRepositoryAsync(repositoryRoot, repositoryBranch, cancellationToken);
+      }
 
-    if (result.ExitCode != 0)
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = repositoryRoot,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = $"log -1 --format=%H -- {QuoteArgument(relativePath)}"
+        },
+        cancellationToken: cancellationToken);
+
+      if (result.ExitCode != 0)
+      {
+        return null;
+      }
+
+      var revision = result.StandardOutput.Trim();
+      return string.IsNullOrWhiteSpace(revision) ? null : revision;
+    }
+    catch
     {
       return null;
     }
-
-    var revision = result.StandardOutput.Trim();
-    return string.IsNullOrWhiteSpace(revision) ? null : revision;
   }
 
   private static async Task<bool> IsShallowRepositoryAsync(string repositoryRoot, CancellationToken cancellationToken)
   {
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = "rev-parse --is-shallow-repository"
-      },
-      cancellationToken: cancellationToken);
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = repositoryRoot,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = "rev-parse --is-shallow-repository"
+        },
+        cancellationToken: cancellationToken);
 
-    return result.ExitCode == 0 &&
-      string.Equals(result.StandardOutput.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+      return result.ExitCode == 0 &&
+        string.Equals(result.StandardOutput.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+    catch
+    {
+      return false;
+    }
   }
 
   private static async Task<bool> HeadTouchesPathAsync(string repositoryRoot, string relativePath, CancellationToken cancellationToken)
   {
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = $"diff-tree --no-commit-id --name-only -r HEAD -- {QuoteArgument(relativePath)}"
-      },
-      cancellationToken: cancellationToken);
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = repositoryRoot,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = $"diff-tree --no-commit-id --name-only -r HEAD -- {QuoteArgument(relativePath)}"
+        },
+        cancellationToken: cancellationToken);
 
-    return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput);
+      return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput);
+    }
+    catch
+    {
+      return false;
+    }
   }
 
   private static async Task<bool> UnshallowRepositoryAsync(
@@ -1006,22 +1115,29 @@ sealed class RuntimeInstaller
     string branch,
     CancellationToken cancellationToken)
   {
-    var result = await RunCommandAsync(
-      new ProcessStartInfo
-      {
-        FileName = "git",
-        WorkingDirectory = repositoryRoot,
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8,
-        Arguments = $"fetch --unshallow origin {QuoteArgument(branch)}"
-      },
-      cancellationToken: cancellationToken);
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = "git",
+          WorkingDirectory = repositoryRoot,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = $"fetch --unshallow origin {QuoteArgument(branch)}"
+        },
+        cancellationToken: cancellationToken);
 
-    return result.ExitCode == 0;
+      return result.ExitCode == 0;
+    }
+    catch
+    {
+      return false;
+    }
   }
 
   private static string QuoteArgument(string value)
