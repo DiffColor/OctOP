@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Lib.Net.Http.WebPush;
 
@@ -73,6 +75,7 @@ public sealed class WebPushNotificationService(
       var notificationTag = string.IsNullOrWhiteSpace(request.Tag)
         ? $"octop-push-{sentAt.ToUnixTimeMilliseconds()}"
         : request.Tag.Trim();
+      var deliveryTopic = CreateDeliveryTopic(notificationTag);
       var payload = JsonSerializer.Serialize(BuildPayload(subscription, request, notificationTag, sentAt));
       var target = new PushSubscription
       {
@@ -85,7 +88,7 @@ public sealed class WebPushNotificationService(
       {
         var message = new PushMessage(payload)
         {
-          Topic = notificationTag,
+          Topic = deliveryTopic,
           TimeToLive = 60,
           Urgency = PushMessageUrgency.High
         };
@@ -177,6 +180,47 @@ public sealed class WebPushNotificationService(
       message.Contains("used to create the subscriptions") ||
       message.Contains("authorization header")
     );
+  }
+
+  private static string CreateDeliveryTopic(string notificationTag)
+  {
+    if (IsValidTopic(notificationTag))
+    {
+      return notificationTag;
+    }
+
+    var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(notificationTag));
+    var base64Url = Convert.ToBase64String(bytes)
+      .TrimEnd('=')
+      .Replace('+', '-')
+      .Replace('/', '_');
+
+    return base64Url[..32];
+  }
+
+  private static bool IsValidTopic(string value)
+  {
+    if (string.IsNullOrWhiteSpace(value) || value.Length > 32)
+    {
+      return false;
+    }
+
+    foreach (var character in value)
+    {
+      if (
+        (character >= 'A' && character <= 'Z') ||
+        (character >= 'a' && character <= 'z') ||
+        (character >= '0' && character <= '9') ||
+        character is '-' or '_'
+      )
+      {
+        continue;
+      }
+
+      return false;
+    }
+
+    return true;
   }
 
   private static Dictionary<string, object?> BuildPayload(
