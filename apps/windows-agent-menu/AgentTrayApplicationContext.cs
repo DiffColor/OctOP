@@ -1559,17 +1559,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     using var process = new Process
     {
-      StartInfo = new ProcessStartInfo
-      {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8
-      }
+      StartInfo = CreatePowerShellStartInfo(command)
     };
 
     try
@@ -2191,17 +2181,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     using var process = new Process
     {
-      StartInfo = new ProcessStartInfo
-      {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8
-      }
+      StartInfo = CreatePowerShellStartInfo(command)
     };
 
     try
@@ -2231,17 +2211,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     using var process = new Process
     {
-      StartInfo = new ProcessStartInfo
-      {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"",
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8
-      }
+      StartInfo = CreatePowerShellStartInfo(command)
     };
 
     try
@@ -2283,38 +2253,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
-  private static int? TryParsePort(string? rawValue)
-  {
-    return int.TryParse(rawValue?.Trim(), out var port) && port is >= 1 and <= 65535
-      ? port
-      : null;
-  }
-
-  private static int? TryParsePortFromUrl(string? rawValue)
-  {
-    if (!Uri.TryCreate(rawValue?.Trim(), UriKind.Absolute, out var uri))
-    {
-      return null;
-    }
-
-    if (!uri.IsDefaultPort)
-    {
-      return uri.Port is >= 1 and <= 65535 ? uri.Port : null;
-    }
-
-    return uri.Scheme.ToLowerInvariant() switch
-    {
-      "ws" => 80,
-      "wss" => 443,
-      _ => null
-    };
-  }
-
-  private static string EscapePowerShellLikePattern(string? value)
-  {
-    return (value ?? string.Empty).Replace("'", "''");
-  }
-
   private string BuildServiceProcessQuery()
   {
     var runtimeRoots = _paths.EnumerateRuntimeProcessRoots()
@@ -2325,10 +2263,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       : "(" + string.Join(
         " -or ",
         runtimeRoots.Select(static root => "$_.CommandLine -like '*" + root + "*'")) + ")";
-    var appServerListenTarget = EscapePowerShellLikePattern(_configuration.AppServerWsUrl?.Trim());
-    var appServerCondition = string.IsNullOrWhiteSpace(appServerListenTarget)
-      ? "$_.CommandLine -like '*codex*app-server*--listen*ws://*'"
-      : "$_.CommandLine -like '*app-server*--listen*" + appServerListenTarget + "*'";
+    var appServerCondition =
+      "($_.CommandLine -like '*app-server*--listen*ws://*' -or $_.CommandLine -like '*app-server*--listen*wss://*')";
 
     return string.Join(
       " ",
@@ -2362,18 +2298,10 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return false;
     }
 
-    var listenTarget = _configuration.AppServerWsUrl?.Trim();
-    if (string.IsNullOrWhiteSpace(listenTarget))
-    {
-      return process.CommandLine.Contains("codex", StringComparison.OrdinalIgnoreCase) &&
-        process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
-        process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
-        process.CommandLine.Contains("ws://", StringComparison.OrdinalIgnoreCase);
-    }
-
     return process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
       process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
-      process.CommandLine.Contains(listenTarget, StringComparison.OrdinalIgnoreCase);
+      (process.CommandLine.Contains("ws://", StringComparison.OrdinalIgnoreCase) ||
+        process.CommandLine.Contains("wss://", StringComparison.OrdinalIgnoreCase));
   }
 
   private static int GetAppServerProcessPriority(ServiceProcessInfo process)
@@ -2442,17 +2370,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     using var process = new Process
     {
-      StartInfo = new ProcessStartInfo
-      {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{BuildLocalAgentProcessQuery()}\"",
-        UseShellExecute = false,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        CreateNoWindow = true,
-        StandardOutputEncoding = Encoding.UTF8,
-        StandardErrorEncoding = Encoding.UTF8
-      }
+      StartInfo = CreatePowerShellStartInfo(BuildLocalAgentProcessQuery())
     };
 
     try
@@ -2483,6 +2401,27 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       ]);
 
     return RunPowerShellProcessQuery(command).Contains(processId);
+  }
+
+  private static ProcessStartInfo CreatePowerShellStartInfo(string command)
+  {
+    var startInfo = new ProcessStartInfo
+    {
+      FileName = "powershell.exe",
+      UseShellExecute = false,
+      RedirectStandardOutput = true,
+      RedirectStandardError = true,
+      CreateNoWindow = true,
+      StandardOutputEncoding = Encoding.UTF8,
+      StandardErrorEncoding = Encoding.UTF8
+    };
+    startInfo.ArgumentList.Add("-NoProfile");
+    startInfo.ArgumentList.Add("-NonInteractive");
+    startInfo.ArgumentList.Add("-ExecutionPolicy");
+    startInfo.ArgumentList.Add("Bypass");
+    startInfo.ArgumentList.Add("-Command");
+    startInfo.ArgumentList.Add(command);
+    return startInfo;
   }
 
   private string BuildLocalAgentProcessQuery()
