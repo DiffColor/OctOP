@@ -27,6 +27,7 @@ import {
   sanitizeBridgeId,
   sanitizeUserId
 } from "./domain.js";
+import { buildSystemNetworkStateSignature } from "./systemNetwork.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
 // Runtime update verification marker 2: second non-functional comment for follow-up validation.
@@ -86,6 +87,9 @@ const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
 );
 const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
+);
+const APP_SERVER_RECONNECT_MAX_DELAY_MS = Number(
+  process.env.OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS ?? 5000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
@@ -508,19 +512,6 @@ function buildSystemNetworkLogContext(networkState) {
       : [],
     system_network_default_route_interface: networkState?.default_route?.interfaceName ?? null
   };
-}
-
-function buildSystemNetworkStateSignature(networkState) {
-  const interfaceNames = Array.isArray(networkState?.interfaces)
-    ? [...new Set(networkState.interfaces.map((entry) => String(entry?.name ?? "").trim()).filter(Boolean))].sort()
-    : [];
-  const defaultRouteInterface = String(networkState?.default_route?.interfaceName ?? "").trim() || null;
-
-  return JSON.stringify({
-    connected: Boolean(networkState?.connected),
-    interface_names: interfaceNames,
-    default_route_interface: defaultRouteInterface
-  });
 }
 
 async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified") {
@@ -8777,12 +8768,19 @@ class AppServerClient {
     }
 
     const attempt = this.reconnectAttempt + 1;
-    const delayMs = Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt);
+    const uncappedDelayMs = APP_SERVER_RECONNECT_DELAY_MS * attempt;
+    const delayMs = Math.max(
+      100,
+      APP_SERVER_RECONNECT_MAX_DELAY_MS > 0
+        ? Math.min(APP_SERVER_RECONNECT_MAX_DELAY_MS, uncappedDelayMs)
+        : uncappedDelayMs
+    );
     this.reconnectAttempt = attempt;
     console.warn("[OctOP bridge] scheduling app-server reconnect", {
       trigger,
       attempt,
-      delay_ms: delayMs
+      delay_ms: delayMs,
+      uncapped_delay_ms: uncappedDelayMs
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
