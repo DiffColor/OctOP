@@ -1,4 +1,6 @@
 using System.Net.Http;
+using System.Net;
+using System.Globalization;
 using System.Text.Json;
 
 sealed class GitHubTagUpdateClient
@@ -6,8 +8,19 @@ sealed class GitHubTagUpdateClient
   private const string Owner = "DiffColor";
   private const string Repo = "OctOP";
   private const string ReleasesApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=20";
+  private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(15);
+  private static readonly TimeSpan MinimumRateLimitBackoff = TimeSpan.FromMinutes(20);
 
   private static readonly HttpClient HttpClient = CreateHttpClient();
+  private static readonly object ReleaseStateSync = new();
+  private static readonly Dictionary<string, (DateTimeOffset CheckedAt, AppUpdateDescriptor? Descriptor)> CachedReleaseByTag = new(StringComparer.OrdinalIgnoreCase);
+  private static DateTimeOffset _rateLimitBlockUntil = DateTimeOffset.MinValue;
+
+  private static readonly IReadOnlyList<string> GitHubTokens = [
+    "OCTOP_WINDOWS_GITHUB_TOKEN",
+    "OCTOP_GITHUB_TOKEN",
+    "GITHUB_TOKEN"
+  ];
 
   public async Task<AppUpdateDescriptor?> GetLatestWindowsReleaseAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
@@ -16,73 +29,167 @@ sealed class GitHubTagUpdateClient
 
   private static async Task<AppUpdateDescriptor?> GetLatestReleaseAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
+    var now = DateTimeOffset.UtcNow;
+
+    if (TryGetCachedRelease(currentVersionTag, now, out var cachedDescriptor))
+    {
+      return cachedDescriptor;
+    }
+
+    lock (ReleaseStateSync)
+    {
+      if (now < _rateLimitBlockUntil)
+      {
+        return null;
+      }
+    }
+
     if (!SemVersion.TryParse(currentVersionTag, out var currentVersion))
     {
       return null;
     }
 
-    using var response = await HttpClient.GetAsync(ReleasesApiUrl, cancellationToken);
-    response.EnsureSuccessStatusCode();
-
-    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-    using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-    var candidates = new List<(SemVersion version, AppUpdateDescriptor release)>();
-    var includePrerelease = !string.IsNullOrWhiteSpace(currentVersion.Suffix);
-
-    foreach (var item in document.RootElement.EnumerateArray())
+    try
     {
-      if (item.TryGetProperty("draft", out var draftProperty) && draftProperty.ValueKind == JsonValueKind.True)
+      using var response = await HttpClient.GetAsync(ReleasesApiUrl, cancellationToken);
+
+      if (response.StatusCode == HttpStatusCode.Forbidden &&
+          TryResolveRateLimitReset(response, out var resetAt))
       {
-        continue;
+        var nextCheck = resetAt > now ? resetAt : now.Add(MinimumRateLimitBackoff);
+        lock (ReleaseStateSync)
+        {
+          _rateLimitBlockUntil = nextCheck;
+        }
+
+        if (TryGetCachedRelease(currentVersionTag, DateTimeOffset.UtcNow, out cachedDescriptor))
+        {
+          return cachedDescriptor;
+        }
+
+        throw new InvalidOperationException(
+          $"GitHub API rate limit exceeded. 다음 확인 가능 시각(UTC): {nextCheck:yyyy-MM-dd HH:mm:ss} (현재 UTC={now:yyyy-MM-dd HH:mm:ss}).");
       }
 
-      if (!includePrerelease &&
-          item.TryGetProperty("prerelease", out var prereleaseProperty) &&
-          prereleaseProperty.ValueKind == JsonValueKind.True)
+      response.EnsureSuccessStatusCode();
+
+      await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+      using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+      var candidates = new List<(SemVersion version, AppUpdateDescriptor release)>();
+      var includePrerelease = !string.IsNullOrWhiteSpace(currentVersion.Suffix);
+
+      foreach (var item in document.RootElement.EnumerateArray())
       {
-        continue;
+        if (item.TryGetProperty("draft", out var draftProperty) && draftProperty.ValueKind == JsonValueKind.True)
+        {
+          continue;
+        }
+
+        if (!includePrerelease &&
+            item.TryGetProperty("prerelease", out var prereleaseProperty) &&
+            prereleaseProperty.ValueKind == JsonValueKind.True)
+        {
+          continue;
+        }
+
+        if (!item.TryGetProperty("tag_name", out var tagProperty))
+        {
+          continue;
+        }
+
+        var rawTag = tagProperty.GetString();
+        if (string.IsNullOrWhiteSpace(rawTag))
+        {
+          continue;
+        }
+
+        if (!SemVersion.TryParse(rawTag, out var version))
+        {
+          continue;
+        }
+
+        var normalizedTag = AppMetadata.NormalizeVersionTag(rawTag);
+        if (version.CompareTo(currentVersion) <= 0)
+        {
+          continue;
+        }
+
+        var expectedAssetName = $"OctOP.WindowsAgentMenu-win-x64-{normalizedTag}.exe";
+        if (!TryResolveReleaseAsset(item, expectedAssetName, out var assetName, out var downloadUrl))
+        {
+          continue;
+        }
+
+        candidates.Add((version, new AppUpdateDescriptor
+        {
+          Tag = normalizedTag,
+          AssetName = assetName,
+          DownloadUrl = downloadUrl
+        }));
       }
 
-      if (!item.TryGetProperty("tag_name", out var tagProperty))
+      var selected = candidates
+        .OrderByDescending(static item => item.version)
+        .Select(static item => item.release)
+        .FirstOrDefault();
+
+      lock (ReleaseStateSync)
       {
-        continue;
+        CachedReleaseByTag[currentVersionTag] = (DateTimeOffset.UtcNow, selected);
+        _rateLimitBlockUntil = DateTimeOffset.MinValue;
       }
 
-      var rawTag = tagProperty.GetString();
-      if (string.IsNullOrWhiteSpace(rawTag))
+      return selected;
+    }
+    catch (HttpRequestException) when (TryGetCachedRelease(currentVersionTag, DateTimeOffset.UtcNow, out cachedDescriptor))
+    {
+      return cachedDescriptor;
+    }
+    catch (JsonException) when (TryGetCachedRelease(currentVersionTag, DateTimeOffset.UtcNow, out cachedDescriptor))
+    {
+      return cachedDescriptor;
+    }
+  }
+
+  private static bool TryGetCachedRelease(string currentVersionTag, DateTimeOffset now, out AppUpdateDescriptor? descriptor)
+  {
+    lock (ReleaseStateSync)
+    {
+      if (!CachedReleaseByTag.TryGetValue(currentVersionTag, out var cached) ||
+          now - cached.CheckedAt > CacheTtl)
       {
-        continue;
+        descriptor = null;
+        return false;
       }
 
-      if (!SemVersion.TryParse(rawTag, out var version))
-      {
-        continue;
-      }
+      descriptor = cached.Descriptor;
+      return true;
+    }
+  }
 
-      var normalizedTag = AppMetadata.NormalizeVersionTag(rawTag);
-      if (version.CompareTo(currentVersion) <= 0)
-      {
-        continue;
-      }
+  private static bool TryResolveRateLimitReset(HttpResponseMessage response, out DateTimeOffset resetAt)
+  {
+    resetAt = DateTimeOffset.UtcNow;
 
-      var expectedAssetName = $"OctOP.WindowsAgentMenu-win-x64-{normalizedTag}.exe";
-      if (!TryResolveReleaseAsset(item, expectedAssetName, out var assetName, out var downloadUrl))
-      {
-        continue;
-      }
-
-      candidates.Add((version, new AppUpdateDescriptor
-      {
-        Tag = normalizedTag,
-        AssetName = assetName,
-        DownloadUrl = downloadUrl
-      }));
+    if (!response.Headers.TryGetValues("X-RateLimit-Reset", out var values) ||
+        values is null)
+    {
+      return false;
     }
 
-    return candidates
-      .OrderByDescending(static item => item.version)
-      .Select(static item => item.release)
-      .FirstOrDefault();
+    var rawReset = values.FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(rawReset))
+    {
+      return false;
+    }
+
+    if (!long.TryParse(rawReset, NumberStyles.Integer, CultureInfo.InvariantCulture, out var epochSeconds))
+    {
+      return false;
+    }
+
+    resetAt = DateTimeOffset.FromUnixTimeSeconds(epochSeconds);
+    return true;
   }
 
   private static bool TryResolveReleaseAsset(
@@ -164,6 +271,19 @@ sealed class GitHubTagUpdateClient
     var client = new HttpClient();
     client.DefaultRequestHeaders.UserAgent.ParseAdd("OctOPAgentMenu/1.0");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+    foreach (var token in GitHubTokens)
+    {
+      var trimmedToken = Environment.GetEnvironmentVariable(token)?.Trim();
+      if (string.IsNullOrWhiteSpace(trimmedToken))
+      {
+        continue;
+      }
+
+      client.DefaultRequestHeaders.Authorization =
+        new("token", trimmedToken);
+      break;
+    }
+
     return client;
   }
 }

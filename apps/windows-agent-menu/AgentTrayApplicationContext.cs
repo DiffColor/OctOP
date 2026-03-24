@@ -1000,6 +1000,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private async Task RefreshAvailableAppUpdateAsync()
   {
+    var previousAvailableAppUpdate = _availableAppUpdate;
     try
     {
       _availableAppUpdate = await _autoUpdater.GetAvailableUpdateAsync(
@@ -1008,7 +1009,15 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
     catch (Exception error)
     {
-      _availableAppUpdate = null;
+      if (previousAvailableAppUpdate is null)
+      {
+        _availableAppUpdate = null;
+      }
+      else
+      {
+        _availableAppUpdate = previousAvailableAppUpdate;
+      }
+
       AppendLog($"앱 업데이트 확인 실패: {error.Message}");
     }
 
