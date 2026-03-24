@@ -216,11 +216,17 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
       .Where(subscription => !string.IsNullOrWhiteSpace(subscription.Endpoint))
       .GroupBy(subscription => subscription.Endpoint, StringComparer.Ordinal)
       .Select((group) => group
-        .OrderByDescending(subscription => ParseSortTimestamp(subscription.UpdatedAt))
+        .OrderByDescending(subscription => HasDeliverableAppId(subscription.AppId))
+        .ThenByDescending(subscription => ParseSortTimestamp(subscription.UpdatedAt))
         .ThenByDescending(subscription => ParseSortTimestamp(subscription.LastSuccessAt))
         .ThenByDescending(subscription => ParseSortTimestamp(subscription.CreatedAt))
         .First())
       .ToList();
+  }
+
+  private static bool HasDeliverableAppId(string? value)
+  {
+    return !string.IsNullOrWhiteSpace(PushNotificationTemplateService.NormalizeAppId(value));
   }
 
   private static long ParseSortTimestamp(string? value)

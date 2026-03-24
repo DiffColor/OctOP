@@ -189,12 +189,6 @@ public sealed partial class PushNotificationTemplateService
 
   public static bool ShouldDeliverToApp(string? sourceAppId, string? targetAppId)
   {
-    var normalizedTargetAppId = NormalizeAppId(targetAppId);
-
-    if (string.IsNullOrWhiteSpace(normalizedTargetAppId))
-    {
-      return false;
-    }
     return true;
   }
 
