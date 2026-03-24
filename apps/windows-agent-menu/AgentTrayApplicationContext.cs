@@ -1944,7 +1944,30 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var baseRuntimeHealthy = checks.Any(static check =>
       check.Passed && check.Message == "base runtime health check");
 
-    return wsConnectionReady && baseRuntimeHealthy;
+    if (wsConnectionReady && baseRuntimeHealthy)
+    {
+      return true;
+    }
+
+    var localAgentReady = checks.Any(static check =>
+      check.Passed && check.Message == "run-local-agent launch check");
+    var adapterReady = checks.Any(static check =>
+      check.Passed && check.Message == "codex-adapter launch check");
+    var wsAppServerReady = checks.Any(static check =>
+      check.Passed && check.Message == "WS app-server launch check");
+    var runtimePathReady = checks.Any(static check =>
+      check.Passed && check.Message == "current runtime path launch check");
+    var bridgePortReady = checks.Any(static check =>
+      check.Passed && check.Message == "bridge port listen check");
+    var wsPortReady = checks.Any(static check =>
+      check.Passed && check.Message == "WS app-server port listen check");
+
+    return localAgentReady &&
+      adapterReady &&
+      wsAppServerReady &&
+      runtimePathReady &&
+      bridgePortReady &&
+      wsPortReady;
   }
 
   private async Task<IReadOnlyList<ServiceLaunchCheck>> BuildServiceLaunchChecksAsync(string expectedRuntimeRoot)

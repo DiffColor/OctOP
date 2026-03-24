@@ -1,5 +1,6 @@
 import net from "node:net";
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { applyBridgeCliArgs, loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
 
 const workspaceRoot = process.cwd();
@@ -26,7 +27,8 @@ const appServerProcess = spawn(env.OCTOP_APP_SERVER_COMMAND, {
   shell: true
 });
 
-const bridgeProcess = spawn(process.execPath, ["./scripts/run-bridge.mjs"], {
+const bridgeEntry = resolve(workspaceRoot, "scripts", "run-bridge.mjs");
+const bridgeProcess = spawn(process.execPath, [bridgeEntry], {
   cwd: workspaceRoot,
   env: bridgeEnv,
   stdio: "inherit"
