@@ -973,7 +973,7 @@ test.describe('wide mobile split layout', () => {
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Line 2');
   });
 
-  test('뷰포트가 줄어든 상태에서도 하드웨어 Enter 입력은 프롬프트를 전송한다', async ({ page }) => {
+  test('뷰포트가 줄어든 상태에서는 Enter 입력이 프롬프트를 전송하지 않는다', async ({ page }) => {
     const requestLog = [];
 
     await mockMobileApi(page, { requestLog });
@@ -1036,11 +1036,10 @@ test.describe('wide mobile split layout', () => {
 
     await promptInput.press('Enter');
 
-    await expect.poll(() =>
+    await expect(promptInput).toHaveValue('Hardware keyboard send\n');
+    expect(
       requestLog.filter(({ method, pathname }) => method === 'POST' && pathname === `/api/threads/${threadId}/issues`).length
-    ).toBe(1);
-    await expect(promptInput).toHaveValue('');
-    await expect(page.getByTestId('thread-detail-panel')).toContainText('Hardware keyboard send');
+    ).toBe(0);
   });
 
   test('하단 채팅 입력창은 상단 라벨과 여백을 눌러도 입력창이 선택된다', async ({ page }) => {
