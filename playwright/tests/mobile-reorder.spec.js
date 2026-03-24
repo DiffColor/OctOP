@@ -295,6 +295,31 @@ async function collectProjectChipPositionFrames(page, labels, frameCount = 6) {
   );
 }
 
+async function readProjectChipVisualPositions(page, labels) {
+  return page.evaluate((nextLabels) => {
+    return Array.from(document.querySelectorAll('button'))
+      .filter((node) => nextLabels.includes(node.textContent?.trim() ?? ''))
+      .map((node) => {
+        const label = node.textContent?.trim() ?? '';
+        const rect = node.getBoundingClientRect();
+        return {
+          label,
+          x: rect.left,
+          centerX: rect.left + rect.width / 2
+        };
+      })
+      .sort((left, right) => left.x - right.x);
+  }, labels);
+}
+
+async function readTranslateX(locator) {
+  return locator.evaluate((node) => {
+    const rawTransform = node instanceof HTMLElement ? node.style.transform : '';
+    const matched = rawTransform.match(/translateX\(([-0-9.]+)px\)/);
+    return matched ? Number.parseFloat(matched[1]) : 0;
+  });
+}
+
 async function collectThreadItemPositionFrames(page, threadIds, frameCount = 6) {
   return page.evaluate(
     async ({ nextThreadIds, nextFrameCount }) => {
@@ -356,8 +381,8 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const alphaChip = page.getByRole('button', { name: projectAlphaName });
-    const betaChip = page.getByRole('button', { name: projectBetaName });
+    const alphaChip = page.getByTestId(`project-chip-item-${projectAlphaId}`).locator('button');
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
 
     await expect(alphaChip).toBeVisible();
     await expect(betaChip).toBeVisible();
@@ -433,7 +458,7 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const betaChip = page.getByRole('button', { name: projectBetaName });
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
 
     await expect(betaChip).toBeVisible();
 
@@ -488,12 +513,82 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
+  test('프로젝트 칩은 다른 칩 중앙 1/3 지점에 들어가면 밀려나기 시작한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const alphaChip = page.getByTestId(`project-chip-item-${projectAlphaId}`).locator('button');
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    const gammaChip = page.getByTestId(`project-chip-item-${projectGammaId}`).locator('button');
+    const alphaChipItem = page.getByTestId(`project-chip-item-${projectAlphaId}`);
+
+    await expect(alphaChip).toBeVisible();
+    await expect(betaChip).toBeVisible();
+    await expect(gammaChip).toBeVisible();
+
+    const alphaBox = await alphaChip.boundingBox();
+    const betaBox = await betaChip.boundingBox();
+
+    expect(alphaBox).not.toBeNull();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 18;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+    const betaCenterX = betaBox.x + betaBox.width / 2;
+    const alphaTriggerX = alphaBox.x + alphaBox.width * (2 / 3);
+    const beforeAlphaTriggerClientX = pressX + (alphaTriggerX + 2 - betaCenterX);
+    const afterAlphaTriggerClientX = pressX + (alphaTriggerX - 2 - betaCenterX);
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+
+    await betaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: beforeAlphaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => Math.abs(await readTranslateX(alphaChipItem))).toBeLessThan(1);
+
+    await betaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: afterAlphaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => await readTranslateX(alphaChipItem)).toBeGreaterThan(8);
+
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: afterAlphaTriggerClientX,
+      clientY: pressY
+    });
+  });
+
   test('프로젝트 칩은 롱터치 중 contextmenu가 발생해도 편집 롱프레스를 유지한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const betaChip = page.getByRole('button', { name: projectBetaName });
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
 
     await expect(betaChip).toBeVisible();
 
@@ -548,9 +643,9 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const alphaChip = page.getByRole('button', { name: projectAlphaName });
-    const betaChip = page.getByRole('button', { name: projectBetaName });
-    const gammaChip = page.getByRole('button', { name: projectGammaName });
+    const alphaChip = page.getByTestId(`project-chip-item-${projectAlphaId}`).locator('button');
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    const gammaChip = page.getByTestId(`project-chip-item-${projectGammaId}`).locator('button');
 
     await expect(alphaChip).toBeVisible();
     await expect(betaChip).toBeVisible();

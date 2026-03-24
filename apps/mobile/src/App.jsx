@@ -695,6 +695,67 @@ function reorderProjectChipIdsByIndex(projectIds, draggedProjectId, targetIndex)
   return nextProjectIds;
 }
 
+function buildProjectChipCollapsedLayouts(orderedProjectIds, draggedProjectId, layoutSnapshot, draggedWidth, gapPx) {
+  const normalizedOrderedProjectIds = normalizeProjectChipOrder(orderedProjectIds);
+  const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
+  const draggedProjectIndex = normalizedOrderedProjectIds.indexOf(normalizedDraggedProjectId);
+  const shiftDistance = Math.max(0, draggedWidth) + Math.max(0, gapPx);
+  const draggableLayouts = [];
+
+  normalizedOrderedProjectIds.forEach((projectId, orderedIndex) => {
+    if (projectId === normalizedDraggedProjectId) {
+      return;
+    }
+
+    const layout = layoutSnapshot.get(projectId);
+
+    if (!layout) {
+      return;
+    }
+
+    draggableLayouts.push({
+      id: projectId,
+      orderedIndex,
+      left: layout.left + (orderedIndex > draggedProjectIndex ? -shiftDistance : 0),
+      width: layout.width
+    });
+  });
+
+  return {
+    draggedProjectIndex,
+    draggableLayouts,
+    shiftDistance
+  };
+}
+
+function resolveProjectChipSlotLeft(draggableLayouts, slotIndex, gapPx, fallbackLeft = 0) {
+  const normalizedSlotIndex = Math.max(0, Math.min(Number(slotIndex) || 0, draggableLayouts.length));
+
+  if (draggableLayouts.length === 0) {
+    return fallbackLeft;
+  }
+
+  if (normalizedSlotIndex < draggableLayouts.length) {
+    return draggableLayouts[normalizedSlotIndex].left;
+  }
+
+  const lastLayout = draggableLayouts[draggableLayouts.length - 1];
+  return lastLayout.left + lastLayout.width + Math.max(0, gapPx);
+}
+
+function resolveProjectedProjectChipLayout(draggableLayouts, itemIndex, slotIndex, shiftDistance) {
+  const layout = draggableLayouts[itemIndex];
+
+  if (!layout) {
+    return null;
+  }
+
+  return {
+    left: layout.left + (itemIndex >= slotIndex ? shiftDistance : 0),
+    width: layout.width
+  };
+}
+
 function normalizeThreadOrder(source, availableThreadIds = null) {
   if (!Array.isArray(source)) {
     return [];
@@ -8422,43 +8483,99 @@ function MainPage({
     return snapshot;
   }, []);
   const resolveProjectChipDropIndex = useCallback(
-    (draggedCenterX, draggedProjectId) => {
-      const activeDragState = projectChipDragStateRef.current;
+    (draggedCenterX, draggedProjectId, previousDraggedCenterX = draggedCenterX) => {
       const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
-      const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== normalizedDraggedProjectId);
-      const draggedProjectIndex = orderedProjectIds.indexOf(normalizedDraggedProjectId);
       const layoutSnapshot = projectChipLayoutSnapshotRef.current;
       const draggedLayout = layoutSnapshot.get(normalizedDraggedProjectId);
       const draggedNode = projectChipNodesRef.current.get(normalizedDraggedProjectId);
-      const collapsedShiftDistance =
-        draggedProjectIndex >= 0
-          ? (draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0) + getFlexRowGapPx(projectChipRowRef.current)
-          : 0;
+      const gapPx = getFlexRowGapPx(projectChipRowRef.current);
+      const draggedWidth = draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0;
+      const fallbackSlotLeft = draggedLayout?.left ?? draggedCenterX - draggedWidth / 2;
+      const {
+        draggedProjectIndex,
+        draggableLayouts,
+        shiftDistance
+      } = buildProjectChipCollapsedLayouts(
+        orderedProjectIds,
+        normalizedDraggedProjectId,
+        layoutSnapshot,
+        draggedWidth,
+        gapPx
+      );
 
-      for (let index = 0; index < draggableProjectIds.length; index += 1) {
-        const projectId = draggableProjectIds[index];
-        const layout = layoutSnapshot.get(projectId);
-        const node = projectChipNodesRef.current.get(projectId);
+      if (draggedProjectIndex < 0) {
+        return -1;
+      }
 
-        if (!layout && !node) {
-          continue;
+      let nextDropIndex = projectChipDropIndexRef.current;
+
+      if (nextDropIndex < 0) {
+        nextDropIndex = draggedProjectIndex;
+      }
+
+      nextDropIndex = Math.max(0, Math.min(nextDropIndex, draggableLayouts.length));
+
+      if (draggedCenterX < previousDraggedCenterX) {
+        while (nextDropIndex > 0) {
+          const reversingTowardOrigin = nextDropIndex > draggedProjectIndex;
+
+          if (reversingTowardOrigin) {
+            const slotLeft = resolveProjectChipSlotLeft(draggableLayouts, nextDropIndex, gapPx, fallbackSlotLeft);
+            const slotTriggerX = slotLeft + draggedWidth / 3;
+
+            if (draggedCenterX < slotTriggerX) {
+              nextDropIndex -= 1;
+              continue;
+            }
+          } else {
+            const previousLayout = resolveProjectedProjectChipLayout(
+              draggableLayouts,
+              nextDropIndex - 1,
+              nextDropIndex,
+              shiftDistance
+            );
+            const previousTriggerX = previousLayout ? previousLayout.left + previousLayout.width * (2 / 3) : -Infinity;
+
+            if (draggedCenterX < previousTriggerX) {
+              nextDropIndex -= 1;
+              continue;
+            }
+          }
+
+          break;
         }
+      } else if (draggedCenterX > previousDraggedCenterX) {
+        while (nextDropIndex < draggableLayouts.length) {
+          const reversingTowardOrigin = nextDropIndex < draggedProjectIndex;
 
-        const currentProjectIndex = orderedProjectIds.indexOf(projectId);
-        const collapsedOffsetX =
-          draggedProjectIndex >= 0 && currentProjectIndex > draggedProjectIndex ? -collapsedShiftDistance : 0;
-        const adjustedLeft =
-          layout?.left ??
-          (node.getBoundingClientRect().left + (activeDragState?.startScrollLeft ?? projectChipRowRef.current?.scrollLeft ?? 0));
-        const adjustedWidth = layout?.width ?? node.getBoundingClientRect().width;
-        const adjustedCenterX = adjustedLeft + collapsedOffsetX + adjustedWidth / 2;
+          if (reversingTowardOrigin) {
+            const slotLeft = resolveProjectChipSlotLeft(draggableLayouts, nextDropIndex, gapPx, fallbackSlotLeft);
+            const slotTriggerX = slotLeft + draggedWidth * (2 / 3);
 
-        if (draggedCenterX < adjustedCenterX) {
-          return index;
+            if (draggedCenterX > slotTriggerX) {
+              nextDropIndex += 1;
+              continue;
+            }
+          } else {
+            const nextLayout = resolveProjectedProjectChipLayout(
+              draggableLayouts,
+              nextDropIndex,
+              nextDropIndex,
+              shiftDistance
+            );
+            const nextTriggerX = nextLayout ? nextLayout.left + nextLayout.width / 3 : Infinity;
+
+            if (draggedCenterX > nextTriggerX) {
+              nextDropIndex += 1;
+              continue;
+            }
+          }
+
+          break;
         }
       }
 
-      return draggableProjectIds.length;
+      return nextDropIndex;
     },
     [orderedProjectIds]
   );
@@ -8626,9 +8743,11 @@ function MainPage({
           : draggedRect
             ? draggedRect.left + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft) + draggedRect.width / 2
             : activeDragState.startX + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft);
+        activeDragState.latestDraggedCenterX = activeDragState.dragOriginCenterX;
         projectChipDropIndexRef.current = resolveProjectChipDropIndex(
           activeDragState.dragOriginCenterX,
-          project.id
+          project.id,
+          activeDragState.dragOriginCenterX
         );
         setDraggingProjectChipId(project.id);
         setDraggingProjectChipOffsetX(0);
@@ -8693,12 +8812,18 @@ function MainPage({
       const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
       const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
       const draggedCenterX = activeDragState.dragOriginCenterX + dragOffsetX;
+      const previousDraggedCenterX = activeDragState.latestDraggedCenterX ?? activeDragState.dragOriginCenterX;
+      activeDragState.latestDraggedCenterX = draggedCenterX;
 
       if (!activeDragState.moved && Math.hypot(dragOffsetX, deltaY) > PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      projectChipDropIndexRef.current = resolveProjectChipDropIndex(draggedCenterX, activeDragState.project.id);
+      projectChipDropIndexRef.current = resolveProjectChipDropIndex(
+        draggedCenterX,
+        activeDragState.project.id,
+        previousDraggedCenterX
+      );
       setDraggingProjectChipOffsetX(dragOffsetX);
       event.preventDefault();
     },
@@ -9131,6 +9256,7 @@ function MainPage({
             <div
               key={project.id}
               ref={(node) => registerProjectChipNode(project.id, node)}
+              data-testid={`project-chip-item-${project.id}`}
               className="relative shrink-0"
               style={
                 isDraggingProjectChip
