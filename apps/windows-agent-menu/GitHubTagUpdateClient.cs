@@ -16,12 +16,6 @@ sealed class GitHubTagUpdateClient
   private static readonly Dictionary<string, (DateTimeOffset CheckedAt, AppUpdateDescriptor? Descriptor)> CachedReleaseByTag = new(StringComparer.OrdinalIgnoreCase);
   private static DateTimeOffset _rateLimitBlockUntil = DateTimeOffset.MinValue;
 
-  private static readonly IReadOnlyList<string> GitHubTokens = [
-    "OCTOP_WINDOWS_GITHUB_TOKEN",
-    "OCTOP_GITHUB_TOKEN",
-    "GITHUB_TOKEN"
-  ];
-
   public async Task<AppUpdateDescriptor?> GetLatestWindowsReleaseAsync(string currentVersionTag, CancellationToken cancellationToken)
   {
     return await GetLatestReleaseAsync(currentVersionTag, cancellationToken);
@@ -271,19 +265,6 @@ sealed class GitHubTagUpdateClient
     var client = new HttpClient();
     client.DefaultRequestHeaders.UserAgent.ParseAdd("OctOPAgentMenu/1.0");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-    foreach (var token in GitHubTokens)
-    {
-      var trimmedToken = Environment.GetEnvironmentVariable(token)?.Trim();
-      if (string.IsNullOrWhiteSpace(trimmedToken))
-      {
-        continue;
-      }
-
-      client.DefaultRequestHeaders.Authorization =
-        new("token", trimmedToken);
-      break;
-    }
-
     return client;
   }
 }
