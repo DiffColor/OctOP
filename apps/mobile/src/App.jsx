@@ -10184,6 +10184,7 @@ export default function App() {
   const lastForegroundResumeAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
+  const eventStreamReconnectTimerRef = useRef(null);
   const threadDeleteDialogResolverRef = useRef(null);
   const mobileNoticeTimersRef = useRef(new Map());
   const mobileConfirmResolverRef = useRef(null);
@@ -10191,6 +10192,7 @@ export default function App() {
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const bridgeListSyncPromiseRef = useRef(null);
+  const refreshBridgeStatusRef = useRef(null);
   const dismissMobileNotice = useCallback((noticeId) => {
     const normalizedNoticeId = String(noticeId ?? "").trim();
 
@@ -10743,6 +10745,8 @@ export default function App() {
       setSelectedBridgeId(activeBridgeId);
       return;
     }
+
+    await refreshBridgeStatusRef.current?.(session, activeBridgeId);
 
     if (selectedThreadIdRef.current) {
       threadLiveProgressAtByIdRef.current.delete(selectedThreadIdRef.current);
@@ -11611,6 +11615,9 @@ export default function App() {
     ]
   );
   useEffect(() => {
+    refreshBridgeStatusRef.current = refreshBridgeStatus;
+  }, [refreshBridgeStatus]);
+  useEffect(() => {
     return subscribeBridgeRequestFailures((event) => {
       if (!event?.bridgeId || event.bridgeId !== selectedBridgeIdRef.current) {
         return;
@@ -11951,6 +11958,10 @@ export default function App() {
     );
 
     eventSource.addEventListener("ready", () => {
+      if (eventStreamReconnectTimerRef.current) {
+        window.clearTimeout(eventStreamReconnectTimerRef.current);
+        eventStreamReconnectTimerRef.current = null;
+      }
       markStreamActivity();
     });
 
@@ -12278,6 +12289,17 @@ export default function App() {
         updated_at: new Date().toISOString()
       }));
       void refreshBridgeStatus(session, selectedBridgeId);
+
+      const browserOnline =
+        typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+          ? true
+          : navigator.onLine;
+      if (browserOnline && !eventStreamReconnectTimerRef.current) {
+        eventStreamReconnectTimerRef.current = window.setTimeout(() => {
+          eventStreamReconnectTimerRef.current = null;
+          setEventStreamReconnectToken((current) => current + 1);
+        }, 1000);
+      }
     });
 
     return () => {
@@ -12336,6 +12358,15 @@ export default function App() {
       window.removeEventListener("online", handleOnline);
     };
   }, [scheduleAppForegroundResume]);
+
+  useEffect(() => {
+    return () => {
+      if (eventStreamReconnectTimerRef.current) {
+        window.clearTimeout(eventStreamReconnectTimerRef.current);
+        eventStreamReconnectTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const previousOwnerKey = workspaceLayoutOwnerKeyRef.current;

@@ -7941,7 +7941,6 @@ export default function App() {
   const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "" });
   const lastForegroundResumeAtRef = useRef(0);
   const activeIssuePollPausedUntilRef = useRef(0);
-  const eventStreamConnectedAtRef = useRef(0);
   const foregroundResumeEnabledAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
@@ -8854,16 +8853,12 @@ export default function App() {
     lastForegroundResumeAtRef.current = now;
     activeIssuePollPausedUntilRef.current = now + ACTIVE_ISSUE_POLL_RESUME_GRACE_MS;
 
-    const streamConnectedRecently =
-      eventStreamConnectedAtRef.current > 0 &&
-      now - eventStreamConnectedAtRef.current < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS;
     const streamActiveRecently =
       Number.isFinite(streamActivityAt) &&
       streamActivityAt > 0 &&
       now - streamActivityAt < ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS;
-    const shouldReconnectStream = !streamConnectedRecently && !streamActiveRecently;
 
-    if (shouldReconnectStream) {
+    if (!streamActiveRecently) {
       setEventStreamReconnectToken((current) => current + 1);
     }
 
@@ -9056,7 +9051,6 @@ export default function App() {
 
   useEffect(() => {
     setStreamActivityAt(null);
-    eventStreamConnectedAtRef.current = 0;
     foregroundResumeEnabledAtRef.current = Date.now() + DASHBOARD_RESUME_ENABLE_DELAY_MS;
   }, [selectedBridgeId]);
 
@@ -9068,7 +9062,6 @@ export default function App() {
     const eventSource = new EventSource(
       `${API_BASE_URL}/api/events?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
     );
-    eventStreamConnectedAtRef.current = Date.now();
 
     const appendEvent = (type, summary) => {
       setRecentEvents((current) => [
