@@ -212,39 +212,7 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     CancellationToken cancellationToken)
   {
     var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId: null, cancellationToken);
-    return SelectDeliveryTargets(subscriptions);
-  }
-
-  private static IReadOnlyList<PushSubscriptionEntity> SelectDeliveryTargets(
-    IReadOnlyList<PushSubscriptionEntity> subscriptions)
-  {
-    if (subscriptions.Count <= 1)
-    {
-      return subscriptions;
-    }
-
-    var deliveryTargets = new List<PushSubscriptionEntity>(subscriptions.Count);
-    var mobileSubscriptions = subscriptions
-      .Where(subscription => string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
-      .ToList();
-
-    if (mobileSubscriptions.Count > 0)
-    {
-      var preferredMobileSubscriptions = mobileSubscriptions
-        .Where(subscription => string.Equals(
-          NormalizeClientMode(subscription.ClientMode),
-          ClientModeStandalone,
-          StringComparison.Ordinal))
-        .ToList();
-
-      deliveryTargets.AddRange(preferredMobileSubscriptions.Count > 0 ? preferredMobileSubscriptions : mobileSubscriptions);
-    }
-
-    deliveryTargets.AddRange(
-      subscriptions.Where(subscription => !string.Equals(subscription.AppId, PushNotificationTemplateService.MobileAppId, StringComparison.Ordinal))
-    );
-
-    return deliveryTargets;
+    return subscriptions;
   }
 
   private static string NormalizeClientMode(string? value)

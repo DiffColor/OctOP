@@ -189,19 +189,12 @@ public sealed partial class PushNotificationTemplateService
 
   public static bool ShouldDeliverToApp(string? sourceAppId, string? targetAppId)
   {
-    var normalizedSourceAppId = NormalizeAppId(sourceAppId);
     var normalizedTargetAppId = NormalizeAppId(targetAppId);
 
     if (string.IsNullOrWhiteSpace(normalizedTargetAppId))
     {
       return false;
     }
-
-    if (string.Equals(normalizedSourceAppId, MobileAppId, StringComparison.Ordinal))
-    {
-      return string.Equals(normalizedTargetAppId, MobileAppId, StringComparison.Ordinal);
-    }
-
     return true;
   }
 

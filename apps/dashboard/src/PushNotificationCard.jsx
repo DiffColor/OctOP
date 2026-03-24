@@ -409,23 +409,37 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     }
   };
 
-  const statusToneClassName = state.bridgeRegistered
-    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-    : "border-slate-700 bg-slate-900 text-slate-300";
+  const togglePushForBridge = async () => {
+    if (state.bridgeRegistered) {
+      await disablePushForBridge();
+      return;
+    }
+
+    await enablePushForBridge();
+  };
+
+  const canTogglePush =
+    Boolean(selectedBridgeId) &&
+    !state.loading &&
+    supportsPush() &&
+    (state.configured || state.bridgeRegistered);
 
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-3 shadow-inner shadow-black/10">
+    <section className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 shadow-telegram-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Push Alerts</p>
-          <h3 className="mt-1 text-sm font-semibold text-white">현재 브릿지 종료 알림</h3>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Push Alerts</p>
         </div>
-        <span className={`rounded-full border px-2 py-1 text-[11px] font-medium ${statusToneClassName}`}>
+        <span
+          className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+            state.bridgeRegistered ? "bg-emerald-400/10 text-emerald-300" : "bg-white/5 text-slate-300"
+          }`}
+        >
           {state.bridgeRegistered ? "켜짐" : "꺼짐"}
         </span>
       </div>
 
-      <div className="mt-3 grid gap-2 text-xs text-slate-400">
+      <div className="mt-3 grid gap-2 text-[12px] text-slate-400">
         <div className="flex items-center justify-between gap-3">
           <span>서버 구성</span>
           <span className={state.configured ? "text-emerald-300" : "text-slate-500"}>
@@ -445,44 +459,45 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           </span>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <span>현재 브릿지 등록 수</span>
-          <span className="text-slate-200">{state.subscriptionCount}</span>
+          <span>알림 등록 상태</span>
+          <span className={state.bridgeRegistered ? "text-emerald-300" : "text-slate-500"}>
+            {state.bridgeRegistered ? "등록됨" : "등록 안 됨"}
+          </span>
         </div>
       </div>
 
-      {state.notice ? <p className="mt-3 text-xs leading-5 text-slate-400">{state.notice}</p> : null}
-      {state.error ? <p className="mt-3 text-xs leading-5 text-rose-300">{state.error}</p> : null}
+      {state.notice ? <p className="mt-3 text-[12px] leading-5 text-slate-400">{state.notice}</p> : null}
+      {state.error ? <p className="mt-3 text-[12px] leading-5 text-rose-300">{state.error}</p> : null}
 
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3">
         <button
           type="button"
-          onClick={() => void enablePushForBridge()}
-          disabled={!selectedBridgeId || state.loading || !supportsPush() || !state.configured}
-          className="flex-1 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:border-sky-400/40 hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => void togglePushForBridge()}
+          disabled={!canTogglePush}
+          className={`w-full rounded-2xl px-3 py-2 text-[12px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+            state.bridgeRegistered
+              ? "border border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10"
+              : "bg-telegram-500 hover:bg-telegram-400"
+          }`}
         >
-          {state.loading ? "처리 중..." : "현재 브릿지 켜기"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void disablePushForBridge()}
-          disabled={!selectedBridgeId || state.loading || !state.bridgeRegistered}
-          className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          끄기
+          {state.loading ? "처리 중..." : state.bridgeRegistered ? "알림 끄기" : "알림 받기"}
         </button>
       </div>
 
       {state.received.length > 0 ? (
-        <div className="mt-3 border-t border-slate-800 pt-3">
+        <div className="mt-3 border-t border-white/10 pt-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Recent</p>
           <ul className="mt-2 space-y-2">
             {state.received.map((entry) => (
-              <li key={`${entry.issueId ?? entry.tag ?? entry.sentAt}-${entry.sentAt}`} className="rounded-lg bg-slate-950/80 px-3 py-2">
+              <li
+                key={`${entry.issueId ?? entry.tag ?? entry.sentAt}-${entry.sentAt}`}
+                className="rounded-2xl bg-slate-950/70 px-3 py-2"
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-xs font-medium text-slate-100">{entry.title ?? "OctOP 알림"}</p>
+                  <p className="truncate text-[12px] font-medium text-white">{entry.title ?? "OctOP 알림"}</p>
                   <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTimestamp(entry.sentAt)}</span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-slate-400">{entry.body}</p>
+                <p className="mt-1 text-[11px] leading-5 text-slate-400">{entry.body}</p>
               </li>
             ))}
           </ul>
