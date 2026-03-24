@@ -225,7 +225,8 @@ sealed class RuntimeStatus
 {
   public bool RuntimeBundlePresent { get; init; }
   public bool ConfigurationSaved { get; init; }
-  public string RuntimeVersion { get; init; } = "unknown";
+  public string RuntimeCommitId { get; init; } = "unknown";
+  public string AppVersion { get; init; } = "unknown";
   public bool NodeInstalled { get; init; }
   public string? NodeVersion { get; init; }
   public bool RuntimeDependenciesInstalled { get; init; }
@@ -248,9 +249,12 @@ sealed class RuntimeStatus
     {
       RuntimeBundlePresent ? "런타임 준비됨" : "런타임 없음",
       ConfigurationSaved ? "설정 저장됨" : "설정 없음",
-      string.IsNullOrWhiteSpace(RuntimeVersion) || RuntimeVersion == "unknown"
-        ? "런타임 버전 미확인"
-        : $"런타임 버전 {RuntimeVersion}",
+      string.IsNullOrWhiteSpace(RuntimeCommitId) || RuntimeCommitId == "unknown"
+        ? "런타임 커밋 ID 미확인"
+        : $"런타임 커밋 ID {RuntimeCommitId}",
+      string.IsNullOrWhiteSpace(AppVersion) || AppVersion == "unknown"
+        ? "앱 버전 미확인"
+        : $"앱 버전 {AppVersion}",
       NodeInstalled ? $"Node {NodeVersion ?? "설치됨"}" : "Node 없음",
       RuntimeDependenciesInstalled ? "bridge 의존성 설치됨" : "bridge 의존성 없음",
       CodexInstalled ? "Codex 설치됨" : "Codex 없음",

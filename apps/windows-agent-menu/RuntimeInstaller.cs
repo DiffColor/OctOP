@@ -101,7 +101,10 @@ sealed class RuntimeInstaller
     var activeRuntimeRoot = paths.ResolveActiveRuntimeRoot();
     var runtimeBuildInfo = activeRuntimeRoot is null ? null : LoadRuntimeBuildInfo(activeRuntimeRoot);
     TryDeleteRuntimeVersionFile(activeRuntimeRoot);
-    var runtimeVersion = runtimeBuildInfo?.AppVersion;
+    var runtimeCommitId = string.IsNullOrWhiteSpace(runtimeBuildInfo?.SourceRevision)
+      ? runtimeBuildInfo?.SourceContentRevision
+      : runtimeBuildInfo?.SourceRevision;
+    var appVersion = runtimeBuildInfo?.AppVersion;
     var nodeVersion = paths.GetManagedNodeVersion();
     var nodeInstalled = File.Exists(paths.GetNodeExecutablePath());
     var runtimeDependenciesInstalled =
@@ -127,7 +130,8 @@ sealed class RuntimeInstaller
     {
       RuntimeBundlePresent = runtimeBundlePresent,
       ConfigurationSaved = configurationSaved,
-      RuntimeVersion = string.IsNullOrWhiteSpace(runtimeVersion) ? "unknown" : runtimeVersion,
+      RuntimeCommitId = string.IsNullOrWhiteSpace(runtimeCommitId) ? "unknown" : runtimeCommitId,
+      AppVersion = string.IsNullOrWhiteSpace(appVersion) ? "unknown" : appVersion,
       NodeInstalled = nodeInstalled,
       NodeVersion = nodeVersion,
       RuntimeDependenciesInstalled = runtimeDependenciesInstalled,

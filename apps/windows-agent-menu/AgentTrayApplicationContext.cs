@@ -1883,6 +1883,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private async Task<bool> WaitForServiceReadyAsync(Process process, string expectedRuntimeRoot, int timeoutMs = 10000)
   {
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
+    IReadOnlyList<ServiceLaunchCheck> lastChecks = [];
 
     while (DateTimeOffset.UtcNow < deadline)
     {
@@ -1890,15 +1891,18 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       {
         if (process.HasExited)
         {
+          LogFailedServiceLaunchChecks(lastChecks, "프로세스가 조기 종료되어");
           return false;
         }
       }
       catch
       {
+        LogFailedServiceLaunchChecks(lastChecks, "프로세스 상태 확인 중 오류가 발생해");
         return false;
       }
 
       var checks = await BuildServiceLaunchChecksAsync(expectedRuntimeRoot);
+      lastChecks = checks;
       if (checks.All(static check => check.Passed))
       {
         return true;
@@ -1907,6 +1911,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       await Task.Delay(250);
     }
 
+    LogFailedServiceLaunchChecks(lastChecks, "제한 시간 안에 준비되지 않아");
     return false;
   }
 
@@ -1920,9 +1925,15 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       process.CommandLine.Contains("run-bridge.mjs", StringComparison.OrdinalIgnoreCase));
     var adapterProcess = serviceProcesses.FirstOrDefault(static process =>
       process.CommandLine.Contains(@"services\codex-adapter\src\index.js", StringComparison.OrdinalIgnoreCase));
-    var wsProcess = serviceProcesses.FirstOrDefault(IsWsAppServerProcess);
+    var wsProcesses = serviceProcesses
+      .Where(IsWsAppServerProcess)
+      .OrderByDescending(GetAppServerProcessPriority)
+      .ToList();
     var adapterPorts = adapterProcess is null ? [] : FindListeningPortsForProcess(adapterProcess.ProcessId);
-    var wsPorts = wsProcess is null ? [] : FindListeningPortsForProcess(wsProcess.ProcessId);
+    var wsPorts = wsProcesses
+      .SelectMany(process => FindListeningPortsForProcess(process.ProcessId))
+      .Distinct()
+      .ToList();
     var bridgeHealth = await TryReadBridgeHealthStatusAsync(_configuration, adapterPorts.FirstOrDefault());
 
     return
@@ -1944,7 +1955,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       },
       new ServiceLaunchCheck
       {
-        Passed = wsProcess is not null,
+        Passed = wsProcesses.Count > 0,
         Message = "WS app-server launch check"
       },
       new ServiceLaunchCheck
@@ -1979,6 +1990,27 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         Message = "base runtime health check"
       }
     ];
+  }
+
+  private void LogFailedServiceLaunchChecks(IReadOnlyList<ServiceLaunchCheck> checks, string reason)
+  {
+    if (checks.Count == 0)
+    {
+      AppendLog($"서비스 기동 검증이 실패했습니다. {reason} 준비 상태를 확인하지 못했습니다.");
+      return;
+    }
+
+    var failedMessages = checks
+      .Where(static check => !check.Passed)
+      .Select(static check => check.Message)
+      .ToArray();
+
+    if (failedMessages.Length == 0)
+    {
+      return;
+    }
+
+    AppendLog($"서비스 기동 검증이 실패했습니다. {reason} 통과하지 못한 항목={string.Join(", ", failedMessages)}");
   }
 
   private PreparedRuntimeRelease? ResolveRollbackPreparedRuntimeRelease(string failedRuntimeId)
@@ -2303,6 +2335,26 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
       process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
       process.CommandLine.Contains(listenTarget, StringComparison.OrdinalIgnoreCase);
+  }
+
+  private static int GetAppServerProcessPriority(ServiceProcessInfo process)
+  {
+    if (string.Equals(process.Name, "codex.exe", StringComparison.OrdinalIgnoreCase))
+    {
+      return 3;
+    }
+
+    if (string.Equals(process.Name, "node.exe", StringComparison.OrdinalIgnoreCase))
+    {
+      return 2;
+    }
+
+    if (string.Equals(process.Name, "cmd.exe", StringComparison.OrdinalIgnoreCase))
+    {
+      return 1;
+    }
+
+    return 0;
   }
 
   private bool TryReadPersistedAgentProcessId(out int processId)

@@ -154,12 +154,20 @@ sealed class SetupWindow : Window
     UpdateDiagnostic("configuration", status.ConfigurationSaved ? DiagnosticState.Ok : DiagnosticState.Missing, status.ConfigurationSaved ? "정상" : "누락");
     UpdateDiagnostic(
       "runtimeVersion",
-      string.IsNullOrWhiteSpace(status.RuntimeVersion) || status.RuntimeVersion == "unknown"
+      string.IsNullOrWhiteSpace(status.RuntimeCommitId) || status.RuntimeCommitId == "unknown"
         ? DiagnosticState.Warning
         : DiagnosticState.Ok,
-      string.IsNullOrWhiteSpace(status.RuntimeVersion) || status.RuntimeVersion == "unknown"
+      string.IsNullOrWhiteSpace(status.RuntimeCommitId) || status.RuntimeCommitId == "unknown"
         ? "미확인"
-        : status.RuntimeVersion);
+        : status.RuntimeCommitId);
+    UpdateDiagnostic(
+      "appVersion",
+      string.IsNullOrWhiteSpace(status.AppVersion) || status.AppVersion == "unknown"
+        ? DiagnosticState.Warning
+        : DiagnosticState.Ok,
+      string.IsNullOrWhiteSpace(status.AppVersion) || status.AppVersion == "unknown"
+        ? "미확인"
+        : status.AppVersion);
     UpdateDiagnostic("node", status.NodeInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.NodeInstalled ? (status.NodeVersion ?? "정상") : "누락");
     UpdateDiagnostic("dependencies", status.RuntimeDependenciesInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeDependenciesInstalled ? "정상" : "누락");
     UpdateDiagnostic("codex", status.CodexInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.CodexInstalled ? "정상" : "누락");
@@ -247,7 +255,8 @@ sealed class SetupWindow : Window
 
     AddDiagnosticRow(stack, "runtimeBundle", "런타임 번들");
     AddDiagnosticRow(stack, "configuration", "설정 파일");
-    AddDiagnosticRow(stack, "runtimeVersion", "런타임 버전");
+    AddDiagnosticRow(stack, "runtimeVersion", "런타임 커밋 ID");
+    AddDiagnosticRow(stack, "appVersion", "앱 버전");
     AddDiagnosticRow(stack, "node", "Node.js");
     AddDiagnosticRow(stack, "dependencies", "bridge 의존성");
     AddDiagnosticRow(stack, "codex", "Codex CLI");
