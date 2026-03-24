@@ -212,7 +212,22 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     CancellationToken cancellationToken)
   {
     var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId: null, cancellationToken);
-    return subscriptions;
+    return subscriptions
+      .Where(subscription => !string.IsNullOrWhiteSpace(subscription.Endpoint))
+      .GroupBy(subscription => subscription.Endpoint, StringComparer.Ordinal)
+      .Select((group) => group
+        .OrderByDescending(subscription => ParseSortTimestamp(subscription.UpdatedAt))
+        .ThenByDescending(subscription => ParseSortTimestamp(subscription.LastSuccessAt))
+        .ThenByDescending(subscription => ParseSortTimestamp(subscription.CreatedAt))
+        .First())
+      .ToList();
+  }
+
+  private static long ParseSortTimestamp(string? value)
+  {
+    return DateTimeOffset.TryParse(value, out var parsed)
+      ? parsed.ToUnixTimeMilliseconds()
+      : long.MinValue;
   }
 
   private static string NormalizeClientMode(string? value)
