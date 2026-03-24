@@ -152,7 +152,14 @@ sealed class SetupWindow : Window
     _lastKnownStatus = status;
     UpdateDiagnostic("runtimeBundle", status.RuntimeBundlePresent ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeBundlePresent ? "정상" : "누락");
     UpdateDiagnostic("configuration", status.ConfigurationSaved ? DiagnosticState.Ok : DiagnosticState.Missing, status.ConfigurationSaved ? "정상" : "누락");
-    UpdateDiagnostic("runtimeVersion", status.RuntimeVersionMatches ? DiagnosticState.Ok : DiagnosticState.Warning, status.RuntimeVersionMatches ? status.RuntimeVersion : "업데이트 필요");
+    UpdateDiagnostic(
+      "runtimeVersion",
+      string.IsNullOrWhiteSpace(status.RuntimeVersion) || status.RuntimeVersion == "unknown"
+        ? DiagnosticState.Warning
+        : DiagnosticState.Ok,
+      string.IsNullOrWhiteSpace(status.RuntimeVersion) || status.RuntimeVersion == "unknown"
+        ? "미확인"
+        : status.RuntimeVersion);
     UpdateDiagnostic("node", status.NodeInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.NodeInstalled ? (status.NodeVersion ?? "정상") : "누락");
     UpdateDiagnostic("dependencies", status.RuntimeDependenciesInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeDependenciesInstalled ? "정상" : "누락");
     UpdateDiagnostic("codex", status.CodexInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.CodexInstalled ? "정상" : "누락");

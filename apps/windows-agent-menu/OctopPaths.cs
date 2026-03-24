@@ -49,7 +49,6 @@ sealed class OctopPaths
   public string AppUpdateLaunchMarkerPath => Path.Combine(InstallRoot, "app-update-launch-confirmed");
   public string RuntimePackageJsonPath => Path.Combine(RuntimeRoot, "package.json");
   public string RuntimeEnvLocalPath => Path.Combine(RuntimeRoot, ".env.local");
-  public string RuntimeVersionPath => Path.Combine(RuntimeRoot, "version.txt");
   public string RuntimeBuildInfoPath => Path.Combine(RuntimeRoot, "build-info.json");
   public string RuntimeAgentEntryPath => Path.Combine(RuntimeRoot, "scripts", "run-local-agent.mjs");
 

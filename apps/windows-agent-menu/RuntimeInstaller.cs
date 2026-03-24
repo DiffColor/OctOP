@@ -98,14 +98,10 @@ sealed class RuntimeInstaller
     var configuration = LoadConfiguration(paths);
     var runtimeBundlePresent = RequiredRuntimeFiles(paths).All(File.Exists);
     var configurationSaved = File.Exists(paths.ConfigurationPath) && File.Exists(paths.RuntimeEnvLocalPath);
-    var runtimeVersionFileExists = File.Exists(paths.RuntimeVersionPath);
-    var runtimeVersion = runtimeVersionFileExists
-      ? File.ReadAllText(paths.RuntimeVersionPath, Encoding.UTF8).Trim()
-      : string.Empty;
-    var runtimeVersionMatches = runtimeVersionFileExists && string.Equals(
-      AppMetadata.NormalizeVersionTag(runtimeVersion),
-      AppMetadata.CurrentVersionTag,
-      StringComparison.OrdinalIgnoreCase);
+    var activeRuntimeRoot = paths.ResolveActiveRuntimeRoot();
+    var runtimeBuildInfo = activeRuntimeRoot is null ? null : LoadRuntimeBuildInfo(activeRuntimeRoot);
+    TryDeleteRuntimeVersionFile(activeRuntimeRoot);
+    var runtimeVersion = runtimeBuildInfo?.AppVersion;
     var nodeVersion = paths.GetManagedNodeVersion();
     var nodeInstalled = File.Exists(paths.GetNodeExecutablePath());
     var runtimeDependenciesInstalled =
@@ -131,7 +127,6 @@ sealed class RuntimeInstaller
     {
       RuntimeBundlePresent = runtimeBundlePresent,
       ConfigurationSaved = configurationSaved,
-      RuntimeVersionMatches = runtimeVersionMatches,
       RuntimeVersion = string.IsNullOrWhiteSpace(runtimeVersion) ? "unknown" : runtimeVersion,
       NodeInstalled = nodeInstalled,
       NodeVersion = nodeVersion,
@@ -188,10 +183,20 @@ sealed class RuntimeInstaller
     WriteEnvironmentFile(configuration, paths, paths.RuntimeRoot);
   }
 
-  public void WriteRuntimeVersion(string runtimeRoot)
+  private static void TryDeleteRuntimeVersionFile(string? runtimeRoot)
   {
-    Directory.CreateDirectory(runtimeRoot);
-    File.WriteAllText(Path.Combine(runtimeRoot, "version.txt"), AppMetadata.CurrentVersionTag, new UTF8Encoding(false));
+    if (string.IsNullOrWhiteSpace(runtimeRoot))
+    {
+      return;
+    }
+
+    try
+    {
+      File.Delete(Path.Combine(runtimeRoot, "version.txt"));
+    }
+    catch
+    {
+    }
   }
 
   public async Task LoginWithBrowserSelectionAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken, bool logoutFirst)
@@ -489,7 +494,6 @@ sealed class RuntimeInstaller
         await WriteRuntimeBundleAsync(stagingRoot, progress, cancellationToken);
         OverlayCodexAdapterSource(preparedSource.SourceRoot, stagingRoot);
         WriteEnvironmentFile(configuration, paths, stagingRoot);
-        WriteRuntimeVersion(stagingRoot);
 
         var buildInfo = new RuntimeReleaseBuildInfo
         {
@@ -1145,9 +1149,8 @@ sealed class RuntimeInstaller
       Path.Combine(runtimeRoot, "services", "codex-adapter", "src", "domain.js"),
       Path.Combine(runtimeRoot, "packages", "domain", "src", "index.js"),
       Path.Combine(runtimeRoot, ".env.local"),
-      Path.Combine(runtimeRoot, "version.txt"),
-      Path.Combine(runtimeRoot, "build-info.json")
-    };
+    Path.Combine(runtimeRoot, "build-info.json")
+  };
 
     foreach (var requiredPath in requiredPaths)
     {
@@ -1184,8 +1187,7 @@ sealed class RuntimeInstaller
     }
 
     if (buildInfo is null ||
-        !string.Equals(buildInfo.SourceHash, expectedSourceHash, StringComparison.OrdinalIgnoreCase) ||
-        !string.Equals(buildInfo.AppVersion, AppMetadata.CurrentVersionTag, StringComparison.OrdinalIgnoreCase))
+        !string.Equals(buildInfo.SourceHash, expectedSourceHash, StringComparison.OrdinalIgnoreCase))
     {
       return false;
     }

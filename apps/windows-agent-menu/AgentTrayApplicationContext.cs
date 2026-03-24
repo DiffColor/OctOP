@@ -283,8 +283,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     var currentRuntimeRoot = _paths.ResolveActiveRuntimeRoot();
     var shouldPrepareImmediately =
       currentRuntimeRoot is null ||
-      _availableRuntimeUpdate is not null ||
-      _runtimeStatus?.RuntimeVersionMatches != true;
+      _availableRuntimeUpdate is not null;
     if (!shouldPrepareImmediately)
     {
       return false;
@@ -294,7 +293,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     {
       AppendLog("첫 시작 런타임이 없어 원자적 런타임 준비를 바로 진행합니다.");
     }
-    else if (_runtimeStatus?.RuntimeVersionMatches != true)
+    else if (_availableRuntimeUpdate is not null)
     {
       AppendLog("앱 시작 직후 런타임 버전 불일치를 감지해 원자적 런타임 준비를 진행합니다.");
     }
@@ -338,7 +337,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return runtimePreparedChanged ||
       currentRuntimeRoot is null ||
       _availableRuntimeUpdate is not null ||
-      _runtimeStatus?.RuntimeVersionMatches != true ||
       _runtimeState is not (AgentRuntimeState.Running or AgentRuntimeState.Starting);
   }
 
