@@ -6,53 +6,19 @@ using System.Text.Json;
 
 sealed class WindowsAutoUpdater
 {
-  private const int DownloadBufferSize = 1024 * 128;
+  private const int DownloadBufferSize = 1024 * 1024 * 2;
   private const long DiskSafetyMarginBytes = 64L * 1024 * 1024;
-  private static readonly TimeSpan UpdateCheckCacheDuration = TimeSpan.FromHours(6);
-  private static readonly TimeSpan NoUpdateCheckCacheDuration = TimeSpan.FromMinutes(5);
   private static readonly TimeSpan DownloadProgressLogInterval = TimeSpan.FromSeconds(2);
   private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromMinutes(2);
 
   private readonly GitHubTagUpdateClient _releaseClient = new();
-  private string? _cachedVersionTag;
-  private DateTimeOffset? _cachedCheckedAt;
-  private AppUpdateDescriptor? _cachedUpdate;
 
   public async Task<AppUpdateDescriptor?> GetAvailableUpdateAsync(
     string currentVersionTag,
-    CancellationToken cancellationToken,
-    bool force = false)
+    CancellationToken cancellationToken)
   {
     var normalizedVersionTag = AppMetadata.NormalizeVersionTag(currentVersionTag);
-    var now = DateTimeOffset.UtcNow;
-    var cacheDuration = _cachedUpdate is null ? NoUpdateCheckCacheDuration : UpdateCheckCacheDuration;
-
-    if (!force &&
-        _cachedCheckedAt is not null &&
-        string.Equals(_cachedVersionTag, normalizedVersionTag, StringComparison.OrdinalIgnoreCase) &&
-        now - _cachedCheckedAt.Value < cacheDuration)
-    {
-      return _cachedUpdate;
-    }
-
-    try
-    {
-      var availableUpdate = await _releaseClient.GetLatestWindowsReleaseAsync(normalizedVersionTag, cancellationToken);
-      _cachedVersionTag = normalizedVersionTag;
-      _cachedCheckedAt = now;
-      _cachedUpdate = availableUpdate;
-      return availableUpdate;
-    }
-    catch
-    {
-      if (_cachedCheckedAt is not null &&
-          string.Equals(_cachedVersionTag, normalizedVersionTag, StringComparison.OrdinalIgnoreCase))
-      {
-        return _cachedUpdate;
-      }
-
-      throw;
-    }
+    return await _releaseClient.GetLatestWindowsReleaseAsync(normalizedVersionTag, cancellationToken);
   }
 
   public async Task<bool> TryApplyUpdateAsync(

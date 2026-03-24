@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using Microsoft.Win32;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -95,6 +96,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private bool _appUpdateInProgress;
   private string? _appUpdateTargetTag;
   private AppUpdateProgressInfo? _appUpdateProgress;
+  private int _shutdownCleanupStarted;
 
   public AgentTrayApplicationContext()
   {
@@ -183,6 +185,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       ShowSetup();
     };
 
+    AppDomain.CurrentDomain.ProcessExit += HandleCurrentProcessExit;
+    AppDomain.CurrentDomain.UnhandledException += HandleCurrentUnhandledException;
+    SystemEvents.SessionEnding += HandleWindowsSessionEnding;
+    SystemEvents.SessionEnded += HandleWindowsSessionEnded;
+
     AppendLog("윈도우 트레이 앱이 시작되었습니다.");
     RefreshRuntimeStateFromSystem(logDetection: true);
     RefreshUi();
@@ -207,6 +214,16 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     if (disposing)
     {
+      AppDomain.CurrentDomain.ProcessExit -= HandleCurrentProcessExit;
+      AppDomain.CurrentDomain.UnhandledException -= HandleCurrentUnhandledException;
+      SystemEvents.SessionEnding -= HandleWindowsSessionEnding;
+      SystemEvents.SessionEnded -= HandleWindowsSessionEnded;
+
+      if (!_suppressRuntimeStopOnExit)
+      {
+        TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
+      }
+
       _notifyIcon.Visible = false;
       _notifyIcon.Dispose();
       _menu.Dispose();
@@ -230,7 +247,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     await RefreshRuntimeStatusAsync(showSetupWhenIncomplete: true);
     await RefreshAvailableRuntimeUpdateAsync();
-    await RefreshAvailableAppUpdateAsync(force: true);
+    await RefreshAvailableAppUpdateAsync();
     var runtimePreparedChanged = await EnsureRuntimePreparedIfNeededAsync(allowWhileRunning: true);
 
     var resumePendingServiceStart = ConsumePendingServiceStartRequest();
@@ -746,6 +763,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     _exitInProgress = true;
     _isExiting = true;
 
+    return ExitApplicationCoreAsync();
+  }
+
+  private async Task ExitApplicationCoreAsync()
+  {
     try
     {
       _setupWindow.AllowClose = true;
@@ -758,10 +780,12 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       {
         try
         {
-          StopServiceProcessesImmediatelyForExit(includeStdioSessions: true);
+          await StopServiceProcessesAsync(includeStdioSessions: true, logWhenIdle: false);
         }
-        catch
+        catch (Exception error)
         {
+          AppendLog($"앱 종료 중 서비스 정상 정지가 완전히 끝나지 않아 강제 종료를 이어갑니다: {error.Message}");
+          TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
         }
       }
 
@@ -772,8 +796,6 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     {
       Environment.Exit(0);
     }
-
-    return Task.CompletedTask;
   }
 
   private void MarkPendingServiceStartRequest()
@@ -971,14 +993,13 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     RefreshUi();
   }
 
-  private async Task RefreshAvailableAppUpdateAsync(bool force = false)
+  private async Task RefreshAvailableAppUpdateAsync()
   {
     try
     {
       _availableAppUpdate = await _autoUpdater.GetAvailableUpdateAsync(
         AppMetadata.CurrentVersionTag,
-        CancellationToken.None,
-        force);
+        CancellationToken.None);
     }
     catch (Exception error)
     {
@@ -997,7 +1018,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return;
     }
 
-    await RefreshAvailableAppUpdateAsync(force: true);
+    await RefreshAvailableAppUpdateAsync();
     if (_availableAppUpdate is null)
     {
       AppendLog("적용 가능한 앱 업데이트가 없습니다.");
@@ -1245,8 +1266,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   {
     var servicePorts = ResolveServicePorts(_configuration);
     var allProcessIds = CollectStopTargetProcessIds(includeStdioSessions, servicePorts);
+    var allProcessNames = CollectStopTargetProcessNames(includeStdioSessions, servicePorts);
 
-    if (allProcessIds.Count == 0)
+    if (allProcessIds.Count == 0 && allProcessNames.Count == 0)
     {
       DeleteAgentPidFile();
       _processId = null;
@@ -1260,8 +1282,11 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       return;
     }
 
-    AppendLog($"서비스 관련 프로세스를 종료합니다. pids={string.Join(",", allProcessIds)}");
+    AppendLog(
+      $"서비스 관련 프로세스를 종료합니다. pids={string.Join(",", allProcessIds)}, names={string.Join(",", allProcessNames)}");
+    ForceKillProcessNames(allProcessNames);
     ForceKillProcesses(allProcessIds);
+    ForceKillProcessNames(CollectStopTargetProcessNames(includeStdioSessions, servicePorts));
     await ForceKillManagedProcessesUntilExitedAsync(includeStdioSessions);
     await ForceKillListeningProcessesUntilReleasedAsync(servicePorts);
 
@@ -1287,18 +1312,34 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private void StopServiceProcessesImmediatelyForExit(bool includeStdioSessions)
   {
+    var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
     var servicePorts = ResolveServicePorts(_configuration);
-    var allProcessIds = CollectStopTargetProcessIds(includeStdioSessions, servicePorts);
 
-    if (allProcessIds.Count > 0)
+    while (DateTimeOffset.UtcNow < deadline)
     {
-      ForceKillProcesses(allProcessIds);
-    }
+      var allProcessIds = CollectStopTargetProcessIds(includeStdioSessions, servicePorts);
+      var allProcessNames = CollectStopTargetProcessNames(includeStdioSessions, servicePorts);
+      if (allProcessNames.Count > 0)
+      {
+        ForceKillProcessNames(allProcessNames);
+      }
 
-    var listeningProcessIds = FindListeningProcessIds(servicePorts);
-    if (listeningProcessIds.Count > 0)
-    {
-      ForceKillProcesses(listeningProcessIds);
+      if (allProcessIds.Count > 0)
+      {
+        ForceKillProcesses(allProcessIds);
+      }
+
+      var remainingManagedProcessIds = CollectManagedProcessIds(includeStdioSessions);
+      var listeningProcessIds = FindListeningProcessIds(servicePorts);
+      var remainingProcessNames = CollectStopTargetProcessNames(includeStdioSessions, servicePorts);
+      if (remainingManagedProcessIds.Count == 0 && listeningProcessIds.Count == 0 && remainingProcessNames.Count == 0)
+      {
+        break;
+      }
+
+      ForceKillProcessNames(remainingProcessNames);
+      ForceKillProcesses(remainingManagedProcessIds.Concat(listeningProcessIds));
+      Thread.Sleep(250);
     }
 
     DeleteAgentPidFile();
@@ -1335,6 +1376,15 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
   private List<int> FindStdioSessionProcessIds()
   {
+    return FindStdioSessionProcesses()
+      .Select(static process => process.ProcessId)
+      .Where(static processId => processId > 0)
+      .Distinct()
+      .ToList();
+  }
+
+  private List<ServiceProcessInfo> FindStdioSessionProcesses()
+  {
     var command = string.Join(
       " ",
       [
@@ -1343,22 +1393,33 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         "$_.CommandLine -and",
         "$_.CommandLine -like '*codex*app-server*--listen*stdio://*'",
         "} |",
-        "Select-Object -ExpandProperty ProcessId"
+        "ForEach-Object {",
+        "$commandLine = ($_.CommandLine -replace '[\\r\\n]+', ' ');",
+        "Write-Output ($_.ProcessId.ToString() + \"`t\" + $_.Name + \"`t\" + $commandLine)",
+        "}"
       ]);
 
-    return RunPowerShellProcessQuery(command);
+    return RunPowerShellProcessInspectionQuery(command);
   }
 
   private void ForceKillProcesses(IEnumerable<int> processIds)
   {
     foreach (var processId in processIds.Where(static pid => pid > 0).Distinct())
     {
-      if (TryKillProcessTree(processId))
-      {
-        continue;
-      }
-
+      TryKillProcessTree(processId);
       TryForceKillProcessTreeWithTaskKill(processId);
+    }
+  }
+
+  private void ForceKillProcessNames(IEnumerable<string> processNames)
+  {
+    foreach (var processName in processNames
+      .Select(NormalizeProcessImageName)
+      .Where(static value => !string.IsNullOrWhiteSpace(value))
+      .Distinct(StringComparer.OrdinalIgnoreCase))
+    {
+      TryKillProcessesByImageName(processName);
+      TryForceKillProcessByImageNameWithTaskKill(processName);
     }
   }
 
@@ -1381,6 +1442,37 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
+  private static void TryKillProcessesByImageName(string processImageName)
+  {
+    try
+    {
+      var processName = Path.GetFileNameWithoutExtension(processImageName);
+      foreach (var process in Process.GetProcessesByName(processName))
+      {
+        try
+        {
+          if (process.HasExited || process.Id == Environment.ProcessId)
+          {
+            continue;
+          }
+
+          process.Kill(entireProcessTree: true);
+          process.WaitForExit(1000);
+        }
+        catch
+        {
+        }
+        finally
+        {
+          process.Dispose();
+        }
+      }
+    }
+    catch
+    {
+    }
+  }
+
   private static void TryForceKillProcessTreeWithTaskKill(int processId)
   {
     try
@@ -1391,6 +1483,37 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         {
           FileName = "taskkill.exe",
           Arguments = $"/PID {processId} /T /F",
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8
+        }
+      };
+
+      if (!process.Start())
+      {
+        return;
+      }
+
+      process.WaitForExit(3000);
+    }
+    catch
+    {
+    }
+  }
+
+  private static void TryForceKillProcessByImageNameWithTaskKill(string processImageName)
+  {
+    try
+    {
+      using var process = new Process
+      {
+        StartInfo = new ProcessStartInfo
+        {
+          FileName = "taskkill.exe",
+          Arguments = $"/IM \"{processImageName}\" /T /F",
           UseShellExecute = false,
           RedirectStandardOutput = true,
           RedirectStandardError = true,
@@ -1519,7 +1642,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     return false;
   }
 
-  private async Task ForceKillListeningProcessesUntilReleasedAsync(IReadOnlyCollection<int> ports, int timeoutMs = 15000)
+  private async Task ForceKillListeningProcessesUntilReleasedAsync(IReadOnlyCollection<int> ports, int timeoutMs = 30000)
   {
     if (ports.Count == 0)
     {
@@ -1535,6 +1658,10 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return;
       }
 
+      ForceKillProcessNames(listeningProcessIds
+        .Select(TryResolveProcessImageName)
+        .Where(static value => !string.IsNullOrWhiteSpace(value))
+        .Select(static value => value!));
       ForceKillProcesses(listeningProcessIds);
       await Task.Delay(200);
     }
@@ -1546,8 +1673,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
   }
 
-  private async Task ForceKillManagedProcessesUntilExitedAsync(bool includeStdioSessions, int timeoutMs = 15000)
+  private async Task ForceKillManagedProcessesUntilExitedAsync(bool includeStdioSessions, int timeoutMs = 30000)
   {
+    var servicePorts = ResolveServicePorts(_configuration);
     var deadline = DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs);
     while (DateTimeOffset.UtcNow < deadline)
     {
@@ -1557,6 +1685,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         return;
       }
 
+      ForceKillProcessNames(CollectStopTargetProcessNames(includeStdioSessions, servicePorts));
       ForceKillProcesses(remainingProcessIds);
       await Task.Delay(250);
     }
@@ -1628,6 +1757,105 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     }
 
     return processIds.ToList();
+  }
+
+  private List<string> CollectStopTargetProcessNames(bool includeStdioSessions, IReadOnlyCollection<int> servicePorts)
+  {
+    var processNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var process in FindServiceProcesses())
+    {
+      if (!string.IsNullOrWhiteSpace(process.Name))
+      {
+        processNames.Add(NormalizeProcessImageName(process.Name));
+      }
+    }
+
+    if (includeStdioSessions)
+    {
+      foreach (var process in FindStdioSessionProcesses())
+      {
+        if (!string.IsNullOrWhiteSpace(process.Name))
+        {
+          processNames.Add(NormalizeProcessImageName(process.Name));
+        }
+      }
+    }
+
+    foreach (var processId in FindListeningProcessIds(servicePorts))
+    {
+      var processImageName = TryResolveProcessImageName(processId);
+      if (!string.IsNullOrWhiteSpace(processImageName))
+      {
+        processNames.Add(processImageName);
+      }
+    }
+
+    if (_processId is > 0)
+    {
+      var trackedProcessName = TryResolveProcessImageName(_processId.Value);
+      if (!string.IsNullOrWhiteSpace(trackedProcessName))
+      {
+        processNames.Add(trackedProcessName);
+      }
+    }
+
+    try
+    {
+      if (_process is { HasExited: false })
+      {
+        var trackedProcessName = NormalizeProcessImageName(_process.ProcessName);
+        if (!string.IsNullOrWhiteSpace(trackedProcessName))
+        {
+          processNames.Add(trackedProcessName);
+        }
+      }
+    }
+    catch
+    {
+    }
+
+    if (TryReadPersistedAgentProcessId(out var persistedProcessId) && persistedProcessId > 0)
+    {
+      var persistedProcessName = TryResolveProcessImageName(persistedProcessId);
+      if (!string.IsNullOrWhiteSpace(persistedProcessName))
+      {
+        processNames.Add(persistedProcessName);
+      }
+    }
+
+    return processNames.ToList();
+  }
+
+  private static string? TryResolveProcessImageName(int processId)
+  {
+    try
+    {
+      using var process = Process.GetProcessById(processId);
+      if (process.HasExited)
+      {
+        return null;
+      }
+
+      return NormalizeProcessImageName(process.ProcessName);
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  private static string NormalizeProcessImageName(string? processName)
+  {
+    var trimmed = processName?.Trim();
+    if (string.IsNullOrWhiteSpace(trimmed))
+    {
+      return string.Empty;
+    }
+
+    return trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+      ? trimmed
+      : $"{trimmed}.exe";
   }
 
   private static InvalidOperationException BuildServiceStopFailure(
@@ -2150,6 +2378,62 @@ sealed class AgentTrayApplicationContext : ApplicationContext
     if (File.Exists(_paths.RuntimeAgentPidPath))
     {
       File.Delete(_paths.RuntimeAgentPidPath);
+    }
+  }
+
+  private void HandleCurrentProcessExit(object? sender, EventArgs e)
+  {
+    if (_suppressRuntimeStopOnExit)
+    {
+      return;
+    }
+
+    TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
+  }
+
+  private void HandleCurrentUnhandledException(object sender, UnhandledExceptionEventArgs e)
+  {
+    if (_suppressRuntimeStopOnExit)
+    {
+      return;
+    }
+
+    TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
+  }
+
+  private void HandleWindowsSessionEnding(object? sender, SessionEndingEventArgs e)
+  {
+    if (_suppressRuntimeStopOnExit)
+    {
+      return;
+    }
+
+    TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
+  }
+
+  private void HandleWindowsSessionEnded(object? sender, SessionEndedEventArgs e)
+  {
+    if (_suppressRuntimeStopOnExit)
+    {
+      return;
+    }
+
+    TryTerminateServiceProcessesForShutdown(includeStdioSessions: true);
+  }
+
+  private void TryTerminateServiceProcessesForShutdown(bool includeStdioSessions)
+  {
+    if (Interlocked.Exchange(ref _shutdownCleanupStarted, 1) != 0)
+    {
+      return;
+    }
+
+    try
+    {
+      StopServiceProcessesImmediatelyForExit(includeStdioSessions);
+    }
+    catch
+    {
     }
   }
 }
