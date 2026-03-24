@@ -11,6 +11,10 @@ const loginId = 'playwright-user';
 const bridgeId = 'bridge-reorder';
 const projectAlphaId = 'project-alpha';
 const projectBetaId = 'project-beta';
+const projectGammaId = 'project-gamma';
+const projectAlphaName = 'Alpha Workspace';
+const projectBetaName = 'Beta Project With An Extremely Long Title For Drag Reorder Regression';
+const projectGammaName = 'Gamma';
 
 const session = {
   accessToken: 'playwright-token',
@@ -25,12 +29,17 @@ const session = {
 const projects = [
   {
     id: projectAlphaId,
-    name: 'Alpha Workspace',
+    name: projectAlphaName,
     bridge_id: bridgeId
   },
   {
     id: projectBetaId,
-    name: 'Beta Project Long Name',
+    name: projectBetaName,
+    bridge_id: bridgeId
+  },
+  {
+    id: projectGammaId,
+    name: projectGammaName,
     bridge_id: bridgeId
   }
 ];
@@ -99,7 +108,8 @@ const threadsByProjectId = {
       context_used_tokens: 300,
       context_window_tokens: 100000
     }
-  ]
+  ],
+  [projectGammaId]: []
 };
 
 test.use({
@@ -238,7 +248,7 @@ async function seedMobileSession(page) {
         draftThreadProjectId: '',
         threadComposerDrafts: {},
         projectFilterUsage: {},
-        projectChipOrder: [projectAlphaId, projectBetaId],
+        projectChipOrder: [projectAlphaId, projectBetaId, projectGammaId],
         threadOrderByProjectId: {
           [projectAlphaId]: ['thread-alpha-1', 'thread-alpha-2', 'thread-alpha-3'],
           [projectBetaId]: ['thread-beta-1']
@@ -346,8 +356,8 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const alphaChip = page.getByRole('button', { name: 'Alpha Workspace' });
-    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+    const alphaChip = page.getByRole('button', { name: projectAlphaName });
+    const betaChip = page.getByRole('button', { name: projectBetaName });
 
     await expect(alphaChip).toBeVisible();
     await expect(betaChip).toBeVisible();
@@ -391,27 +401,27 @@ test.describe('mobile reorder interactions', () => {
       clientY: pressY
     });
 
-    const chipFrames = await collectProjectChipPositionFrames(page, ['Alpha Workspace', 'Beta Project Long Name']);
+    const chipFrames = await collectProjectChipPositionFrames(page, [projectAlphaName, projectBetaName]);
 
     await expect.poll(async () => {
-      return page.evaluate(() =>
+      return page.evaluate((labels) =>
         Array.from(document.querySelectorAll('button'))
           .map((node) => node.textContent?.trim())
-          .filter((text) => text === 'Alpha Workspace' || text === 'Beta Project Long Name')
-      );
-    }).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+          .filter((text) => labels.includes(text))
+      , [projectAlphaName, projectBetaName]);
+    }).toEqual([projectBetaName, projectAlphaName]);
 
     const storedOrder = await page.evaluate(() => {
       const layout = JSON.parse(window.localStorage.getItem('octop.mobile.workspace.layout.v1') || '{}');
       return layout.projectChipOrder ?? [];
     });
 
-    expect(storedOrder).toEqual([projectBetaId, projectAlphaId]);
-    expect(chipFrames[0].map((entry) => entry.label)).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+    expect(storedOrder).toEqual([projectBetaId, projectAlphaId, projectGammaId]);
+    expect(chipFrames[0].map((entry) => entry.label)).toEqual([projectBetaName, projectAlphaName]);
 
     const baselineChipFrame = chipFrames[0];
     chipFrames.slice(1).forEach((frame) => {
-      expect(frame.map((entry) => entry.label)).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+      expect(frame.map((entry) => entry.label)).toEqual([projectBetaName, projectAlphaName]);
       frame.forEach((entry, index) => {
         expect(Math.abs(entry.x - baselineChipFrame[index].x)).toBeLessThanOrEqual(1);
       });
@@ -423,7 +433,7 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+    const betaChip = page.getByRole('button', { name: projectBetaName });
 
     await expect(betaChip).toBeVisible();
 
@@ -465,7 +475,7 @@ test.describe('mobile reorder interactions', () => {
     });
 
     await expect(page.getByText('프로젝트 편집')).toBeVisible();
-    await expect(page.locator('#project-edit-name')).toHaveValue('Beta Project Long Name');
+    await expect(page.locator('#project-edit-name')).toHaveValue(projectBetaName);
 
     const storedSelectedScope = await page.evaluate(() => {
       const layout = JSON.parse(window.localStorage.getItem('octop.mobile.workspace.layout.v1') || '{}');
@@ -483,7 +493,7 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+    const betaChip = page.getByRole('button', { name: projectBetaName });
 
     await expect(betaChip).toBeVisible();
 
@@ -538,17 +548,21 @@ test.describe('mobile reorder interactions', () => {
     await seedMobileSession(page);
     await page.goto(baseUrl);
 
-    const alphaChip = page.getByRole('button', { name: 'Alpha Workspace' });
-    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+    const alphaChip = page.getByRole('button', { name: projectAlphaName });
+    const betaChip = page.getByRole('button', { name: projectBetaName });
+    const gammaChip = page.getByRole('button', { name: projectGammaName });
 
     await expect(alphaChip).toBeVisible();
     await expect(betaChip).toBeVisible();
+    await expect(gammaChip).toBeVisible();
 
     const alphaBox = await alphaChip.boundingBox();
     const betaBox = await betaChip.boundingBox();
+    const gammaBox = await gammaChip.boundingBox();
 
     expect(alphaBox).not.toBeNull();
     expect(betaBox).not.toBeNull();
+    expect(gammaBox).not.toBeNull();
 
     const pointerId = 23;
     const pressX = betaBox.x + betaBox.width - 6;
@@ -583,11 +597,14 @@ test.describe('mobile reorder interactions', () => {
     }));
     const alphaDuringBox = await alphaChip.boundingBox();
     const betaDuringBox = await betaChip.boundingBox();
+    const gammaDuringBox = await gammaChip.boundingBox();
 
     expect(dragFeedback.transform).toContain('scale(1.02)');
     expect(dragFeedback.zIndex).toBe('20');
     expect(dragFeedback.position).toBe('absolute');
     expect(betaDuringBox.x).toBeLessThan(alphaDuringBox.x);
+    expect(alphaDuringBox.x).toBeLessThan(gammaDuringBox.x);
+    expect(gammaDuringBox.x - alphaDuringBox.x).toBeGreaterThan(24);
 
     await betaChip.dispatchEvent('pointerup', {
       pointerId,
@@ -599,19 +616,19 @@ test.describe('mobile reorder interactions', () => {
     });
 
     await expect.poll(async () => {
-      return page.evaluate(() =>
+      return page.evaluate((labels) =>
         Array.from(document.querySelectorAll('button'))
           .map((node) => node.textContent?.trim())
-          .filter((text) => text === 'Alpha Workspace' || text === 'Beta Project Long Name')
-      );
-    }).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+          .filter((text) => labels.includes(text))
+      , [projectAlphaName, projectBetaName, projectGammaName]);
+    }).toEqual([projectBetaName, projectAlphaName, projectGammaName]);
 
     const storedOrder = await page.evaluate(() => {
       const layout = JSON.parse(window.localStorage.getItem('octop.mobile.workspace.layout.v1') || '{}');
       return layout.projectChipOrder ?? [];
     });
 
-    expect(storedOrder).toEqual([projectBetaId, projectAlphaId]);
+    expect(storedOrder).toEqual([projectBetaId, projectAlphaId, projectGammaId]);
   });
 
   test('쓰레드 리스트는 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {

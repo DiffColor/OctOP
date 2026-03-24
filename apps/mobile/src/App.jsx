@@ -8039,6 +8039,7 @@ function MainPage({
   const projectChipNodesRef = useRef(new Map());
   const projectChipDragStateRef = useRef(null);
   const projectChipDropIndexRef = useRef(-1);
+  const projectChipLayoutSnapshotRef = useRef(new Map());
   const threadListItemNodesRef = useRef(new Map());
   const threadListDragStateRef = useRef(null);
   const threadListDropIndexRef = useRef(-1);
@@ -8079,13 +8080,15 @@ function MainPage({
       return 0;
     }
 
+    const draggingLayout = projectChipLayoutSnapshotRef.current.get(draggingProjectChipId);
     const draggingNode = projectChipNodesRef.current.get(draggingProjectChipId);
+    const draggingWidth = draggingLayout?.width ?? draggingNode?.offsetWidth ?? 0;
 
-    if (!draggingNode) {
+    if (draggingWidth <= 0) {
       return 0;
     }
 
-    return draggingNode.offsetWidth + getFlexRowGapPx(projectChipRowRef.current);
+    return draggingWidth + getFlexRowGapPx(projectChipRowRef.current);
   }, [draggingProjectChipId, draggingProjectChipOffsetX, orderedProjectIds]);
   const draggingProjectChipProjectedIds = useMemo(() => {
     const activeDragState = projectChipDragStateRef.current;
@@ -8314,6 +8317,7 @@ function MainPage({
   const resetProjectChipDragInteraction = useCallback(() => {
     projectChipDragStateRef.current = null;
     projectChipDropIndexRef.current = -1;
+    projectChipLayoutSnapshotRef.current = new Map();
     setDraggingProjectChipId("");
     setDraggingProjectChipOffsetX(0);
   }, []);
@@ -8375,6 +8379,28 @@ function MainPage({
 
     threadListItemNodesRef.current.delete(normalizedThreadId);
   }, []);
+  const captureProjectChipLayoutSnapshot = useCallback((projectIds) => {
+    const snapshot = new Map();
+    const scrollLeft = projectChipRowRef.current?.scrollLeft ?? 0;
+
+    normalizeProjectChipOrder(projectIds).forEach((projectId) => {
+      const node = projectChipNodesRef.current.get(projectId);
+
+      if (!node) {
+        return;
+      }
+
+      const rect = node.getBoundingClientRect();
+      snapshot.set(projectId, {
+        left: rect.left + scrollLeft,
+        width: rect.width,
+        height: rect.height
+      });
+    });
+
+    projectChipLayoutSnapshotRef.current = snapshot;
+    return snapshot;
+  }, []);
   const captureThreadListLayoutSnapshot = useCallback((threadIds) => {
     const snapshot = new Map();
 
@@ -8397,28 +8423,35 @@ function MainPage({
   }, []);
   const resolveProjectChipDropIndex = useCallback(
     (draggedCenterX, draggedProjectId) => {
+      const activeDragState = projectChipDragStateRef.current;
       const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
       const draggableProjectIds = orderedProjectIds.filter((projectId) => projectId !== normalizedDraggedProjectId);
       const draggedProjectIndex = orderedProjectIds.indexOf(normalizedDraggedProjectId);
+      const layoutSnapshot = projectChipLayoutSnapshotRef.current;
+      const draggedLayout = layoutSnapshot.get(normalizedDraggedProjectId);
       const draggedNode = projectChipNodesRef.current.get(normalizedDraggedProjectId);
       const collapsedShiftDistance =
-        draggedProjectIndex >= 0 && draggedNode
-          ? draggedNode.offsetWidth + getFlexRowGapPx(projectChipRowRef.current)
+        draggedProjectIndex >= 0
+          ? (draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0) + getFlexRowGapPx(projectChipRowRef.current)
           : 0;
 
       for (let index = 0; index < draggableProjectIds.length; index += 1) {
         const projectId = draggableProjectIds[index];
+        const layout = layoutSnapshot.get(projectId);
         const node = projectChipNodesRef.current.get(projectId);
 
-        if (!node) {
+        if (!layout && !node) {
           continue;
         }
 
-        const rect = node.getBoundingClientRect();
         const currentProjectIndex = orderedProjectIds.indexOf(projectId);
         const collapsedOffsetX =
           draggedProjectIndex >= 0 && currentProjectIndex > draggedProjectIndex ? -collapsedShiftDistance : 0;
-        const adjustedCenterX = rect.left + collapsedOffsetX + rect.width / 2;
+        const adjustedLeft =
+          layout?.left ??
+          (node.getBoundingClientRect().left + (activeDragState?.startScrollLeft ?? projectChipRowRef.current?.scrollLeft ?? 0));
+        const adjustedWidth = layout?.width ?? node.getBoundingClientRect().width;
+        const adjustedCenterX = adjustedLeft + collapsedOffsetX + adjustedWidth / 2;
 
         if (draggedCenterX < adjustedCenterX) {
           return index;
@@ -8584,11 +8617,15 @@ function MainPage({
         activeDragState.startX = activeDragState.latestClientX ?? event.clientX;
         activeDragState.startY = activeDragState.latestClientY ?? event.clientY;
         activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
+        const layoutSnapshot = captureProjectChipLayoutSnapshot(orderedProjectIds);
+        const draggedLayout = layoutSnapshot.get(project.id);
         const draggedNode = projectChipNodesRef.current.get(project.id);
         const draggedRect = draggedNode?.getBoundingClientRect?.();
-        activeDragState.dragOriginCenterX = draggedRect
-          ? draggedRect.left + draggedRect.width / 2
-          : activeDragState.startX;
+        activeDragState.dragOriginCenterX = draggedLayout
+          ? draggedLayout.left + draggedLayout.width / 2
+          : draggedRect
+            ? draggedRect.left + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft) + draggedRect.width / 2
+            : activeDragState.startX + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft);
         projectChipDropIndexRef.current = resolveProjectChipDropIndex(
           activeDragState.dragOriginCenterX,
           project.id
@@ -8597,7 +8634,13 @@ function MainPage({
         setDraggingProjectChipOffsetX(0);
       }, PROJECT_CHIP_LONG_PRESS_MS);
     },
-    [clearPendingProjectLongPress, resetProjectChipDragInteraction, resolveProjectChipDropIndex]
+    [
+      captureProjectChipLayoutSnapshot,
+      clearPendingProjectLongPress,
+      orderedProjectIds,
+      resetProjectChipDragInteraction,
+      resolveProjectChipDropIndex
+    ]
   );
   const handleProjectChipContextMenu = useCallback(
     (event, project) => {
@@ -9079,9 +9122,10 @@ function MainPage({
           const isDraggingProjectChip = draggingProjectChipId === project.id;
           const projectChipSlideOffsetX = resolveProjectChipSlideOffsetX(project.id);
           const disableProjectChipTransition = lockProjectChipDropLayout || Boolean(optimisticProjectChipOrder);
+          const projectChipLayout = projectChipLayoutSnapshotRef.current.get(project.id);
           const projectChipNode = projectChipNodesRef.current.get(project.id);
-          const projectChipPlaceholderWidth = projectChipNode?.offsetWidth ?? undefined;
-          const projectChipPlaceholderHeight = projectChipNode?.offsetHeight ?? undefined;
+          const projectChipPlaceholderWidth = projectChipLayout?.width ?? projectChipNode?.offsetWidth ?? undefined;
+          const projectChipPlaceholderHeight = projectChipLayout?.height ?? projectChipNode?.offsetHeight ?? undefined;
 
           return (
             <div
@@ -9109,7 +9153,8 @@ function MainPage({
                 onClick={() => handleProjectChipClick(project.id)}
                 onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
                 onContextMenu={(event) => handleProjectChipContextMenu(event, project)}
-                className={`rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
+                title={project.name}
+                className={`max-w-[72vw] overflow-hidden text-ellipsis whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
                   isDraggingProjectChip ? "w-full" : "shrink-0"
                 } ${
                   isDraggingProjectChip
