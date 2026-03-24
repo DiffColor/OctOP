@@ -29,6 +29,7 @@ const THREAD_DETAIL_CACHE_STORAGE_KEY = "octop.mobile.threadDetails.cache.v1";
 const WORKSPACE_SNAPSHOT_CACHE_STORAGE_KEY = "octop.mobile.workspace.snapshot.v1";
 const ISSUE_SOURCE_APP_ID = "mobile-web";
 const createDefaultStatus = () => ({
+  bridge_status_received: false,
   app_server: {
     connected: false,
     initialized: false,
@@ -52,6 +53,7 @@ const normalizeBridgeStatus = (nextStatus) => {
   return {
     ...base,
     ...resolved,
+    bridge_status_received: resolved.bridge_status_received === true,
     app_server: {
       ...base.app_server,
       ...(resolved.app_server ?? {})
@@ -68,6 +70,15 @@ const normalizeBridgeStatus = (nextStatus) => {
         ? Number(resolved.counts.threads)
         : base.counts.threads
     }
+  };
+};
+
+const withReceivedBridgeStatus = (nextStatus) => {
+  const resolved = nextStatus && typeof nextStatus === "object" ? nextStatus : {};
+
+  return {
+    ...resolved,
+    bridge_status_received: true
   };
 };
 
@@ -225,8 +236,16 @@ function formatSilentDuration(ms) {
   return `${minutes}분 ${seconds}초`;
 }
 
-function buildBridgeSignal({ socketConnected, disconnectConfirmed, lastSocketActivityAt, statusUpdatedAt, now }) {
-  if (disconnectConfirmed) {
+function buildBridgeSignal({
+  statusReceived,
+  socketConnected,
+  disconnectConfirmed,
+  hasDisconnectEvidence,
+  lastSocketActivityAt,
+  statusUpdatedAt,
+  now
+}) {
+  if (disconnectConfirmed || (statusReceived && !socketConnected)) {
     return {
       label: "미연결",
       title: "브릿지 연결이 끊어졌습니다.",
@@ -239,7 +258,20 @@ function buildBridgeSignal({ socketConnected, disconnectConfirmed, lastSocketAct
     };
   }
 
-  if (!socketConnected) {
+  if (!statusReceived && !hasDisconnectEvidence) {
+    return {
+      label: "브릿지 확인 중",
+      title: "브릿지 상태를 확인하고 있습니다.",
+      dotColor: "#94a3b8",
+      chipStyle: {
+        backgroundColor: "rgba(148, 163, 184, 0.14)",
+        borderColor: "rgba(148, 163, 184, 0.3)",
+        color: "#cbd5e1"
+      }
+    };
+  }
+
+  if (!statusReceived || !socketConnected) {
     return {
       label: "연결 불안정",
       title: "웹소켓 연결이 잠시 끊겼지만 backfill/API 실패가 함께 확인되기 전까지는 오프라인으로 확정하지 않습니다.",
@@ -10752,6 +10784,11 @@ export default function App() {
     [bridgeDisconnectOverrideById, selectedBridgeId]
   );
   const bridgeDisconnectConfirmed = isBridgeDisconnectConfirmed(bridgeDisconnectEvidence);
+  const bridgeHasDisconnectEvidence =
+    bridgeDisconnectEvidence.socketDisconnectedAt > 0 ||
+    bridgeDisconnectEvidence.transportFailureAt > 0 ||
+    bridgeDisconnectEvidence.confirmedAt > 0 ||
+    Boolean(bridgeDisconnectEvidence.lastError);
   const bridgeSocketConnected = Boolean(status?.app_server?.connected);
   const threadInstructionSupported = bridgeSupportsThreadDeveloperInstructions(status);
   const selectedThread = useMemo(
@@ -10768,16 +10805,19 @@ export default function App() {
   const bridgeSignal = useMemo(
     () =>
       buildBridgeSignal({
+        statusReceived: status?.bridge_status_received === true,
         socketConnected: bridgeSocketConnected,
         disconnectConfirmed: bridgeDisconnectConfirmed,
+        hasDisconnectEvidence: bridgeHasDisconnectEvidence,
         lastSocketActivityAt: Date.parse(status?.app_server?.last_socket_activity_at ?? ""),
         statusUpdatedAt: Date.parse(status?.updated_at ?? ""),
         now: streamNow
       }),
     [
-      bridgeConnected,
+      bridgeHasDisconnectEvidence,
       bridgeDisconnectConfirmed,
       bridgeSocketConnected,
+      status?.bridge_status_received,
       status?.app_server?.last_socket_activity_at,
       status?.updated_at,
       streamNow
@@ -11882,7 +11922,7 @@ export default function App() {
         } else {
           markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
-        setBridgeStatus(bridgeId, nextStatus);
+        setBridgeStatus(bridgeId, withReceivedBridgeStatus(nextStatus));
         markStreamActivity();
         return nextStatus;
       })
@@ -11891,17 +11931,13 @@ export default function App() {
           return null;
         }
 
-        markBridgeTransportFailure(bridgeId, error.message);
-        markBridgeSocketDisconnected(bridgeId, error.message);
+        markBridgeStatusDisconnected(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
-            connected: false,
-            initialized: false,
             last_error: error.message
-          },
-          updated_at: new Date().toISOString()
+          }
         }));
         return null;
       });
@@ -12013,7 +12049,7 @@ export default function App() {
         } else {
           markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
-        setBridgeStatus(bridgeId, nextStatus);
+        setBridgeStatus(bridgeId, withReceivedBridgeStatus(nextStatus));
         return true;
       } catch (error) {
         if (selectedBridgeIdRef.current !== bridgeId) {
@@ -12021,16 +12057,12 @@ export default function App() {
         }
 
         markBridgeTransportFailure(bridgeId, error.message);
-        markBridgeSocketDisconnected(bridgeId, error.message);
         setBridgeStatus(bridgeId, (current) => ({
           ...current,
           app_server: {
             ...(current?.app_server ?? {}),
-            connected: false,
-            initialized: false,
             last_error: error.message
-          },
-          updated_at: new Date().toISOString()
+          }
         }));
         return false;
       }
@@ -12059,11 +12091,8 @@ export default function App() {
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
-          connected: false,
-          initialized: false,
           last_error: event.message ?? "bridge transport unavailable"
-        },
-        updated_at: new Date().toISOString()
+        }
       }));
     });
   }, [markBridgeTransportFailure, setBridgeStatus]);
@@ -12406,7 +12435,7 @@ export default function App() {
           } else {
             markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
-          setBridgeStatus(selectedBridgeIdRef.current, payload);
+          setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload));
         }
       } catch {
         // ignore malformed snapshot
@@ -12531,7 +12560,7 @@ export default function App() {
             } else {
               markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
-            setBridgeStatus(selectedBridgeIdRef.current, payload.payload);
+            setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload.payload));
           }
           return;
         }
@@ -12714,10 +12743,8 @@ export default function App() {
         ...current,
         app_server: {
           ...(current?.app_server ?? {}),
-          connected: false,
-          initialized: false
-        },
-        updated_at: new Date().toISOString()
+          last_error: "event stream disconnected"
+        }
       }));
       void refreshBridgeStatus(session, selectedBridgeId);
 
