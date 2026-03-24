@@ -1396,7 +1396,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         "Get-CimInstance Win32_Process |",
         "Where-Object {",
         "$_.CommandLine -and",
-        "$_.CommandLine -like '*codex*app-server*--listen*stdio://*'",
+        "(($_.Name -eq 'node.exe') -or ($_.Name -eq 'cmd.exe') -or ($_.Name -eq 'codex.exe')) -and",
+        "$_.CommandLine -like '*app-server*--listen*stdio://*'",
         "} |",
         "ForEach-Object {",
         "$commandLine = ($_.CommandLine -replace '[\\r\\n]+', ' ');",
@@ -1404,7 +1405,9 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         "}"
       ]);
 
-    return RunPowerShellProcessInspectionQuery(command);
+    return RunPowerShellProcessInspectionQuery(command)
+      .Where(IsStdioAppServerProcess)
+      .ToList();
   }
 
   private void ForceKillProcesses(IEnumerable<int> processIds)
@@ -2302,6 +2305,27 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
       (process.CommandLine.Contains("ws://", StringComparison.OrdinalIgnoreCase) ||
         process.CommandLine.Contains("wss://", StringComparison.OrdinalIgnoreCase));
+  }
+
+  private static bool IsStdioAppServerProcess(ServiceProcessInfo process)
+  {
+    if (process.ProcessId <= 0 ||
+        string.IsNullOrWhiteSpace(process.Name) ||
+        string.IsNullOrWhiteSpace(process.CommandLine))
+    {
+      return false;
+    }
+
+    if (!string.Equals(process.Name, "node.exe", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(process.Name, "cmd.exe", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(process.Name, "codex.exe", StringComparison.OrdinalIgnoreCase))
+    {
+      return false;
+    }
+
+    return process.CommandLine.Contains("app-server", StringComparison.OrdinalIgnoreCase) &&
+      process.CommandLine.Contains("--listen", StringComparison.OrdinalIgnoreCase) &&
+      process.CommandLine.Contains("stdio://", StringComparison.OrdinalIgnoreCase);
   }
 
   private static int GetAppServerProcessPriority(ServiceProcessInfo process)
