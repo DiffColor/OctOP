@@ -418,6 +418,66 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
+  test('프로젝트 칩은 롱터치 입력을 받아 손을 떼면 편집 다이얼로그를 연다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+
+    await expect(betaChip).toBeVisible();
+
+    const betaBox = await betaChip.boundingBox();
+
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 17;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+
+    const dragFeedback = await betaChip.evaluate((node) => ({
+      transform: node.style.transform,
+      zIndex: node.style.zIndex,
+      position: node.style.position
+    }));
+
+    expect(dragFeedback.transform).toContain('scale(1.02)');
+    expect(dragFeedback.zIndex).toBe('20');
+    expect(dragFeedback.position).toBe('relative');
+
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+
+    await expect(page.getByText('프로젝트 편집')).toBeVisible();
+    await expect(page.locator('#project-edit-name')).toHaveValue('Beta Project Long Name');
+
+    const storedSelectedScope = await page.evaluate(() => {
+      const layout = JSON.parse(window.localStorage.getItem('octop.mobile.workspace.layout.v1') || '{}');
+      return layout.selectedScope ?? null;
+    });
+
+    expect(storedSelectedScope).toEqual({
+      kind: 'project',
+      id: projectAlphaId
+    });
+  });
+
   test('쓰레드 리스트는 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);

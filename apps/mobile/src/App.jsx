@@ -10003,6 +10003,21 @@ function MainPage({
           return accepted;
         }}
       />
+      <ProjectActionSheet
+        open={Boolean(projectActionTarget)}
+        project={projectActionTarget}
+        busy={projectEditBusy || projectBusy}
+        onClose={() => setProjectActionProjectId("")}
+        onEdit={() => {
+          if (!projectActionTarget) {
+            return;
+          }
+
+          setProjectActionProjectId("");
+          onOpenProjectEditDialog(projectActionTarget);
+        }}
+        onDelete={() => requestProjectDeletion(projectActionTarget)}
+      />
       <UtilitySheet
         open={utilityOpen}
         session={session}
@@ -10042,6 +10057,14 @@ function MainPage({
         instructionType={projectInstructionType}
         onClose={onCloseProjectInstructionDialog}
         onSubmit={onSubmitProjectInstruction}
+      />
+      <ProjectEditDialog
+        open={projectEditDialogOpen}
+        busy={projectEditBusy}
+        project={projectEditTarget}
+        errorMessage={projectEditError}
+        onClose={onCloseProjectEditDialog}
+        onSubmit={onSubmitProjectEdit}
       />
       <ThreadEditDialog
         open={threadInstructionDialogOpen}
