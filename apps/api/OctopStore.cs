@@ -430,6 +430,41 @@ public sealed class OctopStore : IAsyncDisposable
       .ToList();
   }
 
+  private async Task<HashSet<string>> ResolveEquivalentBridgeIdsForUserAsync(string userId, string bridgeId)
+  {
+    var normalizedBridgeId = string.IsNullOrWhiteSpace(bridgeId) ? string.Empty : bridgeId.Trim();
+    var equivalentBridgeIds = new HashSet<string>(StringComparer.Ordinal);
+
+    if (string.IsNullOrWhiteSpace(normalizedBridgeId))
+    {
+      return equivalentBridgeIds;
+    }
+
+    equivalentBridgeIds.Add(normalizedBridgeId);
+
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    var matched = bridges.FirstOrDefault(bridge =>
+      string.Equals(bridge.Value<string>("bridge_id"), normalizedBridgeId, StringComparison.Ordinal));
+
+    if (matched is null)
+    {
+      return equivalentBridgeIds;
+    }
+
+    var identityKey = ResolveBridgeIdentityKey(matched);
+
+    foreach (var equivalentBridgeId in bridges
+      .Where(bridge => string.Equals(ResolveBridgeIdentityKey(bridge), identityKey, StringComparison.Ordinal))
+      .Select(bridge => bridge.Value<string>("bridge_id"))
+      .Where(value => !string.IsNullOrWhiteSpace(value))
+      .Cast<string>())
+    {
+      equivalentBridgeIds.Add(equivalentBridgeId);
+    }
+
+    return equivalentBridgeIds;
+  }
+
   private static IReadOnlyList<JObject> CanonicalizeBridgeRows(IEnumerable<JObject> bridges)
   {
     return bridges
@@ -516,6 +551,7 @@ public sealed class OctopStore : IAsyncDisposable
     CancellationToken cancellationToken)
   {
     cancellationToken.ThrowIfCancellationRequested();
+    var equivalentBridgeIds = await ResolveEquivalentBridgeIdsForUserAsync(userId, bridgeId);
     var connection = await GetConnectionAsync();
     using var cursor = await _r.Db(_db)
       .Table(PushSubscriptionTable)
@@ -530,7 +566,7 @@ public sealed class OctopStore : IAsyncDisposable
         row is null ||
         !row.IsActive ||
         !string.Equals(row.LoginId ?? row.UserId, userId, StringComparison.Ordinal) ||
-        !string.Equals(row.BridgeId, bridgeId, StringComparison.Ordinal) ||
+        !equivalentBridgeIds.Contains(row.BridgeId ?? string.Empty) ||
         (!string.IsNullOrWhiteSpace(appId) && !string.Equals(row.AppId, appId, StringComparison.Ordinal)))
       {
         continue;

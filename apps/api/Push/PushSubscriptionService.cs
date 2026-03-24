@@ -16,7 +16,11 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     CancellationToken cancellationToken)
   {
     var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId, cancellationToken);
-    return subscriptions.Count;
+    return subscriptions
+      .Select(subscription => subscription.Endpoint)
+      .Where(endpoint => !string.IsNullOrWhiteSpace(endpoint))
+      .Distinct(StringComparer.Ordinal)
+      .Count();
   }
 
   public async Task<IReadOnlyList<string>> GetEndpointsAsync(
@@ -28,6 +32,8 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId, cancellationToken);
     return subscriptions
       .Select(subscription => subscription.Endpoint)
+      .Where(endpoint => !string.IsNullOrWhiteSpace(endpoint))
+      .Distinct(StringComparer.Ordinal)
       .OrderBy(endpoint => endpoint, StringComparer.Ordinal)
       .ToList();
   }
@@ -76,6 +82,7 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
     };
 
     await octopStore.UpsertPushSubscriptionAsync(entity, cancellationToken);
+    await DeleteDuplicateSubscriptionsAsync(userId, bridgeId, appId, subscriptionDto.Endpoint, entity.Id, cancellationToken);
     return await GetCountAsync(userId, bridgeId, appId, cancellationToken);
   }
 
@@ -91,9 +98,23 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
       throw new ArgumentException("삭제할 endpoint가 필요합니다.", nameof(endpoint));
     }
 
-    await octopStore.DeletePushSubscriptionAsync(
-      CreateSubscriptionDocumentId(userId, bridgeId, appId, endpoint),
-      cancellationToken);
+    var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId, cancellationToken);
+    var matchedSubscriptions = subscriptions
+      .Where(subscription => string.Equals(subscription.Endpoint, endpoint, StringComparison.Ordinal))
+      .ToList();
+
+    if (matchedSubscriptions.Count == 0)
+    {
+      await octopStore.DeletePushSubscriptionAsync(
+        CreateSubscriptionDocumentId(userId, bridgeId, appId, endpoint),
+        cancellationToken);
+      return await GetCountAsync(userId, bridgeId, appId, cancellationToken);
+    }
+
+    foreach (var subscription in matchedSubscriptions)
+    {
+      await octopStore.DeletePushSubscriptionAsync(subscription.Id, cancellationToken);
+    }
 
     return await GetCountAsync(userId, bridgeId, appId, cancellationToken);
   }
@@ -220,8 +241,26 @@ public sealed class PushSubscriptionService(OctopStore octopStore)
         .ThenByDescending(subscription => ParseSortTimestamp(subscription.UpdatedAt))
         .ThenByDescending(subscription => ParseSortTimestamp(subscription.LastSuccessAt))
         .ThenByDescending(subscription => ParseSortTimestamp(subscription.CreatedAt))
-        .First())
+      .First())
       .ToList();
+  }
+
+  private async Task DeleteDuplicateSubscriptionsAsync(
+    string userId,
+    string bridgeId,
+    string appId,
+    string endpoint,
+    string keepSubscriptionId,
+    CancellationToken cancellationToken)
+  {
+    var subscriptions = await octopStore.ListPushSubscriptionsAsync(userId, bridgeId, appId, cancellationToken);
+
+    foreach (var duplicate in subscriptions.Where(subscription =>
+      !string.Equals(subscription.Id, keepSubscriptionId, StringComparison.Ordinal) &&
+      string.Equals(subscription.Endpoint, endpoint, StringComparison.Ordinal)))
+    {
+      await octopStore.DeletePushSubscriptionAsync(duplicate.Id, cancellationToken);
+    }
   }
 
   private static bool HasDeliverableAppId(string? value)

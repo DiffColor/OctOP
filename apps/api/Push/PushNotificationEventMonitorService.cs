@@ -67,26 +67,20 @@ public sealed class PushNotificationEventMonitorService(
       return;
     }
 
-    if (!string.Equals(envelope?.Type, "turn.completed", StringComparison.Ordinal))
+    var terminalEvent = ResolveTerminalIssueEvent(envelope);
+
+    if (terminalEvent is null)
     {
       return;
     }
 
-    var userId = Convert.ToString(envelope.ResolvedLoginId ?? envelope.ResolvedUserId ?? string.Empty)?.Trim() ?? string.Empty;
-    var bridgeId = Convert.ToString(envelope.ResolvedBridgeId ?? string.Empty)?.Trim() ?? string.Empty;
-    var issueId = Convert.ToString(envelope.Payload?.ResolvedIssueId ?? string.Empty)?.Trim() ?? string.Empty;
-    var threadId = Convert.ToString(envelope.Payload?.ResolvedThreadId ?? string.Empty)?.Trim() ?? string.Empty;
-    var projectId = Convert.ToString(envelope.Payload?.ResolvedProjectId ?? string.Empty)?.Trim() ?? string.Empty;
-    var issueStatus = Convert.ToString(envelope.Payload?.Turn?.Status ?? string.Empty)?.Trim().ToLowerInvariant() ?? string.Empty;
-
-    if (
-      string.IsNullOrWhiteSpace(userId) ||
-      string.IsNullOrWhiteSpace(bridgeId) ||
-      string.IsNullOrWhiteSpace(issueId) ||
-      (issueStatus != "completed" && issueStatus != "failed"))
-    {
-      return;
-    }
+    var userId = terminalEvent.UserId;
+    var bridgeId = terminalEvent.BridgeId;
+    var issueId = terminalEvent.IssueId;
+    var threadId = terminalEvent.ThreadId;
+    var projectId = terminalEvent.ProjectId;
+    var issueStatus = terminalEvent.IssueStatus;
+    var eventType = terminalEvent.EventType;
 
     var receiptId = PushSubscriptionService.CreateReceiptId(userId, bridgeId, issueId, issueStatus);
 
@@ -106,7 +100,7 @@ public sealed class PushNotificationEventMonitorService(
       ThreadId = threadId,
       ProjectId = projectId,
       IssueStatus = issueStatus,
-      EventType = envelope.Type ?? "turn.completed",
+      EventType = eventType,
       SuccessCount = 0,
       FailureCount = 0,
       CreatedAt = createdAt
@@ -185,7 +179,7 @@ public sealed class PushNotificationEventMonitorService(
           ThreadId = threadId,
           ProjectId = resolvedProjectId,
           IssueStatus = issueStatus,
-          EventType = envelope.Type ?? "turn.completed",
+          EventType = eventType,
           SuccessCount = response.SuccessCount,
           FailureCount = response.FailureCount,
           CreatedAt = createdAt
@@ -249,6 +243,79 @@ public sealed class PushNotificationEventMonitorService(
     return UntitledIssueTitle;
   }
 
+  private static ResolvedTerminalIssueEvent? ResolveTerminalIssueEvent(PushEventEnvelope? envelope)
+  {
+    if (envelope is null)
+    {
+      return null;
+    }
+
+    var eventType = NormalizeLowerInvariantValue(envelope.Type);
+    var userId = NormalizeTrimmedValue(envelope.ResolvedLoginId ?? envelope.ResolvedUserId);
+    var bridgeId = NormalizeTrimmedValue(envelope.ResolvedBridgeId);
+    var issueId = NormalizeTrimmedValue(envelope.Payload?.ResolvedIssueId);
+
+    if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(bridgeId) || string.IsNullOrWhiteSpace(issueId))
+    {
+      return null;
+    }
+
+    var issueStatus = ResolveTerminalIssueStatus(eventType, envelope.Payload);
+
+    if (issueStatus is not ("completed" or "failed"))
+    {
+      return null;
+    }
+
+    return new ResolvedTerminalIssueEvent(
+      userId,
+      bridgeId,
+      issueId,
+      NormalizeTrimmedValue(envelope.Payload?.ResolvedThreadId),
+      NormalizeTrimmedValue(envelope.Payload?.ResolvedProjectId),
+      issueStatus,
+      eventType);
+  }
+
+  private static string ResolveTerminalIssueStatus(string eventType, PushEventPayload? payload)
+  {
+    return eventType switch
+    {
+      "turn.completed" => NormalizeTerminalStatus(payload?.Turn?.Status),
+      "turn.start.failed" => "failed",
+      "thread.status.changed" when string.Equals(
+        NormalizeLowerInvariantValue(payload?.Status?.Type),
+        "error",
+        StringComparison.Ordinal) => "failed",
+      _ => string.Empty
+    };
+  }
+
+  private static string NormalizeTerminalStatus(string? value)
+  {
+    var normalized = NormalizeLowerInvariantValue(value);
+    return normalized is "completed" or "failed" ? normalized : string.Empty;
+  }
+
+  private static string NormalizeTrimmedValue(string? value)
+  {
+    return Convert.ToString(value ?? string.Empty)?.Trim() ?? string.Empty;
+  }
+
+  private static string NormalizeLowerInvariantValue(string? value)
+  {
+    return NormalizeTrimmedValue(value).ToLowerInvariant();
+  }
+
+  private sealed record ResolvedTerminalIssueEvent(
+    string UserId,
+    string BridgeId,
+    string IssueId,
+    string ThreadId,
+    string ProjectId,
+    string IssueStatus,
+    string EventType);
+
   private sealed class PushEventEnvelope
   {
     public string? UserId { get; set; }
@@ -290,6 +357,8 @@ public sealed class PushNotificationEventMonitorService(
 
     public PushTurnPayload? Turn { get; set; }
 
+    public PushThreadStatusPayload? Status { get; set; }
+
     public string? ResolvedThreadId => ThreadId ?? Thread_id;
 
     public string? ResolvedProjectId => ProjectId ?? Project_id;
@@ -300,5 +369,10 @@ public sealed class PushNotificationEventMonitorService(
   private sealed class PushTurnPayload
   {
     public string? Status { get; set; }
+  }
+
+  private sealed class PushThreadStatusPayload
+  {
+    public string? Type { get; set; }
   }
 }
