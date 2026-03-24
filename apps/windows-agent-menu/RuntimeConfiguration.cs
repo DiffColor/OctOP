@@ -134,6 +134,26 @@ sealed class RuntimeConfiguration
       AppServerMode = "ws-local";
     }
 
+    if (string.IsNullOrWhiteSpace(CodexModel))
+    {
+      CodexModel = "gpt-5.4";
+    }
+
+    if (string.IsNullOrWhiteSpace(CodexReasoningEffort))
+    {
+      CodexReasoningEffort = "high";
+    }
+
+    if (string.IsNullOrWhiteSpace(CodexApprovalPolicy))
+    {
+      CodexApprovalPolicy = "on-request";
+    }
+
+    if (string.IsNullOrWhiteSpace(CodexSandbox))
+    {
+      CodexSandbox = "danger-full-access";
+    }
+
     if (string.IsNullOrWhiteSpace(WatchdogIntervalMs))
     {
       WatchdogIntervalMs = "15000";

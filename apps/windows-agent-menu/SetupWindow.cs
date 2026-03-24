@@ -33,6 +33,29 @@ sealed class SetupWindow : Window
     "gpt-5"
   ];
 
+  private static readonly string[] KnownReasoningOptions =
+  [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+  ];
+
+  private static readonly string[] KnownApprovalOptions =
+  [
+    "on-request",
+    "never",
+    "untrusted"
+  ];
+
+  private static readonly string[] KnownSandboxOptions =
+  [
+    "danger-full-access",
+    "workspace-write",
+    "read-only"
+  ];
+
   private readonly RuntimeInstaller _installer;
   private readonly Dictionary<string, DiagnosticRowView> _diagnosticRows = [];
   private TextBox _natsUrlTextBox = null!;
@@ -354,9 +377,9 @@ sealed class SetupWindow : Window
   {
     var stack = CreateSectionStack();
     stack.Children.Add(CreateLabeledComboField("모델", _codexModelComboBox = CreateComboBox(KnownCodexModelOptions)));
-    stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(["none", "low", "medium", "high", "xhigh"])));
-    stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(["never", "on-request", "untrusted"])));
-    stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(["workspace-write", "read-only", "danger-full-access"])));
+    stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(KnownReasoningOptions)));
+    stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(KnownApprovalOptions)));
+    stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(KnownSandboxOptions)));
     stack.Children.Add(CreateLabeledTextField("Watchdog (ms)", _watchdogTextBox = CreateTextBox()));
     stack.Children.Add(CreateLabeledTextField("Stale (ms)", _staleTextBox = CreateTextBox()));
     stack.Children.Add(CreateToggleField("로그인 시 자동 실행", _autoStartCheckBox = CreateToggleSwitch()));
@@ -481,8 +504,8 @@ sealed class SetupWindow : Window
       AppServerWsUrl = _appServerWsUrlTextBox.Text.Trim(),
       CodexModel = Convert.ToString(_codexModelComboBox.SelectedItem) ?? "gpt-5.4",
       CodexReasoningEffort = Convert.ToString(_reasoningComboBox.SelectedItem) ?? "high",
-      CodexApprovalPolicy = Convert.ToString(_approvalComboBox.SelectedItem) ?? "never",
-      CodexSandbox = Convert.ToString(_sandboxComboBox.SelectedItem) ?? "workspace-write",
+      CodexApprovalPolicy = Convert.ToString(_approvalComboBox.SelectedItem) ?? "on-request",
+      CodexSandbox = Convert.ToString(_sandboxComboBox.SelectedItem) ?? "danger-full-access",
       WatchdogIntervalMs = _watchdogTextBox.Text.Trim(),
       StaleMs = _staleTextBox.Text.Trim(),
       AutoStartAtLogin = _autoStartCheckBox.IsChecked == true,
