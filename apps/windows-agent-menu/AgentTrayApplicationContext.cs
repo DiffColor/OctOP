@@ -15,6 +15,8 @@ using System.Windows.Forms.Integration;
 sealed class AgentTrayApplicationContext : ApplicationContext
 {
   private const int MaxLines = 2000;
+  private const int DefaultAppServerStartupTimeoutMs = 15000;
+  private const int ServiceLaunchValidationBufferMs = 5000;
   private static readonly string AppTitle = "OctOP Local Agent";
   private static readonly HttpClient HealthcheckClient = new()
   {
@@ -582,7 +584,10 @@ sealed class AgentTrayApplicationContext : ApplicationContext
       AppendLog($"서비스가 시작되었습니다. pid={process.Id}");
       RefreshUi();
 
-      var launchValidated = await WaitForServiceReadyAsync(process, preparedRelease.ReleaseRoot);
+      var launchValidated = await WaitForServiceReadyAsync(
+        process,
+        preparedRelease.ReleaseRoot,
+        ResolveServiceLaunchValidationTimeoutMs());
       if (!launchValidated)
       {
         AppendLog("새 런타임 기동 검증에 실패했습니다. 이전 런타임으로 롤백합니다.");
@@ -1903,7 +1908,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
       var checks = await BuildServiceLaunchChecksAsync(expectedRuntimeRoot);
       lastChecks = checks;
-      if (checks.All(static check => check.Passed))
+      if (IsServiceLaunchValidated(checks))
       {
         return true;
       }
@@ -1913,6 +1918,40 @@ sealed class AgentTrayApplicationContext : ApplicationContext
 
     LogFailedServiceLaunchChecks(lastChecks, "제한 시간 안에 준비되지 않아");
     return false;
+  }
+
+  private int ResolveServiceLaunchValidationTimeoutMs()
+  {
+    var configuredTimeoutMs = _configuration.GetEnvironmentVariables(_paths)
+      .TryGetValue("OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS", out var rawValue) &&
+      int.TryParse(rawValue?.Trim(), out var parsedTimeoutMs) &&
+      parsedTimeoutMs > 0
+        ? parsedTimeoutMs
+        : DefaultAppServerStartupTimeoutMs;
+
+    return Math.Max(
+      DefaultAppServerStartupTimeoutMs + ServiceLaunchValidationBufferMs,
+      configuredTimeoutMs + ServiceLaunchValidationBufferMs);
+  }
+
+  private static bool IsServiceLaunchValidated(IReadOnlyList<ServiceLaunchCheck> checks)
+  {
+    if (checks.Count == 0)
+    {
+      return false;
+    }
+
+    if (checks.All(static check => check.Passed))
+    {
+      return true;
+    }
+
+    var wsConnectionReady = checks.Any(static check =>
+      check.Passed && check.Message == "WS connection check");
+    var baseRuntimeHealthy = checks.Any(static check =>
+      check.Passed && check.Message == "base runtime health check");
+
+    return wsConnectionReady && baseRuntimeHealthy;
   }
 
   private async Task<IReadOnlyList<ServiceLaunchCheck>> BuildServiceLaunchChecksAsync(string expectedRuntimeRoot)
