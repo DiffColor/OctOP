@@ -8611,23 +8611,20 @@ function MainPage({
     return snapshot;
   }, []);
   const resolveProjectChipDropIndex = useCallback(
-    (draggedCenterX, draggedProjectId, previousDraggedCenterX = draggedCenterX) => {
+    (draggedCenterX, draggedProjectId) => {
       const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
       const layoutSnapshot = projectChipLayoutSnapshotRef.current;
       const draggedLayout = layoutSnapshot.get(normalizedDraggedProjectId);
       const draggedNode = projectChipNodesRef.current.get(normalizedDraggedProjectId);
       const gapPx = getFlexRowGapPx(projectChipRowRef.current);
-      const draggedWidth = draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0;
-      const fallbackSlotLeft = draggedLayout?.left ?? draggedCenterX - draggedWidth / 2;
       const {
         draggedProjectIndex,
-        draggableLayouts,
-        shiftDistance
+        draggableLayouts
       } = buildProjectChipCollapsedLayouts(
         orderedProjectIds,
         normalizedDraggedProjectId,
         layoutSnapshot,
-        draggedWidth,
+        draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0,
         gapPx
       );
 
@@ -8635,75 +8632,16 @@ function MainPage({
         return -1;
       }
 
-      let nextDropIndex = projectChipDropIndexRef.current;
+      for (let index = 0; index < draggableLayouts.length; index += 1) {
+        const layout = draggableLayouts[index];
+        const triggerX = layout.left + layout.width / 2;
 
-      if (nextDropIndex < 0) {
-        nextDropIndex = draggedProjectIndex;
-      }
-
-      nextDropIndex = Math.max(0, Math.min(nextDropIndex, draggableLayouts.length));
-
-      if (draggedCenterX < previousDraggedCenterX) {
-        while (nextDropIndex > 0) {
-          const reversingTowardOrigin = nextDropIndex > draggedProjectIndex;
-
-          if (reversingTowardOrigin) {
-            const slotLeft = resolveProjectChipSlotLeft(draggableLayouts, nextDropIndex, gapPx, fallbackSlotLeft);
-            const slotTriggerX = slotLeft + draggedWidth / 3;
-
-            if (draggedCenterX < slotTriggerX) {
-              nextDropIndex -= 1;
-              continue;
-            }
-          } else {
-            const previousLayout = resolveProjectedProjectChipLayout(
-              draggableLayouts,
-              nextDropIndex - 1,
-              nextDropIndex,
-              shiftDistance
-            );
-            const previousTriggerX = previousLayout ? previousLayout.left + previousLayout.width * (2 / 3) : -Infinity;
-
-            if (draggedCenterX < previousTriggerX) {
-              nextDropIndex -= 1;
-              continue;
-            }
-          }
-
-          break;
-        }
-      } else if (draggedCenterX > previousDraggedCenterX) {
-        while (nextDropIndex < draggableLayouts.length) {
-          const reversingTowardOrigin = nextDropIndex < draggedProjectIndex;
-
-          if (reversingTowardOrigin) {
-            const slotLeft = resolveProjectChipSlotLeft(draggableLayouts, nextDropIndex, gapPx, fallbackSlotLeft);
-            const slotTriggerX = slotLeft + draggedWidth * (2 / 3);
-
-            if (draggedCenterX > slotTriggerX) {
-              nextDropIndex += 1;
-              continue;
-            }
-          } else {
-            const nextLayout = resolveProjectedProjectChipLayout(
-              draggableLayouts,
-              nextDropIndex,
-              nextDropIndex,
-              shiftDistance
-            );
-            const nextTriggerX = nextLayout ? nextLayout.left + nextLayout.width * (2 / 3) : Infinity;
-
-            if (draggedCenterX > nextTriggerX) {
-              nextDropIndex += 1;
-              continue;
-            }
-          }
-
-          break;
+        if (draggedCenterX < triggerX) {
+          return index;
         }
       }
 
-      return nextDropIndex;
+      return draggableLayouts.length;
     },
     [orderedProjectIds]
   );
@@ -8872,11 +8810,7 @@ function MainPage({
             ? draggedRect.left + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft) + draggedRect.width / 2
             : activeDragState.startX + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft);
         activeDragState.latestDraggedCenterX = activeDragState.dragOriginCenterX;
-        projectChipDropIndexRef.current = resolveProjectChipDropIndex(
-          activeDragState.dragOriginCenterX,
-          project.id,
-          activeDragState.dragOriginCenterX
-        );
+        projectChipDropIndexRef.current = resolveProjectChipDropIndex(activeDragState.dragOriginCenterX, project.id);
         setDraggingProjectChipId(project.id);
         setDraggingProjectChipOffsetX(0);
       }, PROJECT_CHIP_LONG_PRESS_MS);
@@ -8938,18 +8872,13 @@ function MainPage({
       const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
       const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
       const draggedCenterX = activeDragState.dragOriginCenterX + dragOffsetX;
-      const previousDraggedCenterX = activeDragState.latestDraggedCenterX ?? activeDragState.dragOriginCenterX;
       activeDragState.latestDraggedCenterX = draggedCenterX;
 
       if (!activeDragState.moved && Math.hypot(dragOffsetX, deltaY) > PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      projectChipDropIndexRef.current = resolveProjectChipDropIndex(
-        draggedCenterX,
-        activeDragState.project.id,
-        previousDraggedCenterX
-      );
+      projectChipDropIndexRef.current = resolveProjectChipDropIndex(draggedCenterX, activeDragState.project.id);
       setDraggingProjectChipOffsetX(dragOffsetX);
       maybeAutoScrollProjectChipRow(event.clientX);
       event.preventDefault();
@@ -9083,94 +9012,37 @@ function MainPage({
     };
   }, [handleProjectChipPointerCancel, handleProjectChipPointerEnd, handleProjectChipPointerMove]);
   const resolveThreadDropIndex = useCallback(
-    (draggedCenterY, draggedThreadId, previousDraggedCenterY = draggedCenterY) => {
+    (draggedCenterY, draggedThreadId) => {
       const activeDragState = threadListDragStateRef.current;
       const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
       const baseThreadIds = normalizeThreadOrder(activeDragState?.visibleThreadIds ?? filteredThreadIds);
       const layoutSnapshot = threadListLayoutSnapshotRef.current;
       const draggedThreadLayout = layoutSnapshot.get(normalizedDraggedThreadId);
       const draggedNode = threadListItemNodesRef.current.get(normalizedDraggedThreadId);
-      const draggedHeight = draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0;
-      const fallbackSlotTop = draggedThreadLayout?.top ?? draggedCenterY - draggedHeight / 2;
       const {
         draggedThreadIndex,
-        draggableLayouts,
-        shiftDistance
-      } = buildThreadListCollapsedLayouts(baseThreadIds, normalizedDraggedThreadId, layoutSnapshot, draggedHeight);
+        draggableLayouts
+      } = buildThreadListCollapsedLayouts(
+        baseThreadIds,
+        normalizedDraggedThreadId,
+        layoutSnapshot,
+        draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0
+      );
 
       if (draggedThreadIndex < 0) {
         return -1;
       }
 
-      let nextDropIndex = threadListDropIndexRef.current;
+      for (let index = 0; index < draggableLayouts.length; index += 1) {
+        const layout = draggableLayouts[index];
+        const triggerY = layout.top + layout.height / 2;
 
-      if (nextDropIndex < 0) {
-        nextDropIndex = draggedThreadIndex;
-      }
-
-      nextDropIndex = Math.max(0, Math.min(nextDropIndex, draggableLayouts.length));
-
-      if (draggedCenterY < previousDraggedCenterY) {
-        while (nextDropIndex > 0) {
-          const reversingTowardOrigin = nextDropIndex > draggedThreadIndex;
-
-          if (reversingTowardOrigin) {
-            const slotTop = resolveThreadSlotTop(draggableLayouts, nextDropIndex, fallbackSlotTop);
-            const slotTriggerY = slotTop + draggedHeight / 3;
-
-            if (draggedCenterY < slotTriggerY) {
-              nextDropIndex -= 1;
-              continue;
-            }
-          } else {
-            const previousLayout = resolveProjectedThreadLayout(
-              draggableLayouts,
-              nextDropIndex - 1,
-              nextDropIndex,
-              shiftDistance
-            );
-            const previousTriggerY = previousLayout ? previousLayout.top + previousLayout.height * (2 / 3) : -Infinity;
-
-            if (draggedCenterY < previousTriggerY) {
-              nextDropIndex -= 1;
-              continue;
-            }
-          }
-
-          break;
-        }
-      } else if (draggedCenterY > previousDraggedCenterY) {
-        while (nextDropIndex < draggableLayouts.length) {
-          const reversingTowardOrigin = nextDropIndex < draggedThreadIndex;
-
-          if (reversingTowardOrigin) {
-            const slotTop = resolveThreadSlotTop(draggableLayouts, nextDropIndex, fallbackSlotTop);
-            const slotTriggerY = slotTop + draggedHeight * (2 / 3);
-
-            if (draggedCenterY > slotTriggerY) {
-              nextDropIndex += 1;
-              continue;
-            }
-          } else {
-            const nextLayout = resolveProjectedThreadLayout(
-              draggableLayouts,
-              nextDropIndex,
-              nextDropIndex,
-              shiftDistance
-            );
-            const nextTriggerY = nextLayout ? nextLayout.top + nextLayout.height * (2 / 3) : Infinity;
-
-            if (draggedCenterY > nextTriggerY) {
-              nextDropIndex += 1;
-              continue;
-            }
-          }
-
-          break;
+        if (draggedCenterY < triggerY) {
+          return index;
         }
       }
 
-      return nextDropIndex;
+      return draggableLayouts.length;
     },
     [filteredThreadIds]
   );
@@ -9200,7 +9072,7 @@ function MainPage({
         latestDraggedCenterY: dragOriginCenterY,
         visibleThreadIds
       };
-      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id, dragOriginCenterY);
+      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id);
       setDraggingThreadId(thread.id);
       setDraggingThreadOffsetY(0);
     },
@@ -9220,18 +9092,13 @@ function MainPage({
 
       const dragOffsetY = clientY - activeDragState.startY;
       const draggedCenterY = activeDragState.dragOriginCenterY + dragOffsetY;
-      const previousDraggedCenterY = activeDragState.latestDraggedCenterY ?? activeDragState.dragOriginCenterY;
       activeDragState.latestDraggedCenterY = draggedCenterY;
 
       if (!activeDragState.moved && Math.abs(dragOffsetY) > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      threadListDropIndexRef.current = resolveThreadDropIndex(
-        draggedCenterY,
-        activeDragState.thread.id,
-        previousDraggedCenterY
-      );
+      threadListDropIndexRef.current = resolveThreadDropIndex(draggedCenterY, activeDragState.thread.id);
       setDraggingThreadOffsetY(dragOffsetY);
       return true;
     },

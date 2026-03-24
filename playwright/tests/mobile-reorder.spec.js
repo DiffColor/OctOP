@@ -527,7 +527,7 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
-  test('프로젝트 칩은 다른 칩 중앙 1/3 지점에 들어가면 밀려나기 시작한다', async ({ page }) => {
+  test('프로젝트 칩은 마우스 드래그에서 다른 칩 중심을 넘기면 밀려나기 시작한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
     await page.goto(baseUrl);
@@ -551,7 +551,7 @@ test.describe('mobile reorder interactions', () => {
     const pressX = betaBox.x + betaBox.width / 2;
     const pressY = betaBox.y + betaBox.height / 2;
     const betaCenterX = betaBox.x + betaBox.width / 2;
-    const alphaTriggerX = alphaBox.x + alphaBox.width * (2 / 3);
+    const alphaTriggerX = alphaBox.x + alphaBox.width / 2;
     const beforeAlphaTriggerClientX = pressX + (alphaTriggerX + 2 - betaCenterX);
     const afterAlphaTriggerClientX = pressX + (alphaTriggerX - 2 - betaCenterX);
 
@@ -597,7 +597,75 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
-  test('프로젝트 칩은 우측 이동 시 다음 칩을 충분히 넘기기 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
+  test('프로젝트 칩은 터치 드래그에서도 다른 칩 중심을 넘기면 밀려나기 시작한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const alphaChip = page.getByTestId(`project-chip-item-${projectAlphaId}`).locator('button');
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    const alphaChipItem = page.getByTestId(`project-chip-item-${projectAlphaId}`);
+
+    await expect(alphaChip).toBeVisible();
+    await expect(betaChip).toBeVisible();
+
+    const alphaBox = await alphaChip.boundingBox();
+    const betaBox = await betaChip.boundingBox();
+
+    expect(alphaBox).not.toBeNull();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 26;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+    const betaCenterX = betaBox.x + betaBox.width / 2;
+    const alphaTriggerX = alphaBox.x + alphaBox.width / 2;
+    const beforeAlphaTriggerClientX = pressX + (alphaTriggerX + 2 - betaCenterX);
+    const afterAlphaTriggerClientX = pressX + (alphaTriggerX - 2 - betaCenterX);
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+
+    await betaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: beforeAlphaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => Math.abs(await readTranslateX(alphaChipItem))).toBeLessThan(1);
+
+    await betaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: afterAlphaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => await readTranslateX(alphaChipItem)).toBeGreaterThan(8);
+
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: afterAlphaTriggerClientX,
+      clientY: pressY
+    });
+  });
+
+  test('프로젝트 칩은 우측 이동 시 다음 칩 중심 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
     await page.goto(baseUrl);
@@ -620,7 +688,8 @@ test.describe('mobile reorder interactions', () => {
     const pressX = alphaBox.x + alphaBox.width / 2;
     const pressY = alphaBox.y + alphaBox.height / 2;
     const alphaCenterX = alphaBox.x + alphaBox.width / 2;
-    const betaTriggerX = betaBox.x + betaBox.width * (2 / 3);
+    const projectGap = Math.max(0, betaBox.x - (alphaBox.x + alphaBox.width));
+    const betaTriggerX = betaBox.x - (alphaBox.width + projectGap) + betaBox.width / 2;
     const beforeBetaTriggerClientX = pressX + (betaTriggerX - 2 - alphaCenterX);
     const afterBetaTriggerClientX = pressX + (betaTriggerX + 2 - alphaCenterX);
 
@@ -810,7 +879,7 @@ test.describe('mobile reorder interactions', () => {
     expect(storedOrder).toEqual([projectBetaId, projectAlphaId, projectGammaId]);
   });
 
-  test('쓰레드 리스트는 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {
+  test('쓰레드 리스트는 터치 드래그에서 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
     await page.goto(baseUrl);
@@ -891,7 +960,74 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
-  test('쓰레드 리스트는 하단 이동 시 다음 카드를 충분히 넘기기 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
+  test('쓰레드 리스트는 마우스 드래그에서도 카드 중심을 넘기면 같은 포지션으로 반응한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const secondItem = page.getByTestId('thread-list-item-thread-alpha-2');
+    const thirdItem = page.getByTestId('thread-list-item-thread-alpha-3');
+
+    await expect(secondItem).toBeVisible();
+    await expect(thirdItem).toBeVisible();
+
+    const secondBox = await secondItem.boundingBox();
+    const thirdBox = await thirdItem.boundingBox();
+
+    expect(secondBox).not.toBeNull();
+    expect(thirdBox).not.toBeNull();
+
+    const pointerId = 27;
+    const pressX = thirdBox.x + thirdBox.width / 2;
+    const pressY = thirdBox.y + thirdBox.height / 2;
+    const thirdCenterY = thirdBox.y + thirdBox.height / 2;
+    const secondTriggerY = secondBox.y + secondBox.height / 2;
+    const beforeSecondTriggerClientY = pressY + (secondTriggerY + 2 - thirdCenterY);
+    const afterSecondTriggerClientY = pressY + (secondTriggerY - 2 - thirdCenterY);
+
+    await thirdItem.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(460);
+
+    await thirdItem.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: beforeSecondTriggerClientY
+    });
+
+    await expect.poll(async () => Math.abs(await readTranslateY(secondItem))).toBeLessThan(1);
+
+    await thirdItem.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: afterSecondTriggerClientY
+    });
+
+    await expect.poll(async () => await readTranslateY(secondItem)).toBeGreaterThan(8);
+
+    await thirdItem.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: afterSecondTriggerClientY
+    });
+  });
+
+  test('쓰레드 리스트는 하단 이동 시 다음 카드 중심 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
     await page.goto(baseUrl);
@@ -912,9 +1048,9 @@ test.describe('mobile reorder interactions', () => {
     const pressX = firstBox.x + firstBox.width / 2;
     const pressY = firstBox.y + firstBox.height / 2;
     const firstCenterY = firstBox.y + firstBox.height / 2;
-    const secondTriggerY = secondBox.y + secondBox.height * (2 / 3);
-    const beforeSecondTriggerClientY = pressY + (secondTriggerY - 2 - firstCenterY);
-    const afterSecondTriggerClientY = pressY + (secondTriggerY + 2 - firstCenterY);
+    const secondTriggerY = secondBox.y - firstBox.height + secondBox.height / 2;
+    const beforeSecondTriggerClientY = pressY + (secondTriggerY - 8 - firstCenterY);
+    const afterSecondTriggerClientY = pressY + (secondTriggerY + 12 - firstCenterY);
 
     await firstItem.dispatchEvent('pointerdown', {
       pointerId,
