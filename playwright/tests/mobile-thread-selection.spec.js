@@ -973,6 +973,36 @@ test.describe('wide mobile split layout', () => {
     await expect(page.getByTestId('thread-detail-panel')).toContainText('Line 2');
   });
 
+  test('하단 채팅 입력창은 상단 라벨과 여백을 눌러도 입력창이 선택된다', async ({ page }) => {
+    await mockMobileApi(page);
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const composerSurface = page.getByTestId('thread-prompt-surface');
+    const promptInput = page.getByTestId('thread-prompt-input');
+    const composerSurfaceBox = await composerSurface.boundingBox();
+
+    expect(composerSurfaceBox).not.toBeNull();
+    await expect(promptInput).not.toBeFocused();
+
+    await composerSurface.tap({
+      position: {
+        x: Math.min(28, Math.max(8, composerSurfaceBox.width - 8)),
+        y: 8
+      }
+    });
+
+    await expect(promptInput).toBeFocused();
+  });
+
   test('disables the composer only when the selected thread is running', async ({ page }) => {
     await mockMobileApi(page, {
       threads: [

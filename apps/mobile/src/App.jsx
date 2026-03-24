@@ -756,6 +756,67 @@ function resolveProjectedProjectChipLayout(draggableLayouts, itemIndex, slotInde
   };
 }
 
+function buildThreadListCollapsedLayouts(orderedThreadIds, draggedThreadId, layoutSnapshot, draggedHeight) {
+  const normalizedOrderedThreadIds = normalizeThreadOrder(orderedThreadIds);
+  const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
+  const draggedThreadIndex = normalizedOrderedThreadIds.indexOf(normalizedDraggedThreadId);
+  const shiftDistance = Math.max(0, draggedHeight);
+  const draggableLayouts = [];
+
+  normalizedOrderedThreadIds.forEach((threadId, orderedIndex) => {
+    if (threadId === normalizedDraggedThreadId) {
+      return;
+    }
+
+    const layout = layoutSnapshot.get(threadId);
+
+    if (!layout) {
+      return;
+    }
+
+    draggableLayouts.push({
+      id: threadId,
+      orderedIndex,
+      top: layout.top + (orderedIndex > draggedThreadIndex ? -shiftDistance : 0),
+      height: layout.height
+    });
+  });
+
+  return {
+    draggedThreadIndex,
+    draggableLayouts,
+    shiftDistance
+  };
+}
+
+function resolveThreadSlotTop(draggableLayouts, slotIndex, fallbackTop = 0) {
+  const normalizedSlotIndex = Math.max(0, Math.min(Number(slotIndex) || 0, draggableLayouts.length));
+
+  if (draggableLayouts.length === 0) {
+    return fallbackTop;
+  }
+
+  if (normalizedSlotIndex < draggableLayouts.length) {
+    return draggableLayouts[normalizedSlotIndex].top;
+  }
+
+  const lastLayout = draggableLayouts[draggableLayouts.length - 1];
+  return lastLayout.top + lastLayout.height;
+}
+
+function resolveProjectedThreadLayout(draggableLayouts, itemIndex, slotIndex, shiftDistance) {
+  const layout = draggableLayouts[itemIndex];
+
+  if (!layout) {
+    return null;
+  }
+
+  return {
+    top: layout.top + (itemIndex >= slotIndex ? shiftDistance : 0),
+    height: layout.height
+  };
+}
+
 function normalizeThreadOrder(source, availableThreadIds = null) {
   if (!Array.isArray(source)) {
     return [];
@@ -4177,6 +4238,36 @@ function InlineIssueComposer({
     [syncPromptHeight]
   );
 
+  const focusPromptTextareaFromSurface = useCallback(
+    (event) => {
+      if (busy || disabled || !selectedProject) {
+        return;
+      }
+
+      const textarea = textareaRef.current;
+
+      if (!textarea) {
+        return;
+      }
+
+      const eventTarget = event?.target;
+
+      if (eventTarget instanceof Node && textarea.contains(eventTarget)) {
+        return;
+      }
+
+      textarea.focus({ preventScroll: true });
+
+      try {
+        const caretPosition = textarea.value.length;
+        textarea.setSelectionRange(caretPosition, caretPosition);
+      } catch {
+        // ignore browsers that restrict selection APIs during focus transitions
+      }
+    },
+    [busy, disabled, selectedProject]
+  );
+
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current) {
       window.clearTimeout(longPressTimerRef.current);
@@ -4561,7 +4652,12 @@ function InlineIssueComposer({
         : null}
       <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
         <div className="flex items-end gap-3">
-          <div className="min-w-0 flex-1 rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2">
+          <div
+            data-testid="thread-prompt-surface"
+            onPointerDown={focusPromptTextareaFromSurface}
+            onClick={focusPromptTextareaFromSurface}
+            className="min-w-0 flex-1 cursor-text rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2"
+          >
             <div className="mb-1 text-[11px] text-slate-500">
               {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
             </div>
@@ -8563,7 +8659,7 @@ function MainPage({
               nextDropIndex,
               shiftDistance
             );
-            const nextTriggerX = nextLayout ? nextLayout.left + nextLayout.width / 3 : Infinity;
+            const nextTriggerX = nextLayout ? nextLayout.left + nextLayout.width * (2 / 3) : Infinity;
 
             if (draggedCenterX > nextTriggerX) {
               nextDropIndex += 1;
@@ -8807,8 +8903,6 @@ function MainPage({
         return;
       }
 
-      maybeAutoScrollProjectChipRow(event.clientX);
-
       const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
       const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
       const draggedCenterX = activeDragState.dragOriginCenterX + dragOffsetX;
@@ -8825,6 +8919,7 @@ function MainPage({
         previousDraggedCenterX
       );
       setDraggingProjectChipOffsetX(dragOffsetX);
+      maybeAutoScrollProjectChipRow(event.clientX);
       event.preventDefault();
     },
     [clearPendingProjectLongPress, maybeAutoScrollProjectChipRow, resolveProjectChipDropIndex]
@@ -8956,41 +9051,94 @@ function MainPage({
     };
   }, [handleProjectChipPointerCancel, handleProjectChipPointerEnd, handleProjectChipPointerMove]);
   const resolveThreadDropIndex = useCallback(
-    (draggedCenterY, draggedThreadId) => {
+    (draggedCenterY, draggedThreadId, previousDraggedCenterY = draggedCenterY) => {
       const activeDragState = threadListDragStateRef.current;
       const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
       const baseThreadIds = normalizeThreadOrder(activeDragState?.visibleThreadIds ?? filteredThreadIds);
-      const draggableThreadIds = baseThreadIds.filter((threadId) => threadId !== normalizedDraggedThreadId);
-      const draggedThreadIndex = baseThreadIds.indexOf(normalizedDraggedThreadId);
       const layoutSnapshot = threadListLayoutSnapshotRef.current;
       const draggedThreadLayout = layoutSnapshot.get(normalizedDraggedThreadId);
       const draggedNode = threadListItemNodesRef.current.get(normalizedDraggedThreadId);
-      const collapsedShiftDistance =
-        draggedThreadIndex >= 0
-          ? draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0
-          : 0;
+      const draggedHeight = draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0;
+      const fallbackSlotTop = draggedThreadLayout?.top ?? draggedCenterY - draggedHeight / 2;
+      const {
+        draggedThreadIndex,
+        draggableLayouts,
+        shiftDistance
+      } = buildThreadListCollapsedLayouts(baseThreadIds, normalizedDraggedThreadId, layoutSnapshot, draggedHeight);
 
-      for (let index = 0; index < draggableThreadIds.length; index += 1) {
-        const threadId = draggableThreadIds[index];
-        const layout = layoutSnapshot.get(threadId);
-        const node = threadListItemNodesRef.current.get(threadId);
+      if (draggedThreadIndex < 0) {
+        return -1;
+      }
 
-        if (!layout && !node) {
-          continue;
+      let nextDropIndex = threadListDropIndexRef.current;
+
+      if (nextDropIndex < 0) {
+        nextDropIndex = draggedThreadIndex;
+      }
+
+      nextDropIndex = Math.max(0, Math.min(nextDropIndex, draggableLayouts.length));
+
+      if (draggedCenterY < previousDraggedCenterY) {
+        while (nextDropIndex > 0) {
+          const reversingTowardOrigin = nextDropIndex > draggedThreadIndex;
+
+          if (reversingTowardOrigin) {
+            const slotTop = resolveThreadSlotTop(draggableLayouts, nextDropIndex, fallbackSlotTop);
+            const slotTriggerY = slotTop + draggedHeight / 3;
+
+            if (draggedCenterY < slotTriggerY) {
+              nextDropIndex -= 1;
+              continue;
+            }
+          } else {
+            const previousLayout = resolveProjectedThreadLayout(
+              draggableLayouts,
+              nextDropIndex - 1,
+              nextDropIndex,
+              shiftDistance
+            );
+            const previousTriggerY = previousLayout ? previousLayout.top + previousLayout.height * (2 / 3) : -Infinity;
+
+            if (draggedCenterY < previousTriggerY) {
+              nextDropIndex -= 1;
+              continue;
+            }
+          }
+
+          break;
         }
+      } else if (draggedCenterY > previousDraggedCenterY) {
+        while (nextDropIndex < draggableLayouts.length) {
+          const reversingTowardOrigin = nextDropIndex < draggedThreadIndex;
 
-        const rect = layout ? null : node.getBoundingClientRect();
-        const currentThreadIndex = baseThreadIds.indexOf(threadId);
-        const collapsedOffsetY =
-          draggedThreadIndex >= 0 && currentThreadIndex > draggedThreadIndex ? -collapsedShiftDistance : 0;
-        const adjustedCenterY = (layout?.top ?? rect.top) + collapsedOffsetY + (layout?.height ?? rect.height) / 2;
+          if (reversingTowardOrigin) {
+            const slotTop = resolveThreadSlotTop(draggableLayouts, nextDropIndex, fallbackSlotTop);
+            const slotTriggerY = slotTop + draggedHeight * (2 / 3);
 
-        if (draggedCenterY < adjustedCenterY) {
-          return index;
+            if (draggedCenterY > slotTriggerY) {
+              nextDropIndex += 1;
+              continue;
+            }
+          } else {
+            const nextLayout = resolveProjectedThreadLayout(
+              draggableLayouts,
+              nextDropIndex,
+              nextDropIndex,
+              shiftDistance
+            );
+            const nextTriggerY = nextLayout ? nextLayout.top + nextLayout.height * (2 / 3) : Infinity;
+
+            if (draggedCenterY > nextTriggerY) {
+              nextDropIndex += 1;
+              continue;
+            }
+          }
+
+          break;
         }
       }
 
-      return draggableThreadIds.length;
+      return nextDropIndex;
     },
     [filteredThreadIds]
   );
@@ -9017,9 +9165,10 @@ function MainPage({
         thread,
         startY: clientY,
         dragOriginCenterY,
+        latestDraggedCenterY: dragOriginCenterY,
         visibleThreadIds
       };
-      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id);
+      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id, dragOriginCenterY);
       setDraggingThreadId(thread.id);
       setDraggingThreadOffsetY(0);
     },
@@ -9039,12 +9188,18 @@ function MainPage({
 
       const dragOffsetY = clientY - activeDragState.startY;
       const draggedCenterY = activeDragState.dragOriginCenterY + dragOffsetY;
+      const previousDraggedCenterY = activeDragState.latestDraggedCenterY ?? activeDragState.dragOriginCenterY;
+      activeDragState.latestDraggedCenterY = draggedCenterY;
 
       if (!activeDragState.moved && Math.abs(dragOffsetY) > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
         activeDragState.moved = true;
       }
 
-      threadListDropIndexRef.current = resolveThreadDropIndex(draggedCenterY, activeDragState.thread.id);
+      threadListDropIndexRef.current = resolveThreadDropIndex(
+        draggedCenterY,
+        activeDragState.thread.id,
+        previousDraggedCenterY
+      );
       setDraggingThreadOffsetY(dragOffsetY);
       return true;
     },

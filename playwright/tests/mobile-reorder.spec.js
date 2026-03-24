@@ -320,6 +320,20 @@ async function readTranslateX(locator) {
   });
 }
 
+async function readTranslateY(locator) {
+  return locator.evaluate((node) => {
+    const rawTransform = node instanceof HTMLElement ? node.style.transform : '';
+    const translate3dMatched = rawTransform.match(/translate3d\([^,]+,\s*([-0-9.]+)px,\s*0(?:px)?\)/);
+
+    if (translate3dMatched) {
+      return Number.parseFloat(translate3dMatched[1]);
+    }
+
+    const translateYMatched = rawTransform.match(/translateY\(([-0-9.]+)px\)/);
+    return translateYMatched ? Number.parseFloat(translateYMatched[1]) : 0;
+  });
+}
+
 async function collectThreadItemPositionFrames(page, threadIds, frameCount = 6) {
   return page.evaluate(
     async ({ nextThreadIds, nextFrameCount }) => {
@@ -583,6 +597,76 @@ test.describe('mobile reorder interactions', () => {
     });
   });
 
+  test('프로젝트 칩은 우측 이동 시 다음 칩을 충분히 넘기기 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const alphaChip = page.getByTestId(`project-chip-item-${projectAlphaId}`).locator('button');
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    const alphaChipItem = page.getByTestId(`project-chip-item-${projectAlphaId}`);
+    const betaChipItem = page.getByTestId(`project-chip-item-${projectBetaId}`);
+
+    await expect(alphaChip).toBeVisible();
+    await expect(betaChip).toBeVisible();
+
+    const alphaBox = await alphaChip.boundingBox();
+    const betaBox = await betaChip.boundingBox();
+
+    expect(alphaBox).not.toBeNull();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 24;
+    const pressX = alphaBox.x + alphaBox.width / 2;
+    const pressY = alphaBox.y + alphaBox.height / 2;
+    const alphaCenterX = alphaBox.x + alphaBox.width / 2;
+    const betaTriggerX = betaBox.x + betaBox.width * (2 / 3);
+    const beforeBetaTriggerClientX = pressX + (betaTriggerX - 2 - alphaCenterX);
+    const afterBetaTriggerClientX = pressX + (betaTriggerX + 2 - alphaCenterX);
+
+    await alphaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+
+    await alphaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: beforeBetaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => Math.abs(await readTranslateX(betaChipItem))).toBeLessThan(1);
+
+    await alphaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: afterBetaTriggerClientX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => await readTranslateX(betaChipItem)).toBeLessThan(-8);
+    await expect.poll(async () => await readTranslateX(alphaChipItem)).toBe(0);
+
+    await alphaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: afterBetaTriggerClientX,
+      clientY: pressY
+    });
+  });
+
   test('프로젝트 칩은 롱터치 중 contextmenu가 발생해도 편집 롱프레스를 유지한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
@@ -804,6 +888,73 @@ test.describe('mobile reorder interactions', () => {
       frame.forEach((entry, index) => {
         expect(Math.abs(entry.y - baselineThreadFrame[index].y)).toBeLessThanOrEqual(1);
       });
+    });
+  });
+
+  test('쓰레드 리스트는 하단 이동 시 다음 카드를 충분히 넘기기 전에는 빈 슬롯으로 밀어내지 않는다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const firstItem = page.getByTestId('thread-list-item-thread-alpha-1');
+    const secondItem = page.getByTestId('thread-list-item-thread-alpha-2');
+
+    await expect(firstItem).toBeVisible();
+    await expect(secondItem).toBeVisible();
+
+    const firstBox = await firstItem.boundingBox();
+    const secondBox = await secondItem.boundingBox();
+
+    expect(firstBox).not.toBeNull();
+    expect(secondBox).not.toBeNull();
+
+    const pointerId = 25;
+    const pressX = firstBox.x + firstBox.width / 2;
+    const pressY = firstBox.y + firstBox.height / 2;
+    const firstCenterY = firstBox.y + firstBox.height / 2;
+    const secondTriggerY = secondBox.y + secondBox.height * (2 / 3);
+    const beforeSecondTriggerClientY = pressY + (secondTriggerY - 2 - firstCenterY);
+    const afterSecondTriggerClientY = pressY + (secondTriggerY + 2 - firstCenterY);
+
+    await firstItem.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(460);
+
+    await firstItem.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: beforeSecondTriggerClientY
+    });
+
+    await expect.poll(async () => Math.abs(await readTranslateY(secondItem))).toBeLessThan(1);
+
+    await firstItem.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: afterSecondTriggerClientY
+    });
+
+    await expect.poll(async () => await readTranslateY(secondItem)).toBeLessThan(-8);
+
+    await firstItem.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: afterSecondTriggerClientY
     });
   });
 });
