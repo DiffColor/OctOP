@@ -453,7 +453,7 @@ test.describe('mobile reorder interactions', () => {
 
     expect(dragFeedback.transform).toContain('scale(1.02)');
     expect(dragFeedback.zIndex).toBe('20');
-    expect(dragFeedback.position).toBe('relative');
+    expect(dragFeedback.position).toBe('absolute');
 
     await betaChip.dispatchEvent('pointerup', {
       pointerId,
@@ -476,6 +476,142 @@ test.describe('mobile reorder interactions', () => {
       kind: 'project',
       id: projectAlphaId
     });
+  });
+
+  test('프로젝트 칩은 롱터치 중 contextmenu가 발생해도 편집 롱프레스를 유지한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+
+    await expect(betaChip).toBeVisible();
+
+    const betaBox = await betaChip.boundingBox();
+
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 19;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(240);
+    await betaChip.dispatchEvent('contextmenu', {
+      button: 2,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(520);
+
+    const dragFeedback = await betaChip.evaluate((node) => ({
+      transform: node.style.transform,
+      zIndex: node.style.zIndex,
+      position: node.style.position
+    }));
+
+    expect(dragFeedback.transform).toContain('scale(1.02)');
+    expect(dragFeedback.zIndex).toBe('20');
+    expect(dragFeedback.position).toBe('absolute');
+
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+
+    await expect(page.getByText('프로젝트 편집')).toBeVisible();
+  });
+
+  test('프로젝트 칩은 드래그 중 원래 레이아웃 슬롯을 비우고 형제 칩을 밀어낸다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const alphaChip = page.getByRole('button', { name: 'Alpha Workspace' });
+    const betaChip = page.getByRole('button', { name: 'Beta Project Long Name' });
+
+    await expect(alphaChip).toBeVisible();
+    await expect(betaChip).toBeVisible();
+
+    const alphaBox = await alphaChip.boundingBox();
+    const betaBox = await betaChip.boundingBox();
+
+    expect(alphaBox).not.toBeNull();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 23;
+    const pressX = betaBox.x + betaBox.width - 6;
+    const pressY = betaBox.y + betaBox.height / 2;
+    const desiredDraggedCenterX = alphaBox.x + alphaBox.width / 2 - 4;
+    const currentDraggedCenterX = betaBox.x + betaBox.width / 2;
+    const releaseX = pressX + (desiredDraggedCenterX - currentDraggedCenterX);
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+
+    await betaChip.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: releaseX,
+      clientY: pressY
+    });
+
+    const dragFeedback = await betaChip.evaluate((node) => ({
+      transform: node.style.transform,
+      zIndex: node.style.zIndex,
+      position: node.style.position
+    }));
+    const alphaDuringBox = await alphaChip.boundingBox();
+    const betaDuringBox = await betaChip.boundingBox();
+
+    expect(dragFeedback.transform).toContain('scale(1.02)');
+    expect(dragFeedback.zIndex).toBe('20');
+    expect(dragFeedback.position).toBe('absolute');
+    expect(betaDuringBox.x).toBeLessThan(alphaDuringBox.x);
+
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: releaseX,
+      clientY: pressY
+    });
+
+    await expect.poll(async () => {
+      return page.evaluate(() =>
+        Array.from(document.querySelectorAll('button'))
+          .map((node) => node.textContent?.trim())
+          .filter((text) => text === 'Alpha Workspace' || text === 'Beta Project Long Name')
+      );
+    }).toEqual(['Beta Project Long Name', 'Alpha Workspace']);
+
+    const storedOrder = await page.evaluate(() => {
+      const layout = JSON.parse(window.localStorage.getItem('octop.mobile.workspace.layout.v1') || '{}');
+      return layout.projectChipOrder ?? [];
+    });
+
+    expect(storedOrder).toEqual([projectBetaId, projectAlphaId]);
   });
 
   test('쓰레드 리스트는 카드 중심 기준으로 드롭 위치를 계산한다', async ({ page }) => {

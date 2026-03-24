@@ -4990,7 +4990,13 @@ function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
       pointerIdRef.current = null;
       swipeAxisRef.current = null;
       setDragging(false);
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
     },
     [setRevealOffset]
   );
@@ -8547,6 +8553,7 @@ function MainPage({
         active: false,
         moved: false,
         pointerId: event.pointerId,
+        pointerType: event.pointerType,
         project,
         startX: event.clientX,
         startY: event.clientY,
@@ -8555,7 +8562,13 @@ function MainPage({
         dragOriginCenterX: event.clientX,
         startScrollLeft: projectChipRowRef.current?.scrollLeft ?? 0
       };
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      if (event?.currentTarget && typeof event.currentTarget.setPointerCapture === "function") {
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture failures and fall back to window-level listeners
+        }
+      }
 
       projectLongPressTimerRef.current = window.setTimeout(() => {
         const activeDragState = projectChipDragStateRef.current;
@@ -8585,6 +8598,30 @@ function MainPage({
       }, PROJECT_CHIP_LONG_PRESS_MS);
     },
     [clearPendingProjectLongPress, resetProjectChipDragInteraction, resolveProjectChipDropIndex]
+  );
+  const handleProjectChipContextMenu = useCallback(
+    (event, project) => {
+      event.preventDefault();
+
+      const activeDragState = projectChipDragStateRef.current;
+      const activePointerType = activeDragState?.pointerType ?? "";
+      const suppressActionSheet =
+        Boolean(projectLongPressTimerRef.current) ||
+        Boolean(activeDragState) ||
+        projectLongPressTriggeredRef.current ||
+        activePointerType === "touch" ||
+        activePointerType === "pen";
+
+      if (suppressActionSheet) {
+        return;
+      }
+
+      clearPendingProjectLongPress();
+      projectLongPressTriggeredRef.current = false;
+      resetProjectChipDragInteraction();
+      openProjectActionSheet(project);
+    },
+    [clearPendingProjectLongPress, openProjectActionSheet, resetProjectChipDragInteraction]
   );
   const handleProjectChipPointerMove = useCallback(
     (event) => {
@@ -8713,6 +8750,43 @@ function MainPage({
     },
     [onSelectProject]
   );
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const handleWindowPointerMove = (event) => {
+      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+
+      handleProjectChipPointerMove(event);
+    };
+    const handleWindowPointerEnd = (event) => {
+      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+
+      handleProjectChipPointerEnd(event);
+    };
+    const handleWindowPointerCancel = (event) => {
+      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+
+      handleProjectChipPointerCancel(event);
+    };
+
+    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
+    window.addEventListener("pointerup", handleWindowPointerEnd);
+    window.addEventListener("pointercancel", handleWindowPointerCancel);
+
+    return () => {
+      window.removeEventListener("pointermove", handleWindowPointerMove);
+      window.removeEventListener("pointerup", handleWindowPointerEnd);
+      window.removeEventListener("pointercancel", handleWindowPointerCancel);
+    };
+  }, [handleProjectChipPointerCancel, handleProjectChipPointerEnd, handleProjectChipPointerMove]);
   const resolveThreadDropIndex = useCallback(
     (draggedCenterY, draggedThreadId) => {
       const activeDragState = threadListDragStateRef.current;
@@ -9005,41 +9079,20 @@ function MainPage({
           const isDraggingProjectChip = draggingProjectChipId === project.id;
           const projectChipSlideOffsetX = resolveProjectChipSlideOffsetX(project.id);
           const disableProjectChipTransition = lockProjectChipDropLayout || Boolean(optimisticProjectChipOrder);
+          const projectChipNode = projectChipNodesRef.current.get(project.id);
+          const projectChipPlaceholderWidth = projectChipNode?.offsetWidth ?? undefined;
+          const projectChipPlaceholderHeight = projectChipNode?.offsetHeight ?? undefined;
 
           return (
-            <button
+            <div
               key={project.id}
               ref={(node) => registerProjectChipNode(project.id, node)}
-              type="button"
-              onClick={() => handleProjectChipClick(project.id)}
-              onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
-              onPointerMove={handleProjectChipPointerMove}
-              onPointerUp={handleProjectChipPointerEnd}
-              onPointerCancel={handleProjectChipPointerCancel}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                clearPendingProjectLongPress();
-                projectLongPressTriggeredRef.current = false;
-                resetProjectChipDragInteraction();
-                openProjectActionSheet(project);
-              }}
-              className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
-                disableProjectChipTransition ? "" : "transition"
-              } ${
-                isDraggingProjectChip
-                  ? "bg-white text-slate-900 shadow-[0_12px_24px_rgba(15,23,42,0.35)]"
-                  : !isTodoScope && project.id === selectedProjectId
-                    ? "bg-white text-slate-900"
-                    : "bg-transparent text-slate-400 hover:text-white"
-              }`}
+              className="relative shrink-0"
               style={
                 isDraggingProjectChip
                   ? {
-                      position: "relative",
-                      zIndex: 20,
-                      transform: `translateX(${draggingProjectChipOffsetX}px) scale(1.02)`,
-                      transition: "none",
-                      touchAction: "none"
+                      width: projectChipPlaceholderWidth ? `${projectChipPlaceholderWidth}px` : undefined,
+                      height: projectChipPlaceholderHeight ? `${projectChipPlaceholderHeight}px` : undefined
                     }
                     : projectChipSlideOffsetX !== 0
                     ? {
@@ -9051,8 +9104,37 @@ function MainPage({
                       : undefined
               }
             >
-              {project.name}
-            </button>
+              <button
+                type="button"
+                onClick={() => handleProjectChipClick(project.id)}
+                onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
+                onContextMenu={(event) => handleProjectChipContextMenu(event, project)}
+                className={`rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
+                  isDraggingProjectChip ? "w-full" : "shrink-0"
+                } ${
+                  isDraggingProjectChip
+                    ? "bg-white text-slate-900 shadow-[0_12px_24px_rgba(15,23,42,0.35)]"
+                    : !isTodoScope && project.id === selectedProjectId
+                      ? "bg-white text-slate-900"
+                      : "bg-transparent text-slate-400 hover:text-white"
+                }`}
+                style={
+                  isDraggingProjectChip
+                    ? {
+                        position: "absolute",
+                        inset: 0,
+                        zIndex: 20,
+                        transform: `translateX(${draggingProjectChipOffsetX}px) scale(1.02)`,
+                        transition: "none",
+                        touchAction: "none",
+                        pointerEvents: "none"
+                      }
+                    : undefined
+                }
+              >
+                {project.name}
+              </button>
+            </div>
           );
         })}
       </div>
