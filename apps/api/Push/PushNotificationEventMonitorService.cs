@@ -283,10 +283,19 @@ public sealed class PushNotificationEventMonitorService(
     {
       "turn.completed" => NormalizeTerminalStatus(payload?.Turn?.Status),
       "turn.start.failed" => "failed",
-      "thread.status.changed" when string.Equals(
-        NormalizeLowerInvariantValue(payload?.Status?.Type),
-        "error",
-        StringComparison.Ordinal) => "failed",
+      "thread.status.changed" => ResolveTerminalIssueStatusFromThreadStatus(payload?.Status?.Type),
+      _ => string.Empty
+    };
+  }
+
+  private static string ResolveTerminalIssueStatusFromThreadStatus(string? statusType)
+  {
+    var normalized = NormalizeLowerInvariantValue(statusType);
+
+    return normalized switch
+    {
+      "error" => "failed",
+      "idle" => "completed",
       _ => string.Empty
     };
   }
