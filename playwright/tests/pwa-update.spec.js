@@ -290,8 +290,22 @@ test.describe('모바일 PWA 업데이트 통보', () => {
     }, PWA_UPDATE_ACTIVATOR_KEY);
 
     await page.waitForLoadState('load');
-    await page.waitForFunction(() => Boolean(navigator?.serviceWorker), null, { timeout: 30_000 });
-    const controllerScript = await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? null);
-    expect(controllerScript).toContain('sw.js');
+    await page.waitForFunction(
+      (expectedBuildId) => navigator.serviceWorker.controller?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false,
+      NEW_BUILD_ID,
+      { timeout: 30_000 }
+    );
+    const controllerSnapshot = await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return {
+        controllerScript: navigator.serviceWorker.controller?.scriptURL ?? null,
+        activeScript: registration?.active?.scriptURL ?? null,
+        waitingScript: registration?.waiting?.scriptURL ?? null
+      };
+    });
+    expect(controllerSnapshot.controllerScript).toContain(`v=${NEW_BUILD_ID}`);
+    expect(controllerSnapshot.activeScript).toContain(`v=${NEW_BUILD_ID}`);
+    expect(controllerSnapshot.waitingScript).toBeNull();
+    await expect(page.getByText('업데이트가 준비되었습니다')).toHaveCount(0);
   });
 });

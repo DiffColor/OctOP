@@ -38,6 +38,29 @@ if ("serviceWorker" in navigator) {
     window.location.reload();
   };
 
+  const hasActivatedTargetBuild = (registration, targetBuildId = "") => {
+    const normalizedTargetBuildId = String(targetBuildId ?? "").trim();
+
+    if (!normalizedTargetBuildId) {
+      return false;
+    }
+
+    const activeBuildId = getBuildIdFromScriptUrl(registration?.active?.scriptURL);
+    const controllerBuildId = getBuildIdFromScriptUrl(navigator.serviceWorker.controller?.scriptURL);
+    const waitingBuildId = getBuildIdFromScriptUrl(registration?.waiting?.scriptURL);
+    const installingBuildId = getBuildIdFromScriptUrl(registration?.installing?.scriptURL);
+
+    if (controllerBuildId === normalizedTargetBuildId) {
+      return true;
+    }
+
+    return (
+      activeBuildId === normalizedTargetBuildId &&
+      waitingBuildId !== normalizedTargetBuildId &&
+      installingBuildId !== normalizedTargetBuildId
+    );
+  };
+
   const waitForNewControllerScript = (targetBuildId = "") => {
     clearActivationReloadTimer();
 
@@ -61,11 +84,8 @@ if ("serviceWorker" in navigator) {
 
       try {
         const registration = await navigator.serviceWorker.getRegistration();
-        const activeBuildId = getBuildIdFromScriptUrl(registration?.active?.scriptURL);
-        const controllerBuildId = getBuildIdFromScriptUrl(navigator.serviceWorker.controller?.scriptURL);
-        const waitingBuildId = getBuildIdFromScriptUrl(registration?.waiting?.scriptURL);
 
-        if (activeBuildId === normalizedTargetBuildId || waitingBuildId === normalizedTargetBuildId || controllerBuildId === normalizedTargetBuildId) {
+        if (hasActivatedTargetBuild(registration, normalizedTargetBuildId)) {
           resolved = true;
           forceReload();
           return;
