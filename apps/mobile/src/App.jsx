@@ -8180,6 +8180,7 @@ function MainPage({
   onSubmitProjectInstruction,
   onSubmitProjectEdit,
   onSubmitThreadInstruction,
+  onCreateInstantThread,
   onCreateThread,
   onAppendThreadMessage,
   onChangeThreadComposerDraft,
@@ -9582,14 +9583,37 @@ function MainPage({
         </button>
       </div>
     ) : (
-      <button
-        type="button"
-        onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
-        disabled={isTodoScope ? false : !selectedProject || !bridgeAvailable}
-        className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-      >
-        {isTodoScope ? "+ ToDo 채팅" : "+ 채팅창"}
-      </button>
+      <div className="flex w-full items-center gap-3">
+        {!isTodoScope ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void onCreateInstantThread()}
+              disabled={!selectedProject || !bridgeAvailable || threadBusy}
+              className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              인스턴트 채팅
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenNewThread(selectedProjectId)}
+              disabled={!selectedProject || !bridgeAvailable || threadBusy}
+              className="flex-1 rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              + 채팅창
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpenNewTodoChat()}
+            disabled={threadBusy}
+            className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            + ToDo 채팅
+          </button>
+        )}
+      </div>
     );
   const appChrome = (
     <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
@@ -10436,6 +10460,7 @@ export default function App() {
   const [selectedBridgeId, setSelectedBridgeId] = useState(() => initialSelectedBridgeIdRef.current);
   const [selectedScope, setSelectedScope] = useState(() => initialWorkspaceLayoutRef.current.selectedScope);
   const [selectedThreadId, setSelectedThreadId] = useState(() => initialWorkspaceLayoutRef.current.selectedThreadId);
+  const [instantThreadId, setInstantThreadId] = useState("");
   const pendingPushDeepLinkRef = useRef(readPushDeepLink());
   const [selectedTodoChatId, setSelectedTodoChatId] = useState(() => initialWorkspaceLayoutRef.current.selectedTodoChatId);
   const [draftThreadProjectId, setDraftThreadProjectId] = useState(() => initialWorkspaceLayoutRef.current.draftThreadProjectId);
@@ -10519,6 +10544,7 @@ export default function App() {
   const mobileNoticeTimersRef = useRef(new Map());
   const mobileConfirmResolverRef = useRef(null);
   const selectedThreadIdRef = useRef("");
+  const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const bridgeListSyncPromiseRef = useRef(null);
@@ -10894,7 +10920,50 @@ export default function App() {
       setSelectedThreadId("");
       setActiveView("inbox");
     }
+
+    if (normalizedThreadIds.includes(instantThreadIdRef.current)) {
+      setInstantThreadId("");
+    }
   }, [clearThreadTransientState, removeThreadComposerDrafts]);
+
+  const clearInstantThread = useCallback(async () => {
+    const targetThreadId = String(instantThreadIdRef.current ?? "").trim();
+
+    if (!targetThreadId || !session?.loginId || !selectedBridgeId) {
+      if (targetThreadId) {
+        setInstantThreadId("");
+        removeDeletedThreadsFromState([targetThreadId]);
+      }
+
+      return;
+    }
+
+    removeDeletedThreadsFromState([targetThreadId]);
+
+    try {
+      await apiRequest(
+        `/api/threads/${encodeURIComponent(targetThreadId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
+        {
+          method: "DELETE"
+        }
+      );
+    } catch {
+      // 인스턴트 채팅은 UI 제거를 우선 보장하고, 삭제 실패는 UI 동작을 막지 않음
+    }
+  }, [apiRequest, removeDeletedThreadsFromState, session?.loginId, selectedBridgeId]);
+
+  const clearInstantThreadIfNeeded = useCallback((nextThreadId = "") => {
+    const normalizedNextThreadId = String(nextThreadId ?? "").trim();
+    const currentInstantThreadId = String(instantThreadIdRef.current ?? "").trim();
+
+    if (!currentInstantThreadId) {
+      return;
+    }
+
+    if (currentInstantThreadId && currentInstantThreadId !== normalizedNextThreadId) {
+      void clearInstantThread();
+    }
+  }, [clearInstantThread]);
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
@@ -10977,6 +11046,10 @@ export default function App() {
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    instantThreadIdRef.current = instantThreadId;
+  }, [instantThreadId]);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -12119,10 +12192,11 @@ export default function App() {
   }, []);
 
   const handleBackToInbox = useCallback(() => {
+    clearInstantThreadIfNeeded();
     setDraftThreadProjectId("");
     setActiveView("inbox");
     activeViewRef.current = "inbox";
-  }, [setDraftThreadProjectId, setActiveView]);
+  }, [clearInstantThreadIfNeeded, setActiveView, setDraftThreadProjectId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.history?.pushState) {
@@ -13151,23 +13225,25 @@ export default function App() {
   };
 
   const handleSelectTodoScope = useCallback(() => {
+    clearInstantThreadIfNeeded();
     selectTodoScope();
     setSelectedThreadId("");
     setDraftThreadProjectId("");
     setActiveView("inbox");
-  }, [selectTodoScope]);
+  }, [clearInstantThreadIfNeeded, selectTodoScope]);
 
   const handleSelectTodoChat = useCallback((chatId) => {
     if (!chatId) {
       return;
     }
 
+    clearInstantThreadIfNeeded();
     selectTodoScope();
     setSelectedThreadId("");
     setDraftThreadProjectId("");
     setSelectedTodoChatId(chatId);
     setActiveView("todo");
-  }, [selectTodoScope]);
+  }, [clearInstantThreadIfNeeded, selectTodoScope]);
 
   const ensureProjectThreadsLoaded = useCallback(
     async (projectId, options = {}) => {
@@ -13221,6 +13297,8 @@ export default function App() {
       return false;
     }
 
+    clearInstantThreadIfNeeded();
+
     setTodoBusy(true);
 
     try {
@@ -13261,7 +13339,14 @@ export default function App() {
     } finally {
       setTodoBusy(false);
     }
-  }, [notifyError, selectedBridgeId, selectTodoScope, session, todoChats]);
+  }, [
+    clearInstantThreadIfNeeded,
+    notifyError,
+    selectedBridgeId,
+    selectTodoScope,
+    session,
+    todoChats
+  ]);
 
   const handleSubmitTodoMessage = useCallback(async (content) => {
     if (!session?.loginId || !selectedBridgeId || !selectedTodoChatId) {
@@ -13812,6 +13897,133 @@ export default function App() {
       return false;
     }
   }, [loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, session?.loginId]);
+
+  const handleCreateInstantThread = useCallback(async () => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return false;
+    }
+
+    const projectId = selectedProjectId || draftThreadProjectId;
+
+    if (!projectId) {
+      showMobileAlert("프로젝트를 먼저 선택해 주세요.", {
+        tone: "error",
+        title: "인스턴트 채팅"
+      });
+      return false;
+    }
+
+    clearInstantThreadIfNeeded();
+
+    setThreadBusy(true);
+
+    try {
+      const createThreadPath =
+        `/api/projects/${encodeURIComponent(projectId)}/threads?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`;
+      const createThreadOptions = {
+        method: "POST",
+        body: JSON.stringify({
+          name: "인스턴트 채팅"
+        })
+      };
+
+      let createResponse;
+
+      try {
+        createResponse = await apiRequest(createThreadPath, createThreadOptions);
+      } catch (error) {
+        throw new Error(
+          formatApiRequestError(
+            createThreadPath,
+            createThreadOptions,
+            error,
+            `인스턴트 채팅 생성 실패\n- project_id: ${projectId}\n- bridge_id: ${selectedBridgeId}`
+          )
+        );
+      }
+
+      const threadId = String(createResponse?.thread?.id ?? "").trim();
+
+      if (!threadId) {
+        throw new Error("인스턴트 채팅을 생성하지 못했습니다.");
+      }
+
+      const nextThread =
+        normalizeThread(createResponse?.thread, projectId) ??
+        mergeThreads([], createResponse?.threads ?? []).find((thread) => thread.id === threadId) ??
+        {
+          id: threadId,
+          title: "인스턴트 채팅",
+          project_id: projectId,
+          status: "idle",
+          progress: 0,
+          last_event: "thread.created",
+          last_message: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+      setThreads((current) => upsertThread(current, nextThread));
+      setThreadListsByProjectId((current) => ({
+        ...current,
+        [projectId]: upsertThread(current[projectId] ?? [], nextThread)
+      }));
+      setThreadOrderByProjectId((current) => {
+        const currentOrder = normalizeThreadOrder(current[projectId] ?? []);
+        const nextOrder = [threadId, ...currentOrder.filter((id) => id !== threadId)];
+
+        if (currentOrder.length === nextOrder.length && currentOrder.every((id, index) => id === nextOrder[index])) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [projectId]: nextOrder
+        };
+      });
+      setThreadDetails((current) => ({
+        ...current,
+        [threadId]: {
+          ...(current[threadId] ?? {}),
+          thread: nextThread,
+          issues: current[threadId]?.issues ?? [],
+          messages: current[threadId]?.messages ?? [],
+          loading: false,
+          error: ""
+        }
+      }));
+
+      setSelectedTodoChatId("");
+      setSelectedThreadId(threadId);
+      setInstantThreadId(threadId);
+      setDraftThreadProjectId("");
+      setThreadMessageFilter("all");
+      setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
+
+      return true;
+    } catch (error) {
+      notifyError(error);
+      return false;
+    } finally {
+      setThreadBusy(false);
+    }
+  }, [
+    apiRequest,
+    clearInstantThreadIfNeeded,
+    draftThreadProjectId,
+    notifyError,
+    selectedBridgeId,
+    selectedProjectId,
+    session,
+    session?.loginId,
+    setActiveView,
+    setDraftThreadProjectId,
+    setInstantThreadId,
+    setSelectedThreadId,
+    setSelectedTodoChatId,
+    showMobileAlert,
+    wideThreadSplitEnabled
+  ]);
 
   const handleCreateThread = async (payload, options = {}) => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -14807,6 +15019,7 @@ export default function App() {
 
   const handleSelectProject = (projectId) => {
     selectProjectScope(projectId);
+    clearInstantThreadIfNeeded();
     setSelectedThreadId("");
     setSelectedTodoChatId("");
     setDraftThreadProjectId("");
@@ -14814,6 +15027,8 @@ export default function App() {
   };
 
   const handleSelectThread = (threadId) => {
+    clearInstantThreadIfNeeded(threadId);
+
     startTransition(() => {
       setDraftThreadProjectId("");
       setSelectedThreadId(threadId);
@@ -14829,6 +15044,7 @@ export default function App() {
       return;
     }
 
+    clearInstantThreadIfNeeded();
     selectProjectScope(nextProjectId);
     setSelectedThreadId("");
     setSelectedTodoChatId("");
@@ -15012,6 +15228,7 @@ export default function App() {
         onSubmitProjectInstruction={handleSubmitProjectInstruction}
         onSubmitProjectEdit={handleSubmitProjectEdit}
         onSubmitThreadInstruction={handleSubmitThreadInstruction}
+        onCreateInstantThread={() => void handleCreateInstantThread()}
         onCreateThread={handleCreateThread}
         onAppendThreadMessage={handleAppendThreadMessage}
         onChangeThreadComposerDraft={updateThreadComposerDraft}
