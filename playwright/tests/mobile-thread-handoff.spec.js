@@ -417,7 +417,7 @@ test.describe('모바일 handoff timeline UI', () => {
     await expect(page.getByText('사용률 12%', { exact: true })).toBeVisible();
   });
 
-  test('모바일 쓰레드 목록에서 여러 채팅창을 선택해 한 번에 삭제할 수 있다', async ({ page }) => {
+  test('모바일 쓰레드 목록에서 여러 채팅창을 롱프레스로 선택해 한 번에 삭제할 수 있다', async ({ page }) => {
     const secondaryThread = {
       ...rootThread,
       id: 'thread-root-2',
@@ -434,16 +434,39 @@ test.describe('모바일 handoff timeline UI', () => {
     });
     await page.addInitScript(({ key, value }) => {
       window.localStorage.setItem(key, JSON.stringify(value));
+      HTMLElement.prototype.setPointerCapture = () => {};
+      HTMLElement.prototype.releasePointerCapture = () => {};
     }, { key: SESSION_KEY, value: session });
 
     await page.goto(baseUrl);
 
-    await expect(page.locator('.thread-title')).toHaveCount(2);
+    const firstCard = page.getByTestId(`thread-list-item-${rootThreadId}`);
+    const secondCard = page.getByTestId('thread-list-item-thread-root-2');
 
-    await page.getByRole('button', { name: '채팅창 선택 모드' }).click();
-    await page.getByTestId(`thread-list-item-${rootThreadId}`).click();
-    await page.getByTestId('thread-list-item-thread-root-2').click();
+    await expect(firstCard).toBeVisible();
+    await expect(secondCard).toBeVisible();
 
+    await firstCard.dispatchEvent('pointerdown', {
+      pointerId: 11,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 140,
+      clientY: 240
+    });
+    await page.waitForTimeout(520);
+    await firstCard.dispatchEvent('pointerup', {
+      pointerId: 11,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 140,
+      clientY: 240
+    });
+
+    await expect(page.getByText('1개 선택됨')).toBeVisible();
+
+    await secondCard.click();
     await expect(page.getByText('2개 선택됨')).toBeVisible();
 
     await page.getByRole('button', { name: '선택한 채팅창 삭제' }).click();
@@ -451,8 +474,8 @@ test.describe('모바일 handoff timeline UI', () => {
     await page.getByRole('button', { name: '2개 삭제' }).click();
 
     await expect.poll(() => deleteRequests).toEqual([rootThreadId, 'thread-root-2']);
-    await expect(page.getByTestId(`thread-list-item-${rootThreadId}`)).toHaveCount(0);
-    await expect(page.getByTestId('thread-list-item-thread-root-2')).toHaveCount(0);
+    await expect(firstCard).toHaveCount(0);
+    await expect(secondCard).toHaveCount(0);
     await expect(page.getByText('조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요.')).toBeVisible();
   });
 });

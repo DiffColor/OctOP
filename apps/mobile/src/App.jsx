@@ -9348,38 +9348,22 @@ function MainPage({
   const wideThreadSplitResizeEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX;
   const showThreadSelectionControls = !isTodoScope && activeView === "inbox" && bridgeAvailable && filteredThreads.length > 0;
   const threadSelectionSummaryLabel = `${selectedThreadIds.length}개 선택됨`;
-  const threadSelectionControlRow = showThreadSelectionControls ? (
+  const threadSelectionControlRow = showThreadSelectionControls && threadSelectionMode ? (
     <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-white">
-          {threadSelectionMode ? threadSelectionSummaryLabel : "채팅창 다중 선택"}
-        </p>
+        <p className="text-sm font-semibold text-white">{threadSelectionSummaryLabel}</p>
         <p className="mt-0.5 text-[11px] leading-5 text-slate-400">
-          {threadSelectionMode
-            ? "채팅창을 눌러 선택을 추가하거나 해제할 수 있습니다."
-            : "길게 누르거나 선택 모드로 여러 채팅창을 한 번에 삭제할 수 있습니다."}
+          채팅창을 눌러 선택을 추가하거나 해제할 수 있습니다.
         </p>
       </div>
-      {threadSelectionMode ? (
-        <button
-          type="button"
-          onClick={handleCancelThreadSelection}
-          disabled={threadBusy}
-          className="shrink-0 rounded-full border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          선택 종료
-        </button>
-      ) : (
-        <button
-          type="button"
-          aria-label="채팅창 선택 모드"
-          onClick={() => handleEnterThreadSelectionMode()}
-          disabled={threadBusy}
-          className="shrink-0 rounded-full border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          선택 모드
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={handleCancelThreadSelection}
+        disabled={threadBusy}
+        className="shrink-0 rounded-full border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        선택 종료
+      </button>
     </div>
   ) : null;
   const splitThreadEmptyStateMessage =
