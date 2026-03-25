@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import process from "node:process";
+import { createHash } from "node:crypto";
 
 function parseArgs(argv) {
   const options = {
@@ -92,6 +93,29 @@ function summarizeAccount(result) {
   }
 
   return { loggedIn: true, summary: "로그인됨" };
+}
+
+function buildKeyFingerprint(rawKey) {
+  const key = typeof rawKey === "string" ? rawKey.trim() : "";
+  if (!key) {
+    return null;
+  }
+
+  return createHash("sha256").update(key).digest("hex");
+}
+
+function summarizeAccountForLog(result) {
+  const requiresOpenAIAuth = result?.requiresOpenaiAuth === true;
+  const account = result?.account;
+  const type = typeof account?.type === "string" ? account.type.trim() : "";
+  const hasEmail = typeof account?.email === "string" && account.email.trim().length > 0;
+
+  return {
+    loggedIn: !(!hasEmail && !type),
+    requiresOpenAiAuth: requiresOpenAIAuth,
+    accountType: type,
+    hasEmail
+  };
 }
 
 function createJsonRpcSession({ codex }) {
@@ -342,6 +366,9 @@ async function main() {
   const session = createJsonRpcSession({ codex: options.codex });
 
   try {
+    const keyFingerprint = isApiKeyAuth ? buildKeyFingerprint(options.apiKey) : null;
+    const keyLength = keyFingerprint ? options.apiKey.trim().length : 0;
+
     await session.request("initialize", {
       clientInfo: {
         name: "octop-agent-menu-login-helper",
@@ -366,12 +393,16 @@ async function main() {
 
     const loginId = typeof loginStart?.loginId === "string" ? loginStart.loginId.trim() : "";
     const authUrl = typeof loginStart?.authUrl === "string" ? loginStart.authUrl.trim() : "";
+    const loginStartEventPayload = {
+      loginId,
+      authUrl,
+      browserBundleId: options.browserBundleId,
+      keyLength,
+      keyFingerprint
+    };
+
     if (isApiKeyAuth) {
-      emit("loginStart", {
-        loginId,
-        authUrl,
-        browserBundleId: options.browserBundleId
-      });
+      emit("loginStart", loginStartEventPayload);
       if (loginId) {
         emit("waitingForCompletion", { loginId });
       } else {
@@ -379,12 +410,18 @@ async function main() {
       }
       if (loginId) {
         const loginCompleted = await session.waitForLoginCompleted(loginId, options.timeoutMs);
+        emit("loginCompleted", {
+          loginId,
+          success: loginCompleted.success,
+          error: typeof loginCompleted.error === "string" ? loginCompleted.error : ""
+        });
         if (!loginCompleted.success) {
           throw new Error(loginCompleted.error || "로그인에 실패했습니다.");
         }
       }
       await session.waitForAccountUpdated("apiKey", options.timeoutMs).catch(() => {});
       const accountResult = await session.request("account/read", { refreshToken: false }, options.timeoutMs);
+      emit("accountRead", summarizeAccountForLog(accountResult));
       const accountStatus = summarizeAccount(accountResult);
       emit("loginComplete", accountStatus);
       await session.shutdown();
@@ -396,21 +433,27 @@ async function main() {
     }
 
     emit("loginStart", {
-      loginId,
-      authUrl,
-      browserBundleId: options.browserBundleId
+      ...loginStartEventPayload,
+      keyLength: 0,
+      keyFingerprint: null
     });
     await openInBrowser(options.browserBundleId, authUrl);
     emit("browserOpened", { browserBundleId: options.browserBundleId });
     emit("waitingForCompletion", { loginId });
 
     const loginCompleted = await session.waitForLoginCompleted(loginId, options.timeoutMs);
+    emit("loginCompleted", {
+      loginId,
+      success: loginCompleted.success,
+      error: typeof loginCompleted.error === "string" ? loginCompleted.error : ""
+    });
     if (!loginCompleted.success) {
       throw new Error(loginCompleted.error || "로그인에 실패했습니다.");
     }
 
     await session.waitForAccountUpdated("chatgpt", options.timeoutMs);
     const accountResult = await session.request("account/read", { refreshToken: false }, options.timeoutMs);
+    emit("accountRead", summarizeAccountForLog(accountResult));
     const accountStatus = summarizeAccount(accountResult);
     emit("loginComplete", accountStatus);
     await session.shutdown();

@@ -286,10 +286,26 @@ sealed class RuntimeInstaller
     }
 
     var loginStart = await session.StartApiKeyLoginAsync(trimmedApiKey, cancellationToken);
+    var keyFingerprint = BuildApiKeyFingerprint(trimmedApiKey);
+    var keyLength = trimmedApiKey.Length;
+    progress.Report($"loginStart: mode=api-key, loginId={loginStart.LoginId}, keyFingerprint={keyFingerprint}, keyLength={keyLength}");
     if (!string.IsNullOrWhiteSpace(loginStart.LoginId))
     {
       SavePendingLogin(paths, loginStart.LoginId);
-      await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+      try
+      {
+        await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+        progress.Report($"loginCompleted: loginId={loginStart.LoginId}, success=true");
+      }
+      catch (Exception error)
+      {
+        progress.Report($"loginCompleted.error: loginId={loginStart.LoginId}, error={error.Message}");
+        throw;
+      }
+    }
+    else
+    {
+      progress.Report("loginCompleted: loginId=api-key, success=true");
     }
 
     await TryWaitForAccountUpdatedAsync(session, "apiKey", cancellationToken);
@@ -298,6 +314,10 @@ sealed class RuntimeInstaller
     WindowsSecretStore.SaveCodexApiKey(paths, trimmedApiKey);
 
     var accountStatus = await session.ReadAccountAsync(cancellationToken);
+    var accountType = accountStatus.AccountType is null ? "unknown" : accountStatus.AccountType;
+    progress.Report(
+      $"account/read: loggedIn={accountStatus.LoggedIn}, requiresOpenAiAuth={accountStatus.RequiresOpenAiAuth}, accountType={accountType}, summary={accountStatus.Summary}"
+    );
     progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
   }
 
@@ -332,13 +352,27 @@ sealed class RuntimeInstaller
     }
 
     var loginStart = await session.StartChatGptLoginAsync(cancellationToken);
+    progress.Report($"loginStart: mode=chatgpt, loginId={loginStart.LoginId}");
     SavePendingLogin(paths, loginStart.LoginId);
     BrowserSelection.Open(browser, loginStart.AuthUri.AbsoluteUri);
     progress.Report("브라우저에서 인증을 완료해 주세요.");
-    await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+    try
+    {
+      await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+      progress.Report($"loginCompleted: loginId={loginStart.LoginId}, success=true");
+    }
+    catch (Exception error)
+    {
+      progress.Report($"loginCompleted.error: loginId={loginStart.LoginId}, error={error.Message}");
+      throw;
+    }
     await session.WaitForAccountUpdatedAsync("chatgpt", cancellationToken);
     ClearPendingLogin(paths);
     var accountStatus = await session.ReadAccountAsync(cancellationToken);
+    var accountType = accountStatus.AccountType is null ? "unknown" : accountStatus.AccountType;
+    progress.Report(
+      $"account/read: loggedIn={accountStatus.LoggedIn}, requiresOpenAiAuth={accountStatus.RequiresOpenAiAuth}, accountType={accountType}, summary={accountStatus.Summary}"
+    );
     progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
   }
 
@@ -1682,6 +1716,23 @@ sealed class RuntimeInstaller
   private static string StripAnsi(string value)
   {
     return AnsiEscapePattern.Replace(value ?? string.Empty, string.Empty).Trim();
+  }
+
+  private static string BuildApiKeyFingerprint(string rawApiKey)
+  {
+    if (string.IsNullOrWhiteSpace(rawApiKey))
+    {
+      return "none";
+    }
+
+    var normalizedApiKey = rawApiKey.Trim();
+    if (normalizedApiKey.Length == 0)
+    {
+      return "none";
+    }
+
+    var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedApiKey))).ToLowerInvariant();
+    return fingerprint;
   }
 
   private static void CopyDirectory(string sourceDirectory, string targetDirectory)

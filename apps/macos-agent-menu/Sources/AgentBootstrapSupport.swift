@@ -679,8 +679,7 @@ struct AgentBootstrapConfiguration: Codable {
       deviceName = Self.currentDeviceName()
     }
 
-    let normalizedAuthMode = authMode.trimmingCharacters(in: .whitespacesAndNewlines)
-    authMode = Self.validAuthModes.contains(normalizedAuthMode) ? normalizedAuthMode : Self.authModeDeviceAuth
+    authMode = Self.authModeDeviceAuth
     authApiKey = authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
@@ -865,7 +864,7 @@ final class AgentBootstrapStore: ObservableObject {
   ]
 
   var isAuthModeApiKey: Bool {
-    configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
+    false
   }
 
   var hasStoredApiKey: Bool {
@@ -2397,6 +2396,7 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func ensureCodexLogin(log: @escaping @MainActor (String) -> Void) async throws {
+    let effectiveAuthMode = AgentBootstrapConfiguration.chatGptAuthMode
     if ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_SKIP_LOGIN_CHECKS"] == "1" {
       codexLoggedIn = true
       codexLoginStatus = "테스트 로그인 확인 건너뜀"
@@ -2414,7 +2414,7 @@ final class AgentBootstrapStore: ObservableObject {
       return
     }
 
-    if configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
+    if effectiveAuthMode == AgentBootstrapConfiguration.authModeApiKey {
       let savedApiKey = resolveApiKey(preferred: configuration.authApiKey)
 
       if savedApiKey?.isEmpty ?? true {
@@ -2431,7 +2431,7 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     log("ChatGPT 로그인을 시작합니다.")
-    try await loginWithAuthSelection(log: log, authMode: configuration.authMode, apiKey: nil, logoutFirst: false)
+    try await loginWithAuthSelection(log: log, authMode: effectiveAuthMode, apiKey: nil, logoutFirst: false)
   }
 
   func reloginCodex(
@@ -2487,7 +2487,7 @@ final class AgentBootstrapStore: ObservableObject {
     authMode: String,
     apiKey: String?
   ) async {
-    let normalizedAuthMode = AgentBootstrapConfiguration.normalizedAuthMode(authMode)
+    let normalizedAuthMode = AgentBootstrapConfiguration.chatGptAuthMode
     let trimmedApiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
     if normalizedAuthMode == AgentBootstrapConfiguration.authModeApiKey,
@@ -3084,7 +3084,8 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func currentCodexLoginStatus() async -> (loggedIn: Bool, summary: String) {
-    if configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
+    let effectiveAuthMode = AgentBootstrapConfiguration.chatGptAuthMode
+    if effectiveAuthMode == AgentBootstrapConfiguration.authModeApiKey {
       guard let apiKey = resolveApiKey(preferred: nil), !apiKey.isEmpty else {
         return (false, "저장된 API Key가 없습니다.")
       }
@@ -3321,7 +3322,10 @@ final class AgentBootstrapStore: ObservableObject {
         case "loginStart":
           let loginId = raw["loginId"] as? String ?? ""
           let authUrl = raw["authUrl"] as? String ?? ""
-          AgentLoginDebugLog.write("login start received: loginId=\(loginId)")
+          let keyLength = raw["keyLength"] as? Int ?? 0
+          let keyFingerprint = raw["keyFingerprint"] as? String ?? ""
+          let keyFingerprintLog = keyFingerprint.isEmpty ? "none" : keyFingerprint
+          AgentLoginDebugLog.write("loginStart: loginId=\(loginId), keyFingerprint=\(keyFingerprintLog), keyLength=\(keyLength), authUrl=\(authUrl)")
           if let loginIdToSave = raw["loginId"] as? String, !loginIdToSave.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             savePendingLogin(loginIdToSave)
           }
@@ -3329,6 +3333,11 @@ final class AgentBootstrapStore: ObservableObject {
           if let browserID {
             postLog("선택한 브라우저 번들 ID: \(browserID)")
           }
+        case "loginCompleted":
+          let loginId = raw["loginId"] as? String ?? ""
+          let success = raw["success"] as? Bool ?? false
+          let error = raw["error"] as? String ?? ""
+          AgentLoginDebugLog.write("loginCompleted: loginId=\(loginId), success=\(success), error=\(error)")
         case "browserOpened":
           if let browserID {
             AgentLoginDebugLog.write("browser open exit: bundle=\(browserID) status=0")
@@ -3344,6 +3353,12 @@ final class AgentBootstrapStore: ObservableObject {
           helperState.setResult(BrowserLoginHelperResult(loggedIn: loggedIn, summary: summary))
           AgentLoginDebugLog.write("login completion received: summary=\(summary)")
           clearPendingLogin()
+        case "accountRead":
+          let loggedIn = raw["loggedIn"] as? Bool ?? false
+          let requiresOpenAiAuth = raw["requiresOpenAiAuth"] as? Bool ?? false
+          let accountType = raw["accountType"] as? String
+          let hasEmail = raw["hasEmail"] as? Bool ?? false
+          AgentLoginDebugLog.write("account/read: loggedIn=\(loggedIn), requiresOpenAiAuth=\(requiresOpenAiAuth), accountType=\(accountType ?? "unknown"), hasEmail=\(hasEmail)")
         case "stderr":
           let message = raw["message"] as? String ?? ""
           outputBuffer.append(message)
@@ -3818,18 +3833,19 @@ struct AgentSetupWindow: View {
   }
 
   private var codexLoginField: some View {
-    let isApiKeyMode = bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
+    let fixedAuthMode = AgentBootstrapConfiguration.chatGptAuthMode
+    let isApiKeyMode = fixedAuthMode == AgentBootstrapConfiguration.authModeApiKey
     let trimmedApiKey = bootstrap.authApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
     let isApiKeyMissing = isApiKeyMode && trimmedApiKey.isEmpty && !bootstrap.hasStoredApiKey
 
     return VStack(alignment: .leading, spacing: 12) {
-      pickerField("인증 방식", selection: $bootstrap.configuration.authMode, options: bootstrap.authModeOptions)
-
-      if bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
-        secureSettingField("API Key", text: $bootstrap.authApiKeyInput)
-        Text(bootstrap.hasStoredApiKey ? "저장된 API Key가 있으며 Keychain에 암호화되어 보관됩니다." : "입력한 API Key는 Keychain에 암호화되어 저장됩니다.")
-          .font(.footnote)
+      HStack(alignment: .center, spacing: 8) {
+        Text("인증 방식")
+          .font(.caption)
           .foregroundStyle(.secondary)
+        Text("chatgpt-login")
+          .font(.body)
+          .fontWeight(.semibold)
       }
 
       if !bootstrap.codexLoggedIn,
@@ -3874,7 +3890,7 @@ struct AgentSetupWindow: View {
           } else if bootstrap.codexLoggedIn {
             Button {
               onCodexLogin(
-                AgentBootstrapConfiguration.normalizedAuthMode(bootstrap.configuration.authMode),
+                fixedAuthMode,
                 isApiKeyMode ? trimmedApiKey : nil
               )
             } label: {
@@ -3885,7 +3901,7 @@ struct AgentSetupWindow: View {
           } else {
             Button {
               onCodexLogin(
-                AgentBootstrapConfiguration.normalizedAuthMode(bootstrap.configuration.authMode),
+                fixedAuthMode,
                 isApiKeyMode ? trimmedApiKey : nil
               )
             } label: {

@@ -1001,6 +1001,12 @@ struct AgentMenuContent: View {
 
   private func openWindowAndActivate(id: String) {
     NSApp.activate(ignoringOtherApps: true)
+    if id == "setup",
+       let setupWindow = NSApp.windows.first(where: { $0.title.contains("환경설정") }) {
+      setupWindow.makeKeyAndOrderFront(nil)
+      setupWindow.orderFrontRegardless()
+      return
+    }
     DispatchQueue.main.async {
       openWindow(id: id)
     }

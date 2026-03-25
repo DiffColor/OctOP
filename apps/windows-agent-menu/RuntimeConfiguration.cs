@@ -170,6 +170,7 @@ sealed class RuntimeConfiguration
     {
       AuthMode = CodexAuthMode.ChatGptDeviceAuth;
     }
+    AuthMode = CodexAuthMode.ChatGptDeviceAuth;
 
     CodexApiKey = CodexApiKey.Trim();
   }
