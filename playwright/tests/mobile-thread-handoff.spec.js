@@ -182,12 +182,17 @@ async function mockMobileApi(page, options = {}) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          status: {
-            bridge_id: bridgeId,
-            counts: {
-              projects: 1,
-              threads: currentThreads.length
+          bridge_id: bridgeId,
+          app_server: {
+            connected: true,
+            initialized: true,
+            account: {
+              login_id: loginId
             }
+          },
+          counts: {
+            projects: 1,
+            threads: currentThreads.length
           }
         })
       });
@@ -441,8 +446,9 @@ test.describe('모바일 handoff timeline UI', () => {
 
     await expect(page.getByText('2개 선택됨')).toBeVisible();
 
-    page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: '선택한 채팅창 삭제' }).click();
+    await expect(page.getByRole('heading', { name: '채팅창 여러 개 삭제' })).toBeVisible();
+    await page.getByRole('button', { name: '2개 삭제' }).click();
 
     await expect.poll(() => deleteRequests).toEqual([rootThreadId, 'thread-root-2']);
     await expect(page.getByTestId(`thread-list-item-${rootThreadId}`)).toHaveCount(0);

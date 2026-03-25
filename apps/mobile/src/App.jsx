@@ -5924,7 +5924,7 @@ function ProjectActionSheet({ open, project, busy = false, onClose, onEdit, onDe
   );
 }
 
-function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmit }) {
+function ProjectEditDialog({ open, busy, deleteBusy = false, project, errorMessage, onClose, onSubmit, onDelete }) {
   const [name, setName] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -5962,6 +5962,8 @@ function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmi
     return null;
   }
 
+  const actionBusy = busy || deleteBusy;
+
   return (
     <BottomSheet
       open={open}
@@ -5988,6 +5990,7 @@ function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmi
             id="project-edit-name"
             type="text"
             value={name}
+            disabled={actionBusy}
             onChange={(event) => {
               setName(event.target.value);
               setDirty(true);
@@ -6004,6 +6007,7 @@ function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmi
             id="project-edit-developer-instructions"
             rows="10"
             value={developerInstructions}
+            disabled={actionBusy}
             onChange={(event) => {
               setDeveloperInstructions(event.target.value);
               setDirty(true);
@@ -6022,18 +6026,29 @@ function ProjectEditDialog({ open, busy, project, errorMessage, onClose, onSubmi
           </div>
         ) : null}
 
+        {typeof onDelete === "function" ? (
+          <button
+            type="button"
+            onClick={() => void onDelete(project)}
+            disabled={actionBusy}
+            className="w-full rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {deleteBusy ? "삭제 중..." : "프로젝트 삭제"}
+          </button>
+        ) : null}
+
         <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
             onClick={onClose}
-            disabled={busy}
+            disabled={actionBusy}
             className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
           >
             취소
           </button>
           <button
             type="submit"
-            disabled={busy || !name.trim()}
+            disabled={actionBusy || !name.trim()}
             className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {busy ? "저장 중..." : "저장"}
@@ -6332,6 +6347,8 @@ function ThreadListItem({
   const latestPointerPointRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
+  const longPressReadyRef = useRef(false);
+  const reorderRequestedRef = useRef(false);
   const ACTION_WIDTH = 92;
   const SNAP_THRESHOLD = 42;
   const [offset, setOffset] = useState(0);
@@ -6363,6 +6380,8 @@ function ThreadListItem({
     swipeAxisRef.current = null;
     movedRef.current = false;
     longPressTriggeredRef.current = false;
+    longPressReadyRef.current = false;
+    reorderRequestedRef.current = false;
     setDragging(false);
     event.currentTarget.setPointerCapture?.(event.pointerId);
 
@@ -6376,15 +6395,12 @@ function ThreadListItem({
       longPressTimerRef.current = window.setTimeout(() => {
         longPressTimerRef.current = null;
         longPressTriggeredRef.current = true;
+        longPressReadyRef.current = true;
+        reorderRequestedRef.current = false;
         setRevealOffset(0);
-        onStartReorder?.({
-          thread,
-          pointerId: event.pointerId,
-          clientY: latestPointerPointRef.current?.y ?? event.clientY
-        });
       }, THREAD_LIST_ITEM_LONG_PRESS_MS);
     }
-  }, [clearPendingLongPress, onStartReorder, setRevealOffset, thread]);
+  }, [clearPendingLongPress, setRevealOffset]);
 
   const handlePointerMove = useCallback(
     (event) => {
@@ -6414,6 +6430,28 @@ function ThreadListItem({
       const absY = Math.abs(deltaY);
       latestPointerPointRef.current = { x: event.clientX, y: event.clientY };
 
+      if (longPressReadyRef.current) {
+        if (!reorderRequestedRef.current && absY > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
+          reorderRequestedRef.current = true;
+          onStartReorder?.({
+            thread,
+            pointerId: event.pointerId,
+            clientY: startPointRef.current?.y ?? event.clientY
+          });
+          onMoveReorder?.({
+            threadId: thread.id,
+            pointerId: event.pointerId,
+            clientY: event.clientY
+          });
+        }
+
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+
+        return;
+      }
+
       if (Math.hypot(deltaX, deltaY) > THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX) {
         clearPendingLongPress();
       }
@@ -6442,7 +6480,7 @@ function ThreadListItem({
       setDragging(true);
       setRevealOffset(baseOffsetRef.current + deltaX);
     },
-    [clearPendingLongPress, onMoveReorder, reorderActive, setRevealOffset, thread.id]
+    [clearPendingLongPress, onMoveReorder, onStartReorder, reorderActive, setRevealOffset, thread]
   );
 
   const handlePointerUp = useCallback((event) => {
@@ -6466,7 +6504,34 @@ function ThreadListItem({
       return;
     }
 
+    const longPressReady = longPressReadyRef.current;
+    const reorderRequested = reorderRequestedRef.current;
+
     clearPendingLongPress();
+
+    if (longPressReady) {
+      startPointRef.current = null;
+      baseOffsetRef.current = 0;
+      pointerIdRef.current = null;
+      swipeAxisRef.current = null;
+      latestPointerPointRef.current = null;
+      longPressReadyRef.current = false;
+      reorderRequestedRef.current = false;
+      movedRef.current = false;
+      setDragging(false);
+      setRevealOffset(0);
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+      if (!reorderRequested) {
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+
+        onEnterSelectionMode?.(thread.id);
+      }
+
+      return;
+    }
 
     if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
       setRevealOffset(-ACTION_WIDTH);
@@ -6481,9 +6546,11 @@ function ThreadListItem({
     pointerIdRef.current = null;
     swipeAxisRef.current = null;
     latestPointerPointRef.current = null;
+    longPressReadyRef.current = false;
+    reorderRequestedRef.current = false;
     setDragging(false);
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }, [clearPendingLongPress, onEndReorder, reorderActive, setRevealOffset, thread.id]);
+  }, [clearPendingLongPress, onEndReorder, onEnterSelectionMode, reorderActive, setRevealOffset, thread.id]);
 
   const handlePointerCancel = useCallback(
     (event) => {
@@ -6501,6 +6568,8 @@ function ThreadListItem({
       pointerIdRef.current = null;
       swipeAxisRef.current = null;
       latestPointerPointRef.current = null;
+      longPressReadyRef.current = false;
+      reorderRequestedRef.current = false;
       setDragging(false);
 
       if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
@@ -9277,6 +9346,42 @@ function MainPage({
     (selectedProjectId || draftThreadProjectId || selectedThreadId);
   const showWideSplitLayout = showWideTodoSplitLayout || showWideThreadSplitLayout;
   const wideThreadSplitResizeEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX;
+  const showThreadSelectionControls = !isTodoScope && activeView === "inbox" && bridgeAvailable && filteredThreads.length > 0;
+  const threadSelectionSummaryLabel = `${selectedThreadIds.length}개 선택됨`;
+  const threadSelectionControlRow = showThreadSelectionControls ? (
+    <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-white">
+          {threadSelectionMode ? threadSelectionSummaryLabel : "채팅창 다중 선택"}
+        </p>
+        <p className="mt-0.5 text-[11px] leading-5 text-slate-400">
+          {threadSelectionMode
+            ? "채팅창을 눌러 선택을 추가하거나 해제할 수 있습니다."
+            : "길게 누르거나 선택 모드로 여러 채팅창을 한 번에 삭제할 수 있습니다."}
+        </p>
+      </div>
+      {threadSelectionMode ? (
+        <button
+          type="button"
+          onClick={handleCancelThreadSelection}
+          disabled={threadBusy}
+          className="shrink-0 rounded-full border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          선택 종료
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label="채팅창 선택 모드"
+          onClick={() => handleEnterThreadSelectionMode()}
+          disabled={threadBusy}
+          className="shrink-0 rounded-full border border-white/10 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          선택 모드
+        </button>
+      )}
+    </div>
+  ) : null;
   const splitThreadEmptyStateMessage =
     !selectedThreadId && !draftProject
       ? "채팅창이 없습니다. 좌측 쓰레드를 선택하거나 새 채팅창을 시작해 주세요."
@@ -9561,6 +9666,28 @@ function MainPage({
       )}
     </>
   );
+  const threadCreateActionButtons = !isTodoScope ? (
+    <div className="flex w-full items-center gap-3">
+      <button
+        type="button"
+        data-testid="thread-create-instant-button"
+        onClick={() => void onCreateInstantThread()}
+        disabled={!selectedProject || !bridgeAvailable || threadBusy}
+        className="flex-[2_1_0%] rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        +인스턴트
+      </button>
+      <button
+        type="button"
+        data-testid="thread-create-button"
+        onClick={() => onOpenNewThread(selectedProjectId)}
+        disabled={!selectedProject || !bridgeAvailable || threadBusy}
+        className="flex-[3_1_0%] rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        +채팅
+      </button>
+    </div>
+  ) : null;
   const actionBarContent =
     threadSelectionMode && !isTodoScope ? (
       <div className="flex w-full items-center gap-3">
@@ -9585,24 +9712,7 @@ function MainPage({
     ) : (
       <div className="flex w-full items-center gap-3">
         {!isTodoScope ? (
-          <>
-            <button
-              type="button"
-              onClick={() => void onCreateInstantThread()}
-              disabled={!selectedProject || !bridgeAvailable || threadBusy}
-              className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              인스턴트 채팅
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenNewThread(selectedProjectId)}
-              disabled={!selectedProject || !bridgeAvailable || threadBusy}
-              className="flex-1 rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              + 채팅창
-            </button>
-          </>
+          threadCreateActionButtons
         ) : (
           <button
             type="button"
@@ -9670,6 +9780,8 @@ function MainPage({
             />
           </div>
         ) : null}
+
+        {threadSelectionControlRow}
       </header>
 
       <InstallPromptBanner
@@ -9808,10 +9920,12 @@ function MainPage({
       <ProjectEditDialog
         open={projectEditDialogOpen}
         busy={projectEditBusy}
+        deleteBusy={projectBusy}
         project={projectEditTarget}
         errorMessage={projectEditError}
         onClose={onCloseProjectEditDialog}
         onSubmit={onSubmitProjectEdit}
+        onDelete={(project) => requestProjectDeletion(project)}
       />
       <ThreadEditDialog
         open={threadInstructionDialogOpen}
@@ -10158,6 +10272,8 @@ function MainPage({
                 />
               </div>
             ) : null}
+
+            {threadSelectionControlRow}
           </header>
 
           <InstallPromptBanner
@@ -10257,14 +10373,18 @@ function MainPage({
               </button>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => (isTodoScope ? onOpenNewTodoChat() : onOpenNewThread(selectedProjectId))}
-              disabled={isTodoScope ? false : !selectedProject || !bridgeAvailable}
-              className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {isTodoScope ? "새 ToDo 채팅" : "새 채팅창"}
-            </button>
+            isTodoScope ? (
+              <button
+                type="button"
+                onClick={() => onOpenNewTodoChat()}
+                disabled={threadBusy}
+                className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                새 ToDo 채팅
+              </button>
+            ) : (
+              threadCreateActionButtons
+            )
           )}
         </div>
       </div>
@@ -10392,10 +10512,12 @@ function MainPage({
       <ProjectEditDialog
         open={projectEditDialogOpen}
         busy={projectEditBusy}
+        deleteBusy={projectBusy}
         project={projectEditTarget}
         errorMessage={projectEditError}
         onClose={onCloseProjectEditDialog}
         onSubmit={onSubmitProjectEdit}
+        onDelete={(project) => requestProjectDeletion(project)}
       />
       <ThreadEditDialog
         open={threadInstructionDialogOpen}

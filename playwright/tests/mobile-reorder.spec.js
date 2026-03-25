@@ -123,9 +123,15 @@ test.use({
 });
 
 async function mockMobileApi(page) {
+  let currentProjects = projects.map((project) => ({ ...project }));
+  let currentThreadsByProjectId = Object.fromEntries(
+    Object.entries(threadsByProjectId).map(([projectId, threads]) => [projectId, threads.map((thread) => ({ ...thread }))])
+  );
+
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const pathname = url.pathname;
+    const method = route.request().method();
 
     if (pathname === '/api/events') {
       await route.fulfill({
@@ -154,7 +160,7 @@ async function mockMobileApi(page) {
     }
 
     if (pathname === '/api/bridge/status') {
-      const threadCount = Object.values(threadsByProjectId).reduce((count, threads) => count + threads.length, 0);
+      const threadCount = Object.values(currentThreadsByProjectId).reduce((count, threads) => count + threads.length, 0);
 
       await route.fulfill({
         status: 200,
@@ -169,7 +175,7 @@ async function mockMobileApi(page) {
             }
           },
           counts: {
-            projects: projects.length,
+            projects: currentProjects.length,
             threads: threadCount
           }
         })
@@ -182,7 +188,26 @@ async function mockMobileApi(page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          projects
+          projects: currentProjects
+        })
+      });
+      return;
+    }
+
+    const projectDeleteMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectDeleteMatch && method === 'DELETE') {
+      const projectId = decodeURIComponent(projectDeleteMatch[1]);
+
+      currentProjects = currentProjects.filter((project) => project.id !== projectId);
+      delete currentThreadsByProjectId[projectId];
+      const remainingThreads = Object.values(currentThreadsByProjectId).flat();
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          projects: currentProjects,
+          threads: remainingThreads
         })
       });
       return;
@@ -196,7 +221,7 @@ async function mockMobileApi(page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          threads: threadsByProjectId[projectId] ?? []
+          threads: currentThreadsByProjectId[projectId] ?? []
         })
       });
       return;
@@ -525,6 +550,54 @@ test.describe('mobile reorder interactions', () => {
       kind: 'project',
       id: projectAlphaId
     });
+  });
+
+  test('프로젝트 편집창에서 프로젝트 삭제 버튼을 노출하고 삭제 확인 후 실제 제거한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    await expect(betaChip).toBeVisible();
+
+    const betaBox = await betaChip.boundingBox();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 31;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+
+    await expect(page.getByText('프로젝트 편집')).toBeVisible();
+
+    const deleteButton = page.getByRole('button', { name: '프로젝트 삭제' });
+    await expect(deleteButton).toBeVisible();
+    await deleteButton.click();
+
+    const confirmDialog = page.getByTestId('mobile-confirm-dialog');
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog).toContainText(`"${projectBetaName}" 프로젝트를 삭제하시겠습니까?`);
+    await confirmDialog.getByRole('button', { name: '삭제' }).click();
+
+    await expect(page.getByTestId(`project-chip-item-${projectBetaId}`)).toHaveCount(0);
+    await expect(page.getByText('프로젝트 편집')).toHaveCount(0);
   });
 
   test('프로젝트 칩은 마우스 드래그에서 다른 칩 중심을 넘기면 밀려나기 시작한다', async ({ page }) => {

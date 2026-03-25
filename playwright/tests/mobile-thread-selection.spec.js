@@ -73,6 +73,7 @@ async function mockMobileApi(page, options = {}) {
   const primaryThreadId = String(nextThreads[0]?.id ?? threadId);
   const threadCount = Number.isFinite(options.threadCount) ? options.threadCount : nextThreads.length;
   const requestLog = Array.isArray(options.requestLog) ? options.requestLog : null;
+  const deleteRequests = Array.isArray(options.deleteRequests) ? options.deleteRequests : null;
   const issueDetailRequestHandler =
     typeof options.issueDetailRequestHandler === 'function' ? options.issueDetailRequestHandler : null;
   let currentThreads = [...nextThreads];
@@ -222,6 +223,27 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify({
           threads: currentThreads
+        })
+      });
+      return;
+    }
+
+    if (pathname.match(/^\/api\/threads\/[^/]+$/) && method === 'DELETE') {
+      const requestedThreadId = pathname.split('/')[3];
+
+      if (deleteRequests) {
+        deleteRequests.push(requestedThreadId);
+      }
+
+      currentThreads = currentThreads.filter((currentThread) => currentThread.id !== requestedThreadId);
+      threadStateById.delete(requestedThreadId);
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          deleted_thread_id: requestedThreadId
         })
       });
       return;
@@ -417,7 +439,7 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
     }
   });
 
-  test('길게 누르면 selection mode로 진입하고 텍스트 선택 상태가 생기지 않는다', async ({ page }) => {
+  test('이동 없이 길게 누른 뒤 손을 떼면 selection mode로 진입하고 텍스트 선택 상태가 생기지 않는다', async ({ page }) => {
     await mockMobileApi(page);
     await page.addInitScript(
       ({ key, value }) => {
@@ -457,6 +479,15 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
       clientY: 220
     });
     await page.waitForTimeout(520);
+    await expect(page.getByText('선택 1개 삭제')).toHaveCount(0);
+    await card.dispatchEvent('pointerup', {
+      pointerId: 1,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 120,
+      clientY: 220
+    });
 
     await expect(page.getByText('선택 1개 삭제')).toBeVisible();
 
@@ -472,6 +503,144 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
 
     expect(selectionState.text).toBe('');
     expect(selectionState.isCollapsed).toBeTruthy();
+  });
+
+  test('마우스로 길게 클릭한 뒤 손을 떼도 selection mode로 진입한다', async ({ page }) => {
+    await mockMobileApi(page);
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const card = page.getByTestId(`thread-list-item-${threadId}`);
+    await expect(card).toBeVisible();
+
+    await card.dispatchEvent('pointerdown', {
+      pointerId: 3,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: 140,
+      clientY: 220
+    });
+    await page.waitForTimeout(520);
+    await expect(page.getByText('선택 1개 삭제')).toHaveCount(0);
+
+    await card.dispatchEvent('pointerup', {
+      pointerId: 3,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0,
+      clientX: 140,
+      clientY: 220
+    });
+
+    await expect(page.getByText('선택 1개 삭제')).toBeVisible();
+  });
+
+  test('길게 눌러 selection mode로 들어간 뒤 여러 채팅창을 한 번에 삭제할 수 있다', async ({ page }) => {
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-selection-2',
+      title: 'Long Press Selection Thread 2',
+      name: 'Long Press Selection Thread 2',
+      updated_at: '2026-03-18T10:11:00.000Z',
+      created_at: '2026-03-18T10:01:00.000Z',
+      last_message: 'Second thread for multi delete.'
+    };
+    const deleteRequests = [];
+
+    await mockMobileApi(page, {
+      threads: [thread, secondaryThread],
+      threadCount: 2,
+      deleteRequests
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const firstCard = page.getByTestId(`thread-list-item-${threadId}`);
+    const secondCard = page.getByTestId('thread-list-item-thread-selection-2');
+
+    await expect(firstCard).toBeVisible();
+    await expect(secondCard).toBeVisible();
+
+    await firstCard.dispatchEvent('pointerdown', {
+      pointerId: 7,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 120,
+      clientY: 220
+    });
+    await page.waitForTimeout(520);
+    await firstCard.dispatchEvent('pointerup', {
+      pointerId: 7,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: 120,
+      clientY: 220
+    });
+
+    await expect(page.getByText('1개 선택됨')).toBeVisible();
+
+    await secondCard.click();
+    await expect(page.getByText('2개 선택됨')).toBeVisible();
+
+    await page.getByRole('button', { name: '선택한 채팅창 삭제' }).click();
+    await expect(page.getByRole('heading', { name: '채팅창 여러 개 삭제' })).toBeVisible();
+    await page.getByRole('button', { name: '2개 삭제' }).click();
+
+    await expect.poll(() => deleteRequests).toEqual([threadId, 'thread-selection-2']);
+    await expect(firstCard).toHaveCount(0);
+    await expect(secondCard).toHaveCount(0);
+    await expect(page.getByText('조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요.')).toBeVisible();
+  });
+
+  test('단일 화면 하단에 +인스턴트와 +채팅 버튼이 2대3 비율로 보인다', async ({ page }) => {
+    await mockMobileApi(page);
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const instantButton = page.getByTestId('thread-create-instant-button');
+    const createButton = page.getByTestId('thread-create-button');
+
+    await expect(instantButton).toBeVisible();
+    await expect(createButton).toBeVisible();
+    await expect(instantButton).toHaveText('+인스턴트');
+    await expect(createButton).toHaveText('+채팅');
+
+    const instantBox = await instantButton.boundingBox();
+    const createBox = await createButton.boundingBox();
+
+    expect(instantBox).not.toBeNull();
+    expect(createBox).not.toBeNull();
+
+    const widthRatio = instantBox.width / createBox.width;
+    expect(widthRatio).toBeGreaterThan(0.6);
+    expect(widthRatio).toBeLessThan(0.74);
   });
 });
 
