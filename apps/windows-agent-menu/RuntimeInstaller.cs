@@ -218,6 +218,54 @@ sealed class RuntimeInstaller
     await LoginWithSelectedBrowserAsync(paths, browser, progress, cancellationToken, logoutFirst);
   }
 
+  public async Task LoginWithApiKeyAsync(
+    OctopPaths paths,
+    IProgress<string> progress,
+    CancellationToken cancellationToken,
+    string apiKey,
+    bool logoutFirst)
+  {
+    var codexCommandPath = paths.GetCodexCommandPath();
+    if (!File.Exists(codexCommandPath))
+    {
+      throw new InvalidOperationException($"Codex 실행 파일을 찾지 못했습니다: {codexCommandPath}");
+    }
+
+    var trimmedApiKey = apiKey.Trim();
+    if (trimmedApiKey.Length == 0)
+    {
+      throw new InvalidOperationException("API Key가 비어 있습니다.");
+    }
+
+    progress.Report("API Key로 로그인을 시작합니다.");
+    await using var session = await CodexAppServerSession.StartAsync(
+      codexCommandPath,
+      paths.InstallRoot,
+      BuildToolEnvironment(paths),
+      progress.Report,
+      cancellationToken);
+
+    if (logoutFirst)
+    {
+      progress.Report("현재 로그인 계정을 로그아웃합니다.");
+      await session.LogoutAsync(cancellationToken);
+      ClearPendingLogin(paths);
+    }
+
+    var loginStart = await session.StartApiKeyLoginAsync(trimmedApiKey, cancellationToken);
+    if (!string.IsNullOrWhiteSpace(loginStart.LoginId))
+    {
+      SavePendingLogin(paths, loginStart.LoginId);
+      await session.WaitForLoginCompletedAsync(loginStart.LoginId, cancellationToken);
+    }
+
+    await TryWaitForAccountUpdatedAsync(session, "apiKey", cancellationToken);
+    ClearPendingLogin(paths);
+
+    var accountStatus = await session.ReadAccountAsync(cancellationToken);
+    progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
+  }
+
   public async Task LoginWithSelectedBrowserAsync(
     OctopPaths paths,
     BrowserOption browser,
@@ -1386,6 +1434,23 @@ sealed class RuntimeInstaller
       return;
     }
 
+    if (configuration.AuthMode == CodexAuthMode.ApiKey)
+    {
+      if (string.IsNullOrWhiteSpace(configuration.CodexApiKey))
+      {
+        throw new InvalidOperationException("API Key 방식은 API Key를 입력해야 합니다.");
+      }
+
+      progress.Report("API Key 로그인을 시작합니다.");
+      await LoginWithApiKeyAsync(
+        paths,
+        progress,
+        cancellationToken,
+        configuration.CodexApiKey,
+        logoutFirst: false);
+      return;
+    }
+
     progress.Report("ChatGPT 로그인을 시작합니다.");
     await LoginWithBrowserSelectionAsync(paths, progress, cancellationToken, logoutFirst: false);
   }
@@ -1435,6 +1500,24 @@ sealed class RuntimeInstaller
     }
 
     throw new InvalidOperationException("Node 공식 배포 인덱스에서 설치 가능한 Windows LTS 버전을 찾지 못했습니다.");
+  }
+
+  private static async Task TryWaitForAccountUpdatedAsync(
+    CodexAppServerSession session,
+    string expectedAuthMode,
+    CancellationToken cancellationToken)
+  {
+    using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    timeoutCancellation.CancelAfter(TimeSpan.FromSeconds(20));
+    try
+    {
+      await session.WaitForAccountUpdatedAsync(expectedAuthMode, timeoutCancellation.Token);
+    }
+    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+    {
+      // 일부 로그인 흐름에서는 account/updated 이벤트가 즉시 발생하지 않을 수 있어
+      // 강제 실패 없이 계정 상태 조회로 진행하도록 처리합니다.
+    }
   }
 
   private static string StripAnsi(string value)

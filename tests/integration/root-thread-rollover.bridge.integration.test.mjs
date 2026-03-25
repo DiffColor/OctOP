@@ -4309,3 +4309,57 @@ test("이미지 첨부 download_url은 로컬 파일로 staging되어 app-server
     throw error;
   }
 });
+
+test("앱 설정에서 선택한 model 값이 app-server thread/start 요청에 전달되는지 검증", { timeout: 60000 }, async (t) => {
+  const selectedModel = "gpt-5.4-mini";
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-model-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  let bridge = null;
+
+  t.after(async () => {
+    await bridge?.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-model-token",
+    userId: "model-user",
+    bridgeId: `model-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_CODEX_MODEL: selectedModel
+    }
+  });
+
+  await bridge.start();
+
+  try {
+    const project = await getWorkspaceProject(bridge);
+    await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "모델 검증 쓰레드"
+    });
+
+    const threadStartRequest = await waitFor(() => {
+      const request = fakeAppServer.getRequests("thread/start").at(-1);
+      assert.ok(request, "thread/start 요청이 전송되어야 합니다.");
+      return request;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "model thread/start"
+    });
+
+    assert.equal(threadStartRequest.params?.model, selectedModel);
+    assert.equal(threadStartRequest.params?.approvalPolicy, "on-request");
+    assert.equal(threadStartRequest.params?.sandbox, "danger-full-access");
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});

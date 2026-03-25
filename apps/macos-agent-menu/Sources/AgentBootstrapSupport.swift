@@ -462,6 +462,19 @@ struct AgentDiagnosticItem: Identifiable {
 
 struct AgentBootstrapConfiguration: Codable {
   static let authModeDeviceAuth = "chatgpt-login"
+  static let authModeApiKey = "api-key"
+
+  private static let validAuthModes: Set<String> = [authModeDeviceAuth, authModeApiKey]
+  static let chatGptAuthMode = authModeDeviceAuth
+
+  static func normalizedAuthMode(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return validAuthModes.contains(trimmed) ? trimmed : authModeDeviceAuth
+  }
+
+  static func isApiKeyAuthMode(_ value: String) -> Bool {
+    normalizedAuthMode(value) == authModeApiKey
+  }
 
   var ownerLoginId: String
   var deviceName: String
@@ -480,6 +493,7 @@ struct AgentBootstrapConfiguration: Codable {
   var staleMs: String
   var autoStartAtLogin: Bool
   var authMode: String
+  var authApiKey: String
 
   enum CodingKeys: String, CodingKey {
     case ownerLoginId
@@ -499,6 +513,7 @@ struct AgentBootstrapConfiguration: Codable {
     case staleMs
     case autoStartAtLogin
     case authMode
+    case authApiKey
   }
 
   init(
@@ -518,7 +533,8 @@ struct AgentBootstrapConfiguration: Codable {
     watchdogIntervalMs: String,
     staleMs: String,
     autoStartAtLogin: Bool,
-    authMode: String
+    authMode: String,
+    authApiKey: String = ""
   ) {
     self.ownerLoginId = ownerLoginId
     self.deviceName = deviceName
@@ -537,6 +553,7 @@ struct AgentBootstrapConfiguration: Codable {
     self.staleMs = staleMs
     self.autoStartAtLogin = autoStartAtLogin
     self.authMode = authMode
+    self.authApiKey = authApiKey
   }
 
   static func currentDeviceName() -> String {
@@ -562,7 +579,8 @@ struct AgentBootstrapConfiguration: Codable {
       watchdogIntervalMs: "15000",
       staleMs: "120000",
       autoStartAtLogin: true,
-      authMode: authModeDeviceAuth
+      authMode: authModeDeviceAuth,
+      authApiKey: ""
     )
   }
 
@@ -571,7 +589,9 @@ struct AgentBootstrapConfiguration: Codable {
       deviceName = Self.currentDeviceName()
     }
 
-    authMode = Self.authModeDeviceAuth
+    let normalizedAuthMode = authMode.trimmingCharacters(in: .whitespacesAndNewlines)
+    authMode = Self.validAuthModes.contains(normalizedAuthMode) ? normalizedAuthMode : Self.authModeDeviceAuth
+    authApiKey = authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   init(from decoder: Decoder) throws {
@@ -594,6 +614,7 @@ struct AgentBootstrapConfiguration: Codable {
     staleMs = try container.decodeIfPresent(String.self, forKey: .staleMs) ?? defaults.staleMs
     autoStartAtLogin = try container.decodeIfPresent(Bool.self, forKey: .autoStartAtLogin) ?? defaults.autoStartAtLogin
     authMode = try container.decodeIfPresent(String.self, forKey: .authMode) ?? defaults.authMode
+    authApiKey = try container.decodeIfPresent(String.self, forKey: .authApiKey) ?? defaults.authApiKey
     normalize()
   }
 
@@ -616,6 +637,7 @@ struct AgentBootstrapConfiguration: Codable {
     try container.encode(staleMs, forKey: .staleMs)
     try container.encode(autoStartAtLogin, forKey: .autoStartAtLogin)
     try container.encode(authMode, forKey: .authMode)
+    try container.encode(authApiKey, forKey: .authApiKey)
   }
 }
 
@@ -745,7 +767,14 @@ final class AgentBootstrapStore: ObservableObject {
   let reasoningOptions = ["none", "low", "medium", "high", "xhigh"]
   let approvalOptions = ["on-request", "never", "untrusted"]
   let sandboxOptions = ["danger-full-access", "workspace-write", "read-only"]
-  let authModeOptions = [AgentBootstrapConfiguration.authModeDeviceAuth]
+  let authModeOptions = [
+    AgentBootstrapConfiguration.authModeDeviceAuth,
+    AgentBootstrapConfiguration.authModeApiKey
+  ]
+
+  var isAuthModeApiKey: Bool {
+    configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
+  }
 
   var modelOptions: [String] {
     let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2287,18 +2316,38 @@ final class AgentBootstrapStore: ObservableObject {
       return
     }
 
+    if configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
+      let savedApiKey = configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+      if savedApiKey.isEmpty {
+        log("API Key 방식은 설정 창에서 API Key를 입력해 로그인을 진행해 주세요.")
+        codexLoggedIn = false
+        codexLoginStatus = "API Key가 없습니다. 로그인 버튼에서 API Key를 입력하세요."
+        codexLoginStatusResolved = true
+        return
+      }
+
+      log("API Key 방식으로 로그인을 재시도합니다.")
+      try await loginWithAuthSelection(log: log, authMode: configuration.authMode, apiKey: savedApiKey, logoutFirst: false)
+      return
+    }
+
     log("ChatGPT 로그인을 시작합니다.")
-    try await loginWithBrowserSelection(log: log, logoutFirst: false)
+    try await loginWithAuthSelection(log: log, authMode: configuration.authMode, apiKey: nil, logoutFirst: false)
   }
 
-  func reloginCodex(log: @escaping @MainActor (String) -> Void) async {
+  func reloginCodex(
+    log: @escaping @MainActor (String) -> Void,
+    authMode: String,
+    apiKey: String?
+  ) async {
     bootstrapInProgress = true
     codexLoginInProgress = true
     codexLoginStatusResolved = false
     bootstrapSummary = "Codex 계정 전환 중"
 
     do {
-      try await loginWithBrowserSelection(log: log, logoutFirst: true)
+      try await loginWithAuthSelection(log: log, authMode: authMode, apiKey: apiKey, logoutFirst: true)
       bootstrapSummary = codexLoggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 계정 전환 실패: \(error.localizedDescription)"
@@ -2311,14 +2360,18 @@ final class AgentBootstrapStore: ObservableObject {
     refreshDiagnostics()
   }
 
-  func loginCodex(log: @escaping @MainActor (String) -> Void) async {
+  func loginCodex(
+    log: @escaping @MainActor (String) -> Void,
+    authMode: String,
+    apiKey: String?
+  ) async {
     bootstrapInProgress = true
     codexLoginInProgress = true
     codexLoginStatusResolved = false
     bootstrapSummary = "Codex 로그인 진행 중"
 
     do {
-      try await loginWithBrowserSelection(log: log, logoutFirst: false)
+      try await loginWithAuthSelection(log: log, authMode: authMode, apiKey: apiKey, logoutFirst: false)
       bootstrapSummary = codexLoggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 로그인 실패: \(error.localizedDescription)"
@@ -2331,12 +2384,16 @@ final class AgentBootstrapStore: ObservableObject {
     refreshDiagnostics()
   }
 
-  func handleCodexLoginAction(log: @escaping @MainActor (String) -> Void) async {
+  func handleCodexLoginAction(
+    log: @escaping @MainActor (String) -> Void,
+    authMode: String,
+    apiKey: String?
+  ) async {
     await refreshCodexLoginStatus()
     if codexLoggedIn {
-      await reloginCodex(log: log)
+      await reloginCodex(log: log, authMode: authMode, apiKey: apiKey)
     } else {
-      await loginCodex(log: log)
+      await loginCodex(log: log, authMode: authMode, apiKey: apiKey)
     }
   }
 
@@ -2850,15 +2907,54 @@ final class AgentBootstrapStore: ObservableObject {
     }
   }
 
-  private func loginWithBrowserSelection(log: @escaping @MainActor (String) -> Void, logoutFirst: Bool) async throws {
+  private func loginWithAuthSelection(
+    log: @escaping @MainActor (String) -> Void,
+    authMode: String,
+    apiKey: String?,
+    logoutFirst: Bool
+  ) async throws {
+    let selectedAuthMode = AgentBootstrapConfiguration.normalizedAuthMode(authMode)
+
+    if selectedAuthMode == AgentBootstrapConfiguration.authModeApiKey {
+      let trimmedApiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if trimmedApiKey.isEmpty {
+        throw NSError(
+          domain: "OctOPAgentMenu.Login",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "API Key가 비어 있습니다."]
+        )
+      }
+
+      log("API Key로 로그인을 시작합니다.")
+      AgentLoginDebugLog.write("apiKey selected")
+      let accountStatus = try await runCodexLoginHelper(
+        authMode: selectedAuthMode,
+        apiKey: trimmedApiKey,
+        browserID: nil,
+        logoutFirst: logoutFirst,
+        log: log
+      )
+      codexLoggedIn = accountStatus.loggedIn
+      codexLoginStatus = accountStatus.summary
+      codexLoginStatusResolved = true
+      return
+    }
+
     guard let browserID = await CodexBrowserSelection.selectBrowserID() else {
       AgentLoginDebugLog.write("browser selection cancelled")
-      throw NSError(domain: "OctOPAgentMenu.Browser", code: 1, userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."])
+      throw NSError(
+        domain: "OctOPAgentMenu.Browser",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "로그인에 사용할 브라우저 선택이 취소되었습니다."]
+      )
     }
+
     log("선택한 브라우저로 로그인을 시작합니다.")
     AgentLoginDebugLog.write("browser selected: \(browserID)")
 
-    let accountStatus = try await runBrowserLoginHelper(
+    let accountStatus = try await runCodexLoginHelper(
+      authMode: selectedAuthMode,
+      apiKey: nil,
       browserID: browserID,
       logoutFirst: logoutFirst,
       log: log
@@ -2902,8 +2998,10 @@ final class AgentBootstrapStore: ObservableObject {
     try? FileManager.default.removeItem(at: pendingLoginURL)
   }
 
-  private func runBrowserLoginHelper(
-    browserID: String,
+  private func runCodexLoginHelper(
+    authMode: String,
+    apiKey: String?,
+    browserID: String?,
     logoutFirst: Bool,
     log: @escaping @MainActor (String) -> Void
   ) async throws -> BrowserLoginHelperResult {
@@ -2979,11 +3077,17 @@ final class AgentBootstrapStore: ObservableObject {
           let loginId = raw["loginId"] as? String ?? ""
           let authUrl = raw["authUrl"] as? String ?? ""
           AgentLoginDebugLog.write("login start received: loginId=\(loginId)")
-          savePendingLogin(loginId)
+          if let loginIdToSave = raw["loginId"] as? String, !loginIdToSave.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            savePendingLogin(loginIdToSave)
+          }
           postLog("로그인 URL 생성: \(authUrl)")
-          postLog("선택한 브라우저 번들 ID: \(browserID)")
+          if let browserID {
+            postLog("선택한 브라우저 번들 ID: \(browserID)")
+          }
         case "browserOpened":
-          AgentLoginDebugLog.write("browser open exit: bundle=\(browserID) status=0")
+          if let browserID {
+            AgentLoginDebugLog.write("browser open exit: bundle=\(browserID) status=0")
+          }
           postLog("선택한 브라우저를 열었습니다.")
         case "waitingForCompletion":
           let loginId = raw["loginId"] as? String ?? ""
@@ -3009,11 +3113,21 @@ final class AgentBootstrapStore: ObservableObject {
       }
 
       process.executableURL = runtimeNodeURL
-      process.arguments = [
+      var arguments = [
         scriptURL.path,
         "--codex", runtimeCodexURL.path,
-        "--browser-bundle-id", browserID
-      ] + (logoutFirst ? ["--logout-first"] : [])
+        "--auth-mode", authMode
+      ]
+      if let browserID {
+        arguments.append(contentsOf: ["--browser-bundle-id", browserID])
+      }
+      if let apiKey {
+        arguments.append(contentsOf: ["--api-key", apiKey])
+      }
+      if logoutFirst {
+        arguments.append("--logout-first")
+      }
+      process.arguments = arguments
       process.environment = buildLaunchEnvironment()
       process.currentDirectoryURL = runtimeWorkspaceURL
       process.standardOutput = stdout
@@ -3066,7 +3180,8 @@ final class AgentBootstrapStore: ObservableObject {
       }
 
       do {
-        AgentLoginDebugLog.write("login helper process start: browser=\(browserID)")
+        let browserInfo = browserID ?? "none"
+        AgentLoginDebugLog.write("login helper process start: browser=\(browserInfo)")
         try process.run()
       } catch {
         stdout.fileHandleForReading.readabilityHandler = nil
@@ -3251,7 +3366,7 @@ final class AgentBootstrapStore: ObservableObject {
 struct AgentSetupWindow: View {
   @ObservedObject var bootstrap: AgentBootstrapStore
   let onInstall: () -> Void
-  let onCodexLogin: () -> Void
+  let onCodexLogin: (String, String?) -> Void
   @Environment(\.openWindow) private var openWindow
   @State private var sensitiveConnectionExpanded = false
 
@@ -3458,7 +3573,20 @@ struct AgentSetupWindow: View {
   }
 
   private var codexLoginField: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    let isApiKeyMode = bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
+    let trimmedApiKey = bootstrap.configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let isApiKeyMissing = isApiKeyMode && trimmedApiKey.isEmpty
+
+    return VStack(alignment: .leading, spacing: 12) {
+      pickerField("인증 방식", selection: $bootstrap.configuration.authMode, options: bootstrap.authModeOptions)
+
+      if bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
+        secureSettingField("API Key", text: $bootstrap.configuration.authApiKey)
+        Text("API Key는 다음 실행부터도 자동으로 재사용됩니다.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+      }
+
       if !bootstrap.codexLoggedIn,
          !bootstrap.codexLoginStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         Text(bootstrap.codexLoginStatus)
@@ -3500,7 +3628,10 @@ struct AgentSetupWindow: View {
             .buttonStyle(.bordered)
           } else if bootstrap.codexLoggedIn {
             Button {
-              onCodexLogin()
+              onCodexLogin(
+                AgentBootstrapConfiguration.normalizedAuthMode(bootstrap.configuration.authMode),
+                isApiKeyMode ? trimmedApiKey : nil
+              )
             } label: {
               Text("계정 전환")
                 .frame(minWidth: 112)
@@ -3508,7 +3639,10 @@ struct AgentSetupWindow: View {
             .buttonStyle(.bordered)
           } else {
             Button {
-              onCodexLogin()
+              onCodexLogin(
+                AgentBootstrapConfiguration.normalizedAuthMode(bootstrap.configuration.authMode),
+                isApiKeyMode ? trimmedApiKey : nil
+              )
             } label: {
               Text("로그인")
                 .frame(minWidth: 112)
@@ -3516,7 +3650,7 @@ struct AgentSetupWindow: View {
             .buttonStyle(.borderedProminent)
           }
         }
-        .disabled(bootstrap.codexLoginInProgress || !bootstrap.codexLoginStatusResolved)
+        .disabled(bootstrap.codexLoginInProgress || !bootstrap.codexLoginStatusResolved || isApiKeyMissing)
       }
     }
   }

@@ -4,7 +4,8 @@ using System.Text.Json.Serialization;
 
 enum CodexAuthMode
 {
-  ChatGptDeviceAuth
+  ChatGptDeviceAuth,
+  ApiKey
 }
 
 sealed class RuntimeConfiguration
@@ -49,6 +50,7 @@ sealed class RuntimeConfiguration
   public string ExtraEnvironmentText { get; set; } = string.Empty;
   public bool AutoStartAtLogin { get; set; } = true;
   public CodexAuthMode AuthMode { get; set; } = CodexAuthMode.ChatGptDeviceAuth;
+  public string CodexApiKey { get; set; } = string.Empty;
   public IEnumerable<string> GetWorkspaceRoots()
   {
     return WorkspaceRootsText
@@ -164,7 +166,12 @@ sealed class RuntimeConfiguration
       StaleMs = "120000";
     }
 
-    AuthMode = CodexAuthMode.ChatGptDeviceAuth;
+    if (!Enum.IsDefined(typeof(CodexAuthMode), AuthMode))
+    {
+      AuthMode = CodexAuthMode.ChatGptDeviceAuth;
+    }
+
+    CodexApiKey = CodexApiKey.Trim();
   }
 
   private static string ResolvePreferredCodexHome(OctopPaths paths)

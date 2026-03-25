@@ -6,6 +6,8 @@ import process from "node:process";
 function parseArgs(argv) {
   const options = {
     codex: "",
+    authMode: "chatgpt-login",
+    apiKey: "",
     browserBundleId: "",
     logoutFirst: false,
     timeoutMs: 900000
@@ -18,6 +20,14 @@ function parseArgs(argv) {
     switch (token) {
       case "--codex":
         options.codex = String(next ?? "").trim();
+        index += 1;
+        break;
+      case "--auth-mode":
+        options.authMode = String(next ?? "").trim().toLowerCase();
+        index += 1;
+        break;
+      case "--api-key":
+        options.apiKey = String(next ?? "").trim();
         index += 1;
         break;
       case "--browser-bundle-id":
@@ -40,8 +50,17 @@ function parseArgs(argv) {
     throw new Error("--codex 값이 필요합니다.");
   }
 
-  if (!options.browserBundleId) {
+  const isApiKeyAuth = options.authMode === "api-key";
+  if (!isApiKeyAuth && !options.browserBundleId) {
     throw new Error("--browser-bundle-id 값이 필요합니다.");
+  }
+
+  if (!options.authMode || !["chatgpt-login", "chatgpt", "api-key"].includes(options.authMode)) {
+    throw new Error("--auth-mode 값이 잘못되었습니다.");
+  }
+
+  if (isApiKeyAuth && !options.apiKey) {
+    throw new Error("--api-key 값이 필요합니다.");
   }
 
   return options;
@@ -305,6 +324,7 @@ async function openInBrowser(browserBundleId, authUrl) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const isApiKeyAuth = options.authMode === "api-key";
   const session = createJsonRpcSession({ codex: options.codex });
 
   try {
@@ -323,18 +343,49 @@ async function main() {
       emit("logout");
     }
 
-    const loginStart = await session.request("account/login/start", {
+    const loginStart = await session.request("account/login/start", isApiKeyAuth ? {
+      type: "apiKey",
+      apiKey: options.apiKey
+    } : {
       type: "chatgpt"
     }, options.timeoutMs);
 
     const loginId = typeof loginStart?.loginId === "string" ? loginStart.loginId.trim() : "";
     const authUrl = typeof loginStart?.authUrl === "string" ? loginStart.authUrl.trim() : "";
+    if (isApiKeyAuth) {
+      emit("loginStart", {
+        loginId,
+        authUrl,
+        browserBundleId: options.browserBundleId
+      });
+      if (loginId) {
+        emit("waitingForCompletion", { loginId });
+      } else {
+        emit("waitingForCompletion", { loginId: "api-key" });
+      }
+      if (loginId) {
+        const loginCompleted = await session.waitForLoginCompleted(loginId, options.timeoutMs);
+        if (!loginCompleted.success) {
+          throw new Error(loginCompleted.error || "로그인에 실패했습니다.");
+        }
+      }
+      await session.waitForAccountUpdated("apiKey", options.timeoutMs).catch(() => {});
+      const accountResult = await session.request("account/read", { refreshToken: false }, options.timeoutMs);
+      const accountStatus = summarizeAccount(accountResult);
+      emit("loginComplete", accountStatus);
+      await session.shutdown();
+      return;
+    }
 
     if (!loginId || !authUrl) {
       throw new Error("로그인 URL을 받지 못했습니다.");
     }
 
-    emit("loginStart", { loginId, authUrl, browserBundleId: options.browserBundleId });
+    emit("loginStart", {
+      loginId,
+      authUrl,
+      browserBundleId: options.browserBundleId
+    });
     await openInBrowser(options.browserBundleId, authUrl);
     emit("browserOpened", { browserBundleId: options.browserBundleId });
     emit("waitingForCompletion", { loginId });

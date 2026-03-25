@@ -10,6 +10,22 @@ const bridgeEnv = {
   ...env,
   OCTOP_APP_SERVER_AUTOSTART: "false"
 };
+const APP_SERVER_RESTART_INITIAL_DELAY_MS = normalizePositiveNumber(
+  env.OCTOP_APP_SERVER_RESTART_INITIAL_DELAY_MS,
+  500
+);
+const APP_SERVER_RESTART_MAX_DELAY_MS = normalizePositiveNumber(
+  env.OCTOP_APP_SERVER_RESTART_MAX_DELAY_MS,
+  5000
+);
+const APP_SERVER_RESTART_MAX_ATTEMPTS = normalizePositiveInteger(
+  env.OCTOP_APP_SERVER_RESTART_MAX_ATTEMPTS,
+  12
+);
+const APP_SERVER_RESTART_STABLE_WINDOW_MS = normalizePositiveNumber(
+  env.OCTOP_APP_SERVER_RESTART_STABLE_WINDOW_MS,
+  15000
+);
 
 console.log("OctOP local agent launcher");
 console.log(`- app-server: ${env.OCTOP_APP_SERVER_WS_URL}`);
@@ -19,44 +35,118 @@ console.log(`- bridge-id: ${env.OCTOP_BRIDGE_ID}`);
 console.log(`- device: ${env.OCTOP_BRIDGE_DEVICE_NAME}`);
 console.log(`- owner-login: ${env.OCTOP_BRIDGE_OWNER_LOGIN_ID}`);
 
-const appServerProcess = spawn(env.OCTOP_APP_SERVER_COMMAND, {
-  cwd: workspaceRoot,
-  env,
-  stdio: "inherit",
-  shell: true
-});
+let bridgeProcess = null;
+let appServerProcess = null;
+let appServerRestartCount = 0;
+let appServerStartedAt = 0;
+let appServerRestartTimer = null;
+let isShuttingDown = false;
 
-const bridgeProcess = spawn(process.execPath, ["./scripts/run-bridge.mjs"], {
+function normalizePositiveNumber(rawValue, fallback) {
+  const parsed = Number(String(rawValue ?? "").trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizePositiveInteger(rawValue, fallback) {
+  const parsed = Number.parseInt(String(rawValue ?? "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clearAppServerRestartTimer() {
+  if (appServerRestartTimer) {
+    clearTimeout(appServerRestartTimer);
+    appServerRestartTimer = null;
+  }
+}
+
+function calculateRestartDelay(attempt) {
+  return Math.min(APP_SERVER_RESTART_MAX_DELAY_MS, APP_SERVER_RESTART_INITIAL_DELAY_MS * (2 ** Math.max(0, attempt - 1)));
+}
+
+function stopAll(signal = "SIGTERM") {
+  isShuttingDown = true;
+  clearAppServerRestartTimer();
+
+  if (appServerProcess && !appServerProcess.killed) {
+    appServerProcess.kill(signal);
+  }
+
+  if (bridgeProcess && !bridgeProcess.killed) {
+    bridgeProcess.kill(signal);
+  }
+}
+
+function startAppServer() {
+  if (isShuttingDown) {
+    return;
+  }
+
+  appServerStartedAt = Date.now();
+  appServerProcess = spawn(env.OCTOP_APP_SERVER_COMMAND, {
+    cwd: workspaceRoot,
+    env,
+    stdio: "inherit",
+    shell: true
+  });
+
+  appServerProcess.on("exit", (code, signal) => {
+    if (isShuttingDown) {
+      appServerProcess = null;
+      return;
+    }
+
+    const stableRunWindowReached = appServerStartedAt > 0 &&
+      Date.now() - appServerStartedAt >= APP_SERVER_RESTART_STABLE_WINDOW_MS;
+
+    if (stableRunWindowReached) {
+      appServerRestartCount = 0;
+    }
+
+    const detail = signal ? `signal=${signal}` : `code=${code ?? "unknown"}`;
+    console.warn(`[OctOP] app-server exited unexpectedly (${detail}).`);
+    appServerProcess = null;
+
+    appServerRestartCount += 1;
+    if (appServerRestartCount > APP_SERVER_RESTART_MAX_ATTEMPTS) {
+      console.error("[OctOP] app-server restart attempts exceeded limit. local-agent 종료.");
+      if (!isShuttingDown) {
+        stopAll("SIGTERM");
+      }
+
+      return;
+    }
+
+    const delay = calculateRestartDelay(appServerRestartCount);
+    clearAppServerRestartTimer();
+    appServerRestartTimer = setTimeout(() => {
+      appServerRestartTimer = null;
+      startAppServer();
+    }, delay);
+
+    console.warn(`[OctOP] app-server 재시작 대기 ${delay}ms (시도 ${appServerRestartCount}/${APP_SERVER_RESTART_MAX_ATTEMPTS})`);
+  });
+
+  appServerProcess.on("error", (error) => {
+    if (isShuttingDown) {
+      return;
+    }
+
+    console.error(`[OctOP] app-server process error: ${error.message}`);
+  });
+}
+
+startAppServer();
+bridgeProcess = spawn(process.execPath, ["./scripts/run-bridge.mjs"], {
   cwd: workspaceRoot,
   env: bridgeEnv,
   stdio: "inherit"
 });
 
-function stopAll(signal = "SIGTERM") {
-  if (!bridgeProcess.killed) {
-    bridgeProcess.kill(signal);
-  }
-
-  if (!appServerProcess.killed) {
-    appServerProcess.kill(signal);
-  }
-}
-
-appServerProcess.on("exit", (code, signal) => {
-  if (!bridgeProcess.killed) {
-    bridgeProcess.kill("SIGTERM");
-  }
-
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-
-  process.exit(code ?? 0);
-});
-
 bridgeProcess.on("exit", (code, signal) => {
-  if (!appServerProcess.killed) {
+  isShuttingDown = true;
+  clearAppServerRestartTimer();
+
+  if (appServerProcess && !appServerProcess.killed) {
     appServerProcess.kill("SIGTERM");
   }
 
@@ -66,6 +156,14 @@ bridgeProcess.on("exit", (code, signal) => {
   }
 
   process.exit(code ?? 0);
+});
+
+bridgeProcess.on("error", (error) => {
+  if (isShuttingDown) {
+    return;
+  }
+
+  console.error(`[OctOP] bridge process error: ${error.message}`);
 });
 
 for (const eventName of ["SIGINT", "SIGTERM"]) {

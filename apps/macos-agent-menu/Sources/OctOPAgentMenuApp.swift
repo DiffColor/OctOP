@@ -1161,9 +1161,9 @@ struct OctOPAgentMenuApp: App {
       AgentSetupWindow(
         bootstrap: bootstrap,
         onInstall: { bootstrap.runBootstrap(log: model.appendInstallerLog) },
-        onCodexLogin: {
+        onCodexLogin: { authMode, apiKey in
           Task {
-            await bootstrap.handleCodexLoginAction(log: model.appendInstallerLog)
+            await bootstrap.handleCodexLoginAction(log: model.appendInstallerLog, authMode: authMode, apiKey: apiKey)
           }
         }
       )

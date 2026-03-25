@@ -613,8 +613,9 @@ async function handleSystemNetworkEvent(event = {}) {
   }
 
   const becameConnected = previousConnected === false;
+  const stateChanged = previousStateSignature !== nextStateSignature;
 
-  if (!becameConnected) {
+  if (!becameConnected && !stateChanged) {
     return;
   }
 

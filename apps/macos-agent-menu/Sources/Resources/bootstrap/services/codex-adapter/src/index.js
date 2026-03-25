@@ -496,15 +496,38 @@ function buildSystemNetworkLogContext(networkState) {
   };
 }
 
+function compareSignatureEntries(left, right) {
+  return left.localeCompare(right);
+}
+
+function normalizeSystemNetworkInterfaceSignatureEntries(interfaces = []) {
+  if (!Array.isArray(interfaces)) {
+    return [];
+  }
+
+  return interfaces
+    .map((entry) => {
+      const name = String(entry?.name ?? "").trim();
+      const family = String(entry?.family ?? "").trim().toUpperCase();
+      const address = String(entry?.address ?? "").trim().toLowerCase();
+
+      if (!name || !address) {
+        return null;
+      }
+
+      return family ? `${name}:${family}:${address}` : `${name}:${address}`;
+    })
+    .filter(Boolean)
+    .sort(compareSignatureEntries);
+}
+
 function buildSystemNetworkStateSignature(networkState) {
-  const interfaceNames = Array.isArray(networkState?.interfaces)
-    ? [...new Set(networkState.interfaces.map((entry) => String(entry?.name ?? "").trim()).filter(Boolean))].sort()
-    : [];
+  const interfaceSignatures = normalizeSystemNetworkInterfaceSignatureEntries(networkState?.interfaces);
   const defaultRouteInterface = String(networkState?.default_route?.interfaceName ?? "").trim() || null;
 
   return JSON.stringify({
     connected: Boolean(networkState?.connected),
-    interface_names: interfaceNames,
+    interface_signatures: interfaceSignatures,
     default_route_interface: defaultRouteInterface
   });
 }
@@ -608,8 +631,9 @@ async function handleSystemNetworkEvent(event = {}) {
   }
 
   const becameConnected = previousConnected === false;
+  const interfaceStateChanged = previousStateSignature !== nextStateSignature;
 
-  if (!becameConnected) {
+  if (!becameConnected && !interfaceStateChanged) {
     return;
   }
 

@@ -55,6 +55,9 @@ sealed class SetupWindow : Window
     "workspace-write",
     "read-only"
   ];
+  private const string ChatGptAuthModeValue = "chatgpt-login";
+  private const string ApiKeyAuthModeValue = "api-key";
+  private static readonly string[] KnownAuthModeOptions = [ChatGptAuthModeValue, ApiKeyAuthModeValue];
 
   private readonly RuntimeInstaller _installer;
   private readonly Dictionary<string, DiagnosticRowView> _diagnosticRows = [];
@@ -70,8 +73,11 @@ sealed class SetupWindow : Window
   private ComboBox _reasoningComboBox = null!;
   private ComboBox _approvalComboBox = null!;
   private ComboBox _sandboxComboBox = null!;
+  private ComboBox _authModeComboBox = null!;
   private TextBox _watchdogTextBox = null!;
   private TextBox _staleTextBox = null!;
+  private PasswordBox _codexApiKeyPasswordBox = null!;
+  private UIElement _codexApiKeyField = null!;
   private MacToggleSwitch _autoStartCheckBox = null!;
   private TextBlock _savedAtTextBlock = null!;
   private TextBlock _codexLoginStatusTextBlock = null!;
@@ -141,6 +147,11 @@ sealed class SetupWindow : Window
     SelectComboValue(_reasoningComboBox, configuration.CodexReasoningEffort);
     SelectComboValue(_approvalComboBox, configuration.CodexApprovalPolicy);
     SelectComboValue(_sandboxComboBox, configuration.CodexSandbox);
+    SelectComboValue(_authModeComboBox, configuration.AuthMode == CodexAuthMode.ApiKey
+      ? ApiKeyAuthModeValue
+      : ChatGptAuthModeValue);
+    _codexApiKeyPasswordBox.Password = configuration.CodexApiKey;
+    UpdateCodexAuthModeControls();
     _watchdogTextBox.Text = configuration.WatchdogIntervalMs;
     _staleTextBox.Text = configuration.StaleMs;
     _autoStartCheckBox.IsChecked = configuration.AutoStartAtLogin;
@@ -428,6 +439,14 @@ sealed class SetupWindow : Window
     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
     row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
+    _authModeComboBox = CreateComboBox(KnownAuthModeOptions);
+    _authModeComboBox.SelectionChanged += (_, _) => UpdateCodexAuthModeControls();
+    _codexApiKeyPasswordBox = CreatePasswordBox();
+    _codexApiKeyField = CreateLabeledPasswordField("API Key", _codexApiKeyPasswordBox);
+    UpdateCodexApiKeyVisibility();
+    stack.Children.Add(CreateLabeledComboField("인증 방식", _authModeComboBox));
+    stack.Children.Add(_codexApiKeyField);
+
     _codexLoginSecondaryTextBlock = new TextBlock
     {
       Text = "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.",
@@ -522,10 +541,11 @@ sealed class SetupWindow : Window
       CodexReasoningEffort = Convert.ToString(_reasoningComboBox.SelectedItem) ?? "high",
       CodexApprovalPolicy = Convert.ToString(_approvalComboBox.SelectedItem) ?? "on-request",
       CodexSandbox = Convert.ToString(_sandboxComboBox.SelectedItem) ?? "danger-full-access",
+      AuthMode = ParseAuthMode(Convert.ToString(_authModeComboBox.SelectedItem) ?? string.Empty),
+      CodexApiKey = _codexApiKeyPasswordBox.Password.Trim(),
       WatchdogIntervalMs = _watchdogTextBox.Text.Trim(),
       StaleMs = _staleTextBox.Text.Trim(),
       AutoStartAtLogin = _autoStartCheckBox.IsChecked == true,
-      AuthMode = CodexAuthMode.ChatGptDeviceAuth
     };
   }
 
@@ -664,22 +684,48 @@ sealed class SetupWindow : Window
       _codexLoginInProgress = true;
       UpdateCodexLoginButton();
       SetBusy(true, installing: false);
-      UpdateActivityState(
-        busy: true,
-        installing: false,
-        title: logoutFirst ? "브라우저를 준비하는 중입니다." : "브라우저를 준비하는 중입니다.",
-        hint: "설치된 브라우저 목록과 아이콘을 불러오고 있습니다.");
-      await Dispatcher.Yield(DispatcherPriority.Background);
+      var selectedAuthMode = ParseAuthMode(Convert.ToString(_authModeComboBox.SelectedItem) ?? string.Empty);
+      var isApiKeyMode = selectedAuthMode == CodexAuthMode.ApiKey;
+      var apiKey = _codexApiKeyPasswordBox.Password.Trim();
 
-      var browser = await BrowserSelection.SelectBrowserAsync();
-      if (browser is null)
+      if (isApiKeyMode && string.IsNullOrWhiteSpace(apiKey))
       {
         UpdateActivityState(
           busy: false,
           installing: false,
-          title: "브라우저 선택 취소",
-          hint: "브라우저 선택이 취소되었습니다.");
+          title: "API Key 입력 필요",
+          hint: "인증 방식이 API Key인 경우, API Key를 먼저 입력해 주세요.");
+        MessageBox.Show(
+          this,
+          "인증 방식이 API Key인 경우 API Key가 필요합니다.",
+          "로그인 실패",
+          MessageBoxButton.OK,
+          MessageBoxImage.Warning);
         return;
+      }
+
+      UpdateActivityState(
+        busy: true,
+        installing: false,
+        title: logoutFirst ? "로그인 방식을 준비하는 중입니다." : "로그인 방식을 준비하는 중입니다.",
+        hint: isApiKeyMode
+          ? "API Key 로그인 흐름을 준비하고 있습니다."
+          : "설치된 브라우저 목록과 아이콘을 불러오고 있습니다.");
+      await Dispatcher.Yield(DispatcherPriority.Background);
+
+      BrowserOption? selectedBrowser = null;
+      if (!isApiKeyMode)
+      {
+        selectedBrowser = await BrowserSelection.SelectBrowserAsync();
+        if (selectedBrowser is null)
+        {
+          UpdateActivityState(
+            busy: false,
+            installing: false,
+            title: "브라우저 선택 취소",
+            hint: "브라우저 선택이 취소되었습니다.");
+          return;
+        }
       }
 
       var configuration = GatherConfiguration();
@@ -689,12 +735,31 @@ sealed class SetupWindow : Window
         busy: true,
         installing: false,
         title: logoutFirst ? "계정 전환을 진행하는 중입니다." : "로그인을 진행하는 중입니다.",
-        hint: $"{browser.DisplayName} 브라우저를 열고 인증 세션을 준비합니다.");
+        hint: isApiKeyMode
+          ? "API Key로 Codex 로그인 세션을 준비합니다."
+          : $"{selectedBrowser!.DisplayName} 브라우저를 열고 인증 세션을 준비합니다.");
       await Task.Run(async () =>
       {
         _installer.SaveConfiguration(configuration, paths);
         _installer.WriteEnvironmentFile(configuration, paths);
-        await _installer.LoginWithSelectedBrowserAsync(paths, browser, progress, CancellationToken.None, logoutFirst);
+        if (isApiKeyMode)
+        {
+          await _installer.LoginWithApiKeyAsync(
+            paths,
+            progress,
+            CancellationToken.None,
+            apiKey,
+            logoutFirst);
+        }
+        else
+        {
+          await _installer.LoginWithSelectedBrowserAsync(
+            paths,
+            selectedBrowser!,
+            progress,
+            CancellationToken.None,
+            logoutFirst);
+        }
       });
       var status = await Task.Run(async () => await _installer.InspectAsync(paths, CancellationToken.None));
       UpdateStatus(status);
@@ -703,7 +768,9 @@ sealed class SetupWindow : Window
         busy: false,
         installing: false,
         title: logoutFirst ? "계정 전환 완료" : "로그인 완료",
-        hint: "선택한 브라우저에서 인증한 계정이 반영되었습니다.");
+        hint: isApiKeyMode
+          ? "API Key 로그인 결과가 반영되었습니다."
+          : "선택한 브라우저에서 인증한 계정이 반영되었습니다.");
     }
     catch (Exception error)
     {
@@ -741,11 +808,18 @@ sealed class SetupWindow : Window
       return;
     }
 
+    var isApiKeyMode = IsApiKeyMode();
+    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password);
+
     _codexLoginButton.Content = _codexLoggedIn ? "계정 전환" : "로그인";
     _codexLoginButton.ToolTip = _codexLoggedIn
-      ? "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다."
-      : "브라우저를 선택해 Codex 계정을 로그인합니다.";
-    _codexLoginButton.IsEnabled = !_codexLoginInProgress && !InstallationInProgress;
+      ? (isApiKeyMode
+        ? "현재 API Key 계정을 로그아웃한 뒤 다른 키로 다시 로그인합니다."
+        : "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다.")
+      : isApiKeyMode
+        ? (apiKeyMissing ? "API Key를 먼저 입력해 주세요." : "저장된 API Key로 Codex 계정을 로그인합니다.")
+        : "브라우저를 선택해 Codex 계정을 로그인합니다.";
+    _codexLoginButton.IsEnabled = !_codexLoginInProgress && !InstallationInProgress && !apiKeyMissing;
   }
 
   private void RefreshCodexLoginPresentation()
@@ -757,6 +831,8 @@ sealed class SetupWindow : Window
 
     var status = _codexLoginStatusTextBlock.Text?.Trim() ?? string.Empty;
     var hasStatus = !string.IsNullOrWhiteSpace(status);
+    var isApiKeyMode = IsApiKeyMode();
+    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password);
 
     _codexLoginStatusTextBlock.Visibility = !_codexLoggedIn && hasStatus
       ? Visibility.Visible
@@ -764,7 +840,9 @@ sealed class SetupWindow : Window
 
     _codexLoginSecondaryTextBlock.Text = _codexLoggedIn && hasStatus
       ? status
-      : "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.";
+      : apiKeyMissing
+        ? "API Key가 비어 있습니다. API Key를 입력한 뒤 로그인해 주세요."
+        : "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.";
   }
 
   private void SetBusy(bool busy, bool installing)
@@ -772,10 +850,7 @@ sealed class SetupWindow : Window
     _installButton.IsEnabled = !busy;
     _saveButton.IsEnabled = !busy;
     _logButton.IsEnabled = true;
-    if (_codexLoginButton is not null)
-    {
-      _codexLoginButton.IsEnabled = !_codexLoginInProgress && !installing;
-    }
+    UpdateCodexLoginButton();
     _installButton.Content = installing ? "설치 중..." : "런타임 다시 설치";
     System.Windows.Input.Mouse.OverrideCursor = busy ? WpfCursors.Wait : null;
     UpdateActivityState(
@@ -826,6 +901,45 @@ sealed class SetupWindow : Window
 
     var savedAt = File.GetLastWriteTime(paths.ConfigurationPath);
     _savedAtTextBlock.Text = savedAt.ToString("HH:mm:ss");
+  }
+
+  private bool IsApiKeyMode()
+  {
+    return string.Equals(
+      Convert.ToString(_authModeComboBox.SelectedItem),
+      ApiKeyAuthModeValue,
+      StringComparison.OrdinalIgnoreCase);
+  }
+
+  private static CodexAuthMode ParseAuthMode(string value)
+  {
+    return string.Equals(value, ApiKeyAuthModeValue, StringComparison.OrdinalIgnoreCase)
+      ? CodexAuthMode.ApiKey
+      : CodexAuthMode.ChatGptDeviceAuth;
+  }
+
+  private void UpdateCodexAuthModeControls()
+  {
+    UpdateCodexApiKeyVisibility();
+    UpdateCodexLoginButton();
+    RefreshCodexLoginPresentation();
+  }
+
+  private void UpdateCodexApiKeyVisibility()
+  {
+    if (_codexApiKeyField is null || _codexApiKeyPasswordBox is null)
+    {
+      return;
+    }
+
+    var isApiKeyMode = IsApiKeyMode();
+    _codexApiKeyField.Visibility = isApiKeyMode ? Visibility.Visible : Visibility.Collapsed;
+    if (!isApiKeyMode)
+    {
+      return;
+    }
+
+    _codexApiKeyPasswordBox.Focus();
   }
 
   private void AddDiagnosticRow(System.Windows.Controls.Panel parent, string key, string title)

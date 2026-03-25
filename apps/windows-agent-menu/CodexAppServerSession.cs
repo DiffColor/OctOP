@@ -169,6 +169,51 @@ sealed class CodexAppServerSession : IAsyncDisposable
     };
   }
 
+  public async Task<LoginStartResult> StartApiKeyLoginAsync(
+    string apiKey,
+    CancellationToken cancellationToken)
+  {
+    var trimmedApiKey = apiKey.Trim();
+    if (trimmedApiKey.Length == 0)
+    {
+      throw new InvalidOperationException("API Key가 비어 있습니다.");
+    }
+
+    var result = await RequestAsync(
+      "account/login/start",
+      new Dictionary<string, object?>
+      {
+        ["type"] = "apiKey",
+        ["apiKey"] = trimmedApiKey
+      },
+      cancellationToken);
+
+    var type = result.TryGetProperty("type", out var typeProperty)
+      ? typeProperty.GetString()
+      : null;
+    if (!string.Equals(type, "apiKey", StringComparison.OrdinalIgnoreCase))
+    {
+      throw new InvalidOperationException($"지원하지 않는 로그인 응답입니다: {type ?? "unknown"}");
+    }
+
+    var loginId = result.TryGetProperty("loginId", out var loginIdProperty)
+      ? loginIdProperty.GetString()
+      : null;
+
+    var authUrl = result.TryGetProperty("authUrl", out var authUrlProperty)
+      ? authUrlProperty.GetString()
+      : null;
+    var authUri = Uri.TryCreate(authUrl, UriKind.Absolute, out var parsedAuthUri)
+      ? parsedAuthUri
+      : new Uri("https://auth.openai.com");
+
+    return new LoginStartResult
+    {
+      LoginId = loginId ?? string.Empty,
+      AuthUri = authUri
+    };
+  }
+
   public async Task WaitForLoginCompletedAsync(string loginId, CancellationToken cancellationToken)
   {
     if (_bufferedLoginResults.TryRemove(loginId, out var buffered))

@@ -10,7 +10,8 @@ if ("serviceWorker" in navigator) {
   const SKIP_WAITING_MESSAGE = { type: "SKIP_WAITING" };
   const UPDATE_CHECK_MIN_INTERVAL_MS = 3_000;
   const UPDATE_CHECK_POLL_INTERVAL_MS = 5_000;
-  const UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS = 2_500;
+  const UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS = 10_000;
+  const UPDATE_ACTIVATION_POLL_INTERVAL_MS = 250;
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
   let pendingActivationWorker = null;
@@ -35,6 +36,43 @@ if ("serviceWorker" in navigator) {
     refreshing = true;
     clearActivationReloadTimer();
     window.location.reload();
+  };
+
+  const waitForNewControllerScript = (targetBuildId = "") => {
+    clearActivationReloadTimer();
+
+    const normalizedTargetBuildId = String(targetBuildId ?? "").trim();
+    if (!normalizedTargetBuildId) {
+      activationReloadTimer = window.setTimeout(() => {
+        forceReload();
+      }, UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const check = async () => {
+      try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        const activeBuildId = getBuildIdFromScriptUrl(registration?.active?.scriptURL);
+        const controllerBuildId = getBuildIdFromScriptUrl(navigator.serviceWorker.controller?.scriptURL);
+
+        if (activeBuildId === normalizedTargetBuildId || controllerBuildId === normalizedTargetBuildId) {
+          forceReload();
+          return;
+        }
+      } catch {
+        // ignore and continue polling
+      }
+
+      if (Date.now() - startedAt >= UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS) {
+        forceReload();
+        return;
+      }
+
+      activationReloadTimer = window.setTimeout(check, UPDATE_ACTIVATION_POLL_INTERVAL_MS);
+    };
+
+    activationReloadTimer = window.setTimeout(check, UPDATE_ACTIVATION_POLL_INTERVAL_MS);
   };
 
   const getServiceWorkerUrl = (buildId = SERVICE_WORKER_BUILD_ID) => `/sw.js?v=${encodeURIComponent(buildId)}`;
@@ -65,13 +103,11 @@ if ("serviceWorker" in navigator) {
     }
 
     pendingActivationWorker = worker;
+    const targetBuildId = getBuildIdFromScriptUrl(worker?.scriptURL);
 
     const activate = () => {
       activationRequested = true;
-      clearActivationReloadTimer();
-      activationReloadTimer = window.setTimeout(() => {
-        forceReload();
-      }, UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS);
+      waitForNewControllerScript(targetBuildId ?? SERVICE_WORKER_BUILD_ID);
 
       try {
         if (worker.state !== "redundant") {
