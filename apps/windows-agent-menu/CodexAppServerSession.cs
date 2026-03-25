@@ -28,6 +28,7 @@ sealed class CodexAppServerSession : IAsyncDisposable
   {
     public bool LoggedIn { get; init; }
     public bool RequiresOpenAiAuth { get; init; }
+    public string? AccountType { get; init; }
     public string Summary { get; init; } = "확인 전";
   }
 
@@ -107,6 +108,7 @@ sealed class CodexAppServerSession : IAsyncDisposable
       {
         LoggedIn = false,
         RequiresOpenAiAuth = requiresOpenAiAuth,
+        AccountType = null,
         Summary = requiresOpenAiAuth ? "미로그인" : "계정 정보 없음"
       };
     }
@@ -128,6 +130,7 @@ sealed class CodexAppServerSession : IAsyncDisposable
     {
       LoggedIn = true,
       RequiresOpenAiAuth = requiresOpenAiAuth,
+      AccountType = string.IsNullOrWhiteSpace(type) ? null : type.Trim(),
       Summary = summary
     };
   }

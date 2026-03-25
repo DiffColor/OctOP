@@ -96,6 +96,7 @@ sealed class SetupWindow : Window
   private RuntimeStatus? _lastKnownStatus;
   private bool _codexLoggedIn;
   private bool _codexLoginInProgress;
+  private bool _hasStoredApiKey;
 
   public bool AllowClose { get; set; }
   public bool InstallationInProgress => _activeInstallTask is { IsCompleted: false };
@@ -150,7 +151,8 @@ sealed class SetupWindow : Window
     SelectComboValue(_authModeComboBox, configuration.AuthMode == CodexAuthMode.ApiKey
       ? ApiKeyAuthModeValue
       : ChatGptAuthModeValue);
-    _codexApiKeyPasswordBox.Password = configuration.CodexApiKey;
+    _hasStoredApiKey = !string.IsNullOrWhiteSpace(configuration.CodexApiKey);
+    _codexApiKeyPasswordBox.Password = string.Empty;
     UpdateCodexAuthModeControls();
     _watchdogTextBox.Text = configuration.WatchdogIntervalMs;
     _staleTextBox.Text = configuration.StaleMs;
@@ -442,6 +444,7 @@ sealed class SetupWindow : Window
     _authModeComboBox = CreateComboBox(KnownAuthModeOptions);
     _authModeComboBox.SelectionChanged += (_, _) => UpdateCodexAuthModeControls();
     _codexApiKeyPasswordBox = CreatePasswordBox();
+    _codexApiKeyPasswordBox.PasswordChanged += (_, _) => UpdateCodexAuthModeControls();
     _codexApiKeyField = CreateLabeledPasswordField("API Key", _codexApiKeyPasswordBox);
     UpdateCodexApiKeyVisibility();
     stack.Children.Add(CreateLabeledComboField("인증 방식", _authModeComboBox));
@@ -523,6 +526,7 @@ sealed class SetupWindow : Window
 
   private RuntimeConfiguration GatherConfiguration()
   {
+    var apiKey = _codexApiKeyPasswordBox.Password.Trim();
     return new RuntimeConfiguration
     {
       InstallRoot = string.IsNullOrWhiteSpace(_currentInstallRoot)
@@ -542,7 +546,7 @@ sealed class SetupWindow : Window
       CodexApprovalPolicy = Convert.ToString(_approvalComboBox.SelectedItem) ?? "on-request",
       CodexSandbox = Convert.ToString(_sandboxComboBox.SelectedItem) ?? "danger-full-access",
       AuthMode = ParseAuthMode(Convert.ToString(_authModeComboBox.SelectedItem) ?? string.Empty),
-      CodexApiKey = _codexApiKeyPasswordBox.Password.Trim(),
+      CodexApiKey = apiKey,
       WatchdogIntervalMs = _watchdogTextBox.Text.Trim(),
       StaleMs = _staleTextBox.Text.Trim(),
       AutoStartAtLogin = _autoStartCheckBox.IsChecked == true,
@@ -570,6 +574,10 @@ sealed class SetupWindow : Window
         _installer.EnsureAutoStartAtLogin(configuration, progress);
         return await _installer.InspectAsync(paths, CancellationToken.None);
       });
+      _hasStoredApiKey = configuration.AuthMode == CodexAuthMode.ApiKey
+        ? (_hasStoredApiKey || !string.IsNullOrWhiteSpace(configuration.CodexApiKey))
+        : false;
+      _codexApiKeyPasswordBox.Password = string.Empty;
       UpdateStatus(status);
       UpdateSavedAt(paths.InstallRoot);
       ReportProgress("설정을 저장했습니다.");
@@ -688,7 +696,7 @@ sealed class SetupWindow : Window
       var isApiKeyMode = selectedAuthMode == CodexAuthMode.ApiKey;
       var apiKey = _codexApiKeyPasswordBox.Password.Trim();
 
-      if (isApiKeyMode && string.IsNullOrWhiteSpace(apiKey))
+      if (isApiKeyMode && string.IsNullOrWhiteSpace(apiKey) && !_hasStoredApiKey)
       {
         UpdateActivityState(
           busy: false,
@@ -762,6 +770,8 @@ sealed class SetupWindow : Window
         }
       });
       var status = await Task.Run(async () => await _installer.InspectAsync(paths, CancellationToken.None));
+      _hasStoredApiKey = isApiKeyMode;
+      _codexApiKeyPasswordBox.Password = string.Empty;
       UpdateStatus(status);
       UpdateSavedAt(paths.InstallRoot);
       UpdateActivityState(
@@ -809,7 +819,7 @@ sealed class SetupWindow : Window
     }
 
     var isApiKeyMode = IsApiKeyMode();
-    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password);
+    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password) && !_hasStoredApiKey;
 
     _codexLoginButton.Content = _codexLoggedIn ? "계정 전환" : "로그인";
     _codexLoginButton.ToolTip = _codexLoggedIn
@@ -817,7 +827,7 @@ sealed class SetupWindow : Window
         ? "현재 API Key 계정을 로그아웃한 뒤 다른 키로 다시 로그인합니다."
         : "현재 로그인 계정을 로그아웃한 뒤 다른 계정으로 다시 로그인합니다.")
       : isApiKeyMode
-        ? (apiKeyMissing ? "API Key를 먼저 입력해 주세요." : "저장된 API Key로 Codex 계정을 로그인합니다.")
+        ? (apiKeyMissing ? "API Key를 먼저 입력해 주세요." : "저장된 API Key 또는 방금 입력한 API Key로 Codex 계정을 로그인합니다.")
         : "브라우저를 선택해 Codex 계정을 로그인합니다.";
     _codexLoginButton.IsEnabled = !_codexLoginInProgress && !InstallationInProgress && !apiKeyMissing;
   }
@@ -832,7 +842,7 @@ sealed class SetupWindow : Window
     var status = _codexLoginStatusTextBlock.Text?.Trim() ?? string.Empty;
     var hasStatus = !string.IsNullOrWhiteSpace(status);
     var isApiKeyMode = IsApiKeyMode();
-    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password);
+    var apiKeyMissing = isApiKeyMode && string.IsNullOrWhiteSpace(_codexApiKeyPasswordBox.Password) && !_hasStoredApiKey;
 
     _codexLoginStatusTextBlock.Visibility = !_codexLoggedIn && hasStatus
       ? Visibility.Visible
@@ -842,6 +852,8 @@ sealed class SetupWindow : Window
       ? status
       : apiKeyMissing
         ? "API Key가 비어 있습니다. API Key를 입력한 뒤 로그인해 주세요."
+        : isApiKeyMode && _hasStoredApiKey
+          ? "저장된 API Key는 암호화되어 보관되며 원문은 다시 표시되지 않습니다."
         : "로그인 중 문제가 생기면 서비스를 멈춘 뒤 다시 시작해 로그인할 수 있습니다.";
   }
 

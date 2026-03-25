@@ -2,11 +2,101 @@ import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 import SwiftUI
 
 private struct LocalCodexAuthStoreStatus {
   let loggedIn: Bool
   let summary: String
+}
+
+private enum AgentMenuKeychain {
+  static let service = "app.diffcolor.octop.agentmenu"
+  static let codexApiKeyAccount = "codex_api_key"
+
+  static func save(_ value: String, account: String) throws {
+    let data = Data(value.utf8)
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account
+    ]
+    let attributes: [String: Any] = [
+      kSecValueData as String: data,
+      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    ]
+
+    let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    if updateStatus == errSecSuccess {
+      return
+    }
+
+    if updateStatus != errSecItemNotFound {
+      throw NSError(
+        domain: NSOSStatusErrorDomain,
+        code: Int(updateStatus),
+        userInfo: [NSLocalizedDescriptionKey: "Keychain 저장 실패: \(updateStatus)"]
+      )
+    }
+
+    var insertQuery = query
+    insertQuery[kSecValueData as String] = data
+    insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    let insertStatus = SecItemAdd(insertQuery as CFDictionary, nil)
+
+    guard insertStatus == errSecSuccess else {
+      throw NSError(
+        domain: NSOSStatusErrorDomain,
+        code: Int(insertStatus),
+        userInfo: [NSLocalizedDescriptionKey: "Keychain 저장 실패: \(insertStatus)"]
+      )
+    }
+  }
+
+  static func read(account: String) throws -> String? {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecReturnData as String: true
+    ]
+
+    var item: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    if status == errSecItemNotFound {
+      return nil
+    }
+
+    guard status == errSecSuccess,
+          let data = item as? Data,
+          let value = String(data: data, encoding: .utf8) else {
+      throw NSError(
+        domain: NSOSStatusErrorDomain,
+        code: Int(status),
+        userInfo: [NSLocalizedDescriptionKey: "Keychain 읽기 실패: \(status)"]
+      )
+    }
+
+    return value
+  }
+
+  static func delete(account: String) throws {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account
+    ]
+
+    let status = SecItemDelete(query as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw NSError(
+        domain: NSOSStatusErrorDomain,
+        code: Int(status),
+        userInfo: [NSLocalizedDescriptionKey: "Keychain 삭제 실패: \(status)"]
+      )
+    }
+  }
 }
 
 struct RuntimeUpdateDescriptor: Equatable {
@@ -743,6 +833,7 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var codexLoginStatus = ""
   @Published var codexLoggedIn = false
   @Published var codexLoginStatusResolved = false
+  @Published var authApiKeyInput = ""
   @Published var configurationSavedAt: Date? = nil
   @Published var lastBootstrapAt: Date? = nil
   @Published var availableAppUpdate: AppUpdateDescriptor? = nil
@@ -759,6 +850,7 @@ final class AgentBootstrapStore: ObservableObject {
 
   init() {
     configuration = Self.loadConfiguration() ?? .default()
+    migrateLegacyApiKeyIfNeeded()
     ensureCodexHomeReady()
     refreshDiagnostics()
   }
@@ -774,6 +866,10 @@ final class AgentBootstrapStore: ObservableObject {
 
   var isAuthModeApiKey: Bool {
     configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
+  }
+
+  var hasStoredApiKey: Bool {
+    !(storedApiKey()?.isEmpty ?? true)
   }
 
   var modelOptions: [String] {
@@ -1165,8 +1261,10 @@ final class AgentBootstrapStore: ObservableObject {
 
   func saveConfiguration() {
     do {
+      try persistApiKeyInputIfNeeded()
       try persistConfiguration()
       try installLaunchAgent(enabled: configuration.autoStartAtLogin, log: { _ in })
+      authApiKeyInput = ""
       configurationSavedAt = Date()
       bootstrapSummary = "설정을 저장했습니다."
       refreshDiagnostics()
@@ -2317,9 +2415,9 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     if configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
-      let savedApiKey = configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+      let savedApiKey = resolveApiKey(preferred: configuration.authApiKey)
 
-      if savedApiKey.isEmpty {
+      if savedApiKey?.isEmpty ?? true {
         log("API Key 방식은 설정 창에서 API Key를 입력해 로그인을 진행해 주세요.")
         codexLoggedIn = false
         codexLoginStatus = "API Key가 없습니다. 로그인 버튼에서 API Key를 입력하세요."
@@ -2794,8 +2892,90 @@ final class AgentBootstrapStore: ObservableObject {
     try ensureDirectory(appSupportURL)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(configuration)
+    var sanitizedConfiguration = configuration
+    sanitizedConfiguration.authApiKey = ""
+    let data = try encoder.encode(sanitizedConfiguration)
     try data.write(to: configurationURL, options: .atomic)
+  }
+
+  private func persistApiKeyInputIfNeeded() throws {
+    let trimmedApiKey = authApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard configuration.authMode == AgentBootstrapConfiguration.authModeApiKey,
+          !trimmedApiKey.isEmpty else {
+      return
+    }
+
+    try AgentMenuKeychain.save(trimmedApiKey, account: AgentMenuKeychain.codexApiKeyAccount)
+    configuration.authApiKey = ""
+  }
+
+  private func storedApiKey() -> String? {
+    let keychainValue = try? AgentMenuKeychain.read(account: AgentMenuKeychain.codexApiKeyAccount)
+    let trimmedKeychainValue = keychainValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmedKeychainValue.isEmpty {
+      return trimmedKeychainValue
+    }
+
+    let legacyValue = configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    return legacyValue.isEmpty ? nil : legacyValue
+  }
+
+  private func resolveApiKey(preferred explicitValue: String?) -> String? {
+    let trimmedExplicitValue = explicitValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmedExplicitValue.isEmpty {
+      return trimmedExplicitValue
+    }
+
+    return storedApiKey()
+  }
+
+  private func migrateLegacyApiKeyIfNeeded() {
+    let legacyValue = configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !legacyValue.isEmpty else {
+      configuration.authApiKey = ""
+      return
+    }
+
+    do {
+      try AgentMenuKeychain.save(legacyValue, account: AgentMenuKeychain.codexApiKeyAccount)
+      configuration.authApiKey = ""
+      try? persistConfiguration()
+    } catch {
+      bootstrapSummary = "API Key 이전 실패: \(error.localizedDescription)"
+    }
+  }
+
+  private func validateOpenAIApiKey(_ apiKey: String) async -> (valid: Bool, summary: String) {
+    guard let url = URL(string: "https://api.openai.com/v1/models") else {
+      return (false, "API Key 검증 URL이 잘못되었습니다.")
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "GET"
+    request.timeoutInterval = 20
+    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+    do {
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard let httpResponse = response as? HTTPURLResponse else {
+        return (false, "API Key 검증 응답을 해석하지 못했습니다.")
+      }
+
+      if (200..<300).contains(httpResponse.statusCode) {
+        return (true, "API Key 로그인됨")
+      }
+
+      if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         let error = json["error"] as? [String: Any],
+         let message = error["message"] as? String,
+         !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return (false, message)
+      }
+
+      return (false, "API Key 검증 실패 (\(httpResponse.statusCode))")
+    } catch {
+      return (false, "API Key 검증 실패: \(error.localizedDescription)")
+    }
   }
 
   private func buildProcessEnvironment() -> [String: String] {
@@ -2886,6 +3066,37 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func currentCodexLoginStatus() async -> (loggedIn: Bool, summary: String) {
+    if configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
+      guard let apiKey = resolveApiKey(preferred: nil), !apiKey.isEmpty else {
+        return (false, "저장된 API Key가 없습니다.")
+      }
+
+      let validation = await validateOpenAIApiKey(apiKey)
+      guard validation.valid else {
+        return (false, validation.summary)
+      }
+
+      guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
+        return (false, "Codex 미설치")
+      }
+
+      do {
+        return try await withCodexAppServerSession { session in
+          let status = try await session.readAccount(refreshToken: false)
+          if status.loggedIn && status.accountType == "apiKey" {
+            return (true, "API Key 로그인됨")
+          }
+
+          return (false, "API Key 확인됨. 로그인 버튼을 눌러 연결하세요.")
+        }
+      } catch is CancellationError {
+        return (codexLoggedIn, codexLoginStatus)
+      } catch {
+        let summary = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (false, summary)
+      }
+    }
+
     if let localStatus = localCodexAuthStoreStatus(at: codexHomeURL) {
       return (localStatus.loggedIn, localStatus.summary)
     }
@@ -2916,12 +3127,24 @@ final class AgentBootstrapStore: ObservableObject {
     let selectedAuthMode = AgentBootstrapConfiguration.normalizedAuthMode(authMode)
 
     if selectedAuthMode == AgentBootstrapConfiguration.authModeApiKey {
-      let trimmedApiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let trimmedApiKey = resolveApiKey(preferred: apiKey) ?? ""
       if trimmedApiKey.isEmpty {
         throw NSError(
           domain: "OctOPAgentMenu.Login",
           code: 1,
           userInfo: [NSLocalizedDescriptionKey: "API Key가 비어 있습니다."]
+        )
+      }
+
+      let validation = await validateOpenAIApiKey(trimmedApiKey)
+      guard validation.valid else {
+        codexLoggedIn = false
+        codexLoginStatus = validation.summary
+        codexLoginStatusResolved = true
+        throw NSError(
+          domain: "OctOPAgentMenu.Login",
+          code: 4,
+          userInfo: [NSLocalizedDescriptionKey: validation.summary]
         )
       }
 
@@ -2934,8 +3157,12 @@ final class AgentBootstrapStore: ObservableObject {
         logoutFirst: logoutFirst,
         log: log
       )
+      if accountStatus.loggedIn {
+        try persistApiKeyInputIfNeeded()
+        authApiKeyInput = ""
+      }
       codexLoggedIn = accountStatus.loggedIn
-      codexLoginStatus = accountStatus.summary
+      codexLoginStatus = accountStatus.loggedIn ? "API Key 로그인됨" : accountStatus.summary
       codexLoginStatusResolved = true
       return
     }
@@ -3574,15 +3801,15 @@ struct AgentSetupWindow: View {
 
   private var codexLoginField: some View {
     let isApiKeyMode = bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey
-    let trimmedApiKey = bootstrap.configuration.authApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let isApiKeyMissing = isApiKeyMode && trimmedApiKey.isEmpty
+    let trimmedApiKey = bootstrap.authApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    let isApiKeyMissing = isApiKeyMode && trimmedApiKey.isEmpty && !bootstrap.hasStoredApiKey
 
     return VStack(alignment: .leading, spacing: 12) {
       pickerField("인증 방식", selection: $bootstrap.configuration.authMode, options: bootstrap.authModeOptions)
 
       if bootstrap.configuration.authMode == AgentBootstrapConfiguration.authModeApiKey {
-        secureSettingField("API Key", text: $bootstrap.configuration.authApiKey)
-        Text("API Key는 다음 실행부터도 자동으로 재사용됩니다.")
+        secureSettingField("API Key", text: $bootstrap.authApiKeyInput)
+        Text(bootstrap.hasStoredApiKey ? "저장된 API Key가 있으며 Keychain에 암호화되어 보관됩니다." : "입력한 API Key는 Keychain에 암호화되어 저장됩니다.")
           .font(.footnote)
           .foregroundStyle(.secondary)
       }

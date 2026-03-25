@@ -3,6 +3,7 @@ import Foundation
 struct CodexAppServerAccountStatus: Sendable {
   let loggedIn: Bool
   let requiresOpenAIAuth: Bool
+  let accountType: String?
   let summary: String
 }
 
@@ -334,6 +335,7 @@ final class CodexAppServerSession: @unchecked Sendable {
       return CodexAppServerAccountStatus(
         loggedIn: false,
         requiresOpenAIAuth: requiresOpenAIAuth,
+        accountType: nil,
         summary: requiresOpenAIAuth ? "미로그인" : "계정 정보 없음"
       )
     }
@@ -352,6 +354,7 @@ final class CodexAppServerSession: @unchecked Sendable {
     return CodexAppServerAccountStatus(
       loggedIn: true,
       requiresOpenAIAuth: requiresOpenAIAuth,
+      accountType: type?.trimmingCharacters(in: .whitespacesAndNewlines),
       summary: summary
     )
   }

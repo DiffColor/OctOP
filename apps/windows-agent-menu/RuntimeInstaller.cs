@@ -67,6 +67,7 @@ sealed class RuntimeInstaller
     if (!File.Exists(paths.ConfigurationPath))
     {
       var defaultConfiguration = new RuntimeConfiguration { InstallRoot = paths.InstallRoot };
+      defaultConfiguration.CodexApiKey = TryReadStoredApiKey(paths) ?? string.Empty;
       defaultConfiguration.Normalize();
       return defaultConfiguration;
     }
@@ -78,6 +79,8 @@ sealed class RuntimeInstaller
 
     var resolvedConfiguration = configuration ?? new RuntimeConfiguration { InstallRoot = paths.InstallRoot };
     resolvedConfiguration.InstallRoot = paths.InstallRoot;
+    MigrateLegacyApiKeyIfNeeded(resolvedConfiguration, paths);
+    resolvedConfiguration.CodexApiKey = TryReadStoredApiKey(paths) ?? string.Empty;
     resolvedConfiguration.Normalize();
     return resolvedConfiguration;
   }
@@ -86,8 +89,32 @@ sealed class RuntimeInstaller
   {
     Directory.CreateDirectory(paths.InstallRoot);
     configuration.InstallRoot = paths.InstallRoot;
+    SaveApiKey(configuration, paths);
     OctopPaths.SavePreferredInstallRoot(paths.InstallRoot);
-    var json = JsonSerializer.Serialize(configuration, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+    var sanitizedConfiguration = new RuntimeConfiguration
+    {
+      InstallRoot = configuration.InstallRoot,
+      NatsUrl = configuration.NatsUrl,
+      BridgeHost = configuration.BridgeHost,
+      BridgePort = configuration.BridgePort,
+      BridgeToken = configuration.BridgeToken,
+      DeviceName = configuration.DeviceName,
+      OwnerLoginId = configuration.OwnerLoginId,
+      WorkspaceRootsText = configuration.WorkspaceRootsText,
+      AppServerMode = configuration.AppServerMode,
+      AppServerWsUrl = configuration.AppServerWsUrl,
+      CodexModel = configuration.CodexModel,
+      CodexReasoningEffort = configuration.CodexReasoningEffort,
+      CodexApprovalPolicy = configuration.CodexApprovalPolicy,
+      CodexSandbox = configuration.CodexSandbox,
+      WatchdogIntervalMs = configuration.WatchdogIntervalMs,
+      StaleMs = configuration.StaleMs,
+      ExtraEnvironmentText = configuration.ExtraEnvironmentText,
+      AutoStartAtLogin = configuration.AutoStartAtLogin,
+      AuthMode = configuration.AuthMode,
+      CodexApiKey = string.Empty
+    };
+    var json = JsonSerializer.Serialize(sanitizedConfiguration, new JsonSerializerOptions(JsonSerializerDefaults.Web)
     {
       WriteIndented = true
     });
@@ -237,6 +264,12 @@ sealed class RuntimeInstaller
       throw new InvalidOperationException("API Key가 비어 있습니다.");
     }
 
+    var validation = await ValidateOpenAiApiKeyAsync(trimmedApiKey, cancellationToken);
+    if (!validation.Valid)
+    {
+      throw new InvalidOperationException(validation.Summary);
+    }
+
     progress.Report("API Key로 로그인을 시작합니다.");
     await using var session = await CodexAppServerSession.StartAsync(
       codexCommandPath,
@@ -261,6 +294,8 @@ sealed class RuntimeInstaller
 
     await TryWaitForAccountUpdatedAsync(session, "apiKey", cancellationToken);
     ClearPendingLogin(paths);
+
+    WindowsSecretStore.SaveCodexApiKey(paths, trimmedApiKey);
 
     var accountStatus = await session.ReadAccountAsync(cancellationToken);
     progress.Report($"Codex 로그인 반영: {accountStatus.Summary}");
@@ -1436,7 +1471,8 @@ sealed class RuntimeInstaller
 
     if (configuration.AuthMode == CodexAuthMode.ApiKey)
     {
-      if (string.IsNullOrWhiteSpace(configuration.CodexApiKey))
+      var storedApiKey = ResolveApiKey(configuration, paths, null);
+      if (string.IsNullOrWhiteSpace(storedApiKey))
       {
         throw new InvalidOperationException("API Key 방식은 API Key를 입력해야 합니다.");
       }
@@ -1446,7 +1482,7 @@ sealed class RuntimeInstaller
         paths,
         progress,
         cancellationToken,
-        configuration.CodexApiKey,
+        storedApiKey,
         logoutFirst: false);
       return;
     }
@@ -1459,13 +1495,136 @@ sealed class RuntimeInstaller
     OctopPaths paths,
     CancellationToken cancellationToken)
   {
+    var configuration = LoadConfiguration(paths);
+    if (configuration.AuthMode == CodexAuthMode.ApiKey)
+    {
+      var storedApiKey = ResolveApiKey(configuration, paths, null);
+      if (string.IsNullOrWhiteSpace(storedApiKey))
+      {
+        return new CodexAppServerSession.AccountStatus
+        {
+          LoggedIn = false,
+          RequiresOpenAiAuth = true,
+          AccountType = "apiKey",
+          Summary = "저장된 API Key가 없습니다."
+        };
+      }
+
+      var validation = await ValidateOpenAiApiKeyAsync(storedApiKey, cancellationToken);
+      if (!validation.Valid)
+      {
+        return new CodexAppServerSession.AccountStatus
+        {
+          LoggedIn = false,
+          RequiresOpenAiAuth = true,
+          AccountType = "apiKey",
+          Summary = validation.Summary
+        };
+      }
+    }
+
     await using var session = await CodexAppServerSession.StartAsync(
       paths.GetCodexCommandPath(),
       paths.InstallRoot,
       BuildToolEnvironment(paths),
       null,
       cancellationToken);
-    return await session.ReadAccountAsync(cancellationToken);
+    var accountStatus = await session.ReadAccountAsync(cancellationToken);
+    if (configuration.AuthMode == CodexAuthMode.ApiKey &&
+        (!accountStatus.LoggedIn || !string.Equals(accountStatus.AccountType, "apiKey", StringComparison.OrdinalIgnoreCase)))
+    {
+      return new CodexAppServerSession.AccountStatus
+      {
+        LoggedIn = false,
+        RequiresOpenAiAuth = true,
+        AccountType = "apiKey",
+        Summary = "API Key 확인됨. 로그인 버튼을 눌러 연결하세요."
+      };
+    }
+
+    return accountStatus;
+  }
+
+  private static void SaveApiKey(RuntimeConfiguration configuration, OctopPaths paths)
+  {
+    var normalizedApiKey = configuration.CodexApiKey?.Trim() ?? string.Empty;
+    if (configuration.AuthMode == CodexAuthMode.ApiKey && normalizedApiKey.Length > 0)
+    {
+      WindowsSecretStore.SaveCodexApiKey(paths, normalizedApiKey);
+    }
+
+    configuration.CodexApiKey = string.Empty;
+  }
+
+  private static string? TryReadStoredApiKey(OctopPaths paths)
+  {
+    try
+    {
+      return WindowsSecretStore.ReadCodexApiKey(paths);
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  private static string? ResolveApiKey(RuntimeConfiguration configuration, OctopPaths paths, string? explicitApiKey)
+  {
+    var normalizedExplicitApiKey = explicitApiKey?.Trim() ?? string.Empty;
+    if (normalizedExplicitApiKey.Length > 0)
+    {
+      return normalizedExplicitApiKey;
+    }
+
+    if (!string.IsNullOrWhiteSpace(configuration.CodexApiKey))
+    {
+      return configuration.CodexApiKey.Trim();
+    }
+
+    return TryReadStoredApiKey(paths);
+  }
+
+  private void MigrateLegacyApiKeyIfNeeded(RuntimeConfiguration configuration, OctopPaths paths)
+  {
+    var legacyApiKey = configuration.CodexApiKey?.Trim() ?? string.Empty;
+    if (legacyApiKey.Length == 0)
+    {
+      return;
+    }
+
+    WindowsSecretStore.SaveCodexApiKey(paths, legacyApiKey);
+    configuration.CodexApiKey = string.Empty;
+    SaveConfiguration(configuration, paths);
+  }
+
+  private async Task<(bool Valid, string Summary)> ValidateOpenAiApiKeyAsync(string apiKey, CancellationToken cancellationToken)
+  {
+    using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.openai.com/v1/models");
+    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+    using var response = await HttpClient.SendAsync(request, cancellationToken);
+    if (response.IsSuccessStatusCode)
+    {
+      return (true, "API Key 로그인됨");
+    }
+
+    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    try
+    {
+      using var document = JsonDocument.Parse(body);
+      if (document.RootElement.TryGetProperty("error", out var errorElement) &&
+          errorElement.ValueKind == JsonValueKind.Object &&
+          errorElement.TryGetProperty("message", out var messageElement) &&
+          messageElement.ValueKind == JsonValueKind.String)
+      {
+        return (false, messageElement.GetString() ?? $"API Key 검증 실패 ({(int)response.StatusCode})");
+      }
+    }
+    catch
+    {
+    }
+
+    return (false, $"API Key 검증 실패 ({(int)response.StatusCode})");
   }
 
   private async Task<string> ResolveLatestLtsNodeVersionAsync(CancellationToken cancellationToken)
