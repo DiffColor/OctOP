@@ -65,6 +65,7 @@ jobs:
           name: macos-agent-menu-${{ env.RELEASE_TAG }}
           path: |
             dist/releases/${{ env.RELEASE_TAG }}/*.zip
+            dist/releases/${{ env.RELEASE_TAG }}/*.dmg
           if-no-files-found: error
 
   publish-release:

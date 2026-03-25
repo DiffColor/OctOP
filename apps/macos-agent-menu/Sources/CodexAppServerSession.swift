@@ -128,7 +128,9 @@ private actor CodexAppServerSessionState {
       return UUID()
     }
 
-    if let bufferedIndex = bufferedAccountUpdates.firstIndex(where: { $0.authMode == authMode }) {
+    if let bufferedIndex = bufferedAccountUpdates.firstIndex(where: {
+      Self.normalizedAuthMode($0.authMode) == Self.normalizedAuthMode(authMode)
+    }) {
       let buffered = bufferedAccountUpdates.remove(at: bufferedIndex)
       continuation.resume(returning: buffered)
       return UUID()
@@ -148,7 +150,9 @@ private actor CodexAppServerSessionState {
   }
 
   func handleAccountUpdated(_ result: CodexAppServerAccountUpdatedResult) {
-    if let matchingEntry = accountUpdateWaiters.first(where: { $0.value.authMode == result.authMode }) {
+    if let matchingEntry = accountUpdateWaiters.first(where: {
+      Self.normalizedAuthMode($0.value.authMode) == Self.normalizedAuthMode(result.authMode)
+    }) {
       accountUpdateWaiters.removeValue(forKey: matchingEntry.key)
       matchingEntry.value.continuation.resume(returning: result)
       return
@@ -182,6 +186,18 @@ private actor CodexAppServerSessionState {
     for waiter in accountWaiters {
       waiter.continuation.resume(throwing: error)
     }
+  }
+
+  private static func normalizedAuthMode(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else {
+      return nil
+    }
+
+    return trimmed
+      .lowercased()
+      .replacingOccurrences(of: "-", with: "")
+      .replacingOccurrences(of: "_", with: "")
   }
 }
 

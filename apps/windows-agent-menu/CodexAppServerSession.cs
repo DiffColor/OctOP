@@ -592,7 +592,21 @@ sealed class CodexAppServerSession : IAsyncDisposable
 
   private static bool AuthModeMatches(string? expected, string? actual)
   {
-    return string.Equals(expected, actual, StringComparison.Ordinal);
+    return string.Equals(NormalizeAuthMode(expected), NormalizeAuthMode(actual), StringComparison.Ordinal);
+  }
+
+  private static string? NormalizeAuthMode(string? value)
+  {
+    if (string.IsNullOrWhiteSpace(value))
+    {
+      return null;
+    }
+
+    return value
+      .Trim()
+      .ToLowerInvariant()
+      .Replace("-", string.Empty, StringComparison.Ordinal)
+      .Replace("_", string.Empty, StringComparison.Ordinal);
   }
 
   private static void EnsureLoginSucceeded(LoginCompletedResult result)

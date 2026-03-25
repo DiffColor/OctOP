@@ -142,7 +142,7 @@ function createJsonRpcSession({ codex, codexHome }) {
         const authMode = typeof params.authMode === "string" ? params.authMode.trim() : null;
         const result = { authMode };
         const waiterIndex = accountUpdateWaiters.findIndex(
-          (waiter) => waiter.expectedAuthMode === authMode
+          (waiter) => waiter.expectedAuthMode === normalizeAuthMode(authMode)
         );
 
         if (waiterIndex >= 0) {
@@ -243,8 +243,9 @@ function createJsonRpcSession({ codex, codexHome }) {
   }
 
   function waitForAccountUpdated(expectedAuthMode, timeoutMs) {
+    const normalizedExpectedAuthMode = normalizeAuthMode(expectedAuthMode);
     const bufferedIndex = bufferedAccountUpdates.findIndex(
-      (result) => result.authMode === expectedAuthMode
+      (result) => normalizeAuthMode(result.authMode) === normalizedExpectedAuthMode
     );
     if (bufferedIndex >= 0) {
       const [result] = bufferedAccountUpdates.splice(bufferedIndex, 1);
@@ -253,7 +254,7 @@ function createJsonRpcSession({ codex, codexHome }) {
 
     return new Promise((resolve, reject) => {
       const waiter = {
-        expectedAuthMode,
+        expectedAuthMode: normalizedExpectedAuthMode,
         resolve(value) {
           clearTimeout(timer);
           resolve(value);
@@ -277,6 +278,19 @@ function createJsonRpcSession({ codex, codexHome }) {
   }
 
   return { request, shutdown, waitForLoginCompleted, waitForAccountUpdated };
+}
+
+function normalizeAuthMode(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.toLowerCase().replace(/[-_]/g, "");
 }
 
 async function openInBrowser(browserName, authUrl) {

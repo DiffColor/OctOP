@@ -142,8 +142,11 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   const iconPath = resolve(resourcesRoot, "AppIcon.icns");
   const standaloneAppName = `OctOP-macos-${arch}-${versionTag}.app`;
   const standaloneAppPath = resolve(outputRoot, standaloneAppName);
+  const dmgName = `OctOP-macos-${arch}-${versionTag}.dmg`;
+  const dmgPath = resolve(outputRoot, dmgName);
   rmSync(resolve(stageRoot, "macos"), { recursive: true, force: true });
   rmSync(standaloneAppPath, { recursive: true, force: true });
+  rmSync(dmgPath, { force: true });
   mkdirSync(macOsRoot, { recursive: true });
   mkdirSync(resourcesRoot, { recursive: true });
 
@@ -158,18 +161,12 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   );
 
   cpSync(appRoot, standaloneAppPath, { recursive: true });
-
-  const standaloneArchiveName = `OctOP-macos-${arch}-${versionTag}.app.zip`;
-  const standaloneArchivePath = resolve(outputRoot, standaloneArchiveName);
-  rmSync(standaloneArchivePath, { force: true });
-  run("ditto", [
-    "-c",
-    "-k",
-    "--sequesterRsrc",
-    "--keepParent",
-    standaloneAppPath,
-    standaloneArchivePath
-  ], outputRoot);
+  buildMacDmg({
+    appPath: standaloneAppPath,
+    dmgPath,
+    stageRoot,
+    workspaceRoot
+  });
 
   const archiveName = `OctOPAgentMenu-macos-${arch}-${versionTag}.zip`;
   const archivePath = resolve(outputRoot, archiveName);
@@ -192,8 +189,8 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     },
     {
       platform: "macos",
-      path: standaloneArchivePath,
-      kind: "zip-standalone-app-bundle"
+      path: dmgPath,
+      kind: "dmg-app-bundle"
     },
     {
       platform: "macos",
@@ -323,6 +320,30 @@ function buildMacIcon(sourceIconPath, outputIconPath, iconsetPath) {
     iconsetPath,
     "-o",
     outputIconPath
+  ], workspaceRoot);
+}
+
+function buildMacDmg({ appPath, dmgPath, stageRoot, workspaceRoot }) {
+  const dmgStageRoot = resolve(stageRoot, "macos-dmg");
+  rmSync(dmgStageRoot, { recursive: true, force: true });
+  mkdirSync(dmgStageRoot, { recursive: true });
+
+  const stagedAppPath = resolve(dmgStageRoot, basename(appPath));
+  cpSync(appPath, stagedAppPath, { recursive: true });
+
+  const applicationsLinkPath = resolve(dmgStageRoot, "Applications");
+  run("ln", ["-s", "/Applications", applicationsLinkPath], workspaceRoot);
+
+  run("hdiutil", [
+    "create",
+    "-volname",
+    "OctOP",
+    "-srcfolder",
+    dmgStageRoot,
+    "-ov",
+    "-format",
+    "UDZO",
+    dmgPath
   ], workspaceRoot);
 }
 
