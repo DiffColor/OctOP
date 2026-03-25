@@ -464,10 +464,12 @@ test.describe('모바일 handoff timeline UI', () => {
       clientY: 240
     });
 
-    await expect(page.getByText('1개 선택됨')).toBeVisible();
+    await expect(page.getByRole('button', { name: '선택한 채팅창 삭제' })).toHaveText('선택 1개 삭제');
+    await expect(page.getByText('1개 선택됨')).toHaveCount(0);
 
     await secondCard.click();
-    await expect(page.getByText('2개 선택됨')).toBeVisible();
+    await expect(page.getByRole('button', { name: '선택한 채팅창 삭제' })).toHaveText('선택 2개 삭제');
+    await expect(page.getByText('2개 선택됨')).toHaveCount(0);
 
     await page.getByRole('button', { name: '선택한 채팅창 삭제' }).click();
     await expect(page.getByRole('heading', { name: '채팅창 여러 개 삭제' })).toBeVisible();
