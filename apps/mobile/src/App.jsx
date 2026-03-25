@@ -105,6 +105,7 @@ const BACKGROUND_THREAD_PRELOAD_COUNT = 2;
 const BACKGROUND_THREAD_PRELOAD_DELAY_MS = 220;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+const MESSAGE_BUBBLE_LONG_PRESS_IGNORE_SELECTOR = "[data-message-code-scroll='true']";
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
 const VIEWPORT_METRICS_STORAGE_KEY = "octop.mobile.viewport.metrics.v1";
 const VIEWPORT_STORAGE_REUSE_TOLERANCE_PX = 96;
@@ -3400,7 +3401,13 @@ function RichMessageContent({ content, tone = "light" }) {
                   {label}
                 </span>
               </div>
-              <div className="overflow-x-auto px-3 py-3">
+              <div
+                className="overflow-x-auto px-3 py-3"
+                data-message-code-scroll="true"
+                onPointerDownCapture={(event) => {
+                  event.stopPropagation();
+                }}
+              >
                 <pre className="m-0 w-max min-w-full font-mono text-[13px] leading-6 text-slate-100">
                   <code>{segment.value}</code>
                 </pre>
@@ -6824,6 +6831,10 @@ function MessageBubble({ align = "left", tone = "light", title, meta, children, 
       }
 
       if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      if (event.target instanceof Element && event.target.closest(MESSAGE_BUBBLE_LONG_PRESS_IGNORE_SELECTOR)) {
         return;
       }
 
