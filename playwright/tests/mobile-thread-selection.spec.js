@@ -78,6 +78,8 @@ async function mockMobileApi(page, options = {}) {
     typeof options.issueDetailRequestHandler === 'function' ? options.issueDetailRequestHandler : null;
   const createThreadHandler =
     typeof options.createThreadHandler === 'function' ? options.createThreadHandler : null;
+  const createThreadStateHandler =
+    typeof options.createThreadStateHandler === 'function' ? options.createThreadStateHandler : null;
   let currentThreads = [...nextThreads];
   let createdThreadCount = 0;
   let issueDetailRequestCount = 0;
@@ -270,10 +272,17 @@ async function mockMobileApi(page, options = {}) {
       };
 
       currentThreads = [createdThread, ...currentThreads.filter((currentThread) => currentThread.id !== createdThread.id)];
+      const createdThreadState =
+        createThreadStateHandler?.({
+          payload,
+          createdThread,
+          createdThreadCount,
+          currentThreads: [...currentThreads]
+        }) ?? {};
       threadStateById.set(createdThread.id, {
         thread: createdThread,
-        issues: [],
-        issueMessages: [],
+        issues: Array.isArray(createdThreadState.issues) ? createdThreadState.issues : [],
+        issueMessages: Array.isArray(createdThreadState.issueMessages) ? createdThreadState.issueMessages : [],
         createdIssueCount: 0
       });
 
@@ -820,7 +829,7 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
     await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
   });
 
-  test('쓰레드 status가 아직 running이어도 확인한 최신 이슈가 완료 상태면 다른 기존 채팅창으로 이동할 때 인스턴트 채팅은 삭제된다', async ({ page }) => {
+  test('활성 쓰레드가 완료 상태면 이슈 배열이 stale running이어도 다른 기존 채팅창으로 이동할 때 인스턴트 채팅은 삭제된다', async ({ page }) => {
     const deleteRequests = [];
     const secondaryThread = {
       ...thread,
@@ -838,34 +847,31 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
     await mockMobileApi(page, {
       threads: [secondaryThread],
       deleteRequests,
-      eventMessages: [
-        {
-          type: 'bridge.threadIssues.updated',
-          payload: {
-            thread_id: 'thread-selection-created-1',
-            issues: [
-              {
-                ...issue,
-                id: 'issue-selection-created-finished',
-                thread_id: 'thread-selection-created-1',
-                status: 'completed',
-                updated_at: '2026-03-18T10:21:00.000Z',
-                created_at: '2026-03-18T10:20:00.000Z'
-              }
-            ]
-          }
-        }
-      ],
       createThreadHandler: ({ payload, defaultThread }) =>
         payload.name === '인스턴트 채팅'
           ? {
               ...defaultThread,
-              status: 'running',
-              progress: 90,
-              last_event: 'item.agentMessage.delta',
-              last_message: '표시만 running으로 남아 있는 인스턴트 응답'
+              status: 'idle',
+              progress: 100,
+              last_event: 'turn.completed',
+              last_message: '완료된 인스턴트 응답'
             }
-          : defaultThread
+          : defaultThread,
+      createThreadStateHandler: ({ payload, createdThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              issues: [
+                {
+                  ...issue,
+                  id: 'issue-selection-created-stale-running',
+                  thread_id: createdThread.id,
+                  status: 'running',
+                  updated_at: '2026-03-18T10:21:00.000Z',
+                  created_at: '2026-03-18T10:20:00.000Z'
+                }
+              ]
+            }
+          : {}
     });
     await page.addInitScript(
       ({ key, value }) => {

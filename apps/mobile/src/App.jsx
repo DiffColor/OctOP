@@ -2710,11 +2710,6 @@ function isTerminalThreadStatus(status) {
   return ["completed", "failed"].includes(status);
 }
 
-function isIssueExecutionInProgress(issue) {
-  const status = String(issue?.status ?? "").trim();
-  return ["running", "queued", "awaiting_input"].includes(status);
-}
-
 function getThreadSnapshotTimestamp(thread) {
   const timestamp = Date.parse(thread?.updated_at ?? thread?.created_at ?? "");
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -2742,19 +2737,7 @@ function pickPreferredThreadSnapshot(primaryThread, secondaryThread) {
   return normalizedPrimary;
 }
 
-function isThreadExecutionInProgress(thread, issues = []) {
-  const normalizedIssues = (issues ?? [])
-    .map((issue) => normalizeIssue(issue, thread?.id ?? null))
-    .filter(Boolean);
-
-  if (normalizedIssues.length > 0) {
-    const activeIssue = findActiveIssueForThread(normalizedIssues, thread?.active_physical_thread_id ?? null);
-
-    if (activeIssue) {
-      return isIssueExecutionInProgress(activeIssue);
-    }
-  }
-
+function isThreadExecutionInProgress(thread) {
   const status = String(thread?.status ?? "").trim();
   const lastEvent = String(thread?.last_event ?? "").trim();
 
@@ -11108,11 +11091,8 @@ export default function App() {
       threadDetailsRef.current[currentInstantThreadId]?.thread ?? null,
       threads.find((thread) => thread.id === currentInstantThreadId) ?? null
     );
-    const currentInstantThreadIssues = (threadDetailsRef.current[currentInstantThreadId]?.issues ?? [])
-      .map((issue) => normalizeIssue(issue, currentInstantThreadId))
-      .filter(Boolean);
 
-    if (isThreadExecutionInProgress(currentInstantThread, currentInstantThreadIssues)) {
+    if (isThreadExecutionInProgress(currentInstantThread)) {
       if (!requireRunningConfirmation) {
         return false;
       }
