@@ -2939,6 +2939,11 @@ final class AgentBootstrapStore: ObservableObject {
       return trimmedExplicitValue
     }
 
+    let trimmedInputValue = authApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedInputValue.isEmpty {
+      return trimmedInputValue
+    }
+
     return storedApiKey()
   }
 
