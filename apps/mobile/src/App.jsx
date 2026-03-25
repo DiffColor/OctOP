@@ -219,6 +219,14 @@ function clearPushDeepLink() {
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
+function isStandaloneDisplayMode() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
 function formatSilentDuration(ms) {
   const safeMs = Math.max(0, Number(ms) || 0);
   const totalSeconds = Math.floor(safeMs / 1000);
@@ -12345,10 +12353,7 @@ export default function App() {
       return undefined;
     }
 
-    const isStandalone =
-      window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
-
-    if (isStandalone || isPwaPromptDismissed()) {
+    if (isStandaloneDisplayMode() || isPwaPromptDismissed()) {
       return undefined;
     }
 
@@ -12407,7 +12412,7 @@ export default function App() {
   }, [clearInstantThreadIfNeeded, setActiveView, setDraftThreadProjectId]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !window.history?.pushState) {
+    if (typeof window === "undefined" || !window.history?.pushState || isStandaloneDisplayMode()) {
       return undefined;
     }
 
