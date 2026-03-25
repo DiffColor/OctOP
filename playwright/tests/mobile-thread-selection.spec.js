@@ -71,12 +71,14 @@ async function mockMobileApi(page, options = {}) {
   const nextIssues = Array.isArray(options.issues) ? options.issues : [issue];
   const nextIssueMessages = Array.isArray(options.issueMessages) ? options.issueMessages : issueMessages;
   const primaryThreadId = String(nextThreads[0]?.id ?? threadId);
-  const threadCount = Number.isFinite(options.threadCount) ? options.threadCount : nextThreads.length;
   const requestLog = Array.isArray(options.requestLog) ? options.requestLog : null;
   const deleteRequests = Array.isArray(options.deleteRequests) ? options.deleteRequests : null;
   const issueDetailRequestHandler =
     typeof options.issueDetailRequestHandler === 'function' ? options.issueDetailRequestHandler : null;
+  const createThreadHandler =
+    typeof options.createThreadHandler === 'function' ? options.createThreadHandler : null;
   let currentThreads = [...nextThreads];
+  let createdThreadCount = 0;
   let issueDetailRequestCount = 0;
   const threadStateById = new Map(
     nextThreads.map((currentThread) => [
@@ -193,7 +195,7 @@ async function mockMobileApi(page, options = {}) {
           },
           counts: {
             projects: 1,
-            threads: threadCount
+            threads: currentThreads.length
           }
         })
       });
@@ -217,11 +219,59 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
-    if (pathname === `/api/projects/${projectId}/threads`) {
+    if (pathname === `/api/projects/${projectId}/threads` && method === 'GET') {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
+          threads: currentThreads
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/projects/${projectId}/threads` && method === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}');
+      const now = `2026-03-18T10:${20 + createdThreadCount}:00.000Z`;
+      const createdThreadId = `thread-selection-created-${++createdThreadCount}`;
+      const defaultThread = {
+        ...thread,
+        id: createdThreadId,
+        title: String(payload.name ?? '').trim() || `Created Thread ${createdThreadCount}`,
+        name: String(payload.name ?? '').trim() || `Created Thread ${createdThreadCount}`,
+        project_id: projectId,
+        status: 'idle',
+        progress: 0,
+        last_event: 'thread.created',
+        last_message: '',
+        created_at: now,
+        updated_at: now
+      };
+      const createdThread = {
+        ...defaultThread,
+        ...(createThreadHandler
+          ? createThreadHandler({
+              payload,
+              defaultThread,
+              createdThreadCount,
+              currentThreads: [...currentThreads]
+            }) ?? {}
+          : {})
+      };
+
+      currentThreads = [createdThread, ...currentThreads.filter((currentThread) => currentThread.id !== createdThread.id)];
+      threadStateById.set(createdThread.id, {
+        thread: createdThread,
+        issues: [],
+        issueMessages: [],
+        createdIssueCount: 0
+      });
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          thread: createdThread,
           threads: currentThreads
         })
       });
@@ -611,6 +661,236 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
     await expect(firstCard).toHaveCount(0);
     await expect(secondCard).toHaveCount(0);
     await expect(page.getByText('조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요.')).toBeVisible();
+  });
+
+  test('진행 중인 인스턴트 채팅이 있어도 일반 채팅창으로 이동하면 자동 삭제하지 않고 남겨 둔다', async ({ page }) => {
+    const deleteRequests = [];
+
+    await mockMobileApi(page, {
+      threads: [],
+      deleteRequests,
+      createThreadHandler: ({ payload, defaultThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              ...defaultThread,
+              status: 'running',
+              progress: 35,
+              last_event: 'turn.started'
+            }
+          : defaultThread
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-create-button').click();
+    await expect(page.getByRole('heading', { name: '새 채팅창 시작' })).toBeVisible();
+    await page.getByLabel('제목').fill('일반 채팅창');
+    await page.getByRole('button', { name: '채팅 시작' }).click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+    await expect.poll(() => deleteRequests).toEqual([]);
+  });
+
+  test('완료된 인스턴트 채팅을 확인한 뒤 다른 기존 채팅창으로 이동하면 기존 인스턴트 채팅은 삭제된다', async ({ page }) => {
+    const deleteRequests = [];
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-selection-2',
+      title: '일반 채팅창',
+      name: '일반 채팅창',
+      status: 'idle',
+      progress: 0,
+      last_event: 'thread.created',
+      updated_at: '2026-03-18T10:15:00.000Z',
+      created_at: '2026-03-18T10:02:00.000Z',
+      last_message: '기존 일반 채팅창입니다.'
+    };
+
+    await mockMobileApi(page, {
+      threads: [secondaryThread],
+      deleteRequests,
+      createThreadHandler: ({ payload, defaultThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              ...defaultThread,
+              status: 'idle',
+              progress: 100,
+              last_event: 'turn.completed',
+              last_message: '완료된 인스턴트 응답'
+            }
+          : defaultThread
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-list-item-thread-selection-2').click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
+  });
+
+  test('실패한 인스턴트 채팅을 확인한 뒤 다른 기존 채팅창으로 이동하면 기존 인스턴트 채팅은 삭제된다', async ({ page }) => {
+    const deleteRequests = [];
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-selection-2',
+      title: '일반 채팅창',
+      name: '일반 채팅창',
+      status: 'idle',
+      progress: 0,
+      last_event: 'thread.created',
+      updated_at: '2026-03-18T10:15:00.000Z',
+      created_at: '2026-03-18T10:02:00.000Z',
+      last_message: '기존 일반 채팅창입니다.'
+    };
+
+    await mockMobileApi(page, {
+      threads: [secondaryThread],
+      deleteRequests,
+      createThreadHandler: ({ payload, defaultThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              ...defaultThread,
+              status: 'failed',
+              progress: 100,
+              last_event: 'item.agentMessage.delta',
+              last_message: '실패한 인스턴트 응답'
+            }
+          : defaultThread
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-list-item-thread-selection-2').click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
+  });
+
+  test('진행 중인 인스턴트 채팅이 있을 때 +인스턴트를 누르면 교체 확인 후에만 삭제하고 새로 만든다', async ({ page }) => {
+    const deleteRequests = [];
+
+    await mockMobileApi(page, {
+      threads: [],
+      deleteRequests,
+      createThreadHandler: ({ payload, defaultThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              ...defaultThread,
+              status: 'running',
+              progress: 35,
+              last_event: 'turn.started'
+            }
+          : defaultThread
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('mobile-confirm-dialog')).toBeVisible();
+    await expect(page.getByText('기존 인스턴트 채팅의 작업을 중단하고 삭제합니다.')).toBeVisible();
+    await page.getByRole('button', { name: '취소' }).click();
+
+    await expect(page.getByTestId('mobile-confirm-dialog')).toHaveCount(0);
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-2')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toEqual([]);
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('mobile-confirm-dialog')).toBeVisible();
+    await page.getByRole('button', { name: '중단 후 교체' }).click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
+  });
+
+  test('인스턴트 쓰레드만 하나 있을 때 새 채팅창을 만들고 이동하면 기존 인스턴트 쓰레드는 목록에서 사라진다', async ({ page }) => {
+    const deleteRequests = [];
+
+    await mockMobileApi(page, {
+      threads: [],
+      deleteRequests
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-split-layout')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-create-button').click();
+    await expect(page.getByRole('heading', { name: '새 채팅창 시작' })).toBeVisible();
+    await page.getByLabel('제목').fill('일반 채팅창');
+    await page.getByRole('button', { name: '채팅 시작' }).click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
   });
 
   test('단일 화면 하단에 +인스턴트와 +채팅 버튼이 2대3 비율로 보인다', async ({ page }) => {

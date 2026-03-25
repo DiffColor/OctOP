@@ -2710,6 +2710,48 @@ function isTerminalThreadStatus(status) {
   return ["completed", "failed"].includes(status);
 }
 
+function getThreadSnapshotTimestamp(thread) {
+  const timestamp = Date.parse(thread?.updated_at ?? thread?.created_at ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function pickPreferredThreadSnapshot(primaryThread, secondaryThread) {
+  const normalizedPrimary = normalizeThread(primaryThread);
+  const normalizedSecondary = normalizeThread(secondaryThread);
+
+  if (!normalizedPrimary) {
+    return normalizedSecondary;
+  }
+
+  if (!normalizedSecondary) {
+    return normalizedPrimary;
+  }
+
+  const primaryTimestamp = getThreadSnapshotTimestamp(normalizedPrimary);
+  const secondaryTimestamp = getThreadSnapshotTimestamp(normalizedSecondary);
+
+  if (primaryTimestamp !== secondaryTimestamp) {
+    return primaryTimestamp > secondaryTimestamp ? normalizedPrimary : normalizedSecondary;
+  }
+
+  return normalizedPrimary;
+}
+
+function isThreadExecutionInProgress(thread) {
+  const status = String(thread?.status ?? "").trim();
+  const lastEvent = String(thread?.last_event ?? "").trim();
+
+  if (["running", "queued", "awaiting_input"].includes(status)) {
+    return true;
+  }
+
+  if (status) {
+    return false;
+  }
+
+  return ["turn.starting", "turn.started", "turn.plan.updated", "turn.diff.updated", "item.agentMessage.delta"].includes(lastEvent);
+}
+
 function isLiveThreadProgressEvent(eventType) {
   return ["turn.started", "turn.starting", "turn.plan.updated", "turn.diff.updated", "item.agentMessage.delta"].includes(
     eventType ?? ""
@@ -11008,16 +11050,16 @@ export default function App() {
     }
   }, [clearThreadTransientState, removeThreadComposerDrafts]);
 
-  const clearInstantThread = useCallback(async () => {
-    const targetThreadId = String(instantThreadIdRef.current ?? "").trim();
+  const clearInstantThread = useCallback(async (threadId = "") => {
+    const targetThreadId = String(threadId ?? instantThreadIdRef.current ?? "").trim();
 
     if (!targetThreadId || !session?.loginId || !selectedBridgeId) {
       if (targetThreadId) {
-        setInstantThreadId("");
+        setInstantThreadId((current) => (current === targetThreadId ? "" : current));
         removeDeletedThreadsFromState([targetThreadId]);
       }
 
-      return;
+      return true;
     }
 
     removeDeletedThreadsFromState([targetThreadId]);
@@ -11032,20 +11074,46 @@ export default function App() {
     } catch {
       // 인스턴트 채팅은 UI 제거를 우선 보장하고, 삭제 실패는 UI 동작을 막지 않음
     }
+
+    return true;
   }, [apiRequest, removeDeletedThreadsFromState, session?.loginId, selectedBridgeId]);
 
-  const clearInstantThreadIfNeeded = useCallback((nextThreadId = "") => {
+  const clearInstantThreadIfNeeded = useCallback(async (nextThreadId = "", options = {}) => {
     const normalizedNextThreadId = String(nextThreadId ?? "").trim();
     const currentInstantThreadId = String(instantThreadIdRef.current ?? "").trim();
 
-    if (!currentInstantThreadId) {
-      return;
+    if (!currentInstantThreadId || currentInstantThreadId === normalizedNextThreadId) {
+      return true;
     }
 
-    if (currentInstantThreadId && currentInstantThreadId !== normalizedNextThreadId) {
-      void clearInstantThread();
+    const requireRunningConfirmation = options.requireRunningConfirmation === true;
+    const currentInstantThread = pickPreferredThreadSnapshot(
+      threadDetailsRef.current[currentInstantThreadId]?.thread ?? null,
+      threads.find((thread) => thread.id === currentInstantThreadId) ?? null
+    );
+
+    if (isThreadExecutionInProgress(currentInstantThread)) {
+      if (!requireRunningConfirmation) {
+        return false;
+      }
+
+      const confirmed = await confirmMobileAction({
+        title: "진행 중인 인스턴트 채팅 교체",
+        message:
+          "현재 인스턴트 채팅은 아직 작업 중입니다. 새 인스턴트 채팅으로 교체하면 기존 인스턴트 채팅의 작업을 중단하고 삭제합니다. 계속하시겠습니까?",
+        confirmLabel: "중단 후 교체",
+        cancelLabel: "취소",
+        tone: "danger"
+      });
+
+      if (!confirmed) {
+        return false;
+      }
     }
-  }, [clearInstantThread]);
+
+    await clearInstantThread(currentInstantThreadId);
+    return true;
+  }, [clearInstantThread, confirmMobileAction, threads]);
   const markStreamActivity = useCallback(() => {
     setStreamActivityAt(Date.now());
   }, []);
@@ -14003,7 +14071,11 @@ export default function App() {
       return false;
     }
 
-    clearInstantThreadIfNeeded();
+    const instantThreadReady = await clearInstantThreadIfNeeded("", { requireRunningConfirmation: true });
+
+    if (!instantThreadReady) {
+      return false;
+    }
 
     setThreadBusy(true);
 
@@ -14218,6 +14290,8 @@ export default function App() {
       const stayOnThread = Boolean(options?.stayOnThread);
 
       if (threadId) {
+        clearInstantThreadIfNeeded(threadId);
+
         if (optimisticThread) {
           setThreads((current) => upsertThread(current, optimisticThread));
           setThreadDetails((current) => ({
@@ -14778,6 +14852,8 @@ export default function App() {
           updated_at: new Date().toISOString()
         };
       }
+
+      clearInstantThreadIfNeeded(createdThreadId);
 
       setThreads((current) => upsertThread(current, nextThread));
       setThreadListsByProjectId((current) => ({
