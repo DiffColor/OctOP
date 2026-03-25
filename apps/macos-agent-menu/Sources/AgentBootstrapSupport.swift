@@ -2487,6 +2487,19 @@ final class AgentBootstrapStore: ObservableObject {
     authMode: String,
     apiKey: String?
   ) async {
+    let normalizedAuthMode = AgentBootstrapConfiguration.normalizedAuthMode(authMode)
+    let trimmedApiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    if normalizedAuthMode == AgentBootstrapConfiguration.authModeApiKey,
+       !trimmedApiKey.isEmpty {
+      if codexLoggedIn {
+        await reloginCodex(log: log, authMode: authMode, apiKey: trimmedApiKey)
+      } else {
+        await loginCodex(log: log, authMode: authMode, apiKey: trimmedApiKey)
+      }
+      return
+    }
+
     await refreshCodexLoginStatus()
     if codexLoggedIn {
       await reloginCodex(log: log, authMode: authMode, apiKey: apiKey)
