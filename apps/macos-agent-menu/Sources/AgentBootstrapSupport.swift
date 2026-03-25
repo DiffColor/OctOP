@@ -3846,7 +3846,7 @@ struct AgentSetupWindow: View {
         Spacer(minLength: 0)
 
         Group {
-          if !bootstrap.codexLoginStatusResolved {
+          if bootstrap.codexLoginInProgress {
             Button {
             } label: {
               Text("확인 중")
@@ -3877,7 +3877,7 @@ struct AgentSetupWindow: View {
             .buttonStyle(.borderedProminent)
           }
         }
-        .disabled(bootstrap.codexLoginInProgress || !bootstrap.codexLoginStatusResolved || isApiKeyMissing)
+        .disabled(bootstrap.codexLoginInProgress || isApiKeyMissing)
       }
     }
   }
