@@ -12418,6 +12418,13 @@ export default function App() {
           });
         };
 
+        if (payload.type === "thread.deleted" || payload.type === "rootThread.deleted") {
+          if (eventThreadId) {
+            removeDeletedThreadsFromState([eventThreadId]);
+          }
+          return;
+        }
+
         if (eventThreadId) {
           if (eventThreadId === activeThreadId && isLiveThreadProgressEvent(payload.type)) {
             threadLiveProgressAtByIdRef.current.set(eventThreadId, Date.now());
@@ -12714,6 +12721,7 @@ export default function App() {
     setBridgeStatus,
     selectedBridgeId,
     selectedBridgeKnown,
+    removeDeletedThreadsFromState,
     session?.loginId
   ]);
 
