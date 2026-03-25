@@ -44,19 +44,29 @@ if ("serviceWorker" in navigator) {
     const normalizedTargetBuildId = String(targetBuildId ?? "").trim();
     if (!normalizedTargetBuildId) {
       activationReloadTimer = window.setTimeout(() => {
-        forceReload();
+        void clearServiceWorker().finally(() => {
+          forceReload();
+        });
       }, UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS);
       return;
     }
 
     const startedAt = Date.now();
+    let resolved = false;
+
     const check = async () => {
+      if (resolved) {
+        return;
+      }
+
       try {
         const registration = await navigator.serviceWorker.getRegistration();
         const activeBuildId = getBuildIdFromScriptUrl(registration?.active?.scriptURL);
         const controllerBuildId = getBuildIdFromScriptUrl(navigator.serviceWorker.controller?.scriptURL);
+        const waitingBuildId = getBuildIdFromScriptUrl(registration?.waiting?.scriptURL);
 
-        if (activeBuildId === normalizedTargetBuildId || controllerBuildId === normalizedTargetBuildId) {
+        if (activeBuildId === normalizedTargetBuildId || waitingBuildId === normalizedTargetBuildId || controllerBuildId === normalizedTargetBuildId) {
+          resolved = true;
           forceReload();
           return;
         }
@@ -65,7 +75,10 @@ if ("serviceWorker" in navigator) {
       }
 
       if (Date.now() - startedAt >= UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS) {
-        forceReload();
+        resolved = true;
+        void clearServiceWorker().finally(() => {
+          forceReload();
+        });
         return;
       }
 
@@ -97,6 +110,37 @@ if ("serviceWorker" in navigator) {
         ""
     );
 
+  const requestServiceWorkerActivation = async (targetWorker = null) => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const waitingWorker = registration?.waiting;
+    const activationWorker = targetWorker && targetWorker.state !== "redundant" ? targetWorker : waitingWorker;
+
+    try {
+      await registration?.update?.();
+    } catch {
+      // no-op
+    }
+
+    if (activationWorker && activationWorker.state !== "redundant") {
+      activationWorker.postMessage(SKIP_WAITING_MESSAGE);
+      return;
+    }
+
+    if (waitingWorker && waitingWorker.state !== "redundant") {
+      waitingWorker.postMessage(SKIP_WAITING_MESSAGE);
+    } else {
+      throw new Error("no activatable worker");
+    }
+  };
+
+  const clearServiceWorker = async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+
+    if (registration) {
+      await registration.unregister().catch(() => {});
+    }
+  };
+
   const notifyUpdateReady = (worker) => {
     if (!worker || pendingActivationWorker === worker) {
       return;
@@ -110,13 +154,15 @@ if ("serviceWorker" in navigator) {
       waitForNewControllerScript(targetBuildId ?? SERVICE_WORKER_BUILD_ID);
 
       try {
-        if (worker.state !== "redundant") {
-          worker.postMessage(SKIP_WAITING_MESSAGE);
-        } else {
-          forceReload();
-        }
+        void requestServiceWorkerActivation(worker).catch(() => {
+          void clearServiceWorker().finally(() => {
+            forceReload();
+          });
+        });
       } catch {
-        forceReload();
+        void clearServiceWorker().finally(() => {
+          forceReload();
+        });
       }
     };
 
