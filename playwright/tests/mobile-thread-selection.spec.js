@@ -5,6 +5,7 @@ const { REPO_ROOT, StaticAppServer, buildWorkspace } = require('../helpers/stati
 const MOBILE_DIST_DIR = path.join(REPO_ROOT, 'apps', 'mobile', 'dist');
 const SESSION_KEY = 'octop.mobile.session';
 const WORKSPACE_LAYOUT_KEY = 'octop.mobile.workspace.layout.v1';
+const WORKSPACE_SNAPSHOT_KEY = 'octop.mobile.workspace.snapshot.v1';
 
 const loginId = 'playwright-user';
 const bridgeId = 'bridge-e2e';
@@ -895,6 +896,95 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
     await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
     await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
     await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
+  });
+
+  test('복원된 완료 인스턴트 채팅은 instantThreadId 저장값이 없어도 다른 기존 채팅창으로 이동할 때 삭제된다', async ({ page }) => {
+    const deleteRequests = [];
+    const restoredInstantThread = {
+      ...thread,
+      id: 'thread-selection-instant-restored',
+      title: '인스턴트 채팅',
+      name: '인스턴트 채팅',
+      status: 'idle',
+      progress: 100,
+      last_event: 'turn.completed',
+      updated_at: '2026-03-18T10:20:00.000Z',
+      created_at: '2026-03-18T10:18:00.000Z',
+      last_message: '이미 완료된 인스턴트 응답입니다.'
+    };
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-selection-2',
+      title: '일반 채팅창',
+      name: '일반 채팅창',
+      status: 'idle',
+      progress: 0,
+      last_event: 'thread.created',
+      updated_at: '2026-03-18T10:15:00.000Z',
+      created_at: '2026-03-18T10:02:00.000Z',
+      last_message: '기존 일반 채팅창입니다.'
+    };
+    const workspaceLayout = {
+      loginId,
+      bridgeId,
+      selectedScope: { kind: 'project', id: projectId },
+      selectedThreadId: restoredInstantThread.id,
+      activeView: 'thread'
+    };
+    const workspaceSnapshot = {
+      version: 1,
+      scopes: {
+        [`${loginId}::${bridgeId}`]: {
+          snapshot: {
+            projects: [
+              {
+                id: projectId,
+                name: 'E2E Project',
+                bridge_id: bridgeId
+              }
+            ],
+            todoChats: [],
+            threadListsByProjectId: {
+              [projectId]: [restoredInstantThread, secondaryThread]
+            }
+          }
+        }
+      }
+    };
+
+    await mockMobileApi(page, {
+      threads: [restoredInstantThread, secondaryThread],
+      deleteRequests
+    });
+    await page.addInitScript(
+      ({ sessionKey, sessionValue, workspaceLayoutKey, workspaceLayoutValue, workspaceSnapshotKey, workspaceSnapshotValue }) => {
+        window.localStorage.setItem(sessionKey, JSON.stringify(sessionValue));
+        window.localStorage.setItem(workspaceLayoutKey, JSON.stringify(workspaceLayoutValue));
+        window.localStorage.setItem(workspaceSnapshotKey, JSON.stringify(workspaceSnapshotValue));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      {
+        sessionKey: SESSION_KEY,
+        sessionValue: session,
+        workspaceLayoutKey: WORKSPACE_LAYOUT_KEY,
+        workspaceLayoutValue: workspaceLayout,
+        workspaceSnapshotKey: WORKSPACE_SNAPSHOT_KEY,
+        workspaceSnapshotValue: workspaceSnapshot
+      }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-instant-restored')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+
+    await page.getByTestId('thread-list-item-thread-selection-2').click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-instant-restored')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-instant-restored');
   });
 
   test('진행 중인 인스턴트 채팅이 있을 때 +인스턴트를 누르면 교체 확인 후에만 삭제하고 새로 만든다', async ({ page }) => {

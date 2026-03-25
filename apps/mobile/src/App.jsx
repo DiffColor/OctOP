@@ -607,6 +607,7 @@ function createDefaultMobileWorkspaceLayout() {
     bridgeId: "",
     selectedScope: { kind: "project", id: "" },
     selectedThreadId: "",
+    instantThreadId: "",
     selectedTodoChatId: "",
     draftThreadProjectId: "",
     threadComposerDrafts: {},
@@ -1123,6 +1124,7 @@ function normalizeMobileWorkspaceLayout(layout, filters = {}) {
     bridgeId: String(filters.bridgeId ?? source.bridgeId ?? "").trim(),
     selectedScope,
     selectedThreadId: String(source.selectedThreadId ?? "").trim(),
+    instantThreadId: String(source.instantThreadId ?? "").trim(),
     selectedTodoChatId: String(source.selectedTodoChatId ?? "").trim(),
     draftThreadProjectId: String(source.draftThreadProjectId ?? "").trim(),
     threadComposerDrafts: normalizeThreadComposerDrafts(source.threadComposerDrafts),
@@ -2708,6 +2710,11 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
 
 function isTerminalThreadStatus(status) {
   return ["completed", "failed"].includes(status);
+}
+
+function isInstantThread(thread) {
+  const title = String(thread?.title ?? thread?.name ?? "").trim();
+  return title === "인스턴트 채팅";
 }
 
 function getThreadSnapshotTimestamp(thread) {
@@ -10584,7 +10591,7 @@ export default function App() {
   const [selectedBridgeId, setSelectedBridgeId] = useState(() => initialSelectedBridgeIdRef.current);
   const [selectedScope, setSelectedScope] = useState(() => initialWorkspaceLayoutRef.current.selectedScope);
   const [selectedThreadId, setSelectedThreadId] = useState(() => initialWorkspaceLayoutRef.current.selectedThreadId);
-  const [instantThreadId, setInstantThreadId] = useState("");
+  const [instantThreadId, setInstantThreadId] = useState(() => initialWorkspaceLayoutRef.current.instantThreadId);
   const pendingPushDeepLinkRef = useRef(readPushDeepLink());
   const [selectedTodoChatId, setSelectedTodoChatId] = useState(() => initialWorkspaceLayoutRef.current.selectedTodoChatId);
   const [draftThreadProjectId, setDraftThreadProjectId] = useState(() => initialWorkspaceLayoutRef.current.draftThreadProjectId);
@@ -11225,6 +11232,57 @@ export default function App() {
   useEffect(() => {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
+
+  useEffect(() => {
+    const knownThreadsById = new Map();
+    const registerThread = (thread) => {
+      const normalizedThread = normalizeThread(thread);
+
+      if (!normalizedThread?.id) {
+        return;
+      }
+
+      knownThreadsById.set(
+        normalizedThread.id,
+        pickPreferredThreadSnapshot(knownThreadsById.get(normalizedThread.id) ?? null, normalizedThread)
+      );
+    };
+
+    threads.forEach(registerThread);
+    Object.values(threadListsByProjectId ?? {}).forEach((threadList) => {
+      if (!Array.isArray(threadList)) {
+        return;
+      }
+
+      threadList.forEach(registerThread);
+    });
+    Object.values(threadDetails ?? {}).forEach((detail) => {
+      registerThread(detail?.thread ?? null);
+    });
+
+    const currentInstantThreadId = String(instantThreadId ?? "").trim();
+    const selectedKnownThread = knownThreadsById.get(selectedThreadId) ?? null;
+
+    if (currentInstantThreadId && knownThreadsById.has(currentInstantThreadId)) {
+      return;
+    }
+
+    let nextInstantThread = selectedKnownThread && isInstantThread(selectedKnownThread) ? selectedKnownThread : null;
+
+    for (const thread of knownThreadsById.values()) {
+      if (!isInstantThread(thread)) {
+        continue;
+      }
+
+      nextInstantThread = pickPreferredThreadSnapshot(nextInstantThread, thread);
+    }
+
+    const nextInstantThreadId = String(nextInstantThread?.id ?? "").trim();
+
+    if (nextInstantThreadId !== currentInstantThreadId) {
+      setInstantThreadId(nextInstantThreadId);
+    }
+  }, [instantThreadId, selectedThreadId, threadDetails, threadListsByProjectId, threads]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -12965,6 +13023,7 @@ export default function App() {
     setStreamActivityAt(null);
     setSelectedScope(restoredLayout.selectedScope);
     setSelectedThreadId(restoredLayout.selectedThreadId);
+    setInstantThreadId(restoredLayout.instantThreadId);
     setSelectedTodoChatId(restoredLayout.selectedTodoChatId);
     setDraftThreadProjectId(restoredLayout.draftThreadProjectId);
     setThreadComposerDrafts(restoredLayout.threadComposerDrafts);
@@ -12991,6 +13050,7 @@ export default function App() {
       {
         selectedScope,
         selectedThreadId,
+        instantThreadId,
         selectedTodoChatId,
         draftThreadProjectId,
         threadComposerDrafts,
@@ -13007,6 +13067,7 @@ export default function App() {
   }, [
     activeView,
     draftThreadProjectId,
+    instantThreadId,
     selectedBridgeId,
     selectedScope,
     selectedThreadId,
@@ -13370,6 +13431,7 @@ export default function App() {
     setSelectedWorkspacePath("");
     setSelectedScope({ kind: "project", id: "" });
     setSelectedThreadId("");
+    setInstantThreadId("");
     setSelectedTodoChatId("");
     setDraftThreadProjectId("");
     setThreadComposerDrafts({});
