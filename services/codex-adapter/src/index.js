@@ -831,6 +831,113 @@ function normalizeCodexModel(value) {
   return normalized || "gpt-5.4";
 }
 
+function resolveCodexModelFromOptions(options = {}) {
+  const requestModel = options.model;
+  const fallbackModel = resolveCodexModelFromEnvironmentFiles()
+    ?? process.env.OCTOP_CODEX_MODEL
+    ?? CODEX_MODEL;
+
+  return normalizeCodexModel(requestModel || fallbackModel);
+}
+
+function resolveCodexApprovalPolicyFromOptions(options = {}) {
+  const requestApprovalPolicy = options.approvalPolicy ?? options.approval_policy;
+  const fallbackApprovalPolicy =
+    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_APPROVAL_POLICY")
+    ?? process.env.OCTOP_CODEX_APPROVAL_POLICY
+    ?? CODEX_APPROVAL_POLICY;
+
+  return normalizeStringOption(requestApprovalPolicy, fallbackApprovalPolicy);
+}
+
+function resolveCodexSandboxFromOptions(options = {}) {
+  const requestSandbox = options.sandbox;
+  const fallbackSandbox =
+    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_SANDBOX")
+    ?? process.env.OCTOP_CODEX_SANDBOX
+    ?? CODEX_SANDBOX;
+
+  return normalizeStringOption(requestSandbox, fallbackSandbox);
+}
+
+function resolveCodexReasoningEffortFromOptions(options = {}) {
+  const requestReasoningEffort = options.reasoningEffort ?? options.reasoning_effort;
+  const fallbackReasoningEffort =
+    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_REASONING_EFFORT")
+    ?? process.env.OCTOP_CODEX_REASONING_EFFORT
+    ?? CODEX_REASONING_EFFORT;
+
+  const request = normalizeReasoningEffort(requestReasoningEffort);
+
+  return request ?? normalizeReasoningEffort(fallbackReasoningEffort);
+}
+
+function resolveCodexModelFromEnvironmentFiles() {
+  const candidates = [".env.local", ".env"].map((fileName) => resolve(process.cwd(), fileName));
+
+  for (const filePath of candidates) {
+    const model = readEnvironmentFileValue(filePath, "OCTOP_CODEX_MODEL");
+
+    if (model?.trim()) {
+      return model.trim();
+    }
+  }
+
+  return null;
+}
+
+function resolveCodexStringFromEnvironmentFile(key) {
+  const candidates = [".env.local", ".env"].map((fileName) => resolve(process.cwd(), fileName));
+
+  for (const filePath of candidates) {
+    const value = readEnvironmentFileValue(filePath, key);
+
+    if (value?.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function normalizeStringOption(value, fallback = "") {
+  const normalized = String(value ?? "").trim();
+  return normalized || String(fallback ?? "").trim();
+}
+
+function readEnvironmentFileValue(filePath, key) {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    const lines = readFileSync(filePath, "utf8").split(/\r?\n/u);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      const separatorIndex = trimmed.indexOf("=");
+      if (separatorIndex < 0) {
+        continue;
+      }
+
+      const parsedKey = trimmed.slice(0, separatorIndex).trim();
+      if (parsedKey !== key) {
+        continue;
+      }
+
+      return trimmed.slice(separatorIndex + 1).trim();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function normalizeReasoningEffort(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
 
@@ -5007,12 +5114,15 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     physicalThread.project_id,
     physicalThread.root_thread_id
   );
+  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(options);
+  const sandbox = resolveCodexSandboxFromOptions(options);
+  const reasoningEffort = resolveCodexReasoningEffortFromOptions(options);
   const threadStartParams = {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
-    model: CODEX_MODEL,
-    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
+    approvalPolicy,
+    sandbox,
+    model: resolveCodexModelFromOptions(options),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   };
@@ -5236,12 +5346,14 @@ async function startTurnOnPhysicalThread(
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
       activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
-      const turnStartParams = {
-        threadId: activeCodexThreadId,
-        cwd,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
-        input: turnInput
-      };
+    const approvalPolicy = resolveCodexApprovalPolicyFromOptions(rootThread);
+
+    const turnStartParams = {
+      threadId: activeCodexThreadId,
+      cwd,
+      approvalPolicy,
+      input: turnInput
+    };
       appendDiagnosticLog("info", "app_server.turn_start.params", "turn/start params before app-server request", {
         source: "startTurnOnPhysicalThread",
         user_id: sanitizeUserId(userId),
@@ -10873,12 +10985,13 @@ async function startThreadTurn(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, current.project_id);
+  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(current);
 
   try {
     const turnStartParams = {
       threadId,
       cwd,
-      approvalPolicy: CODEX_APPROVAL_POLICY,
+      approvalPolicy,
       input: [
         {
           type: "text",
@@ -10961,12 +11074,15 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
+  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(payload);
+  const sandbox = resolveCodexSandboxFromOptions(payload);
+  const reasoningEffort = resolveCodexReasoningEffortFromOptions(payload);
   const threadStartParams = {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
-    model: CODEX_MODEL,
-    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
+    approvalPolicy,
+    sandbox,
+    model: resolveCodexModelFromOptions(payload),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   };
