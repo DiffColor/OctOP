@@ -7190,9 +7190,10 @@ function getAppServerAuthenticationError(account) {
     return null;
   }
 
+  const accountType = String(account?.type ?? "").trim();
   const hasSignedInAccount = Boolean(
-    String(account?.email ?? "").trim() &&
-    String(account?.type ?? "").trim()
+    (String(account?.email ?? "").trim() && accountType) ||
+    accountType === "apiKey"
   );
 
   if (hasSignedInAccount) {
