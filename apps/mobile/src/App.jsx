@@ -10677,6 +10677,7 @@ export default function App() {
   const viewportWidth = useVisualViewportWidth();
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
+  const pwaUpdateActivationInFlightRef = useRef(false);
   const threadLoadRequestIdByIdRef = useRef(new Map());
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
@@ -12395,6 +12396,11 @@ export default function App() {
 
     const syncPendingUpdateActivator = (activate = null) => {
       pendingUpdateActivatorRef.current = typeof activate === "function" ? activate : null;
+
+      if (pwaUpdateActivationInFlightRef.current) {
+        return;
+      }
+
       setPwaUpdateBusy(false);
       setPwaUpdateVisible(Boolean(pendingUpdateActivatorRef.current));
     };
@@ -15327,7 +15333,13 @@ export default function App() {
       return;
     }
 
+    if (pwaUpdateActivationInFlightRef.current) {
+      return;
+    }
+
+    pwaUpdateActivationInFlightRef.current = true;
     setPwaUpdateBusy(true);
+    setPwaUpdateVisible(true);
     const activate = pendingUpdateActivatorRef.current;
     window[PWA_UPDATE_ACTIVATOR_KEY] = null;
     pendingUpdateActivatorRef.current = null;

@@ -12,14 +12,71 @@ if ("serviceWorker" in navigator) {
   const UPDATE_CHECK_POLL_INTERVAL_MS = 5_000;
   const UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS = 10_000;
   const UPDATE_ACTIVATION_POLL_INTERVAL_MS = 250;
+  const QUEUED_PWA_UPDATE_BUILD_ID_KEY = "__octopMobileQueuedPwaUpdateBuildId";
+  const UNKNOWN_QUEUED_PWA_UPDATE_BUILD_ID = "__unknown__";
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
   let pendingActivationWorker = null;
   let lastUpdateCheckAt = 0;
   let activationRequested = false;
   let activationReloadTimer = null;
+  let queuedPwaUpdateBuildId = "";
   const observedRegistrations = new WeakSet();
   const observedWorkers = new WeakSet();
+
+  const normalizeQueuedUpdateBuildId = (buildId) => {
+    const normalizedBuildId = String(buildId ?? "").trim();
+    return normalizedBuildId || "";
+  };
+
+  const readQueuedUpdateBuildId = () => {
+    try {
+      return normalizeQueuedUpdateBuildId(window.sessionStorage?.getItem?.(QUEUED_PWA_UPDATE_BUILD_ID_KEY));
+    } catch {
+      return "";
+    }
+  };
+
+  const writeQueuedUpdateBuildId = (buildId = "") => {
+    const normalizedBuildId = normalizeQueuedUpdateBuildId(buildId);
+
+    try {
+      if (!normalizedBuildId) {
+        window.sessionStorage?.removeItem?.(QUEUED_PWA_UPDATE_BUILD_ID_KEY);
+        return;
+      }
+
+      window.sessionStorage?.setItem?.(QUEUED_PWA_UPDATE_BUILD_ID_KEY, normalizedBuildId);
+    } catch {
+      // ignore storage failures
+    }
+  };
+
+  const queueLatestPwaUpdate = (buildId = "") => {
+    queuedPwaUpdateBuildId = normalizeQueuedUpdateBuildId(buildId) || UNKNOWN_QUEUED_PWA_UPDATE_BUILD_ID;
+    writeQueuedUpdateBuildId(queuedPwaUpdateBuildId);
+  };
+
+  const clearQueuedPwaUpdate = () => {
+    queuedPwaUpdateBuildId = "";
+    writeQueuedUpdateBuildId("");
+  };
+
+  const getQueuedPwaUpdateBuildId = () => (queuedPwaUpdateBuildId === UNKNOWN_QUEUED_PWA_UPDATE_BUILD_ID ? "" : queuedPwaUpdateBuildId);
+
+  const shouldAutoActivateQueuedUpdate = (buildId = "") => {
+    if (!queuedPwaUpdateBuildId) {
+      return false;
+    }
+
+    if (queuedPwaUpdateBuildId === UNKNOWN_QUEUED_PWA_UPDATE_BUILD_ID) {
+      return true;
+    }
+
+    return normalizeQueuedUpdateBuildId(buildId) === queuedPwaUpdateBuildId;
+  };
+
+  queuedPwaUpdateBuildId = readQueuedUpdateBuildId();
 
   const clearActivationReloadTimer = () => {
     if (activationReloadTimer) {
@@ -34,6 +91,8 @@ if ("serviceWorker" in navigator) {
     }
 
     refreshing = true;
+    pendingActivationWorker = null;
+    window[PWA_UPDATE_ACTIVATOR_KEY] = null;
     clearActivationReloadTimer();
     window.location.reload();
   };
@@ -162,15 +221,32 @@ if ("serviceWorker" in navigator) {
   };
 
   const notifyUpdateReady = (worker) => {
-    if (!worker || pendingActivationWorker === worker) {
+    if (!worker || pendingActivationWorker === worker || refreshing) {
+      return;
+    }
+
+    const targetBuildId = getBuildIdFromScriptUrl(worker?.scriptURL);
+
+    if (activationRequested) {
+      queueLatestPwaUpdate(targetBuildId);
       return;
     }
 
     pendingActivationWorker = worker;
-    const targetBuildId = getBuildIdFromScriptUrl(worker?.scriptURL);
 
     const activate = () => {
+      if (activationRequested || refreshing) {
+        return;
+      }
+
       activationRequested = true;
+      pendingActivationWorker = worker;
+      window[PWA_UPDATE_ACTIVATOR_KEY] = null;
+
+      if (shouldAutoActivateQueuedUpdate(targetBuildId)) {
+        clearQueuedPwaUpdate();
+      }
+
       waitForNewControllerScript(targetBuildId ?? SERVICE_WORKER_BUILD_ID);
 
       try {
@@ -185,6 +261,16 @@ if ("serviceWorker" in navigator) {
         });
       }
     };
+
+    if (queuedPwaUpdateBuildId) {
+      if (shouldAutoActivateQueuedUpdate(targetBuildId)) {
+        activate();
+        return;
+      }
+
+      checkForServiceWorkerUpdate();
+      return;
+    }
 
     window[PWA_UPDATE_ACTIVATOR_KEY] = activate;
     window.dispatchEvent(
@@ -253,6 +339,11 @@ if ("serviceWorker" in navigator) {
     }
 
     registerUpdateListeners(registration);
+
+    if (activationRequested || refreshing) {
+      return;
+    }
+
     lastUpdateCheckAt = Date.now();
     registration.update().catch(() => {});
   };
@@ -272,7 +363,7 @@ if ("serviceWorker" in navigator) {
   };
 
   const checkForServiceWorkerUpdate = () => {
-    if (shouldSkipUpdateCheck()) {
+    if (shouldSkipUpdateCheck() || activationRequested || refreshing) {
       return;
     }
 
@@ -280,8 +371,13 @@ if ("serviceWorker" in navigator) {
 
     Promise.all([navigator.serviceWorker.getRegistration(), readLatestBuildId().catch(() => null)])
       .then(([registration, latestBuildId]) => {
-        const targetBuildId = latestBuildId ?? SERVICE_WORKER_BUILD_ID;
+        const queuedBuildId = getQueuedPwaUpdateBuildId();
+        const targetBuildId = latestBuildId ?? queuedBuildId ?? SERVICE_WORKER_BUILD_ID;
         const registrationBuildId = getRegistrationBuildId(registration);
+
+        if (queuedBuildId && hasActivatedTargetBuild(registration, queuedBuildId)) {
+          clearQueuedPwaUpdate();
+        }
 
         if (!registration || registrationBuildId !== targetBuildId) {
           return navigator.serviceWorker.register(getServiceWorkerUrl(targetBuildId)).then((nextRegistration) => {
@@ -297,6 +393,8 @@ if ("serviceWorker" in navigator) {
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     clearActivationReloadTimer();
+    pendingActivationWorker = null;
+    window[PWA_UPDATE_ACTIVATOR_KEY] = null;
 
     if (!controllerSeen && !activationRequested) {
       controllerSeen = true;

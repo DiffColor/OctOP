@@ -9,13 +9,30 @@ const MOBILE_DIST_DIR = path.join(REPO_ROOT, 'apps/mobile/dist');
 const TEMP_ROOT = path.join(REPO_ROOT, 'test-results', 'playwright', 'pwa-update');
 const OLD_BUILD_ID = 'playwright-old';
 const NEW_BUILD_ID = 'playwright-new';
+const LATEST_BUILD_ID = 'playwright-latest';
 const OLD_BUILD_DIR = path.join(TEMP_ROOT, 'old');
 const NEW_BUILD_DIR = path.join(TEMP_ROOT, 'new');
+const LATEST_BUILD_DIR = path.join(TEMP_ROOT, 'latest');
 const SERVER_PORT = 4178;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const NPM_COMMAND = 'npm';
 const PWA_UPDATE_ACTIVATOR_KEY = '__octopMobilePwaUpdateActivator';
 const PWA_UPDATE_READY_EVENT = 'octop.mobile.pwa.update-ready';
+const QUEUED_PWA_UPDATE_BUILD_ID_KEY = '__octopMobileQueuedPwaUpdateBuildId';
+const SESSION_KEY = 'octop.mobile.session';
+
+const loginId = 'playwright-user';
+const bridgeId = 'bridge-pwa';
+const projectId = 'project-pwa';
+const session = {
+  accessToken: 'playwright-token',
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  role: 'owner',
+  userId: loginId,
+  displayName: 'Playwright User',
+  permissions: ['*'],
+  loginId
+};
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -190,18 +207,166 @@ async function runMobileBuild(buildId) {
   });
 }
 
-async function copyBuildArtifacts(targetDir, buildId) {
+async function copyBuildArtifacts(targetDir, buildId, options = {}) {
+  const { delaySkipWaitingMs = 0 } = options;
+
   await fs.rm(targetDir, { recursive: true, force: true });
   await fs.mkdir(targetDir, { recursive: true });
   await fs.cp(MOBILE_DIST_DIR, targetDir, { recursive: true });
   const swPath = path.join(targetDir, 'sw.js');
+
+  if (delaySkipWaitingMs > 0) {
+    const source = await fs.readFile(swPath, 'utf8');
+    const patched = source.replace(
+      '    self.skipWaiting();',
+      `    setTimeout(() => {\n      self.skipWaiting();\n    }, ${delaySkipWaitingMs});`
+    );
+
+    await fs.writeFile(swPath, patched);
+  }
+
   await fs.appendFile(swPath, `\n// playwright-build:${buildId}\n`);
 }
 
-async function prepareBuildVariant(buildId, targetDir) {
+async function prepareBuildVariant(buildId, targetDir, options = {}) {
   console.info(`\n[playwright] building mobile workspace (${buildId})...`);
   await runMobileBuild(buildId);
-  await copyBuildArtifacts(targetDir, buildId);
+  await copyBuildArtifacts(targetDir, buildId, options);
+}
+
+async function mockMobileShellApi(page) {
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const pathname = url.pathname;
+
+    if (pathname === '/api/events') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream; charset=utf-8',
+        body: 'event: ready\ndata: {"ok":true}\n\n'
+      });
+      return;
+    }
+
+    if (pathname === '/api/bridges') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          bridges: [
+            {
+              bridge_id: bridgeId,
+              device_name: 'Playwright Bridge',
+              status: 'online'
+            }
+          ]
+        })
+      });
+      return;
+    }
+
+    if (pathname === '/api/bridge/status') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          bridge_id: bridgeId,
+          app_server: {
+            connected: true,
+            initialized: true,
+            account: {
+              login_id: loginId
+            }
+          },
+          counts: {
+            projects: 1,
+            threads: 0
+          }
+        })
+      });
+      return;
+    }
+
+    if (pathname === '/api/projects') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          projects: [
+            {
+              id: projectId,
+              name: 'PWA Test Project',
+              bridge_id: bridgeId
+            }
+          ]
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/projects/${projectId}/threads`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          threads: []
+        })
+      });
+      return;
+    }
+
+    if (pathname === '/api/todo/chats') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          chats: []
+        })
+      });
+      return;
+    }
+
+    if (pathname === '/api/workspace-roots') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          roots: []
+        })
+      });
+      return;
+    }
+
+    if (pathname === '/api/folders') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          path: '',
+          parent_path: null,
+          entries: []
+        })
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({})
+    });
+  });
+}
+
+async function prepareMobileShell(page) {
+  await mockMobileShellApi(page);
+  await page.addInitScript(({ key, value }) => {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  }, { key: SESSION_KEY, value: session });
+}
+
+async function waitForMobileShell(page) {
+  await page.getByTestId('thread-create-button').waitFor({ timeout: 30_000 });
 }
 
 async function waitForServiceWorkerReady(page) {
@@ -221,7 +386,8 @@ test.describe('모바일 PWA 업데이트 통보', () => {
   test.beforeAll(async () => {
     await fs.mkdir(TEMP_ROOT, { recursive: true });
     await prepareBuildVariant(OLD_BUILD_ID, OLD_BUILD_DIR);
-    await prepareBuildVariant(NEW_BUILD_ID, NEW_BUILD_DIR);
+    await prepareBuildVariant(NEW_BUILD_ID, NEW_BUILD_DIR, { delaySkipWaitingMs: 2500 });
+    await prepareBuildVariant(LATEST_BUILD_ID, LATEST_BUILD_DIR);
     server = new SwitchableStaticServer(OLD_BUILD_DIR);
     await server.start(SERVER_PORT);
   });
@@ -233,12 +399,13 @@ test.describe('모바일 PWA 업데이트 통보', () => {
   });
 
   test('페이지가 열린 상태에서도 업데이트 준비 알림을 띄운다', async ({ page }) => {
+    await prepareMobileShell(page);
     await page.goto(BASE_URL, { waitUntil: 'load' });
-    await page.getByRole('button', { name: '접속하기' }).waitFor({ timeout: 30_000 });
+    await waitForMobileShell(page);
     await waitForServiceWorkerReady(page);
 
     await page.reload({ waitUntil: 'load' });
-    await page.getByRole('button', { name: '접속하기' }).waitFor({ timeout: 30_000 });
+    await waitForMobileShell(page);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30_000 });
 
     await page.evaluate((eventName) => {
@@ -247,17 +414,30 @@ test.describe('모바일 PWA 업데이트 통보', () => {
       });
     }, PWA_UPDATE_READY_EVENT);
 
-    await server.setRoot(NEW_BUILD_DIR);
+    await server.setRoot(LATEST_BUILD_DIR);
 
-    await page.evaluate(async () => {
-      const registration = await navigator.serviceWorker.getRegistration();
-      await registration?.update();
-    });
+    await page.evaluate((activatorKey) => {
+      window[activatorKey] = null;
+    }, PWA_UPDATE_ACTIVATOR_KEY);
 
-    await page.waitForFunction(async () => {
+    await page.evaluate(async (latestBuildId) => {
+      const registration = await navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(latestBuildId)}`);
+      await registration?.update?.();
+    }, LATEST_BUILD_ID);
+
+    await page.waitForFunction(
+      (expectedBuildId) => {
+        const scriptUrl = navigator.serviceWorker.controller?.scriptURL ?? '';
+        return !scriptUrl.includes(`v=${expectedBuildId}`);
+      },
+      LATEST_BUILD_ID,
+      { timeout: 30_000 }
+    );
+
+    await page.waitForFunction(async (expectedBuildId) => {
       const registration = await navigator.serviceWorker.getRegistration();
-      return Boolean(registration?.waiting);
-    }, null, { timeout: 60_000 });
+      return registration?.waiting?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false;
+    }, LATEST_BUILD_ID, { timeout: 60_000 });
 
     await page.evaluate(() => window.__playwrightUpdatePromise);
 
@@ -292,20 +472,99 @@ test.describe('모바일 PWA 업데이트 통보', () => {
     await page.waitForLoadState('load');
     await page.waitForFunction(
       (expectedBuildId) => navigator.serviceWorker.controller?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false,
-      NEW_BUILD_ID,
+      LATEST_BUILD_ID,
       { timeout: 30_000 }
     );
-    const controllerSnapshot = await page.evaluate(async () => {
-      const registration = await navigator.serviceWorker.getRegistration();
-      return {
-        controllerScript: navigator.serviceWorker.controller?.scriptURL ?? null,
-        activeScript: registration?.active?.scriptURL ?? null,
-        waitingScript: registration?.waiting?.scriptURL ?? null
-      };
-    });
-    expect(controllerSnapshot.controllerScript).toContain(`v=${NEW_BUILD_ID}`);
-    expect(controllerSnapshot.activeScript).toContain(`v=${NEW_BUILD_ID}`);
-    expect(controllerSnapshot.waitingScript).toBeNull();
+    await page.waitForLoadState('load');
+    await waitForMobileShell(page);
+    await expect
+      .poll(async () => {
+        try {
+          return await page.evaluate(async (expectedBuildId) => {
+            const registration = await navigator.serviceWorker.getRegistration();
+            return {
+              hasLatestController: navigator.serviceWorker.controller?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false,
+              hasLatestActive: registration?.active?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false,
+              waitingScript: registration?.waiting?.scriptURL ?? null
+            };
+          }, LATEST_BUILD_ID);
+        } catch {
+          return {
+            hasLatestController: false,
+            hasLatestActive: false,
+            waitingScript: '__navigation_in_progress__'
+          };
+        }
+      }, { timeout: 30_000 })
+      .toEqual({
+        hasLatestController: true,
+        hasLatestActive: true,
+        waitingScript: null
+      });
     await expect(page.getByText('업데이트가 준비되었습니다')).toHaveCount(0);
+  });
+
+  test('업데이트 중 새 업데이트가 들어오면 마지막 업데이트만 예약해서 새로고침 뒤 이어서 적용한다', async ({ page }) => {
+    await prepareMobileShell(page);
+    await page.goto(BASE_URL, { waitUntil: 'load' });
+    await waitForMobileShell(page);
+    await waitForServiceWorkerReady(page);
+
+    await page.reload({ waitUntil: 'load' });
+    await waitForMobileShell(page);
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30_000 });
+
+    await page.evaluate((eventName) => {
+      window.__playwrightUpdatePromise = new Promise((resolve) => {
+        window.addEventListener(eventName, resolve, { once: true });
+      });
+    }, PWA_UPDATE_READY_EVENT);
+
+    await server.setRoot(NEW_BUILD_DIR);
+
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      await registration?.update();
+    });
+
+    await page.waitForFunction(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return Boolean(registration?.waiting);
+    }, null, { timeout: 60_000 });
+
+    await page.evaluate(() => window.__playwrightUpdatePromise);
+
+    await expect(page.getByText('업데이트가 준비되었습니다')).toBeVisible();
+    await expect(page.getByRole('button', { name: '지금 새로고침' })).toBeVisible();
+
+    await server.setRoot(LATEST_BUILD_DIR);
+    await page.getByRole('button', { name: '지금 새로고침' }).click();
+    await expect(page.getByRole('button', { name: '새로고침 중...' })).toBeVisible();
+
+    await page.evaluate(async (latestBuildId) => {
+      const registration = await navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(latestBuildId)}`);
+      await registration?.update?.();
+    }, LATEST_BUILD_ID);
+
+    await page.waitForFunction(
+      ({ storageKey, latestBuildId }) => window.sessionStorage.getItem(storageKey) === latestBuildId,
+      { storageKey: QUEUED_PWA_UPDATE_BUILD_ID_KEY, latestBuildId: LATEST_BUILD_ID },
+      { timeout: 30_000 }
+    );
+
+    await page.waitForFunction(
+      (expectedBuildId) => navigator.serviceWorker.controller?.scriptURL?.includes(`v=${expectedBuildId}`) ?? false,
+      LATEST_BUILD_ID,
+      { timeout: 60_000 }
+    );
+
+    await page.waitForFunction(
+      (storageKey) => window.sessionStorage.getItem(storageKey) === null,
+      QUEUED_PWA_UPDATE_BUILD_ID_KEY,
+      { timeout: 30_000 }
+    );
+
+    await expect(page.getByText('업데이트가 준비되었습니다')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '지금 새로고침' })).toHaveCount(0);
   });
 });
