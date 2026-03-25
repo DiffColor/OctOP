@@ -71,6 +71,7 @@ async function mockMobileApi(page, options = {}) {
   const nextIssues = Array.isArray(options.issues) ? options.issues : [issue];
   const nextIssueMessages = Array.isArray(options.issueMessages) ? options.issueMessages : issueMessages;
   const primaryThreadId = String(nextThreads[0]?.id ?? threadId);
+  const eventMessages = Array.isArray(options.eventMessages) ? options.eventMessages : [];
   const requestLog = Array.isArray(options.requestLog) ? options.requestLog : null;
   const deleteRequests = Array.isArray(options.deleteRequests) ? options.deleteRequests : null;
   const issueDetailRequestHandler =
@@ -155,10 +156,19 @@ async function mockMobileApi(page, options = {}) {
     }
 
     if (pathname === '/api/events') {
+      const body =
+        [
+          'event: ready',
+          'data: {"ok":true}'
+        ].join('\n') +
+        '\n\n' +
+        eventMessages.map((message) => `data: ${JSON.stringify(message)}`).join('\n\n') +
+        (eventMessages.length > 0 ? '\n\n' : '');
+
       await route.fulfill({
         status: 200,
         contentType: 'text/event-stream; charset=utf-8',
-        body: 'event: ready\ndata: {"ok":true}\n\n'
+        body
       });
       return;
     }
@@ -783,6 +793,77 @@ test.describe('모바일 스레드 멀티 선택 길게 누름', () => {
               progress: 100,
               last_event: 'item.agentMessage.delta',
               last_message: '실패한 인스턴트 응답'
+            }
+          : defaultThread
+    });
+    await page.addInitScript(
+      ({ key, value }) => {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    await page.goto(baseUrl);
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+
+    await page.getByTestId('thread-create-instant-button').click();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toBeVisible();
+
+    await page.getByTestId('thread-list-item-thread-selection-2').click();
+
+    await expect(page.getByTestId('thread-list-item-thread-selection-2')).toBeVisible();
+    await expect(page.getByTestId('thread-list-item-thread-selection-created-1')).toHaveCount(0);
+    await expect.poll(() => deleteRequests).toContain('thread-selection-created-1');
+  });
+
+  test('쓰레드 status가 아직 running이어도 확인한 최신 이슈가 완료 상태면 다른 기존 채팅창으로 이동할 때 인스턴트 채팅은 삭제된다', async ({ page }) => {
+    const deleteRequests = [];
+    const secondaryThread = {
+      ...thread,
+      id: 'thread-selection-2',
+      title: '일반 채팅창',
+      name: '일반 채팅창',
+      status: 'idle',
+      progress: 0,
+      last_event: 'thread.created',
+      updated_at: '2026-03-18T10:15:00.000Z',
+      created_at: '2026-03-18T10:02:00.000Z',
+      last_message: '기존 일반 채팅창입니다.'
+    };
+
+    await mockMobileApi(page, {
+      threads: [secondaryThread],
+      deleteRequests,
+      eventMessages: [
+        {
+          type: 'bridge.threadIssues.updated',
+          payload: {
+            thread_id: 'thread-selection-created-1',
+            issues: [
+              {
+                ...issue,
+                id: 'issue-selection-created-finished',
+                thread_id: 'thread-selection-created-1',
+                status: 'completed',
+                updated_at: '2026-03-18T10:21:00.000Z',
+                created_at: '2026-03-18T10:20:00.000Z'
+              }
+            ]
+          }
+        }
+      ],
+      createThreadHandler: ({ payload, defaultThread }) =>
+        payload.name === '인스턴트 채팅'
+          ? {
+              ...defaultThread,
+              status: 'running',
+              progress: 90,
+              last_event: 'item.agentMessage.delta',
+              last_message: '표시만 running으로 남아 있는 인스턴트 응답'
             }
           : defaultThread
     });
