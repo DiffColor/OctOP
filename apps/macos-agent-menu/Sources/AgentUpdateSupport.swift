@@ -185,10 +185,64 @@ extension AgentBootstrapStore {
 
   private func fetchLatestRelease() async throws -> AppUpdateDescriptor? {
     let arch = currentArchitecture()
-    let requestURL = appUpdateTagsFeedURL
-    let data = try await loadAppUpdateTagsPayload(from: requestURL)
-
+    let requestURL = appUpdateFeedURL
+    let data = try await loadAppUpdateFeedPayload(from: requestURL)
     let payload = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+
+    if payload.contains(where: { $0["assets"] != nil || $0["tag_name"] != nil }) {
+      return latestReleaseDescriptor(fromReleasesPayload: payload, architecture: arch)
+    }
+
+    return try await latestReleaseDescriptor(fromTagsPayload: payload, architecture: arch)
+  }
+
+  private func latestReleaseDescriptor(
+    fromReleasesPayload payload: [[String: Any]],
+    architecture: String
+  ) -> AppUpdateDescriptor? {
+    let includePrerelease = MacSemVersion.parse(currentAppVersionTag)?.suffix?.isEmpty == false
+    var releases: [(MacSemVersion, AppUpdateDescriptor)] = []
+
+    for item in payload {
+      if (item["draft"] as? Bool) == true {
+        continue
+      }
+
+      if !includePrerelease, (item["prerelease"] as? Bool) == true {
+        continue
+      }
+
+      guard let tagName = item["tag_name"] as? String,
+            let version = MacSemVersion.parse(tagName) else {
+        continue
+      }
+
+      let normalizedTag = Self.normalizeVersionTag(tagName)
+      let expectedAssetName = expectedAppUpdateAssetName(for: normalizedTag, architecture: architecture)
+      guard let assets = item["assets"] as? [[String: Any]],
+            let asset = assets.first(where: {
+              ($0["name"] as? String) == expectedAssetName &&
+              ($0["browser_download_url"] as? String)?.isEmpty == false
+            }),
+            let assetName = asset["name"] as? String,
+            let downloadURLString = asset["browser_download_url"] as? String,
+            let downloadURL = URL(string: downloadURLString) else {
+        continue
+      }
+
+      releases.append((
+        version,
+        AppUpdateDescriptor(tag: normalizedTag, assetName: assetName, downloadURL: downloadURL)
+      ))
+    }
+
+    return releases.sorted(by: { $0.0 > $1.0 }).first?.1
+  }
+
+  private func latestReleaseDescriptor(
+    fromTagsPayload payload: [[String: Any]],
+    architecture: String
+  ) async throws -> AppUpdateDescriptor? {
     var releases: [(MacSemVersion, AppUpdateDescriptor)] = []
 
     for item in payload {
@@ -198,7 +252,7 @@ extension AgentBootstrapStore {
       }
 
       let normalizedTag = Self.normalizeVersionTag(tagName)
-      let expectedAssetName = expectedAppUpdateAssetName(for: normalizedTag, architecture: arch)
+      let expectedAssetName = expectedAppUpdateAssetName(for: normalizedTag, architecture: architecture)
       let downloadURL = appUpdateAssetURL(tag: normalizedTag, assetName: expectedAssetName)
 
       guard let assetExists = try? await remoteAssetExists(at: downloadURL), assetExists else {
@@ -214,7 +268,7 @@ extension AgentBootstrapStore {
     return releases.sorted(by: { $0.0 > $1.0 }).first?.1
   }
 
-  var appUpdateTagsFeedURL: URL {
+  var appUpdateFeedURL: URL {
     if let overrideValue = ProcessInfo.processInfo.environment["OCTOP_AGENT_MENU_APP_UPDATE_TAGS_URL"]?
       .trimmingCharacters(in: .whitespacesAndNewlines),
        !overrideValue.isEmpty,
@@ -222,7 +276,7 @@ extension AgentBootstrapStore {
       return url
     }
 
-    return URL(string: "https://api.github.com/repos/DiffColor/OctOP/tags?per_page=30")!
+    return URL(string: "https://api.github.com/repos/DiffColor/OctOP/releases?per_page=20")!
   }
 
   var appUpdateAssetBaseURL: URL {
@@ -247,7 +301,7 @@ extension AgentBootstrapStore {
       .appendingPathComponent(assetName, isDirectory: false)
   }
 
-  private func loadAppUpdateTagsPayload(from requestURL: URL) async throws -> Data {
+  private func loadAppUpdateFeedPayload(from requestURL: URL) async throws -> Data {
     if requestURL.isFileURL {
       return try Data(contentsOf: requestURL)
     }

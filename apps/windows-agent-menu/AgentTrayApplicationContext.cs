@@ -17,6 +17,7 @@ sealed class AgentTrayApplicationContext : ApplicationContext
   private const int MaxLines = 2000;
   private const int DefaultAppServerStartupTimeoutMs = 15000;
   private const int ServiceLaunchValidationBufferMs = 5000;
+  private static readonly TimeSpan GitHubUpdateCheckInterval = TimeSpan.FromMinutes(5);
   private static readonly string AppTitle = "OctOP Local Agent";
   private static readonly HttpClient HealthcheckClient = new()
   {
@@ -207,8 +208,8 @@ sealed class AgentTrayApplicationContext : ApplicationContext
         });
       },
       null,
-      TimeSpan.FromSeconds(60),
-      TimeSpan.FromSeconds(60));
+      GitHubUpdateCheckInterval,
+      GitHubUpdateCheckInterval);
     _ = InitializeAsync();
   }
 

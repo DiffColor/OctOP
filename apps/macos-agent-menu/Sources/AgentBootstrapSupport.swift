@@ -1095,7 +1095,7 @@ final class AgentBootstrapStore: ObservableObject {
       return interval
     }
 
-    return 60
+    return 300
   }
 
   var hasAvailableRuntimeUpdate: Bool {

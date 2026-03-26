@@ -128,14 +128,14 @@ final class AppBundleUpdateTests: XCTestCase {
   @MainActor
   func testRefreshAvailableAppUpdateDetectsLocalTaggedBundleArtifact() async throws {
     let bootstrap = AgentBootstrapStore()
-    let fixture = try makeLocalAppUpdateFixture(tag: "v1.2.5", bootstrap: bootstrap)
+    let fixture = try makeLocalAppUpdateFixture(tag: "v99.2.5", bootstrap: bootstrap)
 
     setenv("OCTOP_AGENT_MENU_APP_UPDATE_TAGS_URL", fixture.tagsURL.absoluteString, 1)
     setenv("OCTOP_AGENT_MENU_APP_UPDATE_ASSET_BASE_URL", fixture.assetBaseURL.absoluteString, 1)
 
     await bootstrap.refreshAvailableAppUpdate(log: { _ in })
 
-    XCTAssertEqual(bootstrap.availableAppUpdate?.tag, "v1.2.5")
+    XCTAssertEqual(bootstrap.availableAppUpdate?.tag, "v99.2.5")
     XCTAssertEqual(bootstrap.availableAppUpdate?.assetName, fixture.assetName)
     XCTAssertEqual(bootstrap.availableAppUpdate?.downloadURL, fixture.assetURL)
   }
@@ -143,7 +143,7 @@ final class AppBundleUpdateTests: XCTestCase {
   @MainActor
   func testPrepareAvailableAppUpdateStagesLocalTaggedBundleArtifact() async throws {
     let bootstrap = AgentBootstrapStore()
-    let fixture = try makeLocalAppUpdateFixture(tag: "v1.2.5", bootstrap: bootstrap)
+    let fixture = try makeLocalAppUpdateFixture(tag: "v99.2.5", bootstrap: bootstrap)
     let fakeInstalledAppURL = sandboxURL.appendingPathComponent("Installed/OctOPAgentMenu.app", isDirectory: true)
     let sampleFileURL = appSupportURL.appendingPathComponent("config.json")
     try FileManager.default.createDirectory(at: fakeInstalledAppURL, withIntermediateDirectories: true)
@@ -158,7 +158,7 @@ final class AppBundleUpdateTests: XCTestCase {
     )
 
     XCTAssertNotNil(prepared)
-    XCTAssertEqual(prepared?.descriptor.tag, "v1.2.5")
+    XCTAssertEqual(prepared?.descriptor.tag, "v99.2.5")
     XCTAssertTrue(FileManager.default.fileExists(atPath: prepared?.archiveURL.path ?? ""))
     XCTAssertTrue(FileManager.default.fileExists(atPath: prepared?.updatedAppURL.path ?? ""))
     XCTAssertTrue(FileManager.default.fileExists(atPath: prepared?.scriptURL.path ?? ""))
@@ -169,7 +169,7 @@ final class AppBundleUpdateTests: XCTestCase {
     let statusData = try Data(contentsOf: statusURL)
     let pendingState = try JSONSerialization.jsonObject(with: statusData) as? [String: Any]
 
-    XCTAssertEqual(pendingState?["targetTag"] as? String, "v1.2.5")
+    XCTAssertEqual(pendingState?["targetTag"] as? String, "v99.2.5")
     XCTAssertEqual(pendingState?["currentAppPath"] as? String, fakeInstalledAppURL.standardizedFileURL.path)
     XCTAssertNil(pendingState?["launchConfirmedAt"] as? String)
     XCTAssertTrue(scriptContents.contains("LAUNCH_MARKER"))
@@ -183,7 +183,7 @@ final class AppBundleUpdateTests: XCTestCase {
     bootstrap.configuration.appServerWsUrl = "ws://127.0.0.1:54600"
     let launchSignalURL = sandboxURL.appendingPathComponent("updated-app-launched")
     let fixture = try makeLocalAppUpdateFixture(
-      tag: "v1.2.5",
+      tag: "v99.2.5",
       bootstrap: bootstrap,
       launchMarkerURL: URL(fileURLWithPath: appSupportURL.path + ".update-backup/launch-confirmed"),
       launchSignalURL: launchSignalURL
@@ -272,7 +272,20 @@ final class AppBundleUpdateTests: XCTestCase {
       launchMarkerURL: launchMarkerURL,
       launchSignalURL: launchSignalURL
     )
-    try Data("[{\"name\":\"\(tag)\"}]".utf8).write(to: tagsURL, options: .atomic)
+    let releasePayload = """
+    [{
+      "tag_name":"\(tag)",
+      "draft":false,
+      "prerelease":false,
+      "assets":[
+        {
+          "name":"\(assetName)",
+          "browser_download_url":"\(assetURL.absoluteString)"
+        }
+      ]
+    }]
+    """
+    try Data(releasePayload.utf8).write(to: tagsURL, options: .atomic)
     try zipFixtureAppBundle(appURL: appRootURL, archiveURL: assetURL)
 
     return (tagsURL, assetBaseURL, assetURL, assetName)

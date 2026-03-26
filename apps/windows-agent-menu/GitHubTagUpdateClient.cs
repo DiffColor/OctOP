@@ -8,7 +8,7 @@ sealed class GitHubTagUpdateClient
   private const string Owner = "DiffColor";
   private const string Repo = "OctOP";
   private const string ReleasesApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=20";
-  private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(15);
+  private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
   private static readonly TimeSpan MinimumRateLimitBackoff = TimeSpan.FromMinutes(20);
 
   private static readonly HttpClient HttpClient = CreateHttpClient();
