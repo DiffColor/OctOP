@@ -180,7 +180,7 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     binaryPath: executablePath
   });
 
-  const archiveName = `OctOPAgentMenu-macos-${buildArchForName}-${versionTag}.zip`;
+  const archiveName = `OctOP-macos-${buildArchForName}-${versionTag}.app.zip`;
   const archivePath = resolve(outputRoot, archiveName);
   rmSync(archivePath, { force: true });
 

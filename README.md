@@ -214,7 +214,7 @@ GitHub Actions에서 빌드할 때는 아래 Secret을 설정하면 자동으로
 - `MAC_CODESIGN_CERT_PASSWORD`
 
 - Windows: `OctOP.WindowsAgentMenu-win-x64-v1.0.0.exe`
-- macOS: `OctOPAgentMenu-macos-arm64-v1.0.0.zip` (`.app` 번들 포함)
+- macOS: `OctOP-macos-arm64-v1.0.0.app.zip` (`.app` 번들 포함)
 
 macOS는 SwiftPM 리소스 번들이 필요하기 때문에 릴리즈 자산을 `.app` 번들이 들어 있는 zip 한 파일로 만들고, Windows는 self-contained single-file exe로 게시합니다.
 

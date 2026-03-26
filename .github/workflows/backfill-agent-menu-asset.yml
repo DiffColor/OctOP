@@ -136,7 +136,7 @@ jobs:
         id: macos-asset
         run: |
           arch="$(uname -m)"
-          update_asset_name="OctOPAgentMenu-macos-${arch}-${RELEASE_TAG}.zip"
+          update_asset_name="OctOP-macos-${arch}-${RELEASE_TAG}.app.zip"
           echo "update_name=${update_asset_name}" >> "$GITHUB_OUTPUT"
           echo "update_path=dist/releases/${RELEASE_TAG}/${update_asset_name}" >> "$GITHUB_OUTPUT"
 
