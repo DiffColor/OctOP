@@ -101,9 +101,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: macos-agent-menu-${{ env.RELEASE_TAG }}
-          path: |
-            dist/releases/${{ env.RELEASE_TAG }}/*.zip
-            dist/releases/${{ env.RELEASE_TAG }}/*.dmg
+          path: dist/releases/${{ env.RELEASE_TAG }}/*.zip
           if-no-files-found: error
 
   publish-release:
