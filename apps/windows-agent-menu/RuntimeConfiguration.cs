@@ -10,6 +10,8 @@ enum CodexAuthMode
 
 sealed class RuntimeConfiguration
 {
+  public const string DangerouslyBypassApprovalsAndSandbox = "dangerously-bypass-approvals-and-sandbox";
+
   public static string GetCurrentUserLogin()
   {
     return string.IsNullOrWhiteSpace(Environment.UserName) ? "local-user" : Environment.UserName;
@@ -74,7 +76,7 @@ sealed class RuntimeConfiguration
       ["OCTOP_BRIDGE_OWNER_USER_ID"] = OwnerLoginId.Trim(),
       ["OCTOP_APP_SERVER_MODE"] = AppServerMode.Trim(),
       ["OCTOP_APP_SERVER_WS_URL"] = appServerWsUrl,
-      ["OCTOP_APP_SERVER_COMMAND"] = BuildAppServerCommand(paths, appServerWsUrl),
+      ["OCTOP_APP_SERVER_COMMAND"] = BuildAppServerCommand(paths, appServerWsUrl, CodexSandbox),
       ["OCTOP_CODEX_MODEL"] = CodexModel.Trim(),
       ["OCTOP_CODEX_REASONING_EFFORT"] = CodexReasoningEffort.Trim(),
       ["OCTOP_CODEX_APPROVAL_POLICY"] = CodexApprovalPolicy.Trim(),
@@ -208,11 +210,16 @@ sealed class RuntimeConfiguration
     return File.Exists(authPath) && new FileInfo(authPath).Length > 0;
   }
 
-  private static string BuildAppServerCommand(OctopPaths paths, string appServerWsUrl)
+  private static string BuildAppServerCommand(OctopPaths paths, string appServerWsUrl, string codexSandbox)
   {
     var codexCommandPath = paths.GetCodexCommandPath();
     var command = File.Exists(codexCommandPath) ? codexCommandPath : "codex";
-    return $"{QuoteCommandToken(command)} app-server --listen {QuoteCommandToken(appServerWsUrl)}";
+    var shouldBypass = string.Equals(
+      codexSandbox?.Trim(),
+      DangerouslyBypassApprovalsAndSandbox,
+      StringComparison.Ordinal);
+    var bypassArgument = shouldBypass ? " --dangerously-bypass-approvals-and-sandbox" : string.Empty;
+    return $"{QuoteCommandToken(command)}{bypassArgument} app-server --listen {QuoteCommandToken(appServerWsUrl)}";
   }
 
   private static string QuoteCommandToken(string value)

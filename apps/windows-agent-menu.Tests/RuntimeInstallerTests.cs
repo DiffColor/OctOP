@@ -167,4 +167,30 @@ public sealed class RuntimeInstallerTests
       CleanupRuntimePath(root);
     }
   }
+
+  [Fact]
+  public void GetEnvironmentVariables_AddsDangerousBypassFlagToAppServerCommandWhenConfigured()
+  {
+    var root = Path.Combine(Path.GetTempPath(), $"octop-win-agent-env-{Guid.NewGuid():N}");
+    try
+    {
+      var paths = new OctopPaths(root);
+      var configuration = new RuntimeConfiguration
+      {
+        InstallRoot = root,
+        CodexSandbox = RuntimeConfiguration.DangerouslyBypassApprovalsAndSandbox,
+        AppServerWsUrl = "ws://127.0.0.1:4610"
+      };
+
+      var env = configuration.GetEnvironmentVariables(paths);
+
+      Assert.Equal(RuntimeConfiguration.DangerouslyBypassApprovalsAndSandbox, env["OCTOP_CODEX_SANDBOX"]);
+      Assert.Contains("--dangerously-bypass-approvals-and-sandbox app-server --listen", env["OCTOP_APP_SERVER_COMMAND"]);
+      Assert.Contains("\"ws://127.0.0.1:4610\"", env["OCTOP_APP_SERVER_COMMAND"]);
+    }
+    finally
+    {
+      CleanupRuntimePath(root);
+    }
+  }
 }

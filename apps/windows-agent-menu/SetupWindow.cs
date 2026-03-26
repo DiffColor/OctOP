@@ -16,6 +16,11 @@ using WpfCursors = System.Windows.Input.Cursors;
 
 sealed class SetupWindow : Window
 {
+  private sealed record ComboOption(string Value, string Label)
+  {
+    public override string ToString() => Label;
+  }
+
   private static readonly string[] KnownCodexModelOptions =
   [
     "gpt-5.4",
@@ -42,18 +47,19 @@ sealed class SetupWindow : Window
     "xhigh"
   ];
 
-  private static readonly string[] KnownApprovalOptions =
+  private static readonly ComboOption[] KnownApprovalOptions =
   [
-    "on-request",
-    "never",
-    "untrusted"
+    new("on-request", "필요할 때만 승인 요청"),
+    new("never", "승인 요청 없이 진행"),
+    new("untrusted", "보수적으로 제한")
   ];
 
-  private static readonly string[] KnownSandboxOptions =
+  private static readonly ComboOption[] KnownSandboxOptions =
   [
-    "danger-full-access",
-    "workspace-write",
-    "read-only"
+    new(RuntimeConfiguration.DangerouslyBypassApprovalsAndSandbox, "승인/샌드박스 완전 우회 (매우 위험)"),
+    new("danger-full-access", "전체 파일 접근"),
+    new("workspace-write", "워크스페이스만 쓰기"),
+    new("read-only", "읽기 전용")
   ];
   private const string ChatGptAuthModeValue = "chatgpt-login";
   private const string ApiKeyAuthModeValue = "api-key";
@@ -406,9 +412,9 @@ sealed class SetupWindow : Window
   {
     var stack = CreateSectionStack();
     stack.Children.Add(CreateLabeledComboField("모델", _codexModelComboBox = CreateComboBox(KnownCodexModelOptions)));
-    stack.Children.Add(CreateLabeledComboField("Reasoning", _reasoningComboBox = CreateComboBox(KnownReasoningOptions)));
-    stack.Children.Add(CreateLabeledComboField("Approval", _approvalComboBox = CreateComboBox(KnownApprovalOptions)));
-    stack.Children.Add(CreateLabeledComboField("Sandbox", _sandboxComboBox = CreateComboBox(KnownSandboxOptions)));
+    stack.Children.Add(CreateLabeledComboField("추론 강도", _reasoningComboBox = CreateComboBox(KnownReasoningOptions)));
+    stack.Children.Add(CreateLabeledComboField("승인 정책", _approvalComboBox = CreateComboBox(KnownApprovalOptions)));
+    stack.Children.Add(CreateLabeledComboField("샌드박스", _sandboxComboBox = CreateComboBox(KnownSandboxOptions)));
     stack.Children.Add(CreateLabeledTextField("Watchdog (ms)", _watchdogTextBox = CreateTextBox()));
     stack.Children.Add(CreateLabeledTextField("Stale (ms)", _staleTextBox = CreateTextBox()));
     stack.Children.Add(CreateToggleField("로그인 시 자동 실행", _autoStartCheckBox = CreateToggleSwitch()));
@@ -543,10 +549,10 @@ sealed class SetupWindow : Window
       WorkspaceRootsText = _workspaceRootTextBox.Text.Trim(),
       AppServerMode = "ws-local",
       AppServerWsUrl = _appServerWsUrlTextBox.Text.Trim(),
-      CodexModel = Convert.ToString(_codexModelComboBox.SelectedItem) ?? "gpt-5.4",
-      CodexReasoningEffort = Convert.ToString(_reasoningComboBox.SelectedItem) ?? "high",
-      CodexApprovalPolicy = Convert.ToString(_approvalComboBox.SelectedItem) ?? "on-request",
-      CodexSandbox = Convert.ToString(_sandboxComboBox.SelectedItem) ?? "danger-full-access",
+      CodexModel = GetSelectedComboValue(_codexModelComboBox, "gpt-5.4"),
+      CodexReasoningEffort = GetSelectedComboValue(_reasoningComboBox, "high"),
+      CodexApprovalPolicy = GetSelectedComboValue(_approvalComboBox, "on-request"),
+      CodexSandbox = GetSelectedComboValue(_sandboxComboBox, "danger-full-access"),
       AuthMode = ParseAuthMode(FixedAuthModeValue),
       CodexApiKey = apiKey,
       WatchdogIntervalMs = _watchdogTextBox.Text.Trim(),
@@ -1054,15 +1060,32 @@ sealed class SetupWindow : Window
     }
 
     var selectedItem = comboBox.Items.Cast<object>()
-      .FirstOrDefault(item => string.Equals(Convert.ToString(item), value, StringComparison.OrdinalIgnoreCase));
+      .FirstOrDefault(item => string.Equals(GetComboItemValue(item), value, StringComparison.OrdinalIgnoreCase));
     if (selectedItem is null)
     {
-      comboBox.Items.Insert(0, value);
-      comboBox.SelectedItem = value;
+      var customOption = new ComboOption(value, value);
+      comboBox.Items.Insert(0, customOption);
+      comboBox.SelectedItem = customOption;
       return;
     }
 
     comboBox.SelectedItem = selectedItem;
+  }
+
+  private static string GetSelectedComboValue(ComboBox comboBox, string fallbackValue)
+  {
+    var value = GetComboItemValue(comboBox.SelectedItem);
+    return string.IsNullOrWhiteSpace(value) ? fallbackValue : value;
+  }
+
+  private static string GetComboItemValue(object? item)
+  {
+    return item switch
+    {
+      ComboOption option => option.Value,
+      null => string.Empty,
+      _ => Convert.ToString(item) ?? string.Empty
+    };
   }
 
   private static Border CreateCard(string title, UIElement content)
@@ -1201,6 +1224,16 @@ sealed class SetupWindow : Window
   }
 
   private static ComboBox CreateComboBox(IEnumerable<string> values)
+  {
+    return CreateComboBox(values.Cast<object>());
+  }
+
+  private static ComboBox CreateComboBox(IEnumerable<ComboOption> values)
+  {
+    return CreateComboBox(values.Cast<object>());
+  }
+
+  private static ComboBox CreateComboBox(IEnumerable<object> values)
   {
     var comboBox = new ComboBox
     {

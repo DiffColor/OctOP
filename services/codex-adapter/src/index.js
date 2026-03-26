@@ -97,6 +97,7 @@ const APP_SERVER_RECONNECT_MAX_DELAY_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
+const CODEX_SANDBOX_DANGEROUSLY_BYPASS = "dangerously-bypass-approvals-and-sandbox";
 const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
 const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
@@ -919,6 +920,26 @@ function resolveCodexSandboxFromOptions(options = {}) {
     ?? CODEX_SANDBOX;
 
   return normalizeStringOption(requestSandbox, fallbackSandbox);
+}
+
+function isDangerouslyBypassCodexSandbox(value) {
+  return normalizeStringOption(value, "") === CODEX_SANDBOX_DANGEROUSLY_BYPASS;
+}
+
+function resolveCodexExecutionPolicyFromOptions(options = {}) {
+  const sandbox = resolveCodexSandboxFromOptions(options);
+
+  if (isDangerouslyBypassCodexSandbox(sandbox)) {
+    return {
+      approvalPolicy: undefined,
+      sandbox: undefined
+    };
+  }
+
+  return {
+    approvalPolicy: resolveCodexApprovalPolicyFromOptions(options),
+    sandbox
+  };
 }
 
 function resolveCodexReasoningEffortFromOptions(options = {}) {
@@ -5175,13 +5196,12 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     physicalThread.project_id,
     physicalThread.root_thread_id
   );
-  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(options);
-  const sandbox = resolveCodexSandboxFromOptions(options);
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(options);
   const reasoningEffort = resolveCodexReasoningEffortFromOptions(options);
   const threadStartParams = {
     cwd,
-    approvalPolicy,
-    sandbox,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: resolveCodexModelFromOptions(options),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
@@ -5407,14 +5427,14 @@ async function startTurnOnPhysicalThread(
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
       activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
-    const approvalPolicy = resolveCodexApprovalPolicyFromOptions(rootThread);
+      const executionPolicy = resolveCodexExecutionPolicyFromOptions(rootThread);
 
-    const turnStartParams = {
-      threadId: activeCodexThreadId,
-      cwd,
-      approvalPolicy,
-      input: turnInput
-    };
+      const turnStartParams = {
+        threadId: activeCodexThreadId,
+        cwd,
+        ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+        input: turnInput
+      };
       appendDiagnosticLog("info", "app_server.turn_start.params", "turn/start params before app-server request", {
         source: "startTurnOnPhysicalThread",
         user_id: sanitizeUserId(userId),
@@ -11047,13 +11067,13 @@ async function startThreadTurn(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, current.project_id);
-  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(current);
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(current);
 
   try {
     const turnStartParams = {
       threadId,
       cwd,
-      approvalPolicy,
+      ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
       input: [
         {
           type: "text",
@@ -11136,13 +11156,12 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
-  const approvalPolicy = resolveCodexApprovalPolicyFromOptions(payload);
-  const sandbox = resolveCodexSandboxFromOptions(payload);
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(payload);
   const reasoningEffort = resolveCodexReasoningEffortFromOptions(payload);
   const threadStartParams = {
     cwd,
-    approvalPolicy,
-    sandbox,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: resolveCodexModelFromOptions(payload),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",

@@ -553,6 +553,7 @@ struct AgentDiagnosticItem: Identifiable {
 struct AgentBootstrapConfiguration: Codable {
   static let authModeDeviceAuth = "chatgpt-login"
   static let authModeApiKey = "api-key"
+  static let dangerouslyBypassApprovalsAndSandbox = "dangerously-bypass-approvals-and-sandbox"
 
   private static let validAuthModes: Set<String> = [authModeDeviceAuth, authModeApiKey]
   static let chatGptAuthMode = authModeDeviceAuth
@@ -857,11 +858,44 @@ final class AgentBootstrapStore: ObservableObject {
   let appServerModeOptions = ["ws-local"]
   let reasoningOptions = ["none", "low", "medium", "high", "xhigh"]
   let approvalOptions = ["on-request", "never", "untrusted"]
-  let sandboxOptions = ["danger-full-access", "workspace-write", "read-only"]
+  let sandboxOptions = [
+    AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox,
+    "danger-full-access",
+    "workspace-write",
+    "read-only"
+  ]
   let authModeOptions = [
     AgentBootstrapConfiguration.authModeDeviceAuth,
     AgentBootstrapConfiguration.authModeApiKey
   ]
+
+  func approvalOptionLabel(for value: String) -> String {
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
+    case "on-request":
+      return "필요할 때만 승인 요청"
+    case "never":
+      return "승인 요청 없이 진행"
+    case "untrusted":
+      return "보수적으로 제한"
+    default:
+      return value
+    }
+  }
+
+  func sandboxOptionLabel(for value: String) -> String {
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
+    case AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox:
+      return "승인/샌드박스 완전 우회 (매우 위험)"
+    case "danger-full-access":
+      return "전체 파일 접근"
+    case "workspace-write":
+      return "워크스페이스만 쓰기"
+    case "read-only":
+      return "읽기 전용"
+    default:
+      return value
+    }
+  }
 
   var isAuthModeApiKey: Bool {
     false
@@ -3043,8 +3077,16 @@ final class AgentBootstrapStore: ObservableObject {
     return environment
   }
 
+  private func shouldDangerouslyBypassApprovalsAndSandbox() -> Bool {
+    configuration.sandboxMode.trimmingCharacters(in: .whitespacesAndNewlines) ==
+      AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox
+  }
+
   private func appServerCommand() -> String {
-    "\(shellEscape(runtimeCodexURL.path)) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
+    let bypassArgument = shouldDangerouslyBypassApprovalsAndSandbox()
+      ? " --dangerously-bypass-approvals-and-sandbox"
+      : ""
+    return "\(shellEscape(runtimeCodexURL.path))\(bypassArgument) app-server --listen \(shellEscape(configuration.appServerWsUrl))"
   }
 
   private func withCodexAppServerSession<T: Sendable>(
@@ -3681,9 +3723,19 @@ struct AgentSetupWindow: View {
 
         configurationCard(title: "Codex 실행 정책", icon: "slider.horizontal.3") {
           pickerField("모델", selection: $bootstrap.configuration.codexModel, options: bootstrap.modelOptions)
-          pickerField("Reasoning", selection: $bootstrap.configuration.reasoningEffort, options: bootstrap.reasoningOptions)
-          pickerField("Approval", selection: $bootstrap.configuration.approvalPolicy, options: bootstrap.approvalOptions)
-          pickerField("Sandbox", selection: $bootstrap.configuration.sandboxMode, options: bootstrap.sandboxOptions)
+          pickerField("추론 강도", selection: $bootstrap.configuration.reasoningEffort, options: bootstrap.reasoningOptions)
+          pickerField(
+            "승인 정책",
+            selection: $bootstrap.configuration.approvalPolicy,
+            options: bootstrap.approvalOptions,
+            optionLabel: bootstrap.approvalOptionLabel(for:)
+          )
+          pickerField(
+            "샌드박스",
+            selection: $bootstrap.configuration.sandboxMode,
+            options: bootstrap.sandboxOptions,
+            optionLabel: bootstrap.sandboxOptionLabel(for:)
+          )
           settingField("Watchdog (ms)", text: $bootstrap.configuration.watchdogIntervalMs)
           settingField("Stale (ms)", text: $bootstrap.configuration.staleMs)
           toggleField("로그인 시 자동 실행", isOn: $bootstrap.configuration.autoStartAtLogin)
@@ -3816,14 +3868,19 @@ struct AgentSetupWindow: View {
     }
   }
 
-  private func pickerField(_ title: String, selection: Binding<String>, options: [String]) -> some View {
+  private func pickerField(
+    _ title: String,
+    selection: Binding<String>,
+    options: [String],
+    optionLabel: ((String) -> String)? = nil
+  ) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(title)
         .font(.caption)
         .foregroundStyle(.secondary)
       Picker("", selection: selection) {
         ForEach(options, id: \.self) { option in
-          Text(option).tag(option)
+          Text(optionLabel?(option) ?? option).tag(option)
         }
       }
       .labelsHidden()

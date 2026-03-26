@@ -61,6 +61,7 @@ const APP_SERVER_RECONNECT_DELAY_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
+const CODEX_SANDBOX_DANGEROUSLY_BYPASS = "dangerously-bypass-approvals-and-sandbox";
 const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
 const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
@@ -420,6 +421,20 @@ function normalizeReasoningEffort(value) {
     value
   });
   return null;
+}
+
+function resolveCodexExecutionPolicy() {
+  if (String(CODEX_SANDBOX).trim() === CODEX_SANDBOX_DANGEROUSLY_BYPASS) {
+    return {
+      approvalPolicy: undefined,
+      sandbox: undefined
+    };
+  }
+
+  return {
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandbox: CODEX_SANDBOX
+  };
 }
 
 function createIssueTitle(payload = {}) {
@@ -4087,11 +4102,12 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
   const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
+  const executionPolicy = resolveCodexExecutionPolicy();
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
@@ -4279,10 +4295,11 @@ async function startTurnOnPhysicalThread(
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
       const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
+      const executionPolicy = resolveCodexExecutionPolicy();
       const turnResponse = await appServer.request("turn/start", {
         threadId: activeCodexThreadId,
         cwd,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
+        ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
         input: [
           {
             type: "text",
@@ -9468,12 +9485,13 @@ async function startThreadTurn(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, current.project_id);
+  const executionPolicy = resolveCodexExecutionPolicy();
 
   try {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
       cwd,
-      approvalPolicy: CODEX_APPROVAL_POLICY,
+      ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
       input: [
         {
           type: "text",
@@ -9548,12 +9566,13 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
+  const executionPolicy = resolveCodexExecutionPolicy();
   await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",

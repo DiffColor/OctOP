@@ -21,6 +21,7 @@ const DUMMY_FINGERPRINT_VALUES = new Set([
   "goldfish",
   "default string"
 ]);
+const DANGEROUSLY_BYPASS_APPROVALS_AND_SANDBOX = "dangerously-bypass-approvals-and-sandbox";
 
 export function loadOctopEnv(workspaceRoot) {
   const envFilePaths = [".env.local", ".env"].map((file) => resolve(workspaceRoot, file));
@@ -83,10 +84,18 @@ export function loadOctopEnv(workspaceRoot) {
   env.OCTOP_BRIDGE_TOKEN = withDefault(env.OCTOP_BRIDGE_TOKEN, "octop-local-bridge");
   env.OCTOP_APP_SERVER_MODE = withDefault(env.OCTOP_APP_SERVER_MODE, "ws-local");
   env.OCTOP_APP_SERVER_WS_URL = withDefault(env.OCTOP_APP_SERVER_WS_URL, "ws://127.0.0.1:4600");
+  env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.4");
+  env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
+  env.OCTOP_CODEX_APPROVAL_POLICY = withDefault(env.OCTOP_CODEX_APPROVAL_POLICY, "on-request");
+  env.OCTOP_CODEX_SANDBOX = withDefault(env.OCTOP_CODEX_SANDBOX, "danger-full-access");
   const codexExecutable = resolveExecutable(env, "codex");
   env.OCTOP_APP_SERVER_COMMAND = withDefault(
     env.OCTOP_APP_SERVER_COMMAND,
-    `${formatCommandToken(codexExecutable)} app-server --listen ${shellEscape(env.OCTOP_APP_SERVER_WS_URL)}`
+    buildAppServerCommand({
+      codexExecutable,
+      appServerWsUrl: env.OCTOP_APP_SERVER_WS_URL,
+      sandboxMode: env.OCTOP_CODEX_SANDBOX
+    })
   );
   env.OCTOP_APP_SERVER_AUTOSTART = withDefault(env.OCTOP_APP_SERVER_AUTOSTART, "true");
   env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS = withDefault(
@@ -97,12 +106,18 @@ export function loadOctopEnv(workspaceRoot) {
     env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT,
     "50"
   );
-  env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.4");
-  env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
-  env.OCTOP_CODEX_APPROVAL_POLICY = withDefault(env.OCTOP_CODEX_APPROVAL_POLICY, "on-request");
-  env.OCTOP_CODEX_SANDBOX = withDefault(env.OCTOP_CODEX_SANDBOX, "danger-full-access");
-
   return env;
+}
+
+function buildAppServerCommand({ codexExecutable, appServerWsUrl, sandboxMode }) {
+  const tokens = [formatCommandToken(codexExecutable)];
+
+  if (String(sandboxMode ?? "").trim() === DANGEROUSLY_BYPASS_APPROVALS_AND_SANDBOX) {
+    tokens.push("--dangerously-bypass-approvals-and-sandbox");
+  }
+
+  tokens.push("app-server", "--listen", shellEscape(appServerWsUrl));
+  return tokens.join(" ");
 }
 
 export function applyBridgeCliArgs(env, argv) {

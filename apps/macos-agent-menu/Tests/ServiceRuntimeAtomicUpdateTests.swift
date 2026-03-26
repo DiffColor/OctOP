@@ -168,6 +168,50 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testDangerousBypassSandboxUpdatesAppServerCommandInLaunchContextAndEnvFile() async throws {
+    let bootstrap = makeBootstrap()
+    bootstrap.configuration.sandboxMode = AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox
+
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    try bootstrap.activateRuntimeRelease(releaseURL, log: { _ in })
+    let launchContext = try bootstrap.makeLaunchContext()
+    let environmentText = try String(
+      contentsOf: releaseURL.appendingPathComponent(".env.local"),
+      encoding: .utf8
+    )
+
+    XCTAssertEqual(
+      launchContext.environment["OCTOP_CODEX_SANDBOX"],
+      AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox
+    )
+    XCTAssertTrue(
+      launchContext.environment["OCTOP_APP_SERVER_COMMAND"]?.contains("--dangerously-bypass-approvals-and-sandbox app-server --listen") == true
+    )
+    XCTAssertTrue(
+      environmentText.contains("OCTOP_CODEX_SANDBOX=\(AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox)")
+    )
+    XCTAssertTrue(
+      environmentText.contains("--dangerously-bypass-approvals-and-sandbox app-server --listen")
+    )
+  }
+
+  @MainActor
+  func testExecutionPolicyOptionLabelsAreUserFriendly() {
+    let bootstrap = makeBootstrap()
+
+    XCTAssertEqual(bootstrap.approvalOptionLabel(for: "on-request"), "필요할 때만 승인 요청")
+    XCTAssertEqual(bootstrap.approvalOptionLabel(for: "never"), "승인 요청 없이 진행")
+    XCTAssertEqual(bootstrap.approvalOptionLabel(for: "untrusted"), "보수적으로 제한")
+    XCTAssertEqual(
+      bootstrap.sandboxOptionLabel(for: AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox),
+      "승인/샌드박스 완전 우회 (매우 위험)"
+    )
+    XCTAssertEqual(bootstrap.sandboxOptionLabel(for: "danger-full-access"), "전체 파일 접근")
+    XCTAssertEqual(bootstrap.sandboxOptionLabel(for: "workspace-write"), "워크스페이스만 쓰기")
+    XCTAssertEqual(bootstrap.sandboxOptionLabel(for: "read-only"), "읽기 전용")
+  }
+
+  @MainActor
   func testDisplayedVersionsUseDeclaredAppVersionAndRuntimeCommit() async throws {
     let revision = try initializeGitRepository(at: codexAdapterSourceURL)
 
