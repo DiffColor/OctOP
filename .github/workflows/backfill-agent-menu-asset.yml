@@ -3,6 +3,10 @@ name: manual-agent-menu-asset
 on:
   workflow_dispatch:
     inputs:
+      source_commit:
+        description: "빌드에 사용할 commit id"
+        required: true
+        type: string
       release_tag:
         description: "대상 릴리스 태그 (예: v1.2.3)"
         required: true
@@ -27,13 +31,19 @@ jobs:
     if: ${{ inputs.platform == 'windows' || inputs.platform == 'all' }}
     runs-on: windows-latest
     env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
+
+      - name: Verify and checkout source commit
+        shell: pwsh
+        run: |
+          git rev-parse --verify "$env:SOURCE_COMMIT`^{commit}" | Out-Null
+          git checkout --detach "$env:SOURCE_COMMIT"
 
       - uses: actions/setup-node@v6
         with:
@@ -69,6 +79,7 @@ jobs:
     if: ${{ inputs.platform == 'macos' || inputs.platform == 'all' }}
     runs-on: macos-14
     env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       GH_TOKEN: ${{ github.token }}
       MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
@@ -77,8 +88,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
+
+      - name: Verify and checkout source commit
+        run: |
+          set -euo pipefail
+          git rev-parse --verify "${SOURCE_COMMIT}^{commit}" >/dev/null
+          git checkout --detach "${SOURCE_COMMIT}"
 
       - uses: actions/setup-node@v6
         with:
