@@ -4180,6 +4180,7 @@ function InlineIssueComposer({
   const longPressTimerRef = useRef(null);
   const voiceRestartTimerRef = useRef(null);
   const suppressClickRef = useRef(false);
+  const submitInFlightRef = useRef(false);
   const isRecordingRef = useRef(false);
   const isPromptComposingRef = useRef(false);
   const shouldKeepRecordingRef = useRef(false);
@@ -4609,9 +4610,11 @@ function InlineIssueComposer({
     const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
 
-    if (!normalizedPrompt || !selectedProject?.id || disabled) {
+    if (!normalizedPrompt || !selectedProject?.id || disabled || submitInFlightRef.current) {
       return;
     }
+
+    submitInFlightRef.current = true;
 
     setInternalPrompt("");
     promptRef.current = "";
@@ -4650,6 +4653,8 @@ function InlineIssueComposer({
     } catch (error) {
       restorePrompt();
       throw error;
+    } finally {
+      submitInFlightRef.current = false;
     }
   }, [disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
 
