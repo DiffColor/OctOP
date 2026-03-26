@@ -2134,21 +2134,20 @@ final class AgentBootstrapStore: ObservableObject {
     try ensureDirectory(runtimeSourceCacheURL)
     let repositoryURL = runtimeRepositoryCacheURL
     let branch = runtimeRepositoryBranch
-    let remoteTrackingRef = "refs/remotes/origin/\(branch)"
 
     if FileManager.default.fileExists(atPath: repositoryURL.appendingPathComponent(".git").path) {
       do {
         log?("codex-adapter 최신 소스를 가져옵니다. branch=\(branch)")
         try await runProcess(
           executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "fetch", "origin", "\(branch):\(remoteTrackingRef)"],
+          arguments: ["-C", repositoryURL.path, "fetch", "origin", branch],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log ?? { _ in }
         )
         try await runProcess(
           executableURL: URL(fileURLWithPath: "/usr/bin/git"),
-          arguments: ["-C", repositoryURL.path, "reset", "--hard", remoteTrackingRef],
+          arguments: ["-C", repositoryURL.path, "reset", "--hard", "FETCH_HEAD"],
           environment: buildProcessEnvironment(),
           currentDirectoryURL: nil,
           log: log ?? { _ in }

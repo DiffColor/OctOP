@@ -7054,6 +7054,10 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
     remotePayload.issue_id = context.issueId;
   }
 
+  if (context.issueStatus) {
+    remotePayload.issue_status = context.issueStatus;
+  }
+
   return remotePayload;
 }
 
@@ -7762,7 +7766,10 @@ class AppServerClient {
           rootThreadId: threadId,
           physicalThreadId,
           projectId,
-          issueId: activeIssueId
+          issueId: activeIssueId,
+          issueStatus:
+            issuePatch?.status ??
+            (activeIssueId ? issueCardsById.get(activeIssueId)?.status ?? null : null)
         })
       );
     }
@@ -9242,7 +9249,8 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     rootThreadId: threadId,
     physicalThreadId,
     projectId: thread.project_id,
-    issueId: activeIssueId
+    issueId: activeIssueId,
+    issueStatus: nextIssue?.status ?? issue?.status ?? null
   };
 
   if (syncedAssistant.appendedDelta) {

@@ -232,7 +232,8 @@ macOS는 SwiftPM 리소스 번들이 필요하기 때문에 릴리즈 자산을 
 
 ## Bridge 동작 방식
 
-- `.env.local` 이후 `.env` 순서로 환경 변수를 읽습니다.
+- Bridge는 **프로세스 환경변수**를 우선 사용합니다.
+- `.env.local`, `.env`는 로컬 개발 편의를 위한 fallback일 뿐이며, Docker/배포 환경에서는 컨테이너 환경변수 설정값이 우선됩니다.
 - Bridge ID는 기본적으로 호스트명을 사용하며, 상태 파일은 `~/.octop` 아래에 저장합니다.
 - 프로젝트 목록은 `~/.octop/<bridge-id>-projects.json`에 저장됩니다.
 - 스레드 상태는 `~/.octop/<bridge-id>-threads.json`에 저장됩니다.

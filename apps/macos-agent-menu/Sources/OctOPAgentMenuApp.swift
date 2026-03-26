@@ -266,7 +266,7 @@ final class AgentMenuModel: ObservableObject {
     while Date() < deadline {
       refreshRuntimeStateFromSystem()
       let checks = await serviceLaunchChecks(using: bootstrap)
-      if checks.allSatisfy(\.passed) {
+      if isServiceLaunchValidated(checks) {
         try? bootstrap.recordRuntimeHealthcheck(
           for: bootstrap.activeRuntimeReleaseURL ?? bootstrap.runtimeWorkspaceURL,
           status: "running",
@@ -293,6 +293,25 @@ final class AgentMenuModel: ObservableObject {
       appendLog("서비스 헬스체크 실패: \(firstFailedCheck.message)")
     }
     return false
+  }
+
+  private func isServiceLaunchValidated(_ checks: [AgentLaunchCheck]) -> Bool {
+    guard !checks.isEmpty else {
+      return false
+    }
+
+    if checks.allSatisfy(\.passed) {
+      return true
+    }
+
+    let wsConnectionReady = checks.contains {
+      $0.passed && $0.message == "WS 연결 확인"
+    }
+    let baseRuntimeHealthy = checks.contains {
+      $0.passed && $0.message == "기본 상태 진단 확인"
+    }
+
+    return wsConnectionReady && baseRuntimeHealthy
   }
 
   private func validateManagedProcessShutdown(using bootstrap: AgentBootstrapStore) async -> Bool {
@@ -339,6 +358,11 @@ final class AgentMenuModel: ObservableObject {
   }
 
   private func handleTermination(_ terminatedProcess: Process) {
+    guard process === terminatedProcess else {
+      appendLog("이전 local-agent 종료 신호를 무시합니다. pid=\(terminatedProcess.processIdentifier)")
+      return
+    }
+
     cleanupPipes()
     let status = terminatedProcess.terminationStatus
     let reason = terminatedProcess.terminationReason
@@ -433,7 +457,9 @@ final class AgentMenuModel: ObservableObject {
     let localAgentProcess = serviceProcesses.first(where: { $0.command.contains("run-local-agent.mjs") })
     let bridgeLauncherProcess = serviceProcesses.first(where: { $0.command.contains("run-bridge.mjs") })
     let adapterProcess = serviceProcesses.first(where: { $0.command.contains("services/codex-adapter/src/index.js") })
-    let wsProcess = serviceProcesses.first(where: { $0.command.contains("/runtime/bin/codex app-server --listen ws://") })
+    let wsProcess = serviceProcesses.first(where: {
+      isManagedCodexAppServerCommand($0.command, runtimePath: runtimeRootPath(), listenTarget: .ws)
+    })
     let adapterPorts = adapterProcess.map(listeningTCPPorts(for:)) ?? []
     let wsPorts = wsProcess.map(listeningTCPPorts(for:)) ?? []
     let bridgeHealth = await fetchBridgeHealthStatus(
@@ -656,7 +682,8 @@ final class AgentMenuModel: ObservableObject {
       return false
     }
 
-    if includeAuxiliarySessions, command.contains("/runtime/bin/codex app-server --listen stdio://") {
+    if includeAuxiliarySessions,
+       isManagedCodexAppServerCommand(command, runtimePath: runtimePath, listenTarget: .stdio) {
       return true
     }
 
@@ -667,13 +694,38 @@ final class AgentMenuModel: ObservableObject {
     return command.contains("run-local-agent.mjs") ||
       command.contains("run-bridge.mjs") ||
       command.contains("services/codex-adapter/src/index.js") ||
-      command.contains("/runtime/bin/codex app-server --listen ws://")
+      isManagedCodexAppServerCommand(command, runtimePath: runtimePath, listenTarget: .ws)
+  }
+
+  private func isManagedCodexAppServerCommand(
+    _ command: String,
+    runtimePath: String,
+    listenTarget: ManagedCodexAppServerListenTarget
+  ) -> Bool {
+    guard command.contains(runtimePath),
+          command.contains("\(runtimePath)/bin/codex"),
+          command.contains("app-server"),
+          command.contains("--listen") else {
+      return false
+    }
+
+    switch listenTarget {
+    case .ws:
+      return command.contains("ws://") || command.contains("wss://")
+    case .stdio:
+      return command.contains("stdio://")
+    }
   }
 
   private struct AgentProcessDescriptor {
     let pid: Int32
     let pgid: Int32
     let command: String
+  }
+
+  private enum ManagedCodexAppServerListenTarget {
+    case ws
+    case stdio
   }
 
   private struct AgentLaunchCheck {

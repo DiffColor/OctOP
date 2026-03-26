@@ -942,14 +942,13 @@ sealed class RuntimeInstaller
     }
 
     progress?.Report("윈도우 런타임 원본 저장소를 최신으로 갱신합니다.");
-    var remoteTrackingRef = $"refs/remotes/origin/{RuntimeRepositoryBranch}";
     try
     {
       await RunGitCommandAsync(
         paths.RuntimeRepositoryCacheRoot,
-        ["fetch", "origin", $"{RuntimeRepositoryBranch}:{remoteTrackingRef}"],
+        ["fetch", "origin", RuntimeRepositoryBranch],
         cancellationToken);
-      await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", remoteTrackingRef], cancellationToken);
+      await RunGitCommandAsync(paths.RuntimeRepositoryCacheRoot, ["reset", "--hard", "FETCH_HEAD"], cancellationToken);
     }
     catch (Exception error) when (CanContinueWithCachedRuntimeRepository(paths, error))
     {

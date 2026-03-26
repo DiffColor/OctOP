@@ -14,6 +14,12 @@ public sealed class PushNotificationEventMonitorService(
   ILogger<PushNotificationEventMonitorService> logger) : BackgroundService
 {
   private const string UntitledIssueTitle = "Untitled issue";
+  private static readonly TimeSpan[] IdleSnapshotResolutionRetryDelays =
+  [
+    TimeSpan.Zero,
+    TimeSpan.FromMilliseconds(150),
+    TimeSpan.FromMilliseconds(350)
+  ];
   private readonly ConcurrentDictionary<string, byte> _inFlightReceiptIds = new(StringComparer.Ordinal);
 
   protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -79,52 +85,33 @@ public sealed class PushNotificationEventMonitorService(
     var issueId = terminalEvent.IssueId;
     var threadId = terminalEvent.ThreadId;
     var projectId = terminalEvent.ProjectId;
-    var issueStatus = terminalEvent.IssueStatus;
     var eventType = terminalEvent.EventType;
-
-    var receiptId = PushSubscriptionService.CreateReceiptId(userId, bridgeId, issueId, issueStatus);
-
-    if (!_inFlightReceiptIds.TryAdd(receiptId, (byte)0))
-    {
-      return;
-    }
-
-    var createdAt = DateTimeOffset.UtcNow.ToString("O");
-    var reservedReceipt = new PushNotificationReceiptEntity
-    {
-      Id = receiptId,
-      LoginId = userId,
-      UserId = userId,
-      BridgeId = bridgeId,
-      IssueId = issueId,
-      ThreadId = threadId,
-      ProjectId = projectId,
-      IssueStatus = issueStatus,
-      EventType = eventType,
-      SuccessCount = 0,
-      FailureCount = 0,
-      CreatedAt = createdAt
-    };
+    string? receiptId = null;
     var receiptCommitted = false;
 
     try
     {
-      if (!await pushSubscriptionService.TryReserveReceiptAsync(reservedReceipt, cancellationToken))
-      {
-        return;
-      }
-
       var subscriptions = await pushSubscriptionService.GetActiveSubscriptionsAsync(userId, bridgeId, cancellationToken);
 
       if (subscriptions.Count == 0)
       {
-        await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
         return;
       }
 
-      var issueSnapshot = await pushSubscriptionService.GetIssueSnapshotAsync(userId, bridgeId, issueId, cancellationToken);
-      var sourceIssueSnapshot = await pushSubscriptionService.GetSourceIssueSnapshotAsync(userId, bridgeId, issueId, cancellationToken);
-      var resolvedProjectId = issueSnapshot?.Value<string>("project_id") ?? projectId;
+      var issueDelivery = await ResolveIssueDeliveryAsync(
+        pushSubscriptionService,
+        terminalEvent,
+        cancellationToken);
+
+      if (issueDelivery is null)
+      {
+        return;
+      }
+
+      var issueStatus = issueDelivery.IssueStatus;
+      var issueSnapshot = issueDelivery.IssueSnapshot;
+      var sourceIssueSnapshot = issueDelivery.SourceIssueSnapshot;
+      var resolvedProjectId = issueDelivery.ProjectId ?? projectId;
       var projectSnapshot = !string.IsNullOrWhiteSpace(resolvedProjectId)
         ? await pushSubscriptionService.GetProjectSnapshotAsync(userId, bridgeId, resolvedProjectId, cancellationToken)
         : null;
@@ -136,7 +123,35 @@ public sealed class PushNotificationEventMonitorService(
 
       if (targetSubscriptions.Count == 0)
       {
-        await pushSubscriptionService.DeleteReceiptAsync(receiptId, cancellationToken);
+        return;
+      }
+
+      receiptId = PushSubscriptionService.CreateReceiptId(userId, bridgeId, issueId, issueStatus);
+
+      if (!_inFlightReceiptIds.TryAdd(receiptId, (byte)0))
+      {
+        return;
+      }
+
+      var createdAt = DateTimeOffset.UtcNow.ToString("O");
+      var reservedReceipt = new PushNotificationReceiptEntity
+      {
+        Id = receiptId,
+        LoginId = userId,
+        UserId = userId,
+        BridgeId = bridgeId,
+        IssueId = issueId,
+        ThreadId = threadId,
+        ProjectId = resolvedProjectId,
+        IssueStatus = issueStatus,
+        EventType = eventType,
+        SuccessCount = 0,
+        FailureCount = 0,
+        CreatedAt = createdAt
+      };
+
+      if (!await pushSubscriptionService.TryReserveReceiptAsync(reservedReceipt, cancellationToken))
+      {
         return;
       }
 
@@ -189,7 +204,7 @@ public sealed class PushNotificationEventMonitorService(
     }
     catch (OperationCanceledException)
     {
-      if (!receiptCommitted)
+      if (!receiptCommitted && !string.IsNullOrWhiteSpace(receiptId))
       {
         try
         {
@@ -202,7 +217,7 @@ public sealed class PushNotificationEventMonitorService(
     }
     catch (Exception exception)
     {
-      if (!receiptCommitted)
+      if (!receiptCommitted && !string.IsNullOrWhiteSpace(receiptId))
       {
         try
         {
@@ -220,8 +235,105 @@ public sealed class PushNotificationEventMonitorService(
     }
     finally
     {
-      _inFlightReceiptIds.TryRemove(receiptId, out _);
+      if (!string.IsNullOrWhiteSpace(receiptId))
+      {
+        _inFlightReceiptIds.TryRemove(receiptId, out _);
+      }
     }
+  }
+
+  private async Task<ResolvedIssueDelivery?> ResolveIssueDeliveryAsync(
+    PushSubscriptionService pushSubscriptionService,
+    ResolvedTerminalIssueEvent terminalEvent,
+    CancellationToken cancellationToken)
+  {
+    JObject? issueSnapshot = null;
+    JObject? sourceIssueSnapshot = null;
+
+    foreach (var delay in ResolveSnapshotRetryDelays(terminalEvent))
+    {
+      if (delay > TimeSpan.Zero)
+      {
+        await Task.Delay(delay, cancellationToken);
+      }
+
+      issueSnapshot = await pushSubscriptionService.GetIssueSnapshotAsync(
+        terminalEvent.UserId,
+        terminalEvent.BridgeId,
+        terminalEvent.IssueId,
+        cancellationToken);
+      sourceIssueSnapshot = await pushSubscriptionService.GetSourceIssueSnapshotAsync(
+        terminalEvent.UserId,
+        terminalEvent.BridgeId,
+        terminalEvent.IssueId,
+        cancellationToken);
+
+      var resolvedIssueStatus = ResolveIssueStatusFromEventOrSnapshot(terminalEvent, issueSnapshot, sourceIssueSnapshot);
+
+      if (resolvedIssueStatus is "completed" or "failed")
+      {
+        return new ResolvedIssueDelivery(
+          resolvedIssueStatus,
+          issueSnapshot,
+          sourceIssueSnapshot,
+          NormalizeTrimmedValue(issueSnapshot?.Value<string>("project_id")) is { Length: > 0 } snapshotProjectId
+            ? snapshotProjectId
+            : terminalEvent.ProjectId);
+      }
+    }
+
+    return null;
+  }
+
+  private static IReadOnlyList<TimeSpan> ResolveSnapshotRetryDelays(ResolvedTerminalIssueEvent terminalEvent)
+  {
+    return terminalEvent is
+    {
+      EventType: "thread.status.changed",
+      ThreadStatusType: "idle",
+      IssueStatusHint: ""
+    }
+      ? IdleSnapshotResolutionRetryDelays
+      : [TimeSpan.Zero];
+  }
+
+  private static string ResolveIssueStatusFromEventOrSnapshot(
+    ResolvedTerminalIssueEvent terminalEvent,
+    JObject? issueSnapshot,
+    JObject? sourceIssueSnapshot)
+  {
+    if (terminalEvent.IssueStatusHint is "completed" or "failed")
+    {
+      return terminalEvent.IssueStatusHint;
+    }
+
+    if (terminalEvent.EventType == "thread.status.changed" && terminalEvent.ThreadStatusType == "idle")
+    {
+      var snapshotStatus = ResolveTerminalStatusFromSnapshots(issueSnapshot, sourceIssueSnapshot);
+
+      if (snapshotStatus is "completed" or "failed")
+      {
+        return snapshotStatus;
+      }
+
+      return "completed";
+    }
+
+    return string.Empty;
+  }
+
+  private static string ResolveTerminalStatusFromSnapshots(JObject? issueSnapshot, JObject? sourceIssueSnapshot)
+  {
+    var logicalStatus = NormalizeTerminalStatus(issueSnapshot?.Value<string>("status"));
+
+    if (logicalStatus is "completed" or "failed")
+    {
+      return logicalStatus;
+    }
+
+    var sourceStatus = NormalizeTerminalStatus(sourceIssueSnapshot?.Value<string>("status"));
+
+    return sourceStatus is "completed" or "failed" ? sourceStatus : string.Empty;
   }
 
   private static string ResolveIssueTitle(JObject? issueSnapshot, JObject? sourceIssueSnapshot)
@@ -262,9 +374,14 @@ public sealed class PushNotificationEventMonitorService(
 
     var issueStatus = ResolveTerminalIssueStatus(eventType, envelope.Payload);
 
+    var threadStatusType = NormalizeLowerInvariantValue(envelope.Payload?.Status?.Type);
+
     if (issueStatus is not ("completed" or "failed"))
     {
-      return null;
+      if (!(eventType == "thread.status.changed" && threadStatusType == "idle"))
+      {
+        return null;
+      }
     }
 
     return new ResolvedTerminalIssueEvent(
@@ -274,11 +391,19 @@ public sealed class PushNotificationEventMonitorService(
       NormalizeTrimmedValue(envelope.Payload?.ResolvedThreadId),
       NormalizeTrimmedValue(envelope.Payload?.ResolvedProjectId),
       issueStatus,
-      eventType);
+      eventType,
+      threadStatusType);
   }
 
   private static string ResolveTerminalIssueStatus(string eventType, PushEventPayload? payload)
   {
+    var explicitIssueStatus = NormalizeTerminalStatus(payload?.ResolvedIssueStatus);
+
+    if (explicitIssueStatus is "completed" or "failed")
+    {
+      return explicitIssueStatus;
+    }
+
     return eventType switch
     {
       "turn.completed" => NormalizeTerminalStatus(payload?.Turn?.Status),
@@ -295,7 +420,6 @@ public sealed class PushNotificationEventMonitorService(
     return normalized switch
     {
       "error" => "failed",
-      "idle" => "completed",
       _ => string.Empty
     };
   }
@@ -322,8 +446,15 @@ public sealed class PushNotificationEventMonitorService(
     string IssueId,
     string ThreadId,
     string ProjectId,
+    string IssueStatusHint,
+    string EventType,
+    string ThreadStatusType);
+
+  private sealed record ResolvedIssueDelivery(
     string IssueStatus,
-    string EventType);
+    JObject? IssueSnapshot,
+    JObject? SourceIssueSnapshot,
+    string ProjectId);
 
   private sealed class PushEventEnvelope
   {
@@ -364,6 +495,10 @@ public sealed class PushNotificationEventMonitorService(
 
     public string? Issue_id { get; set; }
 
+    public string? IssueStatus { get; set; }
+
+    public string? Issue_status { get; set; }
+
     public PushTurnPayload? Turn { get; set; }
 
     public PushThreadStatusPayload? Status { get; set; }
@@ -373,6 +508,8 @@ public sealed class PushNotificationEventMonitorService(
     public string? ResolvedProjectId => ProjectId ?? Project_id;
 
     public string? ResolvedIssueId => IssueId ?? Issue_id;
+
+    public string? ResolvedIssueStatus => IssueStatus ?? Issue_status;
   }
 
   private sealed class PushTurnPayload

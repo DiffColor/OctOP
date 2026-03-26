@@ -450,6 +450,46 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testRefreshAvailableRuntimeUpdateFollowsRemoteBranchAfterNonFastForwardRewrite() async throws {
+    let repositoryURL = sandboxURL.appendingPathComponent("remote-rewrite-repository", isDirectory: true)
+    let adapterURL = repositoryURL
+      .appendingPathComponent("services", isDirectory: true)
+      .appendingPathComponent("codex-adapter", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try createFakeCodexAdapterSource(at: adapterURL)
+    try "seed\n".write(
+      to: repositoryURL.appendingPathComponent("README.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let initialRevision = try initializeGitRepository(at: repositoryURL)
+    try renameGitBranch(at: repositoryURL, name: "main")
+
+    unsetenv("OCTOP_AGENT_MENU_CODEX_ADAPTER_SOURCE_PATH")
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_URL", repositoryURL.absoluteString, 1)
+    setenv("OCTOP_AGENT_MENU_RUNTIME_REPO_BRANCH", "main", 1)
+
+    let bootstrap = makeBootstrap()
+    let releaseURL = try await bootstrap.prepareRuntimeReleaseForServiceStart(log: { _ in })
+    try bootstrap.activateRuntimeRelease(releaseURL, log: { _ in })
+
+    try "export const domain = \"rewritten-history\";\n".write(
+      to: adapterURL.appendingPathComponent("src/domain.js"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let rewrittenRevision = try recreateGitRepository(at: repositoryURL)
+    try renameGitBranch(at: repositoryURL, name: "main")
+
+    await bootstrap.refreshAvailableRuntimeUpdate(log: { _ in })
+
+    XCTAssertNotEqual(initialRevision, rewrittenRevision)
+    XCTAssertEqual(bootstrap.availableRuntimeUpdate?.sourceRevision, rewrittenRevision)
+    XCTAssertEqual(bootstrap.runtimeUpdateStatusDisplay, "업데이트 \(String(rewrittenRevision.prefix(12)))")
+  }
+
+  @MainActor
   func testRefreshAvailableRuntimeUpdateIgnoresRuntimeNodeModulesDifferences() async throws {
     _ = try initializeGitRepository(at: codexAdapterSourceURL)
     let bootstrap = makeBootstrap()
@@ -630,6 +670,73 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       release1.path
     )
     XCTAssertTrue(model.lines.contains(where: { $0.contains("롤백") }))
+
+    model.stop()
+    await model.waitUntilStopped()
+  }
+
+  @MainActor
+  func testServiceStartSucceedsWhenWsAppServerUsesDangerousBypassFlag() async throws {
+    let bootstrap = makeBootstrap()
+    let model = AgentMenuModel()
+
+    try overwriteFakeRuntimeFile(
+      relativePath: "scripts/run-local-agent.mjs",
+      contents: """
+      import net from "node:net";
+      import { spawn } from "node:child_process";
+
+      const workspaceRoot = process.cwd();
+      const wsUrl = new URL(process.env.OCTOP_APP_SERVER_WS_URL);
+      const appServerProcess = spawn(
+        process.execPath,
+        [
+          "-e",
+          "const net=require('node:net'); const url=new URL(process.argv.at(-1)); const server=net.createServer(); server.listen(Number(url.port), url.hostname); setInterval(() => {}, 1000);",
+          `${workspaceRoot}/runtime/bin/codex`,
+          "--dangerously-bypass-approvals-and-sandbox",
+          "app-server",
+          "--listen",
+          process.env.OCTOP_APP_SERVER_WS_URL
+        ],
+        { cwd: workspaceRoot, stdio: "ignore" }
+      );
+      const bridgeProcess = spawn(process.execPath, ["./scripts/run-bridge.mjs"], {
+        cwd: workspaceRoot,
+        env: process.env,
+        stdio: "ignore"
+      });
+
+      function stopAll(signal = "SIGTERM") {
+        if (!bridgeProcess.killed) bridgeProcess.kill(signal);
+        if (!appServerProcess.killed) appServerProcess.kill(signal);
+      }
+
+      appServerProcess.on("exit", () => {
+        if (!bridgeProcess.killed) bridgeProcess.kill("SIGTERM");
+        process.exit(0);
+      });
+
+      bridgeProcess.on("exit", () => {
+        if (!appServerProcess.killed) appServerProcess.kill("SIGTERM");
+        process.exit(0);
+      });
+
+      for (const eventName of ["SIGINT", "SIGTERM"]) {
+        process.on(eventName, () => stopAll(eventName));
+      }
+
+      setInterval(() => {}, 1000);
+      """
+    )
+
+    await model.start(using: bootstrap)
+
+    XCTAssertEqual(
+      model.runtimeState,
+      .running,
+      "서비스 시작 로그:\n\(model.lines.joined(separator: "\n"))"
+    )
 
     model.stop()
     await model.waitUntilStopped()
@@ -1215,5 +1322,14 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
     try process.run()
     process.waitUntilExit()
     XCTAssertEqual(process.terminationStatus, 0, "git branch rename failed: \(name)")
+  }
+
+  private func recreateGitRepository(at repositoryURL: URL) throws -> String {
+    let gitDirectoryURL = repositoryURL.appendingPathComponent(".git", isDirectory: true)
+    if FileManager.default.fileExists(atPath: gitDirectoryURL.path) {
+      try FileManager.default.removeItem(at: gitDirectoryURL)
+    }
+
+    return try initializeGitRepository(at: repositoryURL)
   }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
 using Xunit;
@@ -18,6 +19,102 @@ public sealed class RuntimeInstallerTests
     catch
     {
     }
+  }
+
+  private static void RestoreEnvironmentVariable(string name, string? originalValue)
+  {
+    Environment.SetEnvironmentVariable(name, originalValue);
+  }
+
+  private static void CreateFakeRuntimeRepository(string repositoryRoot)
+  {
+    Directory.CreateDirectory(Path.Combine(repositoryRoot, "services", "codex-adapter", "src"));
+    File.WriteAllText(
+      Path.Combine(repositoryRoot, "services", "codex-adapter", "package.json"),
+      """
+      {
+        "name": "codex-adapter",
+        "private": true,
+        "type": "module",
+        "version": "1.0.0"
+      }
+      """);
+    File.WriteAllText(
+      Path.Combine(repositoryRoot, "services", "codex-adapter", "package-lock.json"),
+      """
+      {
+        "name": "codex-adapter",
+        "lockfileVersion": 3,
+        "requires": true,
+        "packages": {
+          "": {
+            "name": "codex-adapter",
+            "version": "1.0.0"
+          }
+        }
+      }
+      """);
+    File.WriteAllText(
+      Path.Combine(repositoryRoot, "services", "codex-adapter", "src", "index.js"),
+      "export const runtime = 'test';\n");
+    File.WriteAllText(
+      Path.Combine(repositoryRoot, "services", "codex-adapter", "src", "domain.js"),
+      "export const domain = 'seed';\n");
+    File.WriteAllText(Path.Combine(repositoryRoot, "README.md"), "seed\n");
+  }
+
+  private static string RunGit(string repositoryRoot, params string[] arguments)
+  {
+    var startInfo = new ProcessStartInfo
+    {
+      FileName = "git",
+      WorkingDirectory = repositoryRoot,
+      UseShellExecute = false,
+      RedirectStandardOutput = true,
+      RedirectStandardError = true,
+      CreateNoWindow = true
+    };
+
+    foreach (var argument in arguments)
+    {
+      startInfo.ArgumentList.Add(argument);
+    }
+
+    using var process = Process.Start(startInfo);
+    Assert.NotNull(process);
+    var standardOutput = process!.StandardOutput.ReadToEnd();
+    var standardError = process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    Assert.True(
+      process.ExitCode == 0,
+      $"git command failed: {string.Join(" ", arguments)}\nstdout:\n{standardOutput}\nstderr:\n{standardError}");
+    return standardOutput.Trim();
+  }
+
+  private static string InitializeGitRepository(string repositoryRoot, string message = "seed codex adapter")
+  {
+    RunGit(repositoryRoot, "init");
+    RunGit(repositoryRoot, "config", "user.name", "OctOP Tests");
+    RunGit(repositoryRoot, "config", "user.email", "octop-tests@example.com");
+    RunGit(repositoryRoot, "add", ".");
+    RunGit(repositoryRoot, "commit", "-m", message);
+    return RunGit(repositoryRoot, "rev-parse", "HEAD");
+  }
+
+  private static void RenameGitBranch(string repositoryRoot, string branchName)
+  {
+    RunGit(repositoryRoot, "branch", "-M", branchName);
+  }
+
+  private static string RecreateGitRepository(string repositoryRoot, string message = "rewrite codex adapter history")
+  {
+    var gitDirectory = Path.Combine(repositoryRoot, ".git");
+    if (Directory.Exists(gitDirectory))
+    {
+      Directory.Delete(gitDirectory, recursive: true);
+    }
+
+    return InitializeGitRepository(repositoryRoot, message);
   }
 
   [Fact]
@@ -190,6 +287,50 @@ public sealed class RuntimeInstallerTests
     }
     finally
     {
+      CleanupRuntimePath(root);
+    }
+  }
+
+  [Fact]
+  public async Task ResolveAvailableRuntimeUpdateAsync_FollowsRewrittenRemoteBranchAfterNonFastForwardRewrite()
+  {
+    var root = Path.Combine(Path.GetTempPath(), $"octop-win-agent-runtime-update-{Guid.NewGuid():N}");
+    var remoteRepositoryRoot = Path.Combine(root, "remote-repo");
+    var installRoot = Path.Combine(root, "install");
+    var originalRepoUrl = Environment.GetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_URL");
+    var originalRepoBranch = Environment.GetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_BRANCH");
+
+    try
+    {
+      Directory.CreateDirectory(remoteRepositoryRoot);
+      CreateFakeRuntimeRepository(remoteRepositoryRoot);
+      var initialRevision = InitializeGitRepository(remoteRepositoryRoot);
+      RenameGitBranch(remoteRepositoryRoot, "main");
+
+      Environment.SetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_URL", remoteRepositoryRoot);
+      Environment.SetEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_BRANCH", "main");
+
+      var installer = new RuntimeInstaller();
+      var paths = new OctopPaths(installRoot);
+
+      var initialUpdate = await installer.ResolveAvailableRuntimeUpdateAsync(paths, CancellationToken.None);
+      Assert.Equal(initialRevision, initialUpdate?.SourceRevision);
+
+      File.WriteAllText(
+        Path.Combine(remoteRepositoryRoot, "services", "codex-adapter", "src", "domain.js"),
+        "export const domain = 'rewritten-history';\n");
+      var rewrittenRevision = RecreateGitRepository(remoteRepositoryRoot);
+      RenameGitBranch(remoteRepositoryRoot, "main");
+
+      var rewrittenUpdate = await installer.ResolveAvailableRuntimeUpdateAsync(paths, CancellationToken.None);
+
+      Assert.NotEqual(initialRevision, rewrittenRevision);
+      Assert.Equal(rewrittenRevision, rewrittenUpdate?.SourceRevision);
+    }
+    finally
+    {
+      RestoreEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_URL", originalRepoUrl);
+      RestoreEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_BRANCH", originalRepoBranch);
       CleanupRuntimePath(root);
     }
   }

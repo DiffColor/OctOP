@@ -895,8 +895,8 @@ function normalizeCodexModel(value) {
 
 function resolveCodexModelFromOptions(options = {}) {
   const requestModel = options.model;
-  const fallbackModel = resolveCodexModelFromEnvironmentFiles()
-    ?? process.env.OCTOP_CODEX_MODEL
+  const fallbackModel = process.env.OCTOP_CODEX_MODEL
+    ?? resolveCodexModelFromEnvironmentFiles()
     ?? CODEX_MODEL;
 
   return normalizeCodexModel(requestModel || fallbackModel);
@@ -905,8 +905,8 @@ function resolveCodexModelFromOptions(options = {}) {
 function resolveCodexApprovalPolicyFromOptions(options = {}) {
   const requestApprovalPolicy = options.approvalPolicy ?? options.approval_policy;
   const fallbackApprovalPolicy =
-    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_APPROVAL_POLICY")
-    ?? process.env.OCTOP_CODEX_APPROVAL_POLICY
+    process.env.OCTOP_CODEX_APPROVAL_POLICY
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_APPROVAL_POLICY")
     ?? CODEX_APPROVAL_POLICY;
 
   return normalizeStringOption(requestApprovalPolicy, fallbackApprovalPolicy);
@@ -915,8 +915,8 @@ function resolveCodexApprovalPolicyFromOptions(options = {}) {
 function resolveCodexSandboxFromOptions(options = {}) {
   const requestSandbox = options.sandbox;
   const fallbackSandbox =
-    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_SANDBOX")
-    ?? process.env.OCTOP_CODEX_SANDBOX
+    process.env.OCTOP_CODEX_SANDBOX
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_SANDBOX")
     ?? CODEX_SANDBOX;
 
   return normalizeStringOption(requestSandbox, fallbackSandbox);
@@ -945,8 +945,8 @@ function resolveCodexExecutionPolicyFromOptions(options = {}) {
 function resolveCodexReasoningEffortFromOptions(options = {}) {
   const requestReasoningEffort = options.reasoningEffort ?? options.reasoning_effort;
   const fallbackReasoningEffort =
-    resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_REASONING_EFFORT")
-    ?? process.env.OCTOP_CODEX_REASONING_EFFORT
+    process.env.OCTOP_CODEX_REASONING_EFFORT
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_REASONING_EFFORT")
     ?? CODEX_REASONING_EFFORT;
 
   const request = normalizeReasoningEffort(requestReasoningEffort);
@@ -7797,6 +7797,10 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
     remotePayload.issue_id = context.issueId;
   }
 
+  if (context.issueStatus) {
+    remotePayload.issue_status = context.issueStatus;
+  }
+
   return remotePayload;
 }
 
@@ -8587,7 +8591,10 @@ class AppServerClient {
           rootThreadId: threadId,
           physicalThreadId,
           projectId,
-          issueId: activeIssueId
+          issueId: activeIssueId,
+          issueStatus:
+            issuePatch?.status ??
+            (activeIssueId ? issueCardsById.get(activeIssueId)?.status ?? null : null)
         })
       );
     }
@@ -10140,7 +10147,8 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     rootThreadId: threadId,
     physicalThreadId,
     projectId: thread.project_id,
-    issueId: activeIssueId
+    issueId: activeIssueId,
+    issueStatus: nextIssue?.status ?? issue?.status ?? null
   };
 
   if (syncedAssistant.appendedDelta) {
