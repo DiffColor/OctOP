@@ -2,7 +2,7 @@
   "name": "OctOP",
   "short_name": "OctOP",
   "description": "대시보드 기능을 모바일 메시지형 인터페이스로 옮긴 OctOP PWA",
-  "start_url": "/",
+  "start_url": "/?client_mode=standalone",
   "display": "standalone",
   "background_color": "#08111d",
   "theme_color": "#0b5ea8",

@@ -242,6 +242,7 @@ public sealed class WebPushNotificationService(
       ["issueStatus"] = request.IssueStatus,
       ["sourceAppId"] = request.SourceAppId,
       ["targetAppId"] = request.TargetAppId,
+      ["clientMode"] = subscription.ClientMode,
       ["sentAt"] = sentAt.ToString("O")
     };
 

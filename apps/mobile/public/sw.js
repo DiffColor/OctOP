@@ -2,6 +2,39 @@ const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "dev";
 const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-icon-192.png", "/octop-home-icon-512.png", "/octop-home-icon-180.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
+const CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
+const CLIENT_MODE_STANDALONE = "standalone";
+const CLIENT_MODE_BROWSER = "browser";
+const clientContextById = new Map();
+
+const normalizeLaunchUrl = (value) => {
+  try {
+    return new URL(typeof value === "string" ? value : "/", self.location.origin).toString();
+  } catch {
+    return new URL("/", self.location.origin).toString();
+  }
+};
+
+const normalizeClientMode = (value) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === CLIENT_MODE_STANDALONE ? CLIENT_MODE_STANDALONE : CLIENT_MODE_BROWSER;
+};
+
+const withClientModeLaunchUrl = (launchUrl, clientMode) => {
+  const normalizedLaunchUrl = normalizeLaunchUrl(launchUrl);
+
+  if (normalizeClientMode(clientMode) !== CLIENT_MODE_STANDALONE) {
+    return normalizedLaunchUrl;
+  }
+
+  try {
+    const url = new URL(normalizedLaunchUrl);
+    url.searchParams.set("client_mode", CLIENT_MODE_STANDALONE);
+    return url.toString();
+  } catch {
+    return normalizedLaunchUrl;
+  }
+};
 
 const buildLaunchUrl = (payload) => {
   const explicitUrl = [payload?.launchUrl, payload?.url]
@@ -9,7 +42,7 @@ const buildLaunchUrl = (payload) => {
     .find(Boolean);
 
   if (explicitUrl) {
-    return explicitUrl;
+    return withClientModeLaunchUrl(explicitUrl, payload?.clientMode);
   }
 
   const bridgeId = String(payload?.bridgeId ?? "").trim();
@@ -39,7 +72,98 @@ const buildLaunchUrl = (payload) => {
     url.searchParams.set("issue_id", issueId);
   }
 
-  return `${url.pathname}${url.search}${url.hash}`;
+  return withClientModeLaunchUrl(`${url.pathname}${url.search}${url.hash}`, payload?.clientMode);
+};
+
+const isSameOriginClient = (client) => {
+  if (!client?.url) {
+    return false;
+  }
+
+  try {
+    return new URL(client.url).origin === self.location.origin;
+  } catch {
+    return false;
+  }
+};
+
+const readClientMode = (client) => normalizeClientMode(clientContextById.get(client?.id)?.mode);
+
+const readClientModeFromUrl = (client) => {
+  try {
+    const url = new URL(client?.url ?? "", self.location.origin);
+    return normalizeClientMode(url.searchParams.get("client_mode"));
+  } catch {
+    return CLIENT_MODE_BROWSER;
+  }
+};
+
+const pruneClientContexts = (clients) => {
+  const activeIds = new Set(clients.map((client) => client?.id).filter(Boolean));
+
+  for (const clientId of clientContextById.keys()) {
+    if (!activeIds.has(clientId)) {
+      clientContextById.delete(clientId);
+    }
+  }
+};
+
+const scoreNotificationClient = (client, targetUrl) => {
+  if (!client || !isSameOriginClient(client)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const reportedClientMode = readClientMode(client);
+  const clientMode =
+    reportedClientMode === CLIENT_MODE_STANDALONE
+      ? CLIENT_MODE_STANDALONE
+      : readClientModeFromUrl(client);
+  let score = clientMode === CLIENT_MODE_STANDALONE ? 100 : 10;
+
+  if (client.focused) {
+    score += 20;
+  }
+
+  if (client.visibilityState === "visible") {
+    score += 10;
+  }
+
+  if (normalizeLaunchUrl(client.url) === targetUrl) {
+    score += 5;
+  }
+
+  return score;
+};
+
+const focusOrOpenNotificationTarget = async (launchUrl) => {
+  const targetUrl = normalizeLaunchUrl(launchUrl);
+  const clients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true
+  });
+
+  pruneClientContexts(clients);
+
+  const preferredClient = [...clients]
+    .filter((client) => isSameOriginClient(client))
+    .sort((left, right) => scoreNotificationClient(right, targetUrl) - scoreNotificationClient(left, targetUrl))[0];
+
+  if (preferredClient) {
+    try {
+      if (normalizeLaunchUrl(preferredClient.url) !== targetUrl && typeof preferredClient.navigate === "function") {
+        await preferredClient.navigate(targetUrl);
+      }
+    } catch {
+      // navigate 실패 시에도 focus는 계속 시도
+    }
+
+    if (typeof preferredClient.focus === "function") {
+      await preferredClient.focus();
+      return preferredClient;
+    }
+  }
+
+  return self.clients.openWindow(targetUrl);
 };
 
 const getContentType = (response) => response?.headers?.get("content-type")?.toLowerCase() ?? "";
@@ -109,6 +233,20 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") {
     self.skipWaiting();
+    return;
+  }
+
+  if (event.data?.type === CLIENT_CONTEXT_MESSAGE_TYPE) {
+    const clientId = String(event.source?.id ?? "").trim();
+
+    if (!clientId) {
+      return;
+    }
+
+    clientContextById.set(clientId, {
+      mode: normalizeClientMode(event.data.clientMode),
+      updatedAt: Date.now()
+    });
   }
 });
 
@@ -219,5 +357,5 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  event.waitUntil(self.clients.openWindow(event.notification.data?.launchUrl || "/"));
+  event.waitUntil(focusOrOpenNotificationTarget(event.notification.data?.launchUrl || "/"));
 });

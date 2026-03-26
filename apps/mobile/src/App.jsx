@@ -86,6 +86,7 @@ const bridgeSupportsThreadDeveloperInstructions = (status) =>
   status?.capabilities?.thread_developer_instructions === true;
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
+const SERVICE_WORKER_CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -226,6 +227,30 @@ function isStandaloneDisplayMode() {
   }
 
   return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+async function publishServiceWorkerClientContext() {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+    return;
+  }
+
+  const message = {
+    type: SERVICE_WORKER_CLIENT_CONTEXT_MESSAGE_TYPE,
+    clientMode: isStandaloneDisplayMode() ? "standalone" : "browser"
+  };
+
+  try {
+    navigator.serviceWorker.controller?.postMessage(message);
+  } catch {
+    // ignore controller message failures
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    registration.active?.postMessage(message);
+  } catch {
+    // ignore registration message failures
+  }
 }
 
 function formatSilentDuration(ms) {
@@ -12960,21 +12985,27 @@ export default function App() {
       return undefined;
     }
 
+    void publishServiceWorkerClientContext();
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        void publishServiceWorkerClientContext();
         scheduleAppForegroundResume("app_resume:visibility");
       }
     };
 
     const handleWindowFocus = () => {
+      void publishServiceWorkerClientContext();
       scheduleAppForegroundResume("app_resume:focus");
     };
 
     const handlePageShow = () => {
+      void publishServiceWorkerClientContext();
       scheduleAppForegroundResume("app_resume:pageshow");
     };
 
     const handleOnline = () => {
+      void publishServiceWorkerClientContext();
       scheduleAppForegroundResume("app_resume:online");
     };
 
