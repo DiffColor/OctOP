@@ -84,6 +84,9 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       GH_TOKEN: ${{ github.token }}
+      MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+      MAC_CODESIGN_CERT_P12: ${{ secrets.MAC_CODESIGN_CERT_P12 }}
+      MAC_CODESIGN_CERT_PASSWORD: ${{ secrets.MAC_CODESIGN_CERT_PASSWORD }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -100,6 +103,34 @@ jobs:
 
       - name: Verify release exists
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Import macOS signing identity (optional)
+        run: |
+          if [ -z "${MAC_SIGN_IDENTITY:-}" ]; then
+            echo "MAC_SIGN_IDENTITY is not set. Skip codesigning."
+            exit 0
+          fi
+
+          if [ -z "${MAC_CODESIGN_CERT_P12:-}" ] || [ -z "${MAC_CODESIGN_CERT_PASSWORD:-}" ]; then
+            echo "MAC_CODESIGN_CERT_P12 or MAC_CODESIGN_CERT_PASSWORD is missing. Skip codesigning."
+            exit 0
+          fi
+
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/octop-macos-sign.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/octop-macos-sign.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+          echo "$MAC_CODESIGN_CERT_P12" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MAC_CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
 
       - name: Resolve macOS asset names
         id: macos-asset
@@ -136,6 +167,13 @@ jobs:
       - name: Build macOS artifact
         if: ${{ steps.macos-exists.outputs.update_exists != 'true' || steps.macos-exists.outputs.standalone_app_exists != 'true' }}
         run: node ./scripts/release-agent-menu.mjs --platform macos --version "$RELEASE_TAG"
+
+      - name: Clean macOS signing keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/octop-macos-sign.keychain-db"
+          security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload macOS update asset
         if: ${{ steps.macos-exists.outputs.update_exists != 'true' }}

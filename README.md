@@ -186,7 +186,32 @@ npm run release:agent-menu:macos -- --version 1.0.0
 npm run release:agent-menu:windows -- --version 1.0.0
 ```
 
+macOS 산출물은 다음처럼 아키텍처를 지정할 수 있습니다.
+
+```bash
+npm run release:agent-menu:macos -- --version 1.0.0 --mac-archs x86_64
+npm run release:agent-menu:macos -- --version 1.0.0 --mac-archs arm64,x86_64
+```
+
+서명이 가능한 환경이면 다음처럼 서명을 적용해 Gatekeeper 차단 가능성을 낮출 수 있습니다.
+
+```bash
+MAC_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" npm run release:agent-menu:macos -- --version 1.0.0
+```
+
+또는 커맨드 인자로 넘길 수 있습니다.
+
+```bash
+npm run release:agent-menu:macos -- --version 1.0.0 --sign-identity "Developer ID Application: Your Name (TEAMID)"
+```
+
 산출물은 `dist/releases/v1.0.0` 아래에 생성됩니다.
+
+GitHub Actions에서 빌드할 때는 아래 Secret을 설정하면 자동으로 서명 후 업로드할 수 있습니다.
+
+- `MAC_SIGN_IDENTITY`
+- `MAC_CODESIGN_CERT_P12` (base64)
+- `MAC_CODESIGN_CERT_PASSWORD`
 
 - Windows: `OctOP.WindowsAgentMenu-win-x64-v1.0.0.exe`
 - macOS: `OctOPAgentMenu-macos-arm64-v1.0.0.zip`

@@ -103,13 +103,21 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     throw new Error("macOS 릴리즈 빌드는 macOS 호스트에서만 실행할 수 있습니다.");
   }
 
-  run("swift", [
+  const architectures = resolveMacArchitectures(options, workspaceRoot);
+
+  const swiftBuildArgs = [
     "build",
     "--package-path",
     "apps/macos-agent-menu",
     "-c",
     "release"
-  ], workspaceRoot);
+  ];
+
+  for (const architecture of architectures) {
+    swiftBuildArgs.push("--arch", architecture);
+  }
+
+  run("swift", swiftBuildArgs, workspaceRoot);
 
   const binPath = exec("swift", [
     "build",
@@ -131,7 +139,8 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     throw new Error(`macOS resource bundle not found: ${resourceBundlePath}`);
   }
 
-  const arch = exec("uname", ["-m"], workspaceRoot).trim();
+  const builtArchitectures = resolveBinaryArchitectures(executablePath, workspaceRoot);
+  const buildArchForName = architectures.length === 1 ? architectures[0] : "universal";
   const appRoot = resolve(stageRoot, "macos", "OctOP.app");
   const contentsRoot = resolve(appRoot, "Contents");
   const macOsRoot = resolve(contentsRoot, "MacOS");
@@ -140,9 +149,9 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   const fallbackIconPath = resolve(workspaceRoot, "apps", "macos-agent-menu", "Sources", "Resources", "icon.png");
   const iconSourcePath = existsSync(hiResIconPath) ? hiResIconPath : fallbackIconPath;
   const iconPath = resolve(resourcesRoot, "AppIcon.icns");
-  const standaloneAppName = `OctOP-macos-${arch}-${versionTag}.app`;
+  const standaloneAppName = `OctOP-macos-${buildArchForName}-${versionTag}.app`;
   const standaloneAppPath = resolve(outputRoot, standaloneAppName);
-  const dmgName = `OctOP-macos-${arch}-${versionTag}.dmg`;
+  const dmgName = `OctOP-macos-${buildArchForName}-${versionTag}.dmg`;
   const dmgPath = resolve(outputRoot, dmgName);
   rmSync(resolve(stageRoot, "macos"), { recursive: true, force: true });
   rmSync(standaloneAppPath, { recursive: true, force: true });
@@ -161,6 +170,19 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   );
 
   cpSync(appRoot, standaloneAppPath, { recursive: true });
+  sanitizeMacBundle(standaloneAppPath, workspaceRoot);
+
+  const signingIdentity = options.signIdentity || process.env.MAC_SIGN_IDENTITY || "";
+  if (signingIdentity.trim()) {
+    signMacBundle(standaloneAppPath, signingIdentity.trim(), workspaceRoot);
+  }
+
+  validateTargetArchitectures({
+    builtArchitectures,
+    requestedArchitectures: architectures,
+    binaryPath: executablePath
+  });
+
   buildMacDmg({
     appPath: standaloneAppPath,
     dmgPath,
@@ -168,7 +190,7 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     workspaceRoot
   });
 
-  const archiveName = `OctOPAgentMenu-macos-${arch}-${versionTag}.zip`;
+  const archiveName = `OctOPAgentMenu-macos-${buildArchForName}-${versionTag}.zip`;
   const archivePath = resolve(outputRoot, archiveName);
   rmSync(archivePath, { force: true });
 
@@ -218,6 +240,85 @@ function resolveReleaseVersion(explicitVersion) {
   }
 
   return { tag, numeric };
+}
+
+function resolveMacArchitectures(options, workspaceRoot) {
+  const explicit = options.macArchs?.trim();
+  const envArchs = process.env.MAC_ARCHS;
+  const source = explicit ?? envArchs;
+
+  if (!source) {
+    return [exec("uname", ["-m"], workspaceRoot).trim()];
+  }
+
+  const architectures = source
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (architectures.length === 0) {
+    return [exec("uname", ["-m"], workspaceRoot).trim()];
+  }
+
+  const normalized = Array.from(new Set(
+    architectures.map((architecture) => architecture.toLowerCase())
+  ));
+
+  const unknown = normalized.find((architecture) => !["x86_64", "arm64"].includes(architecture));
+  if (unknown) {
+    throw new Error(`지원하지 않는 macOS arch입니다: ${unknown}`);
+  }
+
+  return normalized;
+}
+
+function resolveBinaryArchitectures(binaryPath, workspaceRoot) {
+  const output = exec("lipo", ["-info", binaryPath], workspaceRoot).trim();
+  const matchFat = output.match(/are:\s*(.+)$/u);
+  if (matchFat) {
+    return matchFat[1].split(/\s+/u).filter(Boolean);
+  }
+
+  const matchSingle = output.match(/is architecture:\s*(\S+)$/u);
+  if (matchSingle) {
+    return [matchSingle[1]];
+  }
+
+  throw new Error(`macOS 바이너리 아키텍처를 판별하지 못했습니다: ${output}`);
+}
+
+function validateTargetArchitectures({ builtArchitectures, requestedArchitectures, binaryPath }) {
+  const missing = requestedArchitectures.filter((architecture) => !builtArchitectures.includes(architecture));
+  if (missing.length > 0) {
+    throw new Error(
+      `요청한 아키텍처가 바이너리에 반영되지 않았습니다. binary=${binaryPath}, requested=${requestedArchitectures.join(",")}, built=${builtArchitectures.join(",")} `
+    );
+  }
+}
+
+function sanitizeMacBundle(appPath, workspaceRoot) {
+  const executablePath = resolve(appPath, "Contents", "MacOS", "OctOPAgentMenu");
+
+  run("chmod", ["-R", "a+rX", appPath], workspaceRoot);
+  run("chmod", ["+x", executablePath], workspaceRoot);
+  run("xattr", ["-cr", appPath], workspaceRoot);
+}
+
+function signMacBundle(appPath, identity, workspaceRoot) {
+  run("codesign", [
+    "--force",
+    "--deep",
+    "--sign",
+    identity,
+    appPath
+  ], workspaceRoot);
+  run("codesign", [
+    "--verify",
+    "--deep",
+    "--strict",
+    "--verbose=2",
+    appPath
+  ], workspaceRoot);
 }
 
 function resolveTagFromHead() {
@@ -361,6 +462,18 @@ function parseArgs(argv) {
 
     if (token === "--platform") {
       options.platform = argv[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (token === "--mac-archs") {
+      options.macArchs = argv[index + 1];
+      index += 1;
+      continue;
+    }
+
+    if (token === "--sign-identity") {
+      options.signIdentity = argv[index + 1];
       index += 1;
     }
   }
