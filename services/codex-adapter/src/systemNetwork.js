@@ -33,3 +33,25 @@ export function buildSystemNetworkStateSignature(networkState) {
     default_route_interface: defaultRouteInterface
   });
 }
+
+export function shouldAttemptSystemNetworkRecovery({
+  previousConnected = null,
+  previousStateSignature = null,
+  nextStateSignature = null,
+  recoveryPending = false,
+  networkConnected = false
+} = {}) {
+  if (!networkConnected) {
+    return false;
+  }
+
+  if (recoveryPending) {
+    return true;
+  }
+
+  if (previousConnected === false) {
+    return true;
+  }
+
+  return previousStateSignature !== nextStateSignature;
+}

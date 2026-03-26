@@ -27,7 +27,10 @@ import {
   sanitizeBridgeId,
   sanitizeUserId
 } from "./domain.js";
-import { buildSystemNetworkStateSignature } from "./systemNetwork.js";
+import {
+  buildSystemNetworkStateSignature,
+  shouldAttemptSystemNetworkRecovery
+} from "./systemNetwork.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
 // Runtime update verification marker 2: second non-functional comment for follow-up validation.
@@ -140,6 +143,8 @@ let natsProjectionReplayPromise = null;
 let systemNetworkConnected = null;
 let lastSystemNetworkStateSignature = null;
 let systemNetworkReplayPromise = null;
+let systemNetworkRecoveryPending = false;
+let systemNetworkRecoveryPollTimer = null;
 let systemNetworkEventMonitor = null;
 let systemNetworkEventTimer = null;
 let pendingSystemNetworkEvent = null;
@@ -583,43 +588,98 @@ function scheduleSystemNetworkEvent(event) {
   systemNetworkEventTimer.unref?.();
 }
 
+function startSystemNetworkRecoveryPoll(reason = "unspecified") {
+  if (systemNetworkRecoveryPollTimer || SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS <= 0) {
+    return;
+  }
+
+  console.warn("[OctOP bridge] starting system network recovery poll", {
+    reason,
+    interval_ms: SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS
+  });
+
+  systemNetworkRecoveryPollTimer = setInterval(() => {
+    scheduleSystemNetworkEvent({
+      trigger: `system_network_recovery_poll:${reason}`,
+      source: "system_network_recovery_poll",
+      available: systemNetworkConnected,
+      raw: null
+    });
+  }, SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS);
+  systemNetworkRecoveryPollTimer.unref?.();
+}
+
+function stopSystemNetworkRecoveryPoll(reason = "recovered") {
+  if (!systemNetworkRecoveryPollTimer) {
+    return;
+  }
+
+  clearInterval(systemNetworkRecoveryPollTimer);
+  systemNetworkRecoveryPollTimer = null;
+  console.warn("[OctOP bridge] stopped system network recovery poll", {
+    reason
+  });
+}
+
 async function handleSystemNetworkEvent(event = {}) {
   const networkState = getSystemNetworkState(event.trigger ?? "system_network");
   const previousConnected = systemNetworkConnected;
   const previousStateSignature = lastSystemNetworkStateSignature;
   const nextStateSignature = buildSystemNetworkStateSignature(networkState);
+  const stateChanged = previousStateSignature !== nextStateSignature;
   systemNetworkConnected = networkState.connected;
   lastSystemNetworkStateSignature = nextStateSignature;
 
-  if (previousStateSignature === nextStateSignature) {
-    return;
-  }
-
-  appendDiagnosticLog("info", "system_network.event", "system network event received", {
-    trigger: event.trigger ?? "system_network",
-    source: event.source ?? "unspecified",
-    available: event.available ?? null,
-    raw: event.raw ?? null,
-    ...buildSystemNetworkLogContext(networkState)
-  });
-
-  if (!networkState.connected) {
-    console.warn("[OctOP bridge] system network became unavailable", {
+  if (stateChanged) {
+    appendDiagnosticLog("info", "system_network.event", "system network event received", {
       trigger: event.trigger ?? "system_network",
       source: event.source ?? "unspecified",
+      available: event.available ?? null,
+      raw: event.raw ?? null,
       ...buildSystemNetworkLogContext(networkState)
     });
+  }
+
+  if (!networkState.connected) {
+    systemNetworkRecoveryPending = true;
+    startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    if (stateChanged) {
+      console.warn("[OctOP bridge] system network became unavailable", {
+        trigger: event.trigger ?? "system_network",
+        source: event.source ?? "unspecified",
+        ...buildSystemNetworkLogContext(networkState)
+      });
+    }
     return;
   }
 
-  const becameConnected = previousConnected === false;
-  const stateChanged = previousStateSignature !== nextStateSignature;
+  const shouldAttemptRecovery = shouldAttemptSystemNetworkRecovery({
+    previousConnected,
+    previousStateSignature,
+    nextStateSignature,
+    recoveryPending: systemNetworkRecoveryPending,
+    networkConnected: networkState.connected
+  });
 
-  if (!becameConnected && !stateChanged) {
+  if (!shouldAttemptRecovery) {
+    if (!systemNetworkRecoveryPending) {
+      stopSystemNetworkRecoveryPoll("network_stable");
+    }
     return;
   }
 
-  await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+  systemNetworkRecoveryPending = true;
+  startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+
+  const recovered = await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+
+  if (recovered) {
+    systemNetworkRecoveryPending = false;
+    stopSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    return;
+  }
+
+  systemNetworkRecoveryPending = true;
 }
 
 function buildSystemNetworkMonitorSpec() {
