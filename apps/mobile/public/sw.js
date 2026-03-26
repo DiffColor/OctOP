@@ -98,6 +98,24 @@ const readClientModeFromUrl = (client) => {
   }
 };
 
+const readClientModeFromLaunchUrl = (launchUrl) => {
+  try {
+    const url = new URL(normalizeLaunchUrl(launchUrl));
+    return normalizeClientMode(url.searchParams.get("client_mode"));
+  } catch {
+    return CLIENT_MODE_BROWSER;
+  }
+};
+
+const resolveClientModeForClient = (client) => {
+  const reportedClientMode = readClientMode(client);
+  return reportedClientMode === CLIENT_MODE_STANDALONE
+    ? CLIENT_MODE_STANDALONE
+    : readClientModeFromUrl(client);
+};
+
+const isStandaloneClient = (client) => resolveClientModeForClient(client) === CLIENT_MODE_STANDALONE;
+
 const pruneClientContexts = (clients) => {
   const activeIds = new Set(clients.map((client) => client?.id).filter(Boolean));
 
@@ -113,11 +131,7 @@ const scoreNotificationClient = (client, targetUrl) => {
     return Number.NEGATIVE_INFINITY;
   }
 
-  const reportedClientMode = readClientMode(client);
-  const clientMode =
-    reportedClientMode === CLIENT_MODE_STANDALONE
-      ? CLIENT_MODE_STANDALONE
-      : readClientModeFromUrl(client);
+  const clientMode = resolveClientModeForClient(client);
   let score = clientMode === CLIENT_MODE_STANDALONE ? 100 : 10;
 
   if (client.focused) {
@@ -135,8 +149,54 @@ const scoreNotificationClient = (client, targetUrl) => {
   return score;
 };
 
-const focusOrOpenNotificationTarget = async (launchUrl) => {
+const focusNotificationClient = async (client, targetUrl) => {
+  if (!client) {
+    return null;
+  }
+
+  try {
+    if (normalizeLaunchUrl(client.url) !== targetUrl && typeof client.navigate === "function") {
+      await client.navigate(targetUrl);
+    }
+  } catch {
+    // navigate 실패 시에도 focus는 계속 시도
+  }
+
+  if (typeof client.focus === "function") {
+    try {
+      await client.focus();
+    } catch {
+      // 일부 플랫폼은 background client focus를 무시할 수 있으므로 실패를 삼킨다.
+    }
+  }
+
+  return client;
+};
+
+const openWindowToTarget = async (targetUrl) => {
+  if (typeof self.clients.openWindow !== "function") {
+    return null;
+  }
+
+  try {
+    const openedClient = await self.clients.openWindow(targetUrl);
+
+    if (!openedClient) {
+      return null;
+    }
+
+    return focusNotificationClient(openedClient, targetUrl);
+  } catch {
+    return null;
+  }
+};
+
+const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
   const targetUrl = normalizeLaunchUrl(launchUrl);
+  const targetClientMode =
+    normalizeClientMode(payload?.clientMode) === CLIENT_MODE_STANDALONE
+      ? CLIENT_MODE_STANDALONE
+      : readClientModeFromLaunchUrl(targetUrl);
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true
@@ -144,26 +204,46 @@ const focusOrOpenNotificationTarget = async (launchUrl) => {
 
   pruneClientContexts(clients);
 
-  const preferredClient = [...clients]
+  const sameOriginClients = [...clients]
     .filter((client) => isSameOriginClient(client))
-    .sort((left, right) => scoreNotificationClient(right, targetUrl) - scoreNotificationClient(left, targetUrl))[0];
+    .sort((left, right) => scoreNotificationClient(right, targetUrl) - scoreNotificationClient(left, targetUrl));
+  const preferredClient = sameOriginClients[0] ?? null;
+  const preferredVisibleClient =
+    sameOriginClients.find((client) => client.focused || client.visibilityState === "visible") ?? null;
+  const preferredStandaloneClient = sameOriginClients.find((client) => isStandaloneClient(client)) ?? null;
+  const shouldPreferStandaloneLaunch =
+    targetClientMode === CLIENT_MODE_STANDALONE || Boolean(preferredStandaloneClient);
 
-  if (preferredClient) {
-    try {
-      if (normalizeLaunchUrl(preferredClient.url) !== targetUrl && typeof preferredClient.navigate === "function") {
-        await preferredClient.navigate(targetUrl);
-      }
-    } catch {
-      // navigate 실패 시에도 focus는 계속 시도
-    }
+  if (shouldPreferStandaloneLaunch && preferredStandaloneClient) {
+    const standaloneAlreadyForeground =
+      preferredStandaloneClient.focused || preferredStandaloneClient.visibilityState === "visible";
 
-    if (typeof preferredClient.focus === "function") {
-      await preferredClient.focus();
-      return preferredClient;
+    if (standaloneAlreadyForeground) {
+      return focusNotificationClient(preferredStandaloneClient, targetUrl);
     }
   }
 
-  return self.clients.openWindow(targetUrl);
+  if (shouldPreferStandaloneLaunch || !preferredVisibleClient) {
+    const openedClient = await openWindowToTarget(targetUrl);
+
+    if (openedClient) {
+      return openedClient;
+    }
+  }
+
+  if (shouldPreferStandaloneLaunch && preferredStandaloneClient) {
+    return focusNotificationClient(preferredStandaloneClient, targetUrl);
+  }
+
+  if (preferredVisibleClient) {
+    return focusNotificationClient(preferredVisibleClient, targetUrl);
+  }
+
+  if (preferredClient) {
+    return focusNotificationClient(preferredClient, targetUrl);
+  }
+
+  return openWindowToTarget(targetUrl);
 };
 
 const getContentType = (response) => response?.headers?.get("content-type")?.toLowerCase() ?? "";
@@ -357,5 +437,7 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  event.waitUntil(focusOrOpenNotificationTarget(event.notification.data?.launchUrl || "/"));
+  event.waitUntil(
+    focusOrOpenNotificationTarget(event.notification.data?.launchUrl || "/", event.notification.data ?? null)
+  );
 });
