@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   isBridgeDisconnectConfirmed,
+  mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
   reduceBridgeDisconnectEvidence
 } from "../../../packages/domain/src/index.js";
@@ -29,6 +30,7 @@ const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
 const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
+const BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS = 3_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
@@ -324,7 +326,7 @@ function buildBridgeSignal({
   connectedLabel,
   disconnectedLabel
 }) {
-  if (disconnectConfirmed || (statusReceived && !socketConnected)) {
+  if (disconnectConfirmed) {
     return {
       label: disconnectedLabel,
       title: language === "ko" ? "브릿지 연결이 끊어졌습니다." : "Bridge connection is down.",
@@ -4343,20 +4345,34 @@ function ProjectComposer({
 function ProjectInstructionDialog({ language, open, busy, project, instructionType, onClose, onSubmit }) {
   const copy = getCopy(language);
   const [value, setValue] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const draftScopeRef = useRef("");
+  const instructionValue = instructionType === "developer" ? (project?.developer_instructions ?? "") : (project?.base_instructions ?? "");
+  const draftScope = open && project ? `${project.id}:${instructionType}` : "";
 
   useEffect(() => {
     if (!open) {
       setValue("");
+      setDirty(false);
+      draftScopeRef.current = "";
       return;
     }
 
-    if (instructionType === "developer") {
-      setValue(project?.developer_instructions ?? "");
+    if (!project) {
       return;
     }
 
-    setValue(project?.base_instructions ?? "");
-  }, [instructionType, open, project]);
+    if (draftScopeRef.current !== draftScope) {
+      draftScopeRef.current = draftScope;
+      setValue(instructionValue);
+      setDirty(false);
+      return;
+    }
+
+    if (!dirty) {
+      setValue(instructionValue);
+    }
+  }, [dirty, draftScope, instructionValue, open, project]);
 
   if (!open || !project) {
     return null;
@@ -4400,7 +4416,10 @@ function ProjectInstructionDialog({ language, open, busy, project, instructionTy
           <textarea
             rows="12"
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setDirty(true);
+            }}
             placeholder={placeholder}
             className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
           />
@@ -4435,17 +4454,36 @@ function ProjectEditDialog({ language, open, busy, project, onClose, onSubmit })
   const copy = getCopy(language);
   const [name, setName] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const draftProjectIdRef = useRef("");
+  const draftProjectId = open && project ? project.id : "";
 
   useEffect(() => {
     if (!open) {
       setName("");
       setDeveloperInstructions("");
+      setDirty(false);
+      draftProjectIdRef.current = "";
       return;
     }
 
-    setName(project?.name ?? "");
-    setDeveloperInstructions(project?.developer_instructions ?? "");
-  }, [open, project]);
+    if (!project) {
+      return;
+    }
+
+    if (draftProjectIdRef.current !== draftProjectId) {
+      draftProjectIdRef.current = draftProjectId;
+      setName(project?.name ?? "");
+      setDeveloperInstructions(project?.developer_instructions ?? "");
+      setDirty(false);
+      return;
+    }
+
+    if (!dirty) {
+      setName(project?.name ?? "");
+      setDeveloperInstructions(project?.developer_instructions ?? "");
+    }
+  }, [dirty, draftProjectId, open, project]);
 
   if (!open || !project) {
     return null;
@@ -4491,7 +4529,10 @@ function ProjectEditDialog({ language, open, busy, project, onClose, onSubmit })
               type="text"
               required
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setDirty(true);
+              }}
               placeholder={copy.projectEditor.namePlaceholder}
               className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
@@ -4505,7 +4546,10 @@ function ProjectEditDialog({ language, open, busy, project, onClose, onSubmit })
               id="project-edit-developer-instructions"
               rows="12"
               value={developerInstructions}
-              onChange={(event) => setDeveloperInstructions(event.target.value)}
+              onChange={(event) => {
+                setDeveloperInstructions(event.target.value);
+                setDirty(true);
+              }}
               placeholder={copy.projectEditor.developerPlaceholder}
               className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
             />
@@ -4670,19 +4714,38 @@ function ThreadEditDialog({
   const copy = getCopy(language);
   const [name, setName] = useState("");
   const [developerInstructions, setDeveloperInstructions] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const draftThreadIdRef = useRef("");
   const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
   const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
+  const draftThreadId = open && thread ? thread.id : "";
 
   useEffect(() => {
     if (!open) {
       setName("");
       setDeveloperInstructions("");
+      setDirty(false);
+      draftThreadIdRef.current = "";
       return;
     }
 
-    setName(thread?.name ?? "");
-    setDeveloperInstructions(thread?.developer_instructions ?? "");
-  }, [open, thread]);
+    if (!thread) {
+      return;
+    }
+
+    if (draftThreadIdRef.current !== draftThreadId) {
+      draftThreadIdRef.current = draftThreadId;
+      setName(thread?.name ?? "");
+      setDeveloperInstructions(thread?.developer_instructions ?? "");
+      setDirty(false);
+      return;
+    }
+
+    if (!dirty) {
+      setName(thread?.name ?? "");
+      setDeveloperInstructions(thread?.developer_instructions ?? "");
+    }
+  }, [dirty, draftThreadId, open, thread]);
 
   if (!open || !thread) {
     return null;
@@ -4744,7 +4807,10 @@ function ThreadEditDialog({
               id="thread-edit-name"
               type="text"
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setDirty(true);
+              }}
               placeholder={copy.footer.threadEditDialogNamePlaceholder}
               className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
             />
@@ -4760,7 +4826,10 @@ function ThreadEditDialog({
                   id="thread-edit-developer-instructions"
                   rows="12"
                   value={developerInstructions}
-                  onChange={(event) => setDeveloperInstructions(event.target.value)}
+                  onChange={(event) => {
+                    setDeveloperInstructions(event.target.value);
+                    setDirty(true);
+                  }}
                   placeholder={copy.footer.instructionDialogPlaceholderThreadDeveloper}
                   className="w-full min-w-0 rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm leading-6 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
                 />
@@ -7959,6 +8028,10 @@ export default function App() {
   const loadedProjectThreadsRef = useRef({});
   const pendingProjectThreadLoadsRef = useRef(new Map());
   const selectedBridgeIdRef = useRef("");
+  const sessionRef = useRef(session);
+  const bridgeStatusByIdRef = useRef({});
+  const loadBridgeWorkspaceRef = useRef(null);
+  const bridgeWorkspaceReloadedAtRef = useRef(new Map());
   const selectedProjectIdRef = useRef("");
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const selectedProjectThreadIdRef = useRef("");
@@ -8462,6 +8535,14 @@ export default function App() {
   }, [selectedBridgeId]);
 
   useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    bridgeStatusByIdRef.current = bridgeStatusById;
+  }, [bridgeStatusById]);
+
+  useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
   }, [selectedProjectId]);
 
@@ -8578,7 +8659,7 @@ export default function App() {
         return;
       }
 
-      setProjects(nextProjects.projects ?? []);
+      setProjects((current) => mergeProjectSnapshots(current, nextProjects.projects ?? []));
       setSelectedProjectId((current) => {
         if (current && nextProjects.projects?.some((project) => project.id === current)) {
           return current;
@@ -8604,6 +8685,9 @@ export default function App() {
         return;
       }
 
+      const shouldPreserveWorkspace =
+        projects.some((project) => String(project?.bridge_id ?? "").trim() === bridgeId);
+
       if (!statusLoaded) {
         markBridgeStatusDisconnected(bridgeId, error.message);
       } else {
@@ -8616,20 +8700,24 @@ export default function App() {
           last_error: error.message
         }
       }));
-      setProjects([]);
-      setProjectThreads([]);
-      loadedProjectThreadsRef.current = {};
-      pendingProjectThreadLoadsRef.current.clear();
-      setIssues([]);
-      archivedIssueSnapshotsRef.current = {};
-      visibleIssueSnapshotsRef.current = {};
-      setArchivedIssues([]);
-      setSelectedProjectId("");
-      setSelectedProjectThreadId("");
-      setSelectedIssueId("");
-      setSelectedIssueIds([]);
-      setIssueQueueOrderIds([]);
-      setPrepIssueOrderIds([]);
+
+      if (!shouldPreserveWorkspace) {
+        setProjects([]);
+        setProjectThreads([]);
+        loadedProjectThreadsRef.current = {};
+        pendingProjectThreadLoadsRef.current.clear();
+        setIssues([]);
+        archivedIssueSnapshotsRef.current = {};
+        visibleIssueSnapshotsRef.current = {};
+        setArchivedIssues([]);
+        setSelectedProjectId("");
+        setSelectedProjectThreadId("");
+        setSelectedIssueId("");
+        setSelectedIssueIds([]);
+        setIssueQueueOrderIds([]);
+        setPrepIssueOrderIds([]);
+      }
+
       setLoadingState("error");
       setRecentEvents((current) => [
         {
@@ -8642,6 +8730,42 @@ export default function App() {
       ].slice(0, 20));
     }
   }
+
+  useEffect(() => {
+    loadBridgeWorkspaceRef.current = loadBridgeWorkspace;
+  }, [loadBridgeWorkspace]);
+
+  const reloadBridgeWorkspaceOnReconnect = useCallback((bridgeId, nextStatus) => {
+    const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+    if (!normalizedBridgeId || selectedBridgeIdRef.current !== normalizedBridgeId) {
+      return;
+    }
+
+    const previousStatus = normalizeBridgeStatus(bridgeStatusByIdRef.current[normalizedBridgeId]);
+    const nextNormalizedStatus = normalizeBridgeStatus(withReceivedBridgeStatus(nextStatus));
+    const wasConnected = previousStatus.app_server?.connected === true;
+    const isConnected = nextNormalizedStatus.app_server?.connected === true;
+
+    if (wasConnected || !isConnected) {
+      return;
+    }
+
+    const sessionArg = sessionRef.current;
+
+    if (!sessionArg?.loginId) {
+      return;
+    }
+
+    const lastReloadedAt = bridgeWorkspaceReloadedAtRef.current.get(normalizedBridgeId) ?? 0;
+
+    if (Date.now() - lastReloadedAt < BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS) {
+      return;
+    }
+
+    bridgeWorkspaceReloadedAtRef.current.set(normalizedBridgeId, Date.now());
+    void loadBridgeWorkspaceRef.current?.(sessionArg, normalizedBridgeId);
+  }, []);
 
   const handleDeleteBridge = async () => {
     if (!session?.loginId || !selectedBridgeId || bridgeDeleteBusy) {
@@ -9024,6 +9148,7 @@ export default function App() {
         } else {
           markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
+        reloadBridgeWorkspaceOnReconnect(bridgeId, nextStatus);
         setBridgeStatus(bridgeId, withReceivedBridgeStatus(nextStatus));
         return true;
       } catch (error) {
@@ -9047,6 +9172,7 @@ export default function App() {
       markBridgeSocketDisconnected,
       markBridgeStatusDisconnected,
       markBridgeTransportFailure,
+      reloadBridgeWorkspaceOnReconnect,
       selectedBridgeId,
       session,
       setBridgeStatus
@@ -9126,6 +9252,7 @@ export default function App() {
           } else {
             markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
+          reloadBridgeWorkspaceOnReconnect(selectedBridgeIdRef.current, payload);
           setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload));
         }
       } catch {
@@ -9158,6 +9285,7 @@ export default function App() {
             } else {
               markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
+            reloadBridgeWorkspaceOnReconnect(selectedBridgeIdRef.current, payload.payload);
             setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload.payload));
           }
           return;
@@ -9213,7 +9341,7 @@ export default function App() {
 
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
-          setProjects(nextProjects);
+          setProjects((current) => mergeProjectSnapshots(current, nextProjects));
           updateStatusCounts({ projects: nextProjects.length }, activeBridgeId);
           setSelectedProjectId((current) => {
             if (current && nextProjects.some((project) => project.id === current)) {
@@ -9362,6 +9490,7 @@ export default function App() {
     markBridgeSocketDisconnected,
     markBridgeStatusDisconnected,
     markStreamActivity,
+    reloadBridgeWorkspaceOnReconnect,
     refreshBridgeStatus,
     session,
     setBridgeStatus,
@@ -10644,7 +10773,7 @@ export default function App() {
       const createdProject = response?.project ?? null;
 
       if (Array.isArray(nextProjects)) {
-        setProjects(nextProjects);
+        setProjects((current) => mergeProjectSnapshots(current, nextProjects));
         updateStatusCounts({ projects: nextProjects.length }, bridgeId);
       } else if (createdProject?.id) {
         let didInsert = false;
@@ -10809,7 +10938,7 @@ export default function App() {
       );
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
         updateStatusCounts({ projects: response.projects.length }, bridgeId);
       } else {
         setProjects((current) => current.filter((project) => project.id !== projectId));
@@ -10903,7 +11032,7 @@ export default function App() {
       );
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
       } else if (response?.project?.id) {
         setProjects((current) =>
           current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))
@@ -10974,7 +11103,7 @@ export default function App() {
       );
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
       } else if (response?.project?.id) {
         setProjects((current) =>
           current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))

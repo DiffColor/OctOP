@@ -3522,6 +3522,7 @@ final class AgentBootstrapStore: ObservableObject {
       runtimeReleaseURL.appendingPathComponent("scripts/run-local-agent.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/run-bridge.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/shared-env.mjs"),
+      runtimeReleaseURL.appendingPathComponent("scripts/local-agent-health.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/login-via-app-server.mjs"),
       runtimeReleaseURL.appendingPathComponent("services/codex-adapter/package.json"),
       runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/index.js"),

@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   isBridgeDisconnectConfirmed,
+  mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
   reduceBridgeDisconnectEvidence
 } from "../../../packages/domain/src/index.js";
@@ -97,6 +98,7 @@ const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
 const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
+const BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS = 3_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
@@ -279,7 +281,7 @@ function buildBridgeSignal({
   statusUpdatedAt,
   now
 }) {
-  if (disconnectConfirmed || (statusReceived && !socketConnected)) {
+  if (disconnectConfirmed) {
     return {
       label: "미연결",
       title: "브릿지 연결이 끊어졌습니다.",
@@ -10727,9 +10729,13 @@ export default function App() {
   const selectedThreadIdRef = useRef("");
   const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
+  const sessionRef = useRef(session);
+  const bridgeStatusByIdRef = useRef({});
   const bridgeWorkspaceRequestIdRef = useRef(0);
   const bridgeListSyncPromiseRef = useRef(null);
   const refreshBridgeStatusRef = useRef(null);
+  const loadBridgeWorkspaceRef = useRef(null);
+  const bridgeWorkspaceReloadedAtRef = useRef(new Map());
   const dismissMobileNotice = useCallback((noticeId) => {
     const normalizedNoticeId = String(noticeId ?? "").trim();
 
@@ -11270,6 +11276,14 @@ export default function App() {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    bridgeStatusByIdRef.current = bridgeStatusById;
+  }, [bridgeStatusById]);
 
   useEffect(() => {
     threadDetailsRef.current = threadDetails;
@@ -12164,7 +12178,7 @@ export default function App() {
         return;
       }
 
-      setProjects(nextProjects.projects ?? []);
+      setProjects((current) => mergeProjectSnapshots(current, nextProjects.projects ?? []));
       const nextProjectId =
         selectedProjectId && nextProjects.projects?.some((project) => project.id === selectedProjectId)
           ? selectedProjectId
@@ -12227,6 +12241,42 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    loadBridgeWorkspaceRef.current = loadBridgeWorkspace;
+  }, [loadBridgeWorkspace]);
+
+  const reloadBridgeWorkspaceOnReconnect = useCallback((bridgeId, nextStatus) => {
+    const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+    if (!normalizedBridgeId || selectedBridgeIdRef.current !== normalizedBridgeId) {
+      return;
+    }
+
+    const previousStatus = normalizeBridgeStatus(bridgeStatusByIdRef.current[normalizedBridgeId]);
+    const nextNormalizedStatus = normalizeBridgeStatus(withReceivedBridgeStatus(nextStatus));
+    const wasConnected = previousStatus.app_server?.connected === true;
+    const isConnected = nextNormalizedStatus.app_server?.connected === true;
+
+    if (wasConnected || !isConnected) {
+      return;
+    }
+
+    const sessionArg = sessionRef.current;
+
+    if (!sessionArg?.loginId) {
+      return;
+    }
+
+    const lastReloadedAt = bridgeWorkspaceReloadedAtRef.current.get(normalizedBridgeId) ?? 0;
+
+    if (Date.now() - lastReloadedAt < BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS) {
+      return;
+    }
+
+    bridgeWorkspaceReloadedAtRef.current.set(normalizedBridgeId, Date.now());
+    void loadBridgeWorkspaceRef.current?.(sessionArg, normalizedBridgeId);
+  }, []);
+
   const refreshBridgeStatus = useCallback(
     async (sessionArg = session, bridgeId = selectedBridgeId) => {
       if (!sessionArg?.loginId || !bridgeId) {
@@ -12247,6 +12297,7 @@ export default function App() {
         } else {
           markBridgeStatusDisconnected(bridgeId, nextStatus?.app_server?.last_error ?? "");
         }
+        reloadBridgeWorkspaceOnReconnect(bridgeId, nextStatus);
         setBridgeStatus(bridgeId, withReceivedBridgeStatus(nextStatus));
         return true;
       } catch (error) {
@@ -12270,6 +12321,7 @@ export default function App() {
       markBridgeSocketDisconnected,
       markBridgeStatusDisconnected,
       markBridgeTransportFailure,
+      reloadBridgeWorkspaceOnReconnect,
       selectedBridgeId,
       session,
       setBridgeStatus
@@ -12636,6 +12688,7 @@ export default function App() {
           } else {
             markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload?.app_server?.last_error ?? "");
           }
+          reloadBridgeWorkspaceOnReconnect(selectedBridgeIdRef.current, payload);
           setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload));
         }
       } catch {
@@ -12768,6 +12821,7 @@ export default function App() {
             } else {
               markBridgeStatusDisconnected(selectedBridgeIdRef.current, payload.payload?.app_server?.last_error ?? "");
             }
+            reloadBridgeWorkspaceOnReconnect(selectedBridgeIdRef.current, payload.payload);
             setBridgeStatus(selectedBridgeIdRef.current, withReceivedBridgeStatus(payload.payload));
           }
           return;
@@ -12775,7 +12829,7 @@ export default function App() {
 
         if (payload.type === "bridge.projects.updated") {
           const nextProjects = payload.payload?.projects ?? [];
-          setProjects(nextProjects);
+          setProjects((current) => mergeProjectSnapshots(current, nextProjects));
           setSelectedScope((current) => {
             if (current.kind === "todo") {
               return current;
@@ -12977,6 +13031,7 @@ export default function App() {
     markBridgeSocketDisconnected,
     markBridgeStatusDisconnected,
     markStreamActivity,
+    reloadBridgeWorkspaceOnReconnect,
     refreshBridgeStatus,
     setBridgeStatus,
     selectedBridgeId,
@@ -14750,7 +14805,7 @@ export default function App() {
         : projects.filter((project) => project.id !== projectId);
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
       } else {
         setProjects(updatedProjects);
       }
@@ -14853,7 +14908,7 @@ export default function App() {
       const createdProject = response?.project ?? null;
 
       if (Array.isArray(nextProjects)) {
-        setProjects(nextProjects);
+        setProjects((current) => mergeProjectSnapshots(current, nextProjects));
       } else if (createdProject?.id) {
         setProjects((current) => {
           const exists = current.some((project) => project.id === createdProject.id);
@@ -15083,7 +15138,7 @@ export default function App() {
       );
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
       } else if (response?.project?.id) {
         setProjects((current) =>
           current.map((project) => (project.id === response.project.id ? { ...project, ...response.project } : project))
@@ -15125,7 +15180,7 @@ export default function App() {
       let updatedProject = null;
 
       if (Array.isArray(response?.projects)) {
-        setProjects(response.projects);
+        setProjects((current) => mergeProjectSnapshots(current, response.projects));
         updatedProject = response.projects.find((project) => project.id === projectId) ?? null;
       } else if (response?.project?.id) {
         updatedProject = response.project.id === projectId ? response.project : null;

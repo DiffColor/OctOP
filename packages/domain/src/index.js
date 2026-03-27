@@ -133,9 +133,9 @@ export function reduceBridgeDisconnectEvidence(currentEvidence, event = {}) {
 
   if (event?.type === "status_disconnected") {
     return {
+      ...current,
       socketDisconnectedAt: at,
-      transportFailureAt: at,
-      confirmedAt: at,
+      confirmedAt: current.transportFailureAt > 0 ? at : current.confirmedAt,
       lastError: message || current.lastError
     };
   }
@@ -163,4 +163,53 @@ export function reduceBridgeDisconnectEvidence(currentEvidence, event = {}) {
 
 export function isBridgeDisconnectConfirmed(evidence) {
   return normalizeBridgeDisconnectEvidence(evidence).confirmedAt > 0;
+}
+
+export function mergeProjectSnapshots(currentProjects = [], incomingProjects = []) {
+  const currentById = new Map();
+  const currentByWorkspacePath = new Map();
+
+  for (const project of Array.isArray(currentProjects) ? currentProjects : []) {
+    const currentProject = project && typeof project === "object" ? project : null;
+    const projectId = String(currentProject?.id ?? "").trim();
+    const workspacePath = String(currentProject?.workspace_path ?? "").trim();
+
+    if (projectId) {
+      currentById.set(projectId, currentProject);
+    }
+
+    if (workspacePath) {
+      currentByWorkspacePath.set(workspacePath, currentProject);
+    }
+  }
+
+  return (Array.isArray(incomingProjects) ? incomingProjects : []).map((project) => {
+    const incomingProject = project && typeof project === "object" ? project : {};
+    const projectId = String(incomingProject?.id ?? "").trim();
+    const workspacePath = String(incomingProject?.workspace_path ?? "").trim();
+    const currentProject =
+      (projectId ? currentById.get(projectId) : null) ??
+      (workspacePath ? currentByWorkspacePath.get(workspacePath) : null) ??
+      null;
+
+    if (!currentProject) {
+      return incomingProject;
+    }
+
+    const mergedProject = {
+      ...currentProject,
+      ...incomingProject
+    };
+
+    for (const fieldName of ["base_instructions", "developer_instructions"]) {
+      if (
+        !Object.prototype.hasOwnProperty.call(incomingProject, fieldName) &&
+        Object.prototype.hasOwnProperty.call(currentProject, fieldName)
+      ) {
+        mergedProject[fieldName] = currentProject[fieldName];
+      }
+    }
+
+    return mergedProject;
+  });
 }

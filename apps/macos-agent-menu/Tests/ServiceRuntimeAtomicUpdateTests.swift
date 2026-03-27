@@ -1010,6 +1010,19 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       export function applyBridgeCliArgs(env) { return env; }
       export async function resolveBridgeRuntimeEnv(env) { return env; }
       """,
+      "scripts/local-agent-health.mjs": """
+      export function evaluateBridgeAppServerRecovery() {
+        return {
+          usable: true,
+          healthy: true,
+          recoverable: false,
+          nextConsecutiveFailures: 0,
+          shouldRestart: false,
+          reason: "",
+          summary: "healthy"
+        };
+      }
+      """,
       "scripts/login-via-app-server.mjs": """
       console.log(JSON.stringify({ event: "loginComplete", loggedIn: true, summary: "logged-in" }));
       """,

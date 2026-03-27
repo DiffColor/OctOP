@@ -42,6 +42,7 @@ sealed class RuntimeInstaller
   private static readonly IReadOnlyDictionary<string, string> RuntimeResources = new Dictionary<string, string>
   {
     ["OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs"] = "scripts/shared-env.mjs",
+    ["OctOP.WindowsAgentMenu.Runtime.scripts.local-agent-health.mjs"] = "scripts/local-agent-health.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs"] = "scripts/run-local-agent.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs"] = "scripts/run-bridge.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.package.json"] = "services/codex-adapter/package.json",

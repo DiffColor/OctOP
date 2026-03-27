@@ -14,6 +14,7 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\design\icon.png" LogicalName="OctOP.WindowsAgentMenu.Assets.icon.png" />
     <EmbeddedResource Include="..\..\scripts\shared-env.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs" />
+    <EmbeddedResource Include="..\..\scripts\local-agent-health.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.local-agent-health.mjs" />
     <EmbeddedResource Include="..\..\scripts\run-local-agent.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs" />
     <EmbeddedResource Include="..\..\scripts\run-bridge.mjs" LogicalName="OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs" />
     <EmbeddedResource Include="..\..\services\codex-adapter\package.json" LogicalName="OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.package.json" />
