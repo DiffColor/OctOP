@@ -182,7 +182,10 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
 
   const archiveName = `OctOP-macos-${buildArchForName}-${versionTag}.app.zip`;
   const archivePath = resolve(outputRoot, archiveName);
+  const compatibilityArchiveName = `OctOPAgentMenu-macos-${buildArchForName}-${versionTag}.zip`;
+  const compatibilityArchivePath = resolve(outputRoot, compatibilityArchiveName);
   rmSync(archivePath, { force: true });
+  rmSync(compatibilityArchivePath, { force: true });
 
   run("ditto", [
     "-c",
@@ -192,6 +195,7 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     appRoot,
     archivePath
   ], dirname(appRoot));
+  cpSync(archivePath, compatibilityArchivePath);
 
   return [
     {
@@ -203,6 +207,11 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
       platform: "macos",
       path: archivePath,
       kind: "zip-app-bundle"
+    },
+    {
+      platform: "macos",
+      path: compatibilityArchivePath,
+      kind: "zip-app-bundle-legacy"
     }
   ];
 }

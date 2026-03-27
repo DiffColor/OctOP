@@ -218,11 +218,15 @@ extension AgentBootstrapStore {
       }
 
       let normalizedTag = Self.normalizeVersionTag(tagName)
-      let expectedAssetName = expectedAppUpdateAssetName(for: normalizedTag, architecture: architecture)
+      let expectedAssetNames = expectedAppUpdateAssetNames(for: normalizedTag, architecture: architecture)
       guard let assets = item["assets"] as? [[String: Any]],
             let asset = assets.first(where: {
-              ($0["name"] as? String) == expectedAssetName &&
-              ($0["browser_download_url"] as? String)?.isEmpty == false
+              guard let assetName = $0["name"] as? String else {
+                return false
+              }
+
+              return expectedAssetNames.contains(assetName) &&
+                ($0["browser_download_url"] as? String)?.isEmpty == false
             }),
             let assetName = asset["name"] as? String,
             let downloadURLString = asset["browser_download_url"] as? String,
@@ -252,16 +256,20 @@ extension AgentBootstrapStore {
       }
 
       let normalizedTag = Self.normalizeVersionTag(tagName)
-      let expectedAssetName = expectedAppUpdateAssetName(for: normalizedTag, architecture: architecture)
-      let downloadURL = appUpdateAssetURL(tag: normalizedTag, assetName: expectedAssetName)
-
-      guard let assetExists = try? await remoteAssetExists(at: downloadURL), assetExists else {
+      guard let resolvedAsset = try await resolveAvailableAppUpdateAsset(
+        tag: normalizedTag,
+        architecture: architecture
+      ) else {
         continue
       }
 
       releases.append((
         version,
-        AppUpdateDescriptor(tag: normalizedTag, assetName: expectedAssetName, downloadURL: downloadURL)
+        AppUpdateDescriptor(
+          tag: normalizedTag,
+          assetName: resolvedAsset.assetName,
+          downloadURL: resolvedAsset.downloadURL
+        )
       ))
     }
 
@@ -291,14 +299,50 @@ extension AgentBootstrapStore {
   }
 
   func expectedAppUpdateAssetName(for tag: String, architecture: String? = nil) -> String {
+    expectedAppUpdateAssetNames(for: tag, architecture: architecture).first ?? legacyAppUpdateAssetName(
+      for: tag,
+      architecture: architecture
+    )
+  }
+
+  func expectedAppUpdateAssetNames(for tag: String, architecture: String? = nil) -> [String] {
+    let resolvedArch = architecture ?? currentArchitecture()
+    return [
+      legacyAppUpdateAssetName(for: tag, architecture: resolvedArch),
+      modernAppUpdateAssetName(for: tag, architecture: resolvedArch)
+    ]
+  }
+
+  func legacyAppUpdateAssetName(for tag: String, architecture: String? = nil) -> String {
     let resolvedArch = architecture ?? currentArchitecture()
     return "OctOPAgentMenu-macos-\(resolvedArch)-\(tag).zip"
+  }
+
+  func modernAppUpdateAssetName(for tag: String, architecture: String? = nil) -> String {
+    let resolvedArch = architecture ?? currentArchitecture()
+    return "OctOP-macos-\(resolvedArch)-\(tag).app.zip"
   }
 
   func appUpdateAssetURL(tag: String, assetName: String) -> URL {
     appUpdateAssetBaseURL
       .appendingPathComponent(tag, isDirectory: true)
       .appendingPathComponent(assetName, isDirectory: false)
+  }
+
+  private func resolveAvailableAppUpdateAsset(
+    tag: String,
+    architecture: String
+  ) async throws -> (assetName: String, downloadURL: URL)? {
+    for assetName in expectedAppUpdateAssetNames(for: tag, architecture: architecture) {
+      let downloadURL = appUpdateAssetURL(tag: tag, assetName: assetName)
+      guard let assetExists = try? await remoteAssetExists(at: downloadURL), assetExists else {
+        continue
+      }
+
+      return (assetName, downloadURL)
+    }
+
+    return nil
   }
 
   private func loadAppUpdateFeedPayload(from requestURL: URL) async throws -> Data {

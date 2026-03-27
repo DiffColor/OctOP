@@ -141,6 +141,27 @@ final class AppBundleUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testRefreshAvailableAppUpdateDetectsCurrentTaggedBundleArtifactName() async throws {
+    let bootstrap = AgentBootstrapStore()
+    let fixture = try makeLocalAppUpdateFixture(
+      tag: "v99.2.6",
+      bootstrap: bootstrap,
+      assetName: bootstrap.modernAppUpdateAssetName(for: "v99.2.6"),
+      launchMarkerURL: nil,
+      launchSignalURL: nil
+    )
+
+    setenv("OCTOP_AGENT_MENU_APP_UPDATE_TAGS_URL", fixture.tagsURL.absoluteString, 1)
+    setenv("OCTOP_AGENT_MENU_APP_UPDATE_ASSET_BASE_URL", fixture.assetBaseURL.absoluteString, 1)
+
+    await bootstrap.refreshAvailableAppUpdate(log: { _ in })
+
+    XCTAssertEqual(bootstrap.availableAppUpdate?.tag, "v99.2.6")
+    XCTAssertEqual(bootstrap.availableAppUpdate?.assetName, fixture.assetName)
+    XCTAssertEqual(bootstrap.availableAppUpdate?.downloadURL, fixture.assetURL)
+  }
+
+  @MainActor
   func testPrepareAvailableAppUpdateStagesLocalTaggedBundleArtifact() async throws {
     let bootstrap = AgentBootstrapStore()
     let fixture = try makeLocalAppUpdateFixture(tag: "v99.2.5", bootstrap: bootstrap)
@@ -185,6 +206,7 @@ final class AppBundleUpdateTests: XCTestCase {
     let fixture = try makeLocalAppUpdateFixture(
       tag: "v99.2.5",
       bootstrap: bootstrap,
+      assetName: bootstrap.expectedAppUpdateAssetName(for: "v99.2.5"),
       launchMarkerURL: URL(fileURLWithPath: appSupportURL.path + ".update-backup/launch-confirmed"),
       launchSignalURL: launchSignalURL
     )
@@ -240,6 +262,7 @@ final class AppBundleUpdateTests: XCTestCase {
     try makeLocalAppUpdateFixture(
       tag: tag,
       bootstrap: bootstrap,
+      assetName: bootstrap.expectedAppUpdateAssetName(for: tag),
       launchMarkerURL: nil,
       launchSignalURL: nil
     )
@@ -249,6 +272,7 @@ final class AppBundleUpdateTests: XCTestCase {
   private func makeLocalAppUpdateFixture(
     tag: String,
     bootstrap: AgentBootstrapStore,
+    assetName: String,
     launchMarkerURL: URL?,
     launchSignalURL: URL?
   ) throws -> (
@@ -261,7 +285,6 @@ final class AppBundleUpdateTests: XCTestCase {
     let assetBaseURL = sandboxURL.appendingPathComponent("assets", isDirectory: true)
     let assetDirectoryURL = assetBaseURL.appendingPathComponent(tag, isDirectory: true)
     let appRootURL = sandboxURL.appendingPathComponent("fixture-app/OctOPAgentMenu.app", isDirectory: true)
-    let assetName = bootstrap.expectedAppUpdateAssetName(for: tag)
     let assetURL = assetDirectoryURL.appendingPathComponent(assetName)
 
     try FileManager.default.createDirectory(at: assetDirectoryURL, withIntermediateDirectories: true)
