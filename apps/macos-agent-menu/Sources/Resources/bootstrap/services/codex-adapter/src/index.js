@@ -11,12 +11,13 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { connect, StringCodec } from "nats";
@@ -30,8 +31,20 @@ import {
   applyCommonBaseInstructionsToProjects,
   deriveCommonBaseInstructions
 } from "./projectInstructionState.js";
-import { shouldResetAppServerForSystemNetworkRecovery } from "./systemNetwork.js";
+import {
+  buildSystemNetworkStateSignature,
+  shouldAttemptSystemNetworkRecovery,
+  shouldResetAppServerForSystemNetworkRecovery
+} from "./systemNetwork.js";
 
+// Runtime update verification marker: non-functional comment for atomic update validation.
+// Runtime update verification marker 2: second non-functional comment for follow-up validation.
+// Runtime update verification marker 3: menu indicator validation without logic change.
+// Runtime update verification marker 4: source-only change to trigger update detection.
+// Runtime update verification marker 5: atomic update smoke-test commit without behavior change.
+// Runtime update verification marker 6: push-only change to verify atomic update propagation.
+// Runtime update verification marker 7: follow-up push to recheck first-launch atomic update.
+// Runtime update verification marker 8: retest after startup/restart preparation unification.
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
@@ -85,6 +98,9 @@ const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
 const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
 );
+const APP_SERVER_RECONNECT_MAX_DELAY_MS = Number(
+  process.env.OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS ?? 5000
+);
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
@@ -109,7 +125,8 @@ const CLOSED_PHYSICAL_THREAD_TOMBSTONE_TTL_MS = Number(
 const DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS = Number(
   process.env.OCTOP_DELETED_ROOT_THREAD_TOMBSTONE_TTL_MS ?? 1800000
 );
-const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? os.hostname());
+const HOST_NAME = os.hostname();
+const BRIDGE_ID = sanitizeBridgeId(process.env.OCTOP_BRIDGE_ID ?? HOST_NAME);
 const DEVICE_NAME = process.env.OCTOP_BRIDGE_DEVICE_NAME ?? os.hostname();
 const BRIDGE_OWNER_LOGIN_ID = sanitizeUserId(
   process.env.OCTOP_BRIDGE_OWNER_LOGIN_ID ?? process.env.OCTOP_BRIDGE_OWNER_USER_ID ?? "local-user"
@@ -119,6 +136,7 @@ const PROJECT_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-projects.js
 const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json`);
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
 const DIAGNOSTIC_LOG_MAX_BYTES = 1024 * 1024;
+const ISSUE_ATTACHMENT_STAGE_ROOT = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-issue-attachments`);
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 const CURRENT_FILE_PATH = fileURLToPath(import.meta.url);
@@ -133,6 +151,8 @@ let natsProjectionReplayPromise = null;
 let systemNetworkConnected = null;
 let lastSystemNetworkStateSignature = null;
 let systemNetworkReplayPromise = null;
+let systemNetworkRecoveryPending = false;
+let systemNetworkRecoveryPollTimer = null;
 let systemNetworkEventMonitor = null;
 let systemNetworkEventTimer = null;
 let pendingSystemNetworkEvent = null;
@@ -154,8 +174,10 @@ const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
 const issueQueueProcessingStateByThreadId = new Map();
+const issueAttachmentCleanupLocksByIssueId = new Map();
 let runningIssueBackfillPromise = null;
 let runningIssueThreadReadSamplePromise = null;
+let queuedIssueResumePromise = null;
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -198,6 +220,8 @@ if (
     reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
   });
 }
+
+cleanupIssueAttachmentStageRootOnStartup();
 
 function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
   if (rawValue === undefined || rawValue === null) {
@@ -306,7 +330,7 @@ function appendDiagnosticLog(level, event, message, details = {}) {
       const nextSize = currentSize + Buffer.byteLength(serializedEntry, "utf8");
 
       if (currentSize >= DIAGNOSTIC_LOG_MAX_BYTES || nextSize > DIAGNOSTIC_LOG_MAX_BYTES) {
-        unlinkSync(DIAGNOSTIC_LOG_PATH);
+        rmSync(DIAGNOSTIC_LOG_PATH, { force: true });
       }
     }
 
@@ -504,72 +528,6 @@ function buildSystemNetworkLogContext(networkState) {
   };
 }
 
-function compareSignatureEntries(left, right) {
-  return left.localeCompare(right);
-}
-
-function normalizeInterfaceName(name = "") {
-  return String(name ?? "").trim().toLowerCase();
-}
-
-function normalizeSystemNetworkInterfaceSignatureEntries(interfaces = []) {
-  if (!Array.isArray(interfaces)) {
-    return [];
-  }
-
-  return interfaces
-    .map((entry) => {
-      const name = String(entry?.name ?? "").trim();
-      const normalizedName = normalizeInterfaceName(name);
-      const family = String(entry?.family ?? "").trim().toUpperCase();
-      const address = String(entry?.address ?? "").trim().toLowerCase();
-
-      if (!name || !address) {
-        return null;
-      }
-
-      return {
-        name,
-        normalizedName,
-        signature: family ? `${name}:${family}:${address}` : `${name}:${address}`
-      };
-    })
-    .filter(Boolean)
-    .sort((left, right) => compareSignatureEntries(left.signature, right.signature));
-}
-
-function selectSystemNetworkInterfaceSignatures(interfaceEntries = [], defaultRouteInterface = null) {
-  if (!Array.isArray(interfaceEntries) || interfaceEntries.length === 0) {
-    return [];
-  }
-
-  const normalizedDefaultRouteInterface = normalizeInterfaceName(defaultRouteInterface);
-
-  if (!normalizedDefaultRouteInterface) {
-    return interfaceEntries.map((entry) => entry.signature);
-  }
-
-  const primaryInterfaceEntries = interfaceEntries.filter(
-    (entry) => entry.normalizedName === normalizedDefaultRouteInterface
-  );
-
-  return (primaryInterfaceEntries.length > 0 ? primaryInterfaceEntries : interfaceEntries).map(
-    (entry) => entry.signature
-  );
-}
-
-function buildSystemNetworkStateSignature(networkState) {
-  const defaultRouteInterface = String(networkState?.default_route?.interfaceName ?? "").trim() || null;
-  const interfaceEntries = normalizeSystemNetworkInterfaceSignatureEntries(networkState?.interfaces);
-  const interfaceSignatures = selectSystemNetworkInterfaceSignatures(interfaceEntries, defaultRouteInterface);
-
-  return JSON.stringify({
-    connected: Boolean(networkState?.connected),
-    interface_signatures: interfaceSignatures,
-    default_route_interface: defaultRouteInterface
-  });
-}
-
 async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified") {
   if (systemNetworkReplayPromise) {
     return systemNetworkReplayPromise;
@@ -655,43 +613,98 @@ function scheduleSystemNetworkEvent(event) {
   systemNetworkEventTimer.unref?.();
 }
 
+function startSystemNetworkRecoveryPoll(reason = "unspecified") {
+  if (systemNetworkRecoveryPollTimer || SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS <= 0) {
+    return;
+  }
+
+  console.warn("[OctOP bridge] starting system network recovery poll", {
+    reason,
+    interval_ms: SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS
+  });
+
+  systemNetworkRecoveryPollTimer = setInterval(() => {
+    scheduleSystemNetworkEvent({
+      trigger: `system_network_recovery_poll:${reason}`,
+      source: "system_network_recovery_poll",
+      available: systemNetworkConnected,
+      raw: null
+    });
+  }, SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS);
+  systemNetworkRecoveryPollTimer.unref?.();
+}
+
+function stopSystemNetworkRecoveryPoll(reason = "recovered") {
+  if (!systemNetworkRecoveryPollTimer) {
+    return;
+  }
+
+  clearInterval(systemNetworkRecoveryPollTimer);
+  systemNetworkRecoveryPollTimer = null;
+  console.warn("[OctOP bridge] stopped system network recovery poll", {
+    reason
+  });
+}
+
 async function handleSystemNetworkEvent(event = {}) {
   const networkState = getSystemNetworkState(event.trigger ?? "system_network");
   const previousConnected = systemNetworkConnected;
   const previousStateSignature = lastSystemNetworkStateSignature;
   const nextStateSignature = buildSystemNetworkStateSignature(networkState);
+  const stateChanged = previousStateSignature !== nextStateSignature;
   systemNetworkConnected = networkState.connected;
   lastSystemNetworkStateSignature = nextStateSignature;
 
-  if (previousStateSignature === nextStateSignature) {
-    return;
-  }
-
-  appendDiagnosticLog("info", "system_network.event", "system network event received", {
-    trigger: event.trigger ?? "system_network",
-    source: event.source ?? "unspecified",
-    available: event.available ?? null,
-    raw: event.raw ?? null,
-    ...buildSystemNetworkLogContext(networkState)
-  });
-
-  if (!networkState.connected) {
-    console.warn("[OctOP bridge] system network became unavailable", {
+  if (stateChanged) {
+    appendDiagnosticLog("info", "system_network.event", "system network event received", {
       trigger: event.trigger ?? "system_network",
       source: event.source ?? "unspecified",
+      available: event.available ?? null,
+      raw: event.raw ?? null,
       ...buildSystemNetworkLogContext(networkState)
     });
+  }
+
+  if (!networkState.connected) {
+    systemNetworkRecoveryPending = true;
+    startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    if (stateChanged) {
+      console.warn("[OctOP bridge] system network became unavailable", {
+        trigger: event.trigger ?? "system_network",
+        source: event.source ?? "unspecified",
+        ...buildSystemNetworkLogContext(networkState)
+      });
+    }
     return;
   }
 
-  const becameConnected = previousConnected === false;
-  const interfaceStateChanged = previousStateSignature !== nextStateSignature;
+  const shouldAttemptRecovery = shouldAttemptSystemNetworkRecovery({
+    previousConnected,
+    previousStateSignature,
+    nextStateSignature,
+    recoveryPending: systemNetworkRecoveryPending,
+    networkConnected: networkState.connected
+  });
 
-  if (!becameConnected && !interfaceStateChanged) {
+  if (!shouldAttemptRecovery) {
+    if (!systemNetworkRecoveryPending) {
+      stopSystemNetworkRecoveryPoll("network_stable");
+    }
     return;
   }
 
-  await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+  systemNetworkRecoveryPending = true;
+  startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+
+  const recovered = await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+
+  if (recovered) {
+    systemNetworkRecoveryPending = false;
+    stopSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    return;
+  }
+
+  systemNetworkRecoveryPending = true;
 }
 
 function buildSystemNetworkMonitorSpec() {
@@ -830,6 +843,18 @@ async function startSystemNetworkEventMonitor(reason = "startup") {
   });
 }
 
+function cleanupIssueAttachmentStageRootOnStartup() {
+  try {
+    rmSync(ISSUE_ATTACHMENT_STAGE_ROOT, { recursive: true, force: true });
+    mkdirSync(ISSUE_ATTACHMENT_STAGE_ROOT, { recursive: true });
+  } catch (error) {
+    console.warn("[OctOP bridge] failed to reset issue attachment staging directory", {
+      root: ISSUE_ATTACHMENT_STAGE_ROOT,
+      error: error.message
+    });
+  }
+}
+
 function createThreadEntityId() {
   return sanitizeBridgeId(`thread-${randomUUID()}`);
 }
@@ -892,6 +917,133 @@ function normalizeCodexModel(value) {
   return normalized || "gpt-5.4";
 }
 
+function resolveCodexModelFromOptions(options = {}) {
+  const requestModel = options.model;
+  const fallbackModel = process.env.OCTOP_CODEX_MODEL
+    ?? resolveCodexModelFromEnvironmentFiles()
+    ?? CODEX_MODEL;
+
+  return normalizeCodexModel(requestModel || fallbackModel);
+}
+
+function resolveCodexApprovalPolicyFromOptions(options = {}) {
+  const requestApprovalPolicy = options.approvalPolicy ?? options.approval_policy;
+  const fallbackApprovalPolicy =
+    process.env.OCTOP_CODEX_APPROVAL_POLICY
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_APPROVAL_POLICY")
+    ?? CODEX_APPROVAL_POLICY;
+
+  return normalizeStringOption(requestApprovalPolicy, fallbackApprovalPolicy);
+}
+
+function resolveCodexSandboxFromOptions(options = {}) {
+  const requestSandbox = options.sandbox;
+  const fallbackSandbox =
+    process.env.OCTOP_CODEX_SANDBOX
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_SANDBOX")
+    ?? CODEX_SANDBOX;
+
+  return normalizeStringOption(requestSandbox, fallbackSandbox);
+}
+
+function isDangerouslyBypassCodexSandbox(value) {
+  return normalizeStringOption(value, "") === CODEX_SANDBOX_DANGEROUSLY_BYPASS;
+}
+
+function resolveCodexExecutionPolicyFromOptions(options = {}) {
+  const sandbox = resolveCodexSandboxFromOptions(options);
+
+  if (isDangerouslyBypassCodexSandbox(sandbox)) {
+    return {
+      approvalPolicy: undefined,
+      sandbox: undefined
+    };
+  }
+
+  return {
+    approvalPolicy: resolveCodexApprovalPolicyFromOptions(options),
+    sandbox
+  };
+}
+
+function resolveCodexReasoningEffortFromOptions(options = {}) {
+  const requestReasoningEffort = options.reasoningEffort ?? options.reasoning_effort;
+  const fallbackReasoningEffort =
+    process.env.OCTOP_CODEX_REASONING_EFFORT
+    ?? resolveCodexStringFromEnvironmentFile("OCTOP_CODEX_REASONING_EFFORT")
+    ?? CODEX_REASONING_EFFORT;
+
+  const request = normalizeReasoningEffort(requestReasoningEffort);
+
+  return request ?? normalizeReasoningEffort(fallbackReasoningEffort);
+}
+
+function resolveCodexModelFromEnvironmentFiles() {
+  const candidates = [".env.local", ".env"].map((fileName) => resolve(process.cwd(), fileName));
+
+  for (const filePath of candidates) {
+    const model = readEnvironmentFileValue(filePath, "OCTOP_CODEX_MODEL");
+
+    if (model?.trim()) {
+      return model.trim();
+    }
+  }
+
+  return null;
+}
+
+function resolveCodexStringFromEnvironmentFile(key) {
+  const candidates = [".env.local", ".env"].map((fileName) => resolve(process.cwd(), fileName));
+
+  for (const filePath of candidates) {
+    const value = readEnvironmentFileValue(filePath, key);
+
+    if (value?.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function normalizeStringOption(value, fallback = "") {
+  const normalized = String(value ?? "").trim();
+  return normalized || String(fallback ?? "").trim();
+}
+
+function readEnvironmentFileValue(filePath, key) {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    const lines = readFileSync(filePath, "utf8").split(/\r?\n/u);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      const separatorIndex = trimmed.indexOf("=");
+      if (separatorIndex < 0) {
+        continue;
+      }
+
+      const parsedKey = trimmed.slice(0, separatorIndex).trim();
+      if (parsedKey !== key) {
+        continue;
+      }
+
+      return trimmed.slice(separatorIndex + 1).trim();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function normalizeReasoningEffort(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
 
@@ -907,20 +1059,6 @@ function normalizeReasoningEffort(value) {
     value
   });
   return null;
-}
-
-function resolveCodexExecutionPolicy() {
-  if (String(CODEX_SANDBOX).trim() === CODEX_SANDBOX_DANGEROUSLY_BYPASS) {
-    return {
-      approvalPolicy: undefined,
-      sandbox: undefined
-    };
-  }
-
-  return {
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX
-  };
 }
 
 function createIssueTitle(payload = {}) {
@@ -1835,6 +1973,7 @@ function normalizeIssueCard(issue = {}) {
       : null,
     title: String(issue.title ?? "").trim() || "Untitled issue",
     prompt: String(issue.prompt ?? "").trim(),
+    attachments: normalizeIssueAttachments(issue.attachments),
     status: String(issue.status ?? "staged").trim() || "staged",
     progress: Number.isFinite(Number(issue.progress)) ? Number(issue.progress) : 0,
     last_event: String(issue.last_event ?? "issue.created").trim(),
@@ -1857,6 +1996,367 @@ function normalizeIssueCard(issue = {}) {
     source: issue.source ?? "bridge",
     deleted_at: issue.deleted_at ?? null
   };
+}
+
+function normalizeIssueAttachmentUrl(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return /^https?:\/\//i.test(normalized) ? normalized.slice(0, 4000) : null;
+}
+
+function normalizeIssueAttachmentLocalPath(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized || !isAbsolute(normalized)) {
+    return null;
+  }
+
+  return normalized.slice(0, 2000);
+}
+
+function hasOwnAttachmentField(attachment, ...fieldNames) {
+  if (!attachment || typeof attachment !== "object") {
+    return false;
+  }
+
+  return fieldNames.some((fieldName) => Object.hasOwn(attachment, fieldName));
+}
+
+function mergePreservedIssueAttachmentRuntimeFields(attachment, previousAttachment) {
+  if (!previousAttachment) {
+    return attachment;
+  }
+
+  return {
+    ...attachment,
+    upload_id: hasOwnAttachmentField(attachment, "upload_id", "uploadId")
+      ? attachment.upload_id ?? attachment.uploadId
+      : previousAttachment.upload_id,
+    download_url: hasOwnAttachmentField(attachment, "download_url", "downloadUrl")
+      ? attachment.download_url ?? attachment.downloadUrl
+      : previousAttachment.download_url,
+    cleanup_url: hasOwnAttachmentField(attachment, "cleanup_url", "cleanupUrl")
+      ? attachment.cleanup_url ?? attachment.cleanupUrl
+      : previousAttachment.cleanup_url,
+    local_path: hasOwnAttachmentField(attachment, "local_path", "localPath")
+      ? attachment.local_path ?? attachment.localPath
+      : previousAttachment.local_path,
+    uploaded_at: hasOwnAttachmentField(attachment, "uploaded_at", "uploadedAt")
+      ? attachment.uploaded_at ?? attachment.uploadedAt
+      : previousAttachment.uploaded_at
+  };
+}
+
+function normalizeIssueAttachment(attachment = {}) {
+  const name = String(attachment.name ?? "").trim().slice(0, 160);
+
+  if (!name) {
+    return null;
+  }
+
+  const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim().slice(0, 120);
+  const previewUrl = String(attachment.preview_url ?? attachment.previewUrl ?? "")
+    .trim()
+    .slice(0, 200_000);
+  const textContent = String(attachment.text_content ?? attachment.textContent ?? "")
+    .replace(/\r\n/g, "\n")
+    .slice(0, 20_000);
+  const downloadUrl = normalizeIssueAttachmentUrl(attachment.download_url ?? attachment.downloadUrl);
+  const cleanupUrl = normalizeIssueAttachmentUrl(attachment.cleanup_url ?? attachment.cleanupUrl);
+  const localPath = normalizeIssueAttachmentLocalPath(attachment.local_path ?? attachment.localPath);
+  const uploadId = sanitizeBridgeId(attachment.upload_id ?? attachment.uploadId ?? `iatt-${randomUUID()}`);
+  const uploadedAt = String(attachment.uploaded_at ?? attachment.uploadedAt ?? "").trim();
+  const kind =
+    attachment.kind === "image" ||
+    mimeType.toLowerCase().startsWith("image/") ||
+    previewUrl.startsWith("data:image/")
+      ? "image"
+      : "file";
+
+  return {
+    id: sanitizeBridgeId(attachment.id ?? `iatt-${randomUUID()}`),
+    name,
+    kind,
+    mime_type: mimeType || null,
+    size_bytes: Number.isFinite(Number(attachment.size_bytes ?? attachment.sizeBytes))
+      ? Math.max(0, Number(attachment.size_bytes ?? attachment.sizeBytes))
+      : 0,
+    preview_url: previewUrl || null,
+    text_content: textContent || null,
+    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated),
+    upload_id: uploadId || null,
+    download_url: downloadUrl,
+    cleanup_url: cleanupUrl,
+    local_path: localPath,
+    uploaded_at: uploadedAt || null
+  };
+}
+
+function normalizeIssueAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  return attachments
+    .map((attachment) => normalizeIssueAttachment(attachment))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function normalizeIssueAttachmentsWithExisting(attachments = [], existingAttachments = []) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  const existingById = new Map(
+    normalizeIssueAttachments(existingAttachments).map((attachment) => [attachment.id, attachment])
+  );
+
+  return attachments
+    .map((attachment) => {
+      const rawId = sanitizeBridgeId(attachment?.id ?? "");
+      const previousAttachment = rawId ? existingById.get(rawId) ?? null : null;
+      return normalizeIssueAttachment(mergePreservedIssueAttachmentRuntimeFields(attachment, previousAttachment));
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function serializeIssueAttachmentForClient(attachment = {}) {
+  const normalized = normalizeIssueAttachment(attachment);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    kind: normalized.kind,
+    mime_type: normalized.mime_type,
+    size_bytes: normalized.size_bytes,
+    preview_url: normalized.preview_url,
+    text_content: normalized.text_content,
+    text_truncated: normalized.text_truncated
+  };
+}
+
+function serializeIssueAttachmentsForClient(attachments = []) {
+  return normalizeIssueAttachments(attachments)
+    .map((attachment) => serializeIssueAttachmentForClient(attachment))
+    .filter(Boolean);
+}
+
+function sanitizeIssueAttachmentFileName(fileName = "") {
+  const baseName = basename(String(fileName ?? "").trim() || "attachment");
+  const extension = extname(baseName).replace(/[^a-zA-Z0-9.]/g, "").slice(0, 16);
+  const stem = baseName
+    .slice(0, baseName.length - extension.length)
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+  return `${stem || "attachment"}${extension}`;
+}
+
+function resolveIssueAttachmentStageDirectory(issueId) {
+  return resolve(ISSUE_ATTACHMENT_STAGE_ROOT, sanitizeBridgeId(issueId));
+}
+
+function clearIssueAttachmentStageDirectory(issueId) {
+  try {
+    rmSync(resolveIssueAttachmentStageDirectory(issueId), { recursive: true, force: true });
+  } catch (error) {
+    console.warn("[OctOP bridge] issue attachment stage cleanup failed", {
+      issue_id: issueId,
+      error: error.message
+    });
+  }
+}
+
+async function deleteRemoteIssueAttachmentUpload(attachment) {
+  const normalized = normalizeIssueAttachment(attachment);
+
+  if (!normalized?.cleanup_url) {
+    return;
+  }
+
+  const response = await fetch(normalized.cleanup_url, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`attachment cleanup failed (${response.status})`);
+  }
+}
+
+function stripIssueAttachmentRuntimeFields(attachment, options = {}) {
+  const normalized = normalizeIssueAttachment(attachment);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalizeIssueAttachment({
+    ...normalized,
+    local_path: null,
+    ...(options.removeRemote ? { download_url: null, cleanup_url: null } : {})
+  });
+}
+
+async function cleanupRemovedIssueAttachments(previousAttachments = [], nextAttachments = []) {
+  const nextIds = new Set(normalizeIssueAttachments(nextAttachments).map((attachment) => attachment.id));
+  const removedAttachments = normalizeIssueAttachments(previousAttachments).filter(
+    (attachment) => !nextIds.has(attachment.id)
+  );
+
+  for (const attachment of removedAttachments) {
+    try {
+      await deleteRemoteIssueAttachmentUpload(attachment);
+    } catch (error) {
+      console.warn("[OctOP bridge] removed issue attachment cleanup failed", {
+        issue_attachment_id: attachment.id,
+        error: error.message
+      });
+    }
+  }
+}
+
+async function cleanupIssueAttachmentResources(issueId, options = {}) {
+  const normalizedIssueId = sanitizeBridgeId(issueId);
+  const issue = issueCardsById.get(normalizedIssueId);
+  const attachments = normalizeIssueAttachments(options.attachments ?? issue?.attachments ?? []);
+  const removeRemote = options.removeRemote !== false;
+
+  for (const attachment of attachments) {
+    if (!removeRemote) {
+      continue;
+    }
+
+    try {
+      await deleteRemoteIssueAttachmentUpload(attachment);
+    } catch (error) {
+      console.warn("[OctOP bridge] issue attachment cleanup failed", {
+        issue_id: normalizedIssueId,
+        issue_attachment_id: attachment.id,
+        error: error.message
+      });
+    }
+  }
+
+  clearIssueAttachmentStageDirectory(normalizedIssueId);
+
+  const currentIssue = issueCardsById.get(normalizedIssueId);
+
+  if (!currentIssue || options.forgetIssue) {
+    return;
+  }
+
+  const nextAttachments = normalizeIssueAttachments(currentIssue.attachments)
+    .map((attachment) => stripIssueAttachmentRuntimeFields(attachment, { removeRemote }))
+    .filter(Boolean);
+
+  issueCardsById.set(normalizedIssueId, {
+    ...currentIssue,
+    attachments: nextAttachments,
+    updated_at: now()
+  });
+  persistThreadById(currentIssue.thread_id);
+}
+
+function queueIssueAttachmentCleanup(issueId, options = {}) {
+  const normalizedIssueId = sanitizeBridgeId(issueId);
+  const currentLock = issueAttachmentCleanupLocksByIssueId.get(normalizedIssueId);
+
+  if (currentLock) {
+    return currentLock;
+  }
+
+  const cleanupPromise = cleanupIssueAttachmentResources(normalizedIssueId, options)
+    .catch((error) => {
+      console.warn("[OctOP bridge] queued issue attachment cleanup failed", {
+        issue_id: normalizedIssueId,
+        error: error.message
+      });
+    })
+    .finally(() => {
+      if (issueAttachmentCleanupLocksByIssueId.get(normalizedIssueId) === cleanupPromise) {
+        issueAttachmentCleanupLocksByIssueId.delete(normalizedIssueId);
+      }
+    });
+
+  issueAttachmentCleanupLocksByIssueId.set(normalizedIssueId, cleanupPromise);
+  return cleanupPromise;
+}
+
+async function stageIssueAttachmentsForExecution(issueId) {
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue) {
+    throw new Error("첨부를 준비할 이슈를 찾을 수 없습니다.");
+  }
+
+  const attachments = normalizeIssueAttachments(issue.attachments);
+
+  if (attachments.length === 0) {
+    return issue;
+  }
+
+  const issueStageDirectory = resolveIssueAttachmentStageDirectory(issueId);
+  mkdirSync(issueStageDirectory, { recursive: true });
+  const nextAttachments = [];
+
+  try {
+    for (const [index, attachment] of attachments.entries()) {
+      if (!attachment.download_url) {
+        nextAttachments.push(attachment);
+        continue;
+      }
+
+      const stagedFilePath =
+        attachment.local_path && existsSync(attachment.local_path)
+          ? attachment.local_path
+          : resolve(
+              issueStageDirectory,
+              `${String(index + 1).padStart(2, "0")}-${sanitizeIssueAttachmentFileName(attachment.name)}`
+            );
+
+      if (!existsSync(stagedFilePath)) {
+        const response = await fetch(attachment.download_url, {
+          headers: {
+            Accept: "*/*"
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`첨부 다운로드에 실패했습니다. (${response.status})`);
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        writeFileSync(stagedFilePath, buffer);
+      }
+
+      nextAttachments.push(
+        normalizeIssueAttachment({
+          ...attachment,
+          local_path: stagedFilePath
+        })
+      );
+    }
+  } catch (error) {
+    clearIssueAttachmentStageDirectory(issueId);
+    throw error;
+  }
+
+  updateIssueCard(issueId, { attachments: nextAttachments });
+  return issueCardsById.get(issueId) ?? { ...issue, attachments: nextAttachments };
 }
 
 function normalizeTodoChat(loginId, chat = {}) {
@@ -2972,7 +3472,25 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
       changed: false,
       appendedDelta: "",
       replaced: false,
-      content: normalizedText
+      content: normalizedText,
+      ignoredStaleSnapshot: false
+    };
+  }
+
+  const shouldIgnoreStaleSnapshot =
+    Boolean(currentText) &&
+    (
+      currentText.startsWith(normalizedText) ||
+      currentText.length > normalizedText.length
+    );
+
+  if (shouldIgnoreStaleSnapshot) {
+    return {
+      changed: false,
+      appendedDelta: "",
+      replaced: false,
+      content: currentText,
+      ignoredStaleSnapshot: true
     };
   }
 
@@ -2984,7 +3502,8 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
       changed: true,
       appendedDelta: normalizedText.slice(currentText.length),
       replaced: false,
-      content: normalizedText
+      content: normalizedText,
+      ignoredStaleSnapshot: false
     };
   }
 
@@ -2992,7 +3511,8 @@ function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId =
     changed: true,
     appendedDelta: "",
     replaced: true,
-    content: normalizedText
+    content: normalizedText,
+    ignoredStaleSnapshot: false
   };
 }
 
@@ -3133,7 +3653,16 @@ function listThreadIssues(threadId) {
 }
 
 function serializeIssueForClient(issue) {
-  return normalizeIssueCard(issue);
+  const normalized = normalizeIssueCard(issue);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return {
+    ...normalized,
+    attachments: serializeIssueAttachmentsForClient(normalized.attachments)
+  };
 }
 
 function listThreadIssuesForClient(threadId) {
@@ -4501,6 +5030,15 @@ async function deleteRootThreadCascade(userId, rootThreadId, currentRootThread =
     markRootThreadDeletedForEventDrop(rootThreadId);
     softDeleteRootThreadState(rootThreadId);
     await stopActivePhysicalThreadBestEffort(rootThreadId);
+    await Promise.all(
+      issueIds.map((issueId) =>
+        cleanupIssueAttachmentResources(issueId, {
+          attachments: issueCardsById.get(issueId)?.attachments ?? [],
+          removeRemote: true,
+          forgetIssue: true
+        })
+      )
+    );
 
     for (const physicalThread of physicalThreads) {
       const deletedPhysicalThread = {
@@ -4611,6 +5149,7 @@ function getIssueDetail(userId, issueId) {
 async function createThreadIssue(userId, payload = {}) {
   const threadId = String(payload.thread_id ?? payload.threadId ?? "").trim();
   const prompt = String(payload.prompt ?? "").trim();
+  const attachments = normalizeIssueAttachments(payload.attachments);
 
   if (!threadId) {
     throw new Error("이슈를 등록할 thread가 필요합니다.");
@@ -4636,6 +5175,7 @@ async function createThreadIssue(userId, payload = {}) {
     executed_physical_thread_id: null,
     title: createIssueTitle(payload),
     prompt,
+    attachments,
     status: "staged",
     prep_position: getNextPrepPosition(threadId),
     progress: 0,
@@ -4683,17 +5223,17 @@ async function ensureCodexThreadForProjectThread(userId, threadId) {
   return ensureCodexThreadForActivePhysicalThread(userId, threadId);
 }
 
-async function ensureCodexThreadForActivePhysicalThread(userId, rootThreadId) {
+async function ensureCodexThreadForActivePhysicalThread(userId, rootThreadId, options = {}) {
   const activePhysicalThread = getActivePhysicalThread(rootThreadId);
 
   if (!activePhysicalThread) {
     throw new Error("active physical thread를 찾을 수 없습니다.");
   }
 
-  return ensureCodexThreadForPhysicalThread(userId, activePhysicalThread.id);
+  return ensureCodexThreadForPhysicalThread(userId, activePhysicalThread.id, options);
 }
 
-async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
+async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, options = {}) {
   const physicalThread = physicalThreadStateById.get(physicalThreadId);
 
   if (!physicalThread) {
@@ -4711,13 +5251,14 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
     physicalThread.project_id,
     physicalThread.root_thread_id
   );
-  const executionPolicy = resolveCodexExecutionPolicy();
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(options);
+  const reasoningEffort = resolveCodexReasoningEffortFromOptions(options);
   const threadStartParams = {
     cwd,
     ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
     ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
-    model: CODEX_MODEL,
-    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
+    model: resolveCodexModelFromOptions(options),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   };
@@ -4785,6 +5326,14 @@ function updateIssueCard(issueId, patch = {}) {
   };
 
   issueCardsById.set(issueId, next);
+
+  if (
+    current.status !== next.status &&
+    ["completed", "failed", "interrupted"].includes(String(next.status ?? "").trim())
+  ) {
+    void queueIssueAttachmentCleanup(issueId, { removeRemote: true });
+  }
+
   updateProjectThreadSnapshot(next.thread_id);
   persistThreadById(next.thread_id);
   return next;
@@ -4844,7 +5393,7 @@ async function startTurnOnPhysicalThread(
   rootThreadId,
   physicalThreadId,
   issueId,
-  inputPrompt,
+  buildPrompt,
   turnStartingEvent = "turn.starting"
 ) {
   const rootThread = threadStateById.get(rootThreadId);
@@ -4855,7 +5404,26 @@ async function startTurnOnPhysicalThread(
     throw new Error("실행할 작업을 찾을 수 없습니다.");
   }
 
-  const codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+  let preparedIssue = issue;
+  let inputPrompt = "";
+  let turnInput = [];
+  let codexThreadId = null;
+
+  try {
+    preparedIssue = await stageIssueAttachmentsForExecution(issueId);
+    inputPrompt =
+      typeof buildPrompt === "function"
+        ? buildPrompt(preparedIssue)
+        : String(buildPrompt ?? "").trim();
+    turnInput = buildIssueTurnInput(preparedIssue, inputPrompt);
+    codexThreadId = await ensureCodexThreadForPhysicalThread(userId, physicalThreadId, {
+      issue: preparedIssue
+    });
+  } catch (error) {
+    clearIssueAttachmentStageDirectory(issueId);
+    throw error;
+  }
+
   const cwd = resolveProjectWorkspace(userId, rootThread.project_id);
   resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, {
     status: "active",
@@ -4908,22 +5476,19 @@ async function startTurnOnPhysicalThread(
   });
 
   let attempt = 0;
+  let activeCodexThreadId = codexThreadId;
 
   while (attempt < 2) {
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
-      const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
-      const executionPolicy = resolveCodexExecutionPolicy();
+      activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
+      const executionPolicy = resolveCodexExecutionPolicyFromOptions(rootThread);
+
       const turnStartParams = {
         threadId: activeCodexThreadId,
         cwd,
         ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
-        input: [
-          {
-            type: "text",
-            text: inputPrompt
-          }
-        ]
+        input: turnInput
       };
       appendDiagnosticLog("info", "app_server.turn_start.params", "turn/start params before app-server request", {
         source: "startTurnOnPhysicalThread",
@@ -4988,7 +5553,9 @@ async function startTurnOnPhysicalThread(
 
       if (threadNotFound && attempt === 0) {
         invalidateCodexThreadBinding(rootThreadId);
-        await ensureCodexThreadForPhysicalThread(userId, physicalThreadId);
+        await ensureCodexThreadForPhysicalThread(userId, physicalThreadId, {
+          issue
+        });
         attempt += 1;
         continue;
       }
@@ -5078,7 +5645,7 @@ async function startIssueTurn(userId, threadId, issueId) {
     threadId,
     activePhysicalThread.id,
     issueId,
-    buildExecutionPrompt(issue.prompt)
+    (preparedIssue) => buildExecutionInputPrompt(preparedIssue ?? issue)
   );
 }
 
@@ -5127,6 +5694,30 @@ async function processIssueQueueOnce(userId, threadId, options = {}) {
         nextQueue.unshift(nextIssueId);
         refreshIssueQueuePositions(normalizedThreadId);
       }
+    }
+
+    if (shouldRestoreQueue && isRecoverableAppServerReconnectError(error)) {
+      appendDiagnosticLog(
+        "warn",
+        "thread.issue.start.pipeline.deferred",
+        "issue start deferred while app-server reconnects",
+        {
+          user_id: userId,
+          thread_id: normalizedThreadId,
+          issue_id: nextIssueId,
+          issue_status: issue?.status ?? null,
+          queue_snapshot: ensurePendingQueue(normalizedThreadId),
+          error_message: error.message
+        }
+      );
+      appServer.scheduleReconnect(`issue_start_pipeline:${normalizedThreadId}`);
+      await publishThreadState(userId, normalizedThreadId);
+      return {
+        accepted: true,
+        recovering: true,
+        deferred_issue_id: nextIssueId,
+        error: error.message
+      };
     }
 
     if (options.allowRecovery !== false) {
@@ -5268,6 +5859,46 @@ async function startThreadIssues(userId, payload = {}) {
     blocked_by_thread_id: null,
     issues: listThreadIssuesForClient(threadId)
   };
+}
+
+async function resumeQueuedIssuesAfterAppServerReady(trigger = "unspecified") {
+  if (queuedIssueResumePromise) {
+    return queuedIssueResumePromise;
+  }
+
+  queuedIssueResumePromise = (async () => {
+    const candidateUserIds = new Set([
+      ...users.keys(),
+      ...threadOwners.values()
+    ]);
+
+    for (const candidateUserId of candidateUserIds) {
+      const normalizedUserId = sanitizeUserId(candidateUserId);
+
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      try {
+        await scheduleQueuedIssuesForUser(normalizedUserId);
+      } catch (error) {
+        appendDiagnosticLog(
+          "warn",
+          "thread.issue.queue.resume.failed",
+          "queued issue auto-resume after app-server ready failed",
+          {
+            user_id: normalizedUserId,
+            trigger,
+            error
+          }
+        );
+      }
+    }
+  })().finally(() => {
+    queuedIssueResumePromise = null;
+  });
+
+  return queuedIssueResumePromise;
 }
 
 async function reorderThreadIssues(userId, payload = {}) {
@@ -5445,6 +6076,12 @@ async function deleteThreadIssue(userId, payload = {}) {
     });
     recoverySteps.push("released_active_issue_lock");
   }
+
+  await cleanupIssueAttachmentResources(issueId, {
+    attachments: issue.attachments,
+    removeRemote: true,
+    forgetIssue: true
+  });
 
   issueCardsById.delete(issueId);
   issueMessagesById.delete(issueId);
@@ -6038,9 +6675,14 @@ async function updateThreadIssue(userId, payload = {}) {
     throw new Error("준비 중인 이슈만 수정할 수 있습니다.");
   }
 
+  const attachments = normalizeIssueAttachmentsWithExisting(payload.attachments, issue.attachments);
+
+  await cleanupRemovedIssueAttachments(issue.attachments, attachments);
+
   const next = updateIssueCard(issueId, {
     title: title || issue.title,
     prompt,
+    attachments,
     last_event: "issue.updated",
     last_message: "",
     updated_at: now()
@@ -6261,6 +6903,7 @@ async function publishEvent(loginId, type, payload) {
     user_id: loginId,
     login_id: loginId,
     bridge_id: BRIDGE_ID,
+    host_name: HOST_NAME,
     device_name: DEVICE_NAME,
     type,
     payload,
@@ -6446,7 +7089,111 @@ function buildExecutionPrompt(prompt = "") {
   return `${instruction}\n\n[사용자 프롬프트]\n${normalizedPrompt}`;
 }
 
-function buildHandoffPrompt(summary, issuePrompt = "") {
+function formatIssueAttachmentSize(sizeBytes) {
+  const normalizedSize = Math.max(0, Number(sizeBytes) || 0);
+
+  if (normalizedSize < 1024) {
+    return `${normalizedSize} B`;
+  }
+
+  if (normalizedSize < 1024 * 1024) {
+    return `${(normalizedSize / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(normalizedSize / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildIssueAttachmentPromptSection(attachments = []) {
+  const normalizedAttachments = normalizeIssueAttachments(attachments);
+
+  if (normalizedAttachments.length === 0) {
+    return "";
+  }
+
+  const localFileAttachments = normalizedAttachments.filter(
+    (attachment) => attachment.kind !== "image" && attachment.local_path
+  );
+  const inlineTextAttachments = normalizedAttachments.filter(
+    (attachment) => attachment.kind !== "image" && !attachment.local_path && attachment.text_content
+  );
+  const imageAttachments = normalizedAttachments.filter(
+    (attachment) => attachment.kind === "image" && attachment.local_path
+  );
+  const lines = ["[첨부 자료]"];
+
+  if (localFileAttachments.length > 0) {
+    lines.push("아래 로컬 경로 파일을 직접 열어 내용을 확인한 뒤 작업하십시오.");
+
+    for (const [index, attachment] of localFileAttachments.entries()) {
+      lines.push("");
+      lines.push(`${index + 1}. ${attachment.name}`);
+      lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+      lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+      lines.push(`- local_path: ${attachment.local_path}`);
+    }
+  }
+
+  if (inlineTextAttachments.length > 0) {
+    if (localFileAttachments.length > 0) {
+      lines.push("");
+    }
+
+    lines.push("아래 텍스트 첨부 본문을 직접 참고하십시오.");
+
+    for (const [index, attachment] of inlineTextAttachments.entries()) {
+      lines.push("");
+      lines.push(`${index + 1}. ${attachment.name}`);
+      lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+      lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+
+      if (attachment.text_truncated) {
+        lines.push("- note: 본문이 일부만 포함되었습니다.");
+      }
+
+      lines.push("[content]");
+      lines.push(String(attachment.text_content ?? ""));
+    }
+  }
+
+  if (imageAttachments.length > 0) {
+    if (localFileAttachments.length > 0 || inlineTextAttachments.length > 0) {
+      lines.push("");
+    }
+
+    lines.push("아래 이미지는 localImage 입력으로 함께 전달됩니다.");
+
+    for (const [index, attachment] of imageAttachments.entries()) {
+      lines.push("");
+      lines.push(`${index + 1}. ${attachment.name}`);
+      lines.push(`- mime_type: ${attachment.mime_type ?? "unknown"}`);
+      lines.push(`- size: ${formatIssueAttachmentSize(attachment.size_bytes)}`);
+      lines.push(`- local_path: ${attachment.local_path}`);
+    }
+  }
+
+  if (
+    localFileAttachments.length === 0 &&
+    inlineTextAttachments.length === 0 &&
+    imageAttachments.length === 0
+  ) {
+    lines.push("첨부 메타데이터는 저장되어 있지만 현재 읽을 수 있는 로컬 경로가 준비되지 않았습니다.");
+  }
+
+  return lines.join("\n");
+}
+
+function buildExecutionInputPrompt(issue = null) {
+  const sections = [String(issue?.prompt ?? "").trim()];
+  const attachmentSection = buildIssueAttachmentPromptSection(issue?.attachments ?? []);
+
+  if (attachmentSection) {
+    sections.push(attachmentSection);
+  }
+
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n\n"));
+}
+
+function buildHandoffPrompt(summary, issue = null) {
   const sections = [
     "이전 thread에서 컨텍스트 사용량 한계로 rollover되었습니다.",
     "아래 handoff summary를 최우선 문맥으로 사용해 같은 작업을 이어가십시오.",
@@ -6455,10 +7202,39 @@ function buildHandoffPrompt(summary, issuePrompt = "") {
     summary.content_markdown,
     "",
     "[현재 issue 원본 프롬프트]",
-    String(issuePrompt ?? "").trim()
+    String(issue?.prompt ?? "").trim()
   ];
 
-  return buildExecutionPrompt(sections.join("\n"));
+  const attachmentSection = buildIssueAttachmentPromptSection(issue?.attachments ?? []);
+
+  if (attachmentSection) {
+    sections.push("", attachmentSection);
+  }
+
+  return buildExecutionPrompt(sections.filter(Boolean).join("\n"));
+}
+
+function buildIssueTurnInput(issue = null, inputPrompt = "") {
+  const normalizedAttachments = normalizeIssueAttachments(issue?.attachments);
+  const input = [
+    {
+      type: "text",
+      text: inputPrompt
+    }
+  ];
+
+  for (const attachment of normalizedAttachments) {
+    if (attachment.kind !== "image" || !attachment.local_path) {
+      continue;
+    }
+
+    input.push({
+      type: "localImage",
+      path: attachment.local_path
+    });
+  }
+
+  return input;
 }
 
 function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, issueId = null) {
@@ -6626,7 +7402,9 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       handoff_summary_id: summary.id,
       status: "active"
     });
-    const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id);
+    const targetCodexThreadId = await ensureCodexThreadForPhysicalThread(userId, targetPhysicalThread.id, {
+      issue: activeIssue
+    });
     const interrupted = isPreflight
       ? { ok: true, skipped: true }
       : await requestAppServerBestEffort("turn/interrupt", {
@@ -6690,7 +7468,7 @@ async function performContextRollover(userId, rootThreadId, reason = "threshold"
       rootThreadId,
       updatedTargetPhysicalThread.id,
       activeIssueId,
-      buildHandoffPrompt(nextSummary, activeIssue?.prompt ?? ""),
+      (preparedIssue) => buildHandoffPrompt(nextSummary, preparedIssue ?? activeIssue ?? null),
       isPreflight ? "rootThread.rollover.preflight.starting" : "rootThread.rollover.continuation.starting"
     );
 
@@ -7145,6 +7923,64 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
   return remotePayload;
 }
 
+const orderedBridgeEventQueueByKey = new Map();
+
+function resolveOrderedBridgeEventQueueKey(context = {}) {
+  const normalizedThreadId = String(context.threadId ?? context.rootThreadId ?? "").trim();
+
+  if (normalizedThreadId) {
+    return `thread:${normalizedThreadId}`;
+  }
+
+  const normalizedPhysicalThreadId = String(context.physicalThreadId ?? "").trim();
+
+  if (normalizedPhysicalThreadId) {
+    const rootThreadId = physicalThreadStateById.get(normalizedPhysicalThreadId)?.root_thread_id ?? null;
+
+    if (rootThreadId) {
+      return `thread:${rootThreadId}`;
+    }
+
+    return `physical:${normalizedPhysicalThreadId}`;
+  }
+
+  const normalizedCodexThreadId = String(context.codexThreadId ?? "").trim();
+
+  if (normalizedCodexThreadId) {
+    const resolvedPhysicalThreadId = resolvePhysicalThreadIdByCodexThreadId(normalizedCodexThreadId);
+    const rootThreadId =
+      (resolvedPhysicalThreadId
+        ? physicalThreadStateById.get(resolvedPhysicalThreadId)?.root_thread_id ?? null
+        : null) ??
+      resolveLocalThreadId(normalizedCodexThreadId);
+
+    if (rootThreadId) {
+      return `thread:${rootThreadId}`;
+    }
+
+    return `codex:${normalizedCodexThreadId}`;
+  }
+
+  const owner = String(context.owner ?? BRIDGE_OWNER_LOGIN_ID ?? "global").trim() || "global";
+  return `global:${owner}`;
+}
+
+async function enqueueOrderedBridgeEvent(context = {}, handler = async () => {}) {
+  const queueKey = resolveOrderedBridgeEventQueueKey(context);
+  const previous = orderedBridgeEventQueueByKey.get(queueKey) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => handler());
+  const tracked = next.finally(() => {
+    if (orderedBridgeEventQueueByKey.get(queueKey) === tracked) {
+      orderedBridgeEventQueueByKey.delete(queueKey);
+    }
+  });
+
+  orderedBridgeEventQueueByKey.set(queueKey, tracked);
+  return tracked;
+}
+
 function buildCompactRemoteNotificationPayload(method, params = {}) {
   switch (method) {
     case "thread/started":
@@ -7401,6 +8237,7 @@ class AppServerClient {
     });
     queueMicrotask(() => {
       void backfillRequestedRunningIssues(`ready:${reason}`);
+      void resumeQueuedIssuesAfterAppServerReady(`ready:${reason}`);
     });
     return this;
   }
@@ -7632,7 +8469,31 @@ class AppServerClient {
       return;
     }
 
-    void this.handleNotification(data.method, data.params ?? {});
+    const params = data.params ?? {};
+    const codexThreadId =
+      params.thread?.id ??
+      params.threadId ??
+      params.conversationId ??
+      params.thread_id ??
+      null;
+
+    void enqueueOrderedBridgeEvent({
+      owner: resolveOwnerFromParams(params),
+      rootThreadId: params.root_thread_id ?? null,
+      physicalThreadId: params.physical_thread_id ?? null,
+      codexThreadId
+    }, () => this.handleNotification(data.method, params)).catch((error) => {
+      this.lastError = error.message;
+      appendDiagnosticLog("error", "app_server.notification.failed", "app-server notification handling failed", {
+        method: data.method,
+        params,
+        error
+      });
+      console.error("[OctOP bridge] app-server notification handling failed", {
+        method: data.method,
+        message: error.message
+      });
+    });
   }
 
   async handleNotification(method, params) {
@@ -8218,6 +9079,7 @@ class AppServerClient {
   }
 
   scheduleReconnect(trigger = "unspecified") {
+
     if (this.reconnectTimer || this.readyPromise) {
       return;
     }
@@ -8227,12 +9089,19 @@ class AppServerClient {
     }
 
     const attempt = this.reconnectAttempt + 1;
-    const delayMs = Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt);
+    const uncappedDelayMs = APP_SERVER_RECONNECT_DELAY_MS * attempt;
+    const delayMs = Math.max(
+      100,
+      APP_SERVER_RECONNECT_MAX_DELAY_MS > 0
+        ? Math.min(APP_SERVER_RECONNECT_MAX_DELAY_MS, uncappedDelayMs)
+        : uncappedDelayMs
+    );
     this.reconnectAttempt = attempt;
     console.warn("[OctOP bridge] scheduling app-server reconnect", {
       trigger,
       attempt,
-      delay_ms: delayMs
+      delay_ms: delayMs,
+      uncapped_delay_ms: uncappedDelayMs
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -8331,6 +9200,30 @@ function describeWebSocketErrorEvent(error) {
   }
 
   return details.join(", ") || "unknown";
+}
+
+function isRecoverableAppServerReconnectError(error) {
+  const message = String(error?.message ?? error ?? "").trim().toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  if (message.includes("codex app-server 인증")) {
+    return false;
+  }
+
+  return (
+    message.includes("app-server 연결에 실패") ||
+    message.includes("websocket open failed") ||
+    message.includes("app-server socket is not connected") ||
+    message.includes("app-server socket closed") ||
+    message.includes("app-server websocket forced reconnect") ||
+    message.includes("app-server request timeout") ||
+    message.includes("app-server not connected") ||
+    message.includes("econnrefused") ||
+    message.includes("socket hang up")
+  );
 }
 
 function extractAppServerErrorMessage(params = {}) {
@@ -8729,6 +9622,7 @@ function collectBridgeStatus(userId) {
   return {
     bridge_mode: BRIDGE_MODE,
     bridge_id: BRIDGE_ID,
+    host_name: HOST_NAME,
     bridge_revision: BRIDGE_REVISION,
     device_name: DEVICE_NAME,
     app_server: {
@@ -8906,54 +9800,76 @@ function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
   return turns.at(-1) ?? null;
 }
 
+function joinBackfillTextSegments(segments = []) {
+  return segments.reduce((combined, segment) => {
+    const nextSegment = String(segment ?? "");
+
+    if (!nextSegment) {
+      return combined;
+    }
+
+    if (!combined) {
+      return nextSegment;
+    }
+
+    if (combined.endsWith("\n") || nextSegment.startsWith("\n")) {
+      return `${combined}${nextSegment}`;
+    }
+
+    return `${combined}\n${nextSegment}`;
+  }, "");
+}
+
 function collectTextFromRemoteMessageContent(content) {
   if (!Array.isArray(content)) {
     return "";
   }
 
-  return content
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
+  return joinBackfillTextSegments(
+    content
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return "";
+        }
+
+        if (typeof entry.text === "string" && entry.text.trim()) {
+          return entry.text;
+        }
+
         return "";
-      }
-
-      if (typeof entry.text === "string" && entry.text.trim()) {
-        return entry.text;
-      }
-
-      return "";
-    })
-    .filter(Boolean)
-    .join("");
+      })
+      .filter(Boolean)
+  );
 }
 
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
-  return items
-    .map((item) => {
-      if (!item || typeof item !== "object") {
+  return joinBackfillTextSegments(
+    items
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return "";
+        }
+
+        if (String(item.type ?? "").trim() === "agentMessage") {
+          return (
+            String(item.text ?? "").trim() ||
+            collectTextFromRemoteMessageContent(item.content) ||
+            String(item?.agentMessage?.text ?? "").trim()
+          );
+        }
+
+        if (item.agentMessage && typeof item.agentMessage === "object") {
+          return (
+            String(item.agentMessage.text ?? "").trim() ||
+            collectTextFromRemoteMessageContent(item.agentMessage.content)
+          );
+        }
+
         return "";
-      }
-
-      if (String(item.type ?? "").trim() === "agentMessage") {
-        return (
-          String(item.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.content) ||
-          String(item?.agentMessage?.text ?? "").trim()
-        );
-      }
-
-      if (item.agentMessage && typeof item.agentMessage === "object") {
-        return (
-          String(item.agentMessage.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.agentMessage.content)
-        );
-      }
-
-      return "";
-    })
-    .filter(Boolean)
-    .join("");
+      })
+      .filter(Boolean)
+  );
 }
 
 function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {
@@ -9076,8 +9992,6 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     });
   }
 
-  const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
-
   markRunningIssueActivity(threadId, {
     lastActivityAt: meta.lastActivityAt,
     backfillLastPolledAt: now()
@@ -9089,6 +10003,50 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
     throw new Error("thread/read 응답에 thread가 없습니다.");
   }
 
+  return enqueueOrderedBridgeEvent({
+    owner,
+    threadId,
+    rootThreadId: threadId,
+    physicalThreadId,
+    codexThreadId: remoteThread.id
+  }, () => applyRunningIssueBackfillSnapshot(owner, threadId, remoteThread, reason));
+}
+
+async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread, reason = "unspecified") {
+  const owner = sanitizeUserId(userId);
+  const activeIssueId = activeIssueByThreadId.get(threadId) ?? null;
+  const meta = runningIssueMetaByThreadId.get(threadId) ?? null;
+  const thread = threadStateById.get(threadId) ?? null;
+  const issue = activeIssueId ? issueCardsById.get(activeIssueId) ?? null : null;
+  const physicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    thread?.active_physical_thread_id ??
+    null;
+  const physicalThread = physicalThreadId ? physicalThreadStateById.get(physicalThreadId) ?? null : null;
+
+  if (!remoteThread?.id) {
+    throw new Error("thread/read 응답에 thread가 없습니다.");
+  }
+
+  if (!activeIssueId || !meta || !thread || !issue || thread.deleted_at || issue.deleted_at) {
+    if (reason !== "interval") {
+      appendDiagnosticLog("warn", "running_issue.backfill.skipped", "running issue backfill skipped after queue wait", {
+        thread_id: threadId,
+        reason,
+        active_issue_id: activeIssueId,
+        has_meta: Boolean(meta),
+        has_thread: Boolean(thread),
+        has_issue: Boolean(issue),
+        thread_deleted: Boolean(thread?.deleted_at),
+        issue_deleted: Boolean(issue?.deleted_at),
+        remote_thread_id: remoteThread.id
+      });
+    }
+    return { accepted: false, skipped: true };
+  }
+
+  const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
   const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
   const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
@@ -9413,6 +10371,7 @@ async function backfillRunningIssueFromSnapshot(userId, threadId, reason = "unsp
       codex_thread_id: remoteThread.id,
       remote_status: remoteStatus,
       appended_delta_length: syncedAssistant.appendedDelta.length,
+      stale_snapshot_ignored: syncedAssistant.ignoredStaleSnapshot,
       token_usage_changed: tokenUsageChanged,
       observable_progress: hasObservableRunningProgress,
       no_progress_backfill_count: nextNoProgressBackfillCount,
@@ -10260,7 +11219,7 @@ async function startThreadTurn(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, current.project_id);
-  const executionPolicy = resolveCodexExecutionPolicy();
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(current);
 
   try {
     const turnStartParams = {
@@ -10349,13 +11308,14 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
-  const executionPolicy = resolveCodexExecutionPolicy();
+  const executionPolicy = resolveCodexExecutionPolicyFromOptions(payload);
+  const reasoningEffort = resolveCodexReasoningEffortFromOptions(payload);
   const threadStartParams = {
     cwd,
     ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
     ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
-    model: CODEX_MODEL,
-    ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
+    model: resolveCodexModelFromOptions(payload),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     personality: "pragmatic",
     ...instructionOverrides
   };

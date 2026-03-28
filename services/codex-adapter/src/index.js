@@ -177,6 +177,7 @@ const issueQueueProcessingStateByThreadId = new Map();
 const issueAttachmentCleanupLocksByIssueId = new Map();
 let runningIssueBackfillPromise = null;
 let runningIssueThreadReadSamplePromise = null;
+let queuedIssueResumePromise = null;
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -5695,6 +5696,30 @@ async function processIssueQueueOnce(userId, threadId, options = {}) {
       }
     }
 
+    if (shouldRestoreQueue && isRecoverableAppServerReconnectError(error)) {
+      appendDiagnosticLog(
+        "warn",
+        "thread.issue.start.pipeline.deferred",
+        "issue start deferred while app-server reconnects",
+        {
+          user_id: userId,
+          thread_id: normalizedThreadId,
+          issue_id: nextIssueId,
+          issue_status: issue?.status ?? null,
+          queue_snapshot: ensurePendingQueue(normalizedThreadId),
+          error_message: error.message
+        }
+      );
+      appServer.scheduleReconnect(`issue_start_pipeline:${normalizedThreadId}`);
+      await publishThreadState(userId, normalizedThreadId);
+      return {
+        accepted: true,
+        recovering: true,
+        deferred_issue_id: nextIssueId,
+        error: error.message
+      };
+    }
+
     if (options.allowRecovery !== false) {
       await normalizeRootThread(userId, normalizedThreadId, {
         reason: "recover_current_execution"
@@ -5834,6 +5859,46 @@ async function startThreadIssues(userId, payload = {}) {
     blocked_by_thread_id: null,
     issues: listThreadIssuesForClient(threadId)
   };
+}
+
+async function resumeQueuedIssuesAfterAppServerReady(trigger = "unspecified") {
+  if (queuedIssueResumePromise) {
+    return queuedIssueResumePromise;
+  }
+
+  queuedIssueResumePromise = (async () => {
+    const candidateUserIds = new Set([
+      ...users.keys(),
+      ...threadOwners.values()
+    ]);
+
+    for (const candidateUserId of candidateUserIds) {
+      const normalizedUserId = sanitizeUserId(candidateUserId);
+
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      try {
+        await scheduleQueuedIssuesForUser(normalizedUserId);
+      } catch (error) {
+        appendDiagnosticLog(
+          "warn",
+          "thread.issue.queue.resume.failed",
+          "queued issue auto-resume after app-server ready failed",
+          {
+            user_id: normalizedUserId,
+            trigger,
+            error
+          }
+        );
+      }
+    }
+  })().finally(() => {
+    queuedIssueResumePromise = null;
+  });
+
+  return queuedIssueResumePromise;
 }
 
 async function reorderThreadIssues(userId, payload = {}) {
@@ -8172,6 +8237,7 @@ class AppServerClient {
     });
     queueMicrotask(() => {
       void backfillRequestedRunningIssues(`ready:${reason}`);
+      void resumeQueuedIssuesAfterAppServerReady(`ready:${reason}`);
     });
     return this;
   }
@@ -9134,6 +9200,30 @@ function describeWebSocketErrorEvent(error) {
   }
 
   return details.join(", ") || "unknown";
+}
+
+function isRecoverableAppServerReconnectError(error) {
+  const message = String(error?.message ?? error ?? "").trim().toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  if (message.includes("codex app-server 인증")) {
+    return false;
+  }
+
+  return (
+    message.includes("app-server 연결에 실패") ||
+    message.includes("websocket open failed") ||
+    message.includes("app-server socket is not connected") ||
+    message.includes("app-server socket closed") ||
+    message.includes("app-server websocket forced reconnect") ||
+    message.includes("app-server request timeout") ||
+    message.includes("app-server not connected") ||
+    message.includes("econnrefused") ||
+    message.includes("socket hang up")
+  );
 }
 
 function extractAppServerErrorMessage(params = {}) {

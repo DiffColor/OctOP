@@ -3453,6 +3453,113 @@ test("issue start 준비 단계 예외가 발생해도 queued issue를 복구하
   }
 });
 
+test("app-server reconnect 중 issue start 요청은 queued로 유지되고 복구 후 자동 재개된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-queue-recovery-on-reconnect-int-"));
+  let fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const appServerPort = Number(new URL(appServerUrl).port);
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-queue-recovery-on-reconnect-token",
+    userId: "integration-user",
+    bridgeId: `queue-recovery-on-reconnect-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS: "1200",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "200",
+      OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS: "400"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const threadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Reconnect Queue Recovery Thread"
+      })
+    });
+    const threadId = threadPayload.thread.id;
+
+    const issuePayload = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Reconnect Queue Recovery Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = issuePayload.issue.id;
+
+    await fakeAppServer.stop();
+
+    await waitFor(async () => {
+      const health = await bridge.request("/health");
+      assert.equal(health.status?.app_server?.initialized, false);
+      return health;
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "app-server disconnected before queued start"
+    });
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+
+    assert.equal(startPayload.accepted, true);
+
+    const queuedIssuePayload = await bridge.request(`/api/issues/${issueId}`);
+    assert.equal(queuedIssuePayload.issue?.status, "queued");
+    assert.equal(queuedIssuePayload.issue?.queue_position, 1);
+
+    fakeAppServer = new FakeAppServer({ port: appServerPort });
+    await fakeAppServer.start();
+
+    await waitFor(async () => {
+      const health = await bridge.request("/health");
+      assert.equal(health.status?.app_server?.initialized, true);
+      return health;
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "app-server reconnected after queued start"
+    });
+
+    await waitFor(async () => {
+      const currentIssuePayload = await bridge.request(`/api/issues/${issueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${threadId}/continuity`);
+      assert.equal(currentIssuePayload.issue?.status, "running");
+      assert.equal(currentIssuePayload.issue?.queue_position ?? null, null);
+      assert.ok(continuityPayload.active_physical_thread?.codex_thread_id);
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      return { currentIssuePayload, continuityPayload };
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "queued issue resumed after reconnect"
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length >= 1, true);
+    assert.equal(fakeAppServer.getRequests("turn/start").length >= 1, true);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-int-"));
   const fakeAppServer = new FakeAppServer();
