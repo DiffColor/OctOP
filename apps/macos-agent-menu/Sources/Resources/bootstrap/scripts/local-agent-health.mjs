@@ -78,9 +78,9 @@ export function evaluateBridgeAppServerRecovery({
   const authenticationError =
     isBridgeAppServerAuthenticationError(status.lastError) ||
     isBridgeAppServerAuthenticationError(status.lastSilentStateCheckError);
+  const bridgeConnectionReady = status.connected && status.initialized;
   const healthy =
-    status.connected &&
-    status.initialized &&
+    bridgeConnectionReady &&
     !status.lastError &&
     !status.lastSilentStateCheckError;
 
@@ -96,11 +96,21 @@ export function evaluateBridgeAppServerRecovery({
     };
   }
 
+  if (!bridgeConnectionReady) {
+    return {
+      usable: true,
+      healthy: false,
+      recoverable: false,
+      nextConsecutiveFailures: 0,
+      shouldRestart: false,
+      reason: status.lastError || (!status.connected ? "app-server bridge disconnected" : "app-server bridge uninitialized"),
+      summary: describeBridgeAppServerHealth(health)
+    };
+  }
+
   const recoverable =
     !authenticationError &&
     (
-      !status.connected ||
-      !status.initialized ||
       Boolean(status.lastError) ||
       Boolean(status.lastSilentStateCheckError)
     );

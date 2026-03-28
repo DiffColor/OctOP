@@ -7,7 +7,7 @@ import {
   isBridgeAppServerAuthenticationError
 } from "../../scripts/local-agent-health.mjs";
 
-test("브릿지 헬스에서 app-server 연결이 끊기면 재시작 후보로 판단한다", () => {
+test("브릿지 헬스에서 app-server 연결이 끊겨도 런처가 즉시 프로세스를 재시작하지는 않는다", () => {
   const evaluation = evaluateBridgeAppServerRecovery({
     health: {
       status: {
@@ -24,8 +24,8 @@ test("브릿지 헬스에서 app-server 연결이 끊기면 재시작 후보로 
 
   assert.equal(evaluation.usable, true);
   assert.equal(evaluation.healthy, false);
-  assert.equal(evaluation.recoverable, true);
-  assert.equal(evaluation.nextConsecutiveFailures, 2);
+  assert.equal(evaluation.recoverable, false);
+  assert.equal(evaluation.nextConsecutiveFailures, 0);
   assert.equal(evaluation.shouldRestart, false);
   assert.match(evaluation.summary, /connected=false/);
 });
