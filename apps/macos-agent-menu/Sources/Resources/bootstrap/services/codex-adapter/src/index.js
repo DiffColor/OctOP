@@ -26,6 +26,7 @@ import {
   sanitizeBridgeId,
   sanitizeUserId
 } from "./domain.js";
+import { shouldResetAppServerForSystemNetworkRecovery } from "./systemNetwork.js";
 
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
@@ -54,6 +55,8 @@ const SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS = Number(
 const BRIDGE_MODE = process.env.OCTOP_BRIDGE_MODE ?? "app-server";
 const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
+const SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY =
+  shouldResetAppServerForSystemNetworkRecovery(APP_SERVER_WS_URL);
 const APP_SERVER_COMMAND =
   process.env.OCTOP_APP_SERVER_COMMAND ?? `codex app-server --listen ${APP_SERVER_WS_URL}`;
 const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") !== "false";
@@ -501,6 +504,10 @@ function compareSignatureEntries(left, right) {
   return left.localeCompare(right);
 }
 
+function normalizeInterfaceName(name = "") {
+  return String(name ?? "").trim().toLowerCase();
+}
+
 function normalizeSystemNetworkInterfaceSignatureEntries(interfaces = []) {
   if (!Array.isArray(interfaces)) {
     return [];
@@ -509,6 +516,7 @@ function normalizeSystemNetworkInterfaceSignatureEntries(interfaces = []) {
   return interfaces
     .map((entry) => {
       const name = String(entry?.name ?? "").trim();
+      const normalizedName = normalizeInterfaceName(name);
       const family = String(entry?.family ?? "").trim().toUpperCase();
       const address = String(entry?.address ?? "").trim().toLowerCase();
 
@@ -516,15 +524,40 @@ function normalizeSystemNetworkInterfaceSignatureEntries(interfaces = []) {
         return null;
       }
 
-      return family ? `${name}:${family}:${address}` : `${name}:${address}`;
+      return {
+        name,
+        normalizedName,
+        signature: family ? `${name}:${family}:${address}` : `${name}:${address}`
+      };
     })
     .filter(Boolean)
-    .sort(compareSignatureEntries);
+    .sort((left, right) => compareSignatureEntries(left.signature, right.signature));
+}
+
+function selectSystemNetworkInterfaceSignatures(interfaceEntries = [], defaultRouteInterface = null) {
+  if (!Array.isArray(interfaceEntries) || interfaceEntries.length === 0) {
+    return [];
+  }
+
+  const normalizedDefaultRouteInterface = normalizeInterfaceName(defaultRouteInterface);
+
+  if (!normalizedDefaultRouteInterface) {
+    return interfaceEntries.map((entry) => entry.signature);
+  }
+
+  const primaryInterfaceEntries = interfaceEntries.filter(
+    (entry) => entry.normalizedName === normalizedDefaultRouteInterface
+  );
+
+  return (primaryInterfaceEntries.length > 0 ? primaryInterfaceEntries : interfaceEntries).map(
+    (entry) => entry.signature
+  );
 }
 
 function buildSystemNetworkStateSignature(networkState) {
-  const interfaceSignatures = normalizeSystemNetworkInterfaceSignatureEntries(networkState?.interfaces);
   const defaultRouteInterface = String(networkState?.default_route?.interfaceName ?? "").trim() || null;
+  const interfaceEntries = normalizeSystemNetworkInterfaceSignatureEntries(networkState?.interfaces);
+  const interfaceSignatures = selectSystemNetworkInterfaceSignatures(interfaceEntries, defaultRouteInterface);
 
   return JSON.stringify({
     connected: Boolean(networkState?.connected),
@@ -540,7 +573,23 @@ async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified
 
   const deadline = Date.now() + SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS;
   systemNetworkReplayPromise = (async () => {
-    appServer.prepareForSystemNetworkRestore(trigger);
+    if (SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY) {
+      appServer.prepareForSystemNetworkRestore(trigger);
+    } else {
+      appendDiagnosticLog(
+        "info",
+        "app_server.websocket.system_network_restore_preserved",
+        "preserving local app-server websocket during system network recovery",
+        {
+          trigger,
+          app_server_url: APP_SERVER_WS_URL
+        }
+      );
+      console.warn("[OctOP bridge] preserving local app-server websocket during system network recovery", {
+        trigger,
+        app_server_url: APP_SERVER_WS_URL
+      });
+    }
 
     while (Date.now() < deadline) {
       if (nc.isClosed()) {

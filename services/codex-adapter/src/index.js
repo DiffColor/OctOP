@@ -29,7 +29,8 @@ import {
 } from "./domain.js";
 import {
   buildSystemNetworkStateSignature,
-  shouldAttemptSystemNetworkRecovery
+  shouldAttemptSystemNetworkRecovery,
+  shouldResetAppServerForSystemNetworkRecovery
 } from "./systemNetwork.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
@@ -67,6 +68,8 @@ const SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS = Number(
 const BRIDGE_MODE = process.env.OCTOP_BRIDGE_MODE ?? "app-server";
 const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
+const SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY =
+  shouldResetAppServerForSystemNetworkRecovery(APP_SERVER_WS_URL);
 const APP_SERVER_COMMAND =
   process.env.OCTOP_APP_SERVER_COMMAND ?? `codex app-server --listen ${APP_SERVER_WS_URL}`;
 const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") !== "false";
@@ -527,7 +530,23 @@ async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified
 
   const deadline = Date.now() + SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS;
   systemNetworkReplayPromise = (async () => {
-    appServer.prepareForSystemNetworkRestore(trigger);
+    if (SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY) {
+      appServer.prepareForSystemNetworkRestore(trigger);
+    } else {
+      appendDiagnosticLog(
+        "info",
+        "app_server.websocket.system_network_restore_preserved",
+        "preserving local app-server websocket during system network recovery",
+        {
+          trigger,
+          app_server_url: APP_SERVER_WS_URL
+        }
+      );
+      console.warn("[OctOP bridge] preserving local app-server websocket during system network recovery", {
+        trigger,
+        app_server_url: APP_SERVER_WS_URL
+      });
+    }
 
     while (Date.now() < deadline) {
       if (nc.isClosed()) {
