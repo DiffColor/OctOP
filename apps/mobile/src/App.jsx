@@ -231,6 +231,18 @@ function isStandaloneDisplayMode() {
   return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
 }
 
+function hasCoarsePointerDevice() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+
+  try {
+    return window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(any-pointer: coarse)").matches;
+  } catch {
+    return false;
+  }
+}
+
 async function publishServiceWorkerClientContext() {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
     return;
@@ -4189,6 +4201,7 @@ function InlineIssueComposer({
   const processedFinalResultKeysRef = useRef(new Set());
   const lastVoiceAppendRef = useRef({ text: "", at: 0 });
   const lastFinalTranscriptRef = useRef("");
+  const promptFocusPointerTypeRef = useRef("");
   const viewportBaselineHeightsRef = useRef({
     portrait: 0,
     landscape: 0
@@ -4300,7 +4313,7 @@ function InlineIssueComposer({
     }
   }, [readCurrentViewportMetrics]);
 
-  const isSoftwareKeyboardOpen = useCallback(() => {
+  const isViewportReducedForSoftwareKeyboard = useCallback(() => {
     const { height, orientation } = readCurrentViewportMetrics();
     const baselineHeight = Number(viewportBaselineHeightsRef.current[orientation] ?? 0);
 
@@ -4316,6 +4329,20 @@ function InlineIssueComposer({
 
     return deltaHeight >= threshold;
   }, [readCurrentViewportMetrics]);
+
+  const shouldPreserveEnterForSoftKeyboard = useCallback(() => {
+    const pointerType = promptFocusPointerTypeRef.current;
+
+    if (pointerType !== "touch" && pointerType !== "pen") {
+      return false;
+    }
+
+    if (!hasCoarsePointerDevice()) {
+      return false;
+    }
+
+    return isViewportReducedForSoftwareKeyboard();
+  }, [isViewportReducedForSoftwareKeyboard]);
 
   useLayoutEffect(() => {
     syncPromptHeight();
@@ -4368,6 +4395,12 @@ function InlineIssueComposer({
         return;
       }
 
+      const pointerType = typeof event?.pointerType === "string" ? event.pointerType.toLowerCase() : "";
+
+      if (pointerType === "touch" || pointerType === "pen" || pointerType === "mouse") {
+        promptFocusPointerTypeRef.current = pointerType;
+      }
+
       const textarea = textareaRef.current;
 
       if (!textarea) {
@@ -4390,6 +4423,21 @@ function InlineIssueComposer({
       }
     },
     [busy, disabled, selectedProject]
+  );
+
+  const handlePromptFocus = useCallback(
+    (event) => {
+      onInputFocus?.(event);
+    },
+    [onInputFocus]
+  );
+
+  const handlePromptBlur = useCallback(
+    (event) => {
+      promptFocusPointerTypeRef.current = "";
+      onInputBlur?.(event);
+    },
+    [onInputBlur]
   );
 
   const clearLongPressTimer = useCallback(() => {
@@ -4678,7 +4726,7 @@ function InlineIssueComposer({
         return;
       }
 
-      if (isSoftwareKeyboardOpen()) {
+      if (shouldPreserveEnterForSoftKeyboard()) {
         return;
       }
 
@@ -4690,7 +4738,7 @@ function InlineIssueComposer({
 
       void handlePromptSubmit();
     },
-    [busy, disabled, handlePromptSubmit, isSoftwareKeyboardOpen, selectedProject]
+    [busy, disabled, handlePromptSubmit, selectedProject, shouldPreserveEnterForSoftKeyboard]
   );
 
   const toggleVoiceCapture = useCallback(() => {
@@ -4802,8 +4850,8 @@ function InlineIssueComposer({
               onCompositionEnd={() => {
                 isPromptComposingRef.current = false;
               }}
-              onFocus={onInputFocus ?? undefined}
-              onBlur={onInputBlur ?? undefined}
+              onFocus={handlePromptFocus}
+              onBlur={handlePromptBlur}
               placeholder=""
               disabled={!selectedProject || busy || disabled}
               enterKeyHint="enter"

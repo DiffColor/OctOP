@@ -67,6 +67,63 @@ test.use({
   }
 });
 
+async function installPointerMatchMediaMock(page, options = {}) {
+  const coarse = options.coarse === true;
+
+  await page.addInitScript(({ coarse }) => {
+    const originalMatchMedia = window.matchMedia?.bind(window);
+
+    window.matchMedia = (query) => {
+      if (query === '(pointer: coarse)' || query === '(any-pointer: coarse)') {
+        return {
+          matches: coarse,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent() {
+            return false;
+          }
+        };
+      }
+
+      if (query === '(pointer: fine)' || query === '(any-pointer: fine)') {
+        return {
+          matches: !coarse,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent() {
+            return false;
+          }
+        };
+      }
+
+      if (typeof originalMatchMedia === 'function') {
+        return originalMatchMedia(query);
+      }
+
+      return {
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener() {},
+        removeListener() {},
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() {
+          return false;
+        }
+      };
+    };
+  }, { coarse });
+}
+
 async function mockMobileApi(page, options = {}) {
   const nextThreads = Array.isArray(options.threads) ? options.threads : [thread];
   const nextIssues = Array.isArray(options.issues) ? options.issues : [issue];
@@ -1568,6 +1625,7 @@ test.describe('wide mobile split layout', () => {
   test('sends on Enter and preserves line breaks on Shift+Enter in the prompt composer', async ({ page }) => {
     const requestLog = [];
 
+    await installPointerMatchMediaMock(page, { coarse: true });
     await mockMobileApi(page, { requestLog });
     await page.addInitScript(
       ({ key, value }) => {
@@ -1581,7 +1639,7 @@ test.describe('wide mobile split layout', () => {
     await page.goto(baseUrl);
 
     const promptInput = page.getByTestId('thread-prompt-input');
-    await promptInput.click();
+    await promptInput.tap();
     await promptInput.type('Line 1');
     await promptInput.press('Shift+Enter');
     await promptInput.type('Line 2');
@@ -1604,6 +1662,7 @@ test.describe('wide mobile split layout', () => {
   test('뷰포트가 줄어든 상태에서는 Enter 입력이 프롬프트를 전송하지 않는다', async ({ page }) => {
     const requestLog = [];
 
+    await installPointerMatchMediaMock(page, { coarse: true });
     await mockMobileApi(page, { requestLog });
     await page.addInitScript(
       ({ key, value }) => {
@@ -1655,7 +1714,7 @@ test.describe('wide mobile split layout', () => {
     await page.goto(baseUrl);
 
     const promptInput = page.getByTestId('thread-prompt-input');
-    await promptInput.click();
+    await promptInput.tap();
     await promptInput.type('Hardware keyboard send');
 
     await page.evaluate(() => {
@@ -1668,6 +1727,76 @@ test.describe('wide mobile split layout', () => {
     expect(
       requestLog.filter(({ method, pathname }) => method === 'POST' && pathname === `/api/threads/${threadId}/issues`).length
     ).toBe(0);
+  });
+
+  test('데스크톱 포인터 환경에서는 뷰포트가 줄어들어도 Enter 입력이 프롬프트를 전송한다', async ({ page }) => {
+    const requestLog = [];
+
+    await installPointerMatchMediaMock(page, { coarse: false });
+    await mockMobileApi(page, { requestLog });
+    await page.addInitScript(
+      ({ key, value }) => {
+        const viewportListeners = new Map();
+        const mockViewport = {
+          width: 390,
+          height: 844,
+          offsetTop: 0,
+          offsetLeft: 0,
+          pageTop: 0,
+          pageLeft: 0,
+          scale: 1,
+          addEventListener(type, listener) {
+            const currentListeners = viewportListeners.get(type) ?? new Set();
+            currentListeners.add(listener);
+            viewportListeners.set(type, currentListeners);
+          },
+          removeEventListener(type, listener) {
+            const currentListeners = viewportListeners.get(type);
+
+            if (!currentListeners) {
+              return;
+            }
+
+            currentListeners.delete(listener);
+          }
+        };
+
+        Object.defineProperty(window, 'visualViewport', {
+          configurable: true,
+          value: mockViewport
+        });
+
+        window.__setMockVisualViewportHeight = (nextHeight) => {
+          mockViewport.height = Number(nextHeight) || mockViewport.height;
+
+          for (const listener of viewportListeners.get('resize') ?? []) {
+            listener(new Event('resize'));
+          }
+        };
+
+        window.localStorage.setItem(key, JSON.stringify(value));
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+      },
+      { key: SESSION_KEY, value: session }
+    );
+
+    await page.goto(baseUrl);
+
+    const promptInput = page.getByTestId('thread-prompt-input');
+    await promptInput.focus();
+    await promptInput.fill('Desktop hardware keyboard send');
+
+    await page.evaluate(() => {
+      window.__setMockVisualViewportHeight(540);
+    });
+
+    await promptInput.press('Enter');
+
+    await expect.poll(() =>
+      requestLog.filter(({ method, pathname }) => method === 'POST' && pathname === `/api/threads/${threadId}/issues`).length
+    ).toBe(1);
+    await expect(promptInput).toHaveValue('');
   });
 
   test('하단 채팅 입력창은 상단 라벨과 여백을 눌러도 입력창이 선택된다', async ({ page }) => {
