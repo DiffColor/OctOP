@@ -724,11 +724,11 @@ const COPY = {
       instructionDialogSaving: "Saving...",
       instructionDialogProject: "Project",
       instructionDialogThread: "Thread",
-      instructionDialogPlaceholderGeneral: "Enter the base guidance to inject when a Codex thread starts.",
+      instructionDialogPlaceholderGeneral: "Enter the shared base guidance to inject for every project when a Codex thread starts.",
       instructionDialogPlaceholderDeveloper: "Enter the developer guidance to inject when a Codex thread starts.",
       instructionDialogPlaceholderThreadDeveloper: "Enter the thread-specific developer guidance to inject on the next run for this thread.",
       instructionDialogHintGeneral:
-        "Saved on the selected project and injected into app-server baseInstructions when a thread starts.",
+        "Saved as the shared base guidance and injected into app-server baseInstructions for every project when a thread starts.",
       instructionDialogHintDeveloper:
         "Saved on the selected project and injected into app-server developerInstructions when a thread starts.",
       instructionDialogHintThreadDeveloper:
@@ -955,11 +955,11 @@ const COPY = {
       instructionDialogSaving: "저장 중...",
       instructionDialogProject: "프로젝트",
       instructionDialogThread: "쓰레드",
-      instructionDialogPlaceholderGeneral: "Codex thread 시작 시 주입할 기본 지침을 입력해 주세요.",
+      instructionDialogPlaceholderGeneral: "모든 프로젝트에 공통으로 적용할 기본 지침을 입력해 주세요.",
       instructionDialogPlaceholderDeveloper: "Codex thread 시작 시 주입할 개발 지침을 입력해 주세요.",
       instructionDialogPlaceholderThreadDeveloper: "이 쓰레드의 다음 실행 흐름부터 적용할 전용 개발지침을 입력해 주세요.",
       instructionDialogHintGeneral:
-        "선택한 프로젝트에 저장되며, app-server의 baseInstructions로 thread 시작 시 주입됩니다.",
+        "공통 일반지침으로 저장되며, 모든 프로젝트의 thread 시작 시 app-server baseInstructions로 동일하게 주입됩니다.",
       instructionDialogHintDeveloper:
         "선택한 프로젝트에 저장되며, app-server의 developerInstructions로 thread 시작 시 주입됩니다.",
       instructionDialogHintThreadDeveloper:

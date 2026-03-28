@@ -26,6 +26,10 @@ import {
   sanitizeBridgeId,
   sanitizeUserId
 } from "./domain.js";
+import {
+  applyCommonBaseInstructionsToProjects,
+  deriveCommonBaseInstructions
+} from "./projectInstructionState.js";
 import { shouldResetAppServerForSystemNetworkRecovery } from "./systemNetwork.js";
 
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
@@ -982,8 +986,12 @@ function ensureUserState(userId) {
   if (!users.has(normalized)) {
     const projectEntry = loadProjectEntry(normalized);
     const restoredState = loadThreadsForUser(normalized);
+    const projects = loadProjectsForUser(normalized, projectEntry);
     users.set(normalized, {
-      projects: loadProjectsForUser(normalized, projectEntry),
+      projects,
+      commonBaseInstructions: normalizeInstructionText(
+        projectEntry.commonBaseInstructions ?? deriveCommonBaseInstructions(projects)
+      ),
       deletedWorkspacePaths: projectEntry.deletedWorkspacePaths,
       threadIds: restoredState.threadIds,
       todoChatIds: restoredState.todoChatIds,
@@ -1000,11 +1008,14 @@ function ensureUserState(userId) {
   }
 
   const discoveredProjects = discoverProjectsForUser(normalized, state.deletedWorkspacePaths);
-  const mergedProjects = mergeProjects(state.projects, discoveredProjects);
+  const mergedProjects = applyCommonBaseInstructionsToProjects(
+    mergeProjects(state.projects, discoveredProjects),
+    state.commonBaseInstructions
+  );
 
   if (hasProjectSetChanged(state.projects, mergedProjects)) {
     state.projects = mergedProjects;
-    persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
+    persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   }
 
   return state;
@@ -1449,22 +1460,32 @@ function loadProjectEntry(loginId) {
   if (Array.isArray(stored)) {
     return {
       projects: stored,
-      deletedWorkspacePaths: []
+      deletedWorkspacePaths: [],
+      commonBaseInstructions: deriveCommonBaseInstructions(stored)
     };
   }
 
   if (stored && typeof stored === "object") {
+    const storedProjects = Array.isArray(stored.projects) ? stored.projects : [];
+    const hasStoredCommonBaseInstructions =
+      Object.prototype.hasOwnProperty.call(stored, "common_base_instructions") ||
+      Object.prototype.hasOwnProperty.call(stored, "commonBaseInstructions");
+
     return {
-      projects: Array.isArray(stored.projects) ? stored.projects : [],
+      projects: storedProjects,
       deletedWorkspacePaths: Array.isArray(stored.deleted_workspace_paths)
         ? stored.deleted_workspace_paths.map((value) => resolve(String(value)))
-        : []
+        : [],
+      commonBaseInstructions: hasStoredCommonBaseInstructions
+        ? normalizeInstructionText(stored.common_base_instructions ?? stored.commonBaseInstructions)
+        : deriveCommonBaseInstructions(storedProjects)
     };
   }
 
   return {
     projects: [],
-    deletedWorkspacePaths: []
+    deletedWorkspacePaths: [],
+    commonBaseInstructions: ""
   };
 }
 
@@ -1472,17 +1493,26 @@ function loadProjectsForUser(loginId, projectEntry = loadProjectEntry(loginId)) 
   const persisted = readProjectStorage();
   const storedProjects = projectEntry.projects;
   const discoveredProjects = discoverProjectsForUser(loginId, projectEntry.deletedWorkspacePaths);
+  const commonBaseInstructions = normalizeInstructionText(projectEntry.commonBaseInstructions);
 
   if (Array.isArray(storedProjects) && storedProjects.length > 0) {
-    return mergeProjects(
-      storedProjects.map((project) => normalizeProject(loginId, project)),
-      discoveredProjects
+    return applyCommonBaseInstructionsToProjects(
+      mergeProjects(
+        storedProjects.map((project) => normalizeProject(loginId, project)),
+        discoveredProjects
+      ),
+      commonBaseInstructions
     );
   }
 
   const project = discoveredProjects[0] ?? buildDefaultProject(loginId);
+  const mergedProjects = applyCommonBaseInstructionsToProjects(
+    mergeProjects([project], discoveredProjects),
+    commonBaseInstructions
+  );
   persisted[loginId] = {
-    projects: mergeProjects([project], discoveredProjects),
+    projects: mergedProjects,
+    common_base_instructions: commonBaseInstructions,
     deleted_workspace_paths: projectEntry.deletedWorkspacePaths,
     updated_at: now()
   };
@@ -3428,10 +3458,11 @@ function writeProjectStorage(payload) {
   writeFileSync(PROJECT_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
 }
 
-function persistUserProjects(loginId, projects, deletedWorkspacePaths = []) {
+function persistUserProjects(loginId, projects, deletedWorkspacePaths = [], commonBaseInstructions = "") {
   const storage = readProjectStorage();
   storage[loginId] = {
-    projects,
+    projects: applyCommonBaseInstructionsToProjects(projects, commonBaseInstructions),
+    common_base_instructions: normalizeInstructionText(commonBaseInstructions),
     deleted_workspace_paths: [...new Set(deletedWorkspacePaths.map((value) => resolve(String(value))))],
     updated_at: now()
   };
@@ -3458,6 +3489,7 @@ async function createProject(loginId, payload = {}) {
     key: requestedKey || name,
     name,
     description: payload.description ?? "",
+    base_instructions: state.commonBaseInstructions,
     workspace_path: workspacePath,
     source: "workspace"
   });
@@ -3474,10 +3506,10 @@ async function createProject(loginId, payload = {}) {
     throw new Error("같은 이름 또는 key의 프로젝트가 이미 있습니다.");
   }
 
-  state.projects = [project, ...state.projects];
+  state.projects = applyCommonBaseInstructionsToProjects([project, ...state.projects], state.commonBaseInstructions);
   state.deletedWorkspacePaths = state.deletedWorkspacePaths.filter((value) => value !== project.workspace_path);
   state.updated_at = now();
-  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
 
   return {
@@ -3528,16 +3560,13 @@ async function updateProject(loginId, payload = {}) {
   }
 
   const currentProject = state.projects[projectIndex];
+  const nextCommonBaseInstructions = hasBaseInstructionsUpdate
+    ? normalizeInstructionText(payload.base_instructions ?? payload.baseInstructions)
+    : normalizeInstructionText(state.commonBaseInstructions);
   const updatedProject = {
     ...currentProject,
     ...(hasNameUpdate ? { name } : {}),
-    ...(hasBaseInstructionsUpdate
-      ? {
-          base_instructions: normalizeInstructionText(
-            payload.base_instructions ?? payload.baseInstructions
-          )
-        }
-      : {}),
+    base_instructions: nextCommonBaseInstructions,
     ...(hasDeveloperInstructionsUpdate
       ? {
           developer_instructions: normalizeInstructionText(
@@ -3548,9 +3577,16 @@ async function updateProject(loginId, payload = {}) {
     updated_at: now()
   };
 
-  state.projects = state.projects.map((project) => (project.id === projectId ? updatedProject : project));
+  state.commonBaseInstructions = nextCommonBaseInstructions;
+  state.projects = state.projects.map((project) => (
+    project.id === projectId
+      ? updatedProject
+      : hasBaseInstructionsUpdate
+        ? { ...project, base_instructions: nextCommonBaseInstructions }
+        : project
+  ));
   state.updated_at = now();
-  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   await publishEvent(loginId, "project.updated", { project: updatedProject, project_id: projectId });
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
 
@@ -3952,17 +3988,16 @@ async function transferTodoMessage(userId, payload = {}) {
 }
 
 function getProjectInstructionOverrides(userId, projectId) {
-  if (!projectId) {
-    return {};
-  }
-
-  const project = ensureUserState(userId).projects.find((item) => item.id === projectId);
+  const state = ensureUserState(userId);
+  const project = projectId ? state.projects.find((item) => item.id === projectId) : null;
 
   if (!project) {
-    return {};
+    return normalizeInstructionText(state.commonBaseInstructions)
+      ? { baseInstructions: normalizeInstructionText(state.commonBaseInstructions) }
+      : {};
   }
 
-  const baseInstructions = normalizeInstructionText(project.base_instructions);
+  const baseInstructions = normalizeInstructionText(state.commonBaseInstructions);
   const developerInstructions = normalizeInstructionText(project.developer_instructions);
 
   return {
@@ -10520,7 +10555,7 @@ async function deleteProject(userId, payload = {}) {
     state.deletedWorkspacePaths = [...new Set([...state.deletedWorkspacePaths, project.workspace_path])];
   }
   state.updated_at = now();
-  persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
 
   await publishEvent(normalized, "project.deleted", { project_id: projectId });
   await publishEvent(normalized, "bridge.projects.updated", { projects: state.projects });

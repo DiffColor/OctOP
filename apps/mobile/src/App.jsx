@@ -6196,7 +6196,11 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
     <BottomSheet
       open={open}
       title={isDeveloperInstruction ? "개발지침" : "일반지침"}
-      description={`${project.name} 프로젝트에 저장하고 새 thread 시작 시 app-server에 주입합니다.`}
+      description={
+        isDeveloperInstruction
+          ? `${project.name} 프로젝트에 저장하고 새 thread 시작 시 app-server에 주입합니다.`
+          : "공통 일반지침으로 저장하고 모든 프로젝트의 새 thread 시작 시 app-server에 동일하게 주입합니다."
+      }
       onClose={onClose}
       variant="center"
     >
@@ -6225,7 +6229,7 @@ function ProjectInstructionDialog({ open, busy, project, instructionType, onClos
             placeholder={
               isDeveloperInstruction
                 ? "예: 코드 스타일, 테스트 기준, 금지사항 같은 개발 규칙을 입력해 주세요."
-                : "예: 작업 방식, 응답 톤, 우선순위 같은 기본 지침을 입력해 주세요."
+                : "예: 작업 방식, 응답 톤, 우선순위 같은 공통 기본 지침을 입력해 주세요."
             }
             className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
           />
