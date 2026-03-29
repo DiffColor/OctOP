@@ -35,6 +35,9 @@ const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
 const ACTIVE_ISSUE_POLL_RESUME_GRACE_MS = 8_000;
+const ACTIVE_ISSUE_SYNC_STALE_MS = 15_000;
+const ACTIVE_ISSUE_DETAIL_REQUEST_TIMEOUT_MS = 12_000;
+const API_REQUEST_TIMEOUT_MS = 20_000;
 const DASHBOARD_RESUME_ENABLE_DELAY_MS = 5_000;
 const DASHBOARD_RESUME_COALESCE_MS = 400;
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
@@ -2146,6 +2149,64 @@ function parseResponseBody(response, text) {
   }
 }
 
+function formatRequestTimeoutMs(timeoutMs) {
+  const normalizedTimeoutMs = Number(timeoutMs);
+
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+    return "지정된 시간";
+  }
+
+  return `${Math.max(1, Math.round(normalizedTimeoutMs / 1000))}초`;
+}
+
+function createRequestSignalWithTimeout(existingSignal, timeoutMs) {
+  const normalizedTimeoutMs = Number(timeoutMs);
+
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0 || typeof AbortController === "undefined") {
+    return { signal: existingSignal, cleanup: () => {} };
+  }
+
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    timeoutController.abort(new DOMException(`request_timeout:${normalizedTimeoutMs}`, "AbortError"));
+  }, normalizedTimeoutMs);
+  const cleanupListeners = [];
+
+  const cleanup = () => {
+    window.clearTimeout(timeoutId);
+    for (const dispose of cleanupListeners) {
+      dispose();
+    }
+  };
+
+  if (!existingSignal) {
+    return {
+      signal: timeoutController.signal,
+      cleanup
+    };
+  }
+
+  if (existingSignal.aborted) {
+    timeoutController.abort(existingSignal.reason);
+    return {
+      signal: timeoutController.signal,
+      cleanup
+    };
+  }
+
+  const forwardAbort = () => {
+    timeoutController.abort(existingSignal.reason);
+  };
+
+  existingSignal.addEventListener("abort", forwardAbort, { once: true });
+  cleanupListeners.push(() => existingSignal.removeEventListener("abort", forwardAbort));
+
+  return {
+    signal: timeoutController.signal,
+    cleanup
+  };
+}
+
 function getThreadDeveloperInstructionSaveErrorMessage(error) {
   if (error?.code === "unsupported_bridge_feature" && error?.feature === "thread_developer_instructions") {
     const revision = String(error?.bridgeRevision ?? "").trim();
@@ -2161,16 +2222,23 @@ async function apiRequest(path, options = {}) {
   const method = String(options.method ?? "GET").toUpperCase();
   const requestUrl = `${API_BASE_URL}${path}`;
   const bridgeId = extractBridgeIdFromPath(path);
+  const {
+    timeoutMs = API_REQUEST_TIMEOUT_MS,
+    signal: externalSignal,
+    ...fetchOptions
+  } = options;
+  const { signal, cleanup } = createRequestSignalWithTimeout(externalSignal, timeoutMs);
   let response;
 
   try {
     response = await fetch(requestUrl, {
-      ...options,
-      cache: options.cache ?? "no-store",
+      ...fetchOptions,
+      signal,
+      cache: fetchOptions.cache ?? "no-store",
       headers: {
         Accept: "application/json",
-        ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-        ...(options.headers ?? {})
+        ...(fetchOptions.body && !(fetchOptions.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...(fetchOptions.headers ?? {})
       }
     });
   } catch (error) {
@@ -2191,6 +2259,10 @@ async function apiRequest(path, options = {}) {
       lines.push("설명: 브라우저에서 API 엔드포인트까지 도달하지 못했습니다.");
     }
 
+    if (error?.name === "AbortError") {
+      lines.push(`설명: ${formatRequestTimeoutMs(timeoutMs)} 동안 응답이 없어 요청을 중단했습니다.`);
+    }
+
     lines.push(`원본 오류: ${rawMessage}`);
     if (bridgeId && shouldInferBridgeTransportFailure(path, method)) {
       notifyBridgeRequestFailure({
@@ -2202,6 +2274,8 @@ async function apiRequest(path, options = {}) {
       });
     }
     throw new Error(lines.join("\n"));
+  } finally {
+    cleanup();
   }
 
   const text = await response.text();
@@ -8066,7 +8140,7 @@ export default function App() {
   const archivedIssueSnapshotsRef = useRef({});
   const visibleIssueSnapshotsRef = useRef({});
   const threadLiveProgressAtByIdRef = useRef(new Map());
-  const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "" });
+  const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "", startedAt: 0, requestId: 0 });
   const lastForegroundResumeAtRef = useRef(0);
   const activeIssuePollPausedUntilRef = useRef(0);
   const foregroundResumeEnabledAtRef = useRef(0);
@@ -9005,13 +9079,14 @@ export default function App() {
     return nextIssues;
   }, [applyIssueStateForScope, replaceVisibleIssuesForCurrentScope]);
 
-  const loadIssueDetail = useCallback(async (sessionArg, bridgeId, issueId) => {
+  const loadIssueDetail = useCallback(async (sessionArg, bridgeId, issueId, options = {}) => {
     if (!sessionArg?.loginId || !bridgeId || !issueId) {
       return null;
     }
 
     return apiRequest(
-      `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+      `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(sessionArg.loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+      options
     );
   }, []);
 
@@ -9022,18 +9097,29 @@ export default function App() {
 
     const { force = false } = options;
     const syncState = activeIssueSyncStateRef.current;
+    const startedAt = Number(syncState.startedAt ?? 0);
+    const requestStillFresh =
+      syncState.inFlight &&
+      syncState.issueId === issueId &&
+      Number.isFinite(startedAt) &&
+      Date.now() - startedAt < ACTIVE_ISSUE_SYNC_STALE_MS;
 
-    if (syncState.inFlight && !force && syncState.issueId === issueId) {
+    if (!force && requestStillFresh) {
       return null;
     }
 
+    const requestId = Number(syncState.requestId ?? 0) + 1;
     activeIssueSyncStateRef.current = {
       inFlight: true,
-      issueId
+      issueId,
+      startedAt: Date.now(),
+      requestId
     };
 
     try {
-      const payload = await loadIssueDetail(sessionArg, bridgeId, issueId);
+      const payload = await loadIssueDetail(sessionArg, bridgeId, issueId, {
+        timeoutMs: ACTIVE_ISSUE_DETAIL_REQUEST_TIMEOUT_MS
+      });
       const nextIssue = normalizeIssue(payload?.issue, threadId);
 
       if (nextIssue) {
@@ -9059,10 +9145,14 @@ export default function App() {
 
       return payload;
     } finally {
-      activeIssueSyncStateRef.current = {
-        inFlight: false,
-        issueId: ""
-      };
+      if (activeIssueSyncStateRef.current.requestId === requestId) {
+        activeIssueSyncStateRef.current = {
+          inFlight: false,
+          issueId: "",
+          startedAt: 0,
+          requestId
+        };
+      }
     }
   }, [applyIssueStateForScope, loadIssueDetail]);
 

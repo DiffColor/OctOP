@@ -103,6 +103,7 @@ const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
+const API_REQUEST_TIMEOUT_MS = 20_000;
 const APP_RESUME_COALESCE_MS = 400;
 const BACKGROUND_THREAD_PRELOAD_COUNT = 2;
 const BACKGROUND_THREAD_PRELOAD_DELAY_MS = 220;
@@ -2415,19 +2416,85 @@ async function copyTextToClipboard(text) {
   }
 }
 
+function formatRequestTimeoutMs(timeoutMs) {
+  const normalizedTimeoutMs = Number(timeoutMs);
+
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+    return "지정된 시간";
+  }
+
+  return `${Math.max(1, Math.round(normalizedTimeoutMs / 1000))}초`;
+}
+
+function createRequestSignalWithTimeout(existingSignal, timeoutMs) {
+  const normalizedTimeoutMs = Number(timeoutMs);
+
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0 || typeof AbortController === "undefined") {
+    return { signal: existingSignal, cleanup: () => {} };
+  }
+
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    timeoutController.abort(new DOMException(`request_timeout:${normalizedTimeoutMs}`, "AbortError"));
+  }, normalizedTimeoutMs);
+  const cleanupListeners = [];
+
+  const cleanup = () => {
+    window.clearTimeout(timeoutId);
+    for (const dispose of cleanupListeners) {
+      dispose();
+    }
+  };
+
+  if (!existingSignal) {
+    return {
+      signal: timeoutController.signal,
+      cleanup
+    };
+  }
+
+  if (existingSignal.aborted) {
+    timeoutController.abort(existingSignal.reason);
+    return {
+      signal: timeoutController.signal,
+      cleanup
+    };
+  }
+
+  const forwardAbort = () => {
+    timeoutController.abort(existingSignal.reason);
+  };
+
+  existingSignal.addEventListener("abort", forwardAbort, { once: true });
+  cleanupListeners.push(() => existingSignal.removeEventListener("abort", forwardAbort));
+
+  return {
+    signal: timeoutController.signal,
+    cleanup
+  };
+}
+
 async function apiRequest(path, options = {}) {
   const method = String(options.method ?? "GET").toUpperCase();
   const bridgeId = extractBridgeIdFromPath(path);
+  const {
+    timeoutMs = API_REQUEST_TIMEOUT_MS,
+    signal: externalSignal,
+    ...fetchOptions
+  } = options;
+  const requestUrl = `${API_BASE_URL}${path}`;
+  const { signal, cleanup } = createRequestSignalWithTimeout(externalSignal, timeoutMs);
   let response;
 
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      cache: options.cache ?? "no-store",
+    response = await fetch(requestUrl, {
+      ...fetchOptions,
+      signal,
+      cache: fetchOptions.cache ?? "no-store",
       headers: {
         Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...(options.headers ?? {})
+        ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...(fetchOptions.headers ?? {})
       }
     });
   } catch (error) {
@@ -2440,7 +2507,14 @@ async function apiRequest(path, options = {}) {
         message: String(error?.message ?? error ?? "unknown error")
       });
     }
-    throw new Error(formatApiRequestError(path, options, error));
+    const message = formatApiRequestError(path, { ...fetchOptions, timeoutMs }, error);
+    const detail =
+      error?.name === "AbortError"
+        ? `${message}\n설명: ${formatRequestTimeoutMs(timeoutMs)} 동안 응답이 없어 요청을 중단했습니다.`
+        : message;
+    throw new Error(detail);
+  } finally {
+    cleanup();
   }
 
   const text = await response.text();
