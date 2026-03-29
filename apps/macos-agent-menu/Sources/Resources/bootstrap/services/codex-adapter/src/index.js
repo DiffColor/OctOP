@@ -31,6 +31,11 @@ import {
   applyCommonBaseInstructionsToProjects,
   deriveCommonBaseInstructions
 } from "./projectInstructionState.js";
+import {
+  buildSystemNetworkStateSignature,
+  shouldAttemptSystemNetworkRecovery,
+  shouldResetAppServerForSystemNetworkRecovery
+} from "./systemNetwork.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
 // Runtime update verification marker 2: second non-functional comment for follow-up validation.
@@ -67,6 +72,8 @@ const SYSTEM_NETWORK_ROUTE_CHECK_TIMEOUT_MS = Number(
 const BRIDGE_MODE = process.env.OCTOP_BRIDGE_MODE ?? "app-server";
 const APP_SERVER_MODE = process.env.OCTOP_APP_SERVER_MODE ?? "ws-local";
 const APP_SERVER_WS_URL = process.env.OCTOP_APP_SERVER_WS_URL ?? "ws://127.0.0.1:4600";
+const SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY =
+  shouldResetAppServerForSystemNetworkRecovery(APP_SERVER_WS_URL);
 const APP_SERVER_COMMAND =
   process.env.OCTOP_APP_SERVER_COMMAND ?? `codex app-server --listen ${APP_SERVER_WS_URL}`;
 const APP_SERVER_AUTOSTART = (process.env.OCTOP_APP_SERVER_AUTOSTART ?? "true") !== "false";
@@ -90,6 +97,9 @@ const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
 );
 const APP_SERVER_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_APP_SERVER_RECONNECT_DELAY_MS ?? 1000
+);
+const APP_SERVER_RECONNECT_MAX_DELAY_MS = Number(
+  process.env.OCTOP_APP_SERVER_RECONNECT_MAX_DELAY_MS ?? 5000
 );
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
@@ -139,7 +149,10 @@ const sc = StringCodec();
 const nc = await connectToNats();
 let natsProjectionReplayPromise = null;
 let systemNetworkConnected = null;
+let lastSystemNetworkStateSignature = null;
 let systemNetworkReplayPromise = null;
+let systemNetworkRecoveryPending = false;
+let systemNetworkRecoveryPollTimer = null;
 let systemNetworkEventMonitor = null;
 let systemNetworkEventTimer = null;
 let pendingSystemNetworkEvent = null;
@@ -164,6 +177,7 @@ const issueQueueProcessingStateByThreadId = new Map();
 const issueAttachmentCleanupLocksByIssueId = new Map();
 let runningIssueBackfillPromise = null;
 let runningIssueThreadReadSamplePromise = null;
+let queuedIssueResumePromise = null;
 const codexThreadToThreadId = new Map();
 const codexThreadToPhysicalThreadId = new Map();
 const physicalThreadStateById = new Map();
@@ -521,7 +535,23 @@ async function waitForNatsReplayAfterSystemNetworkRestore(trigger = "unspecified
 
   const deadline = Date.now() + SYSTEM_NETWORK_RECOVERY_TIMEOUT_MS;
   systemNetworkReplayPromise = (async () => {
-    appServer.prepareForSystemNetworkRestore(trigger);
+    if (SHOULD_RESET_APP_SERVER_FOR_SYSTEM_NETWORK_RECOVERY) {
+      appServer.prepareForSystemNetworkRestore(trigger);
+    } else {
+      appendDiagnosticLog(
+        "info",
+        "app_server.websocket.system_network_restore_preserved",
+        "preserving local app-server websocket during system network recovery",
+        {
+          trigger,
+          app_server_url: APP_SERVER_WS_URL
+        }
+      );
+      console.warn("[OctOP bridge] preserving local app-server websocket during system network recovery", {
+        trigger,
+        app_server_url: APP_SERVER_WS_URL
+      });
+    }
 
     while (Date.now() < deadline) {
       if (nc.isClosed()) {
@@ -583,35 +613,98 @@ function scheduleSystemNetworkEvent(event) {
   systemNetworkEventTimer.unref?.();
 }
 
+function startSystemNetworkRecoveryPoll(reason = "unspecified") {
+  if (systemNetworkRecoveryPollTimer || SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS <= 0) {
+    return;
+  }
+
+  console.warn("[OctOP bridge] starting system network recovery poll", {
+    reason,
+    interval_ms: SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS
+  });
+
+  systemNetworkRecoveryPollTimer = setInterval(() => {
+    scheduleSystemNetworkEvent({
+      trigger: `system_network_recovery_poll:${reason}`,
+      source: "system_network_recovery_poll",
+      available: systemNetworkConnected,
+      raw: null
+    });
+  }, SYSTEM_NETWORK_RECOVERY_RETRY_DELAY_MS);
+  systemNetworkRecoveryPollTimer.unref?.();
+}
+
+function stopSystemNetworkRecoveryPoll(reason = "recovered") {
+  if (!systemNetworkRecoveryPollTimer) {
+    return;
+  }
+
+  clearInterval(systemNetworkRecoveryPollTimer);
+  systemNetworkRecoveryPollTimer = null;
+  console.warn("[OctOP bridge] stopped system network recovery poll", {
+    reason
+  });
+}
+
 async function handleSystemNetworkEvent(event = {}) {
   const networkState = getSystemNetworkState(event.trigger ?? "system_network");
   const previousConnected = systemNetworkConnected;
+  const previousStateSignature = lastSystemNetworkStateSignature;
+  const nextStateSignature = buildSystemNetworkStateSignature(networkState);
+  const stateChanged = previousStateSignature !== nextStateSignature;
   systemNetworkConnected = networkState.connected;
+  lastSystemNetworkStateSignature = nextStateSignature;
 
-  appendDiagnosticLog("info", "system_network.event", "system network event received", {
-    trigger: event.trigger ?? "system_network",
-    source: event.source ?? "unspecified",
-    available: event.available ?? null,
-    raw: event.raw ?? null,
-    ...buildSystemNetworkLogContext(networkState)
-  });
-
-  if (!networkState.connected) {
-    console.warn("[OctOP bridge] system network became unavailable", {
+  if (stateChanged) {
+    appendDiagnosticLog("info", "system_network.event", "system network event received", {
       trigger: event.trigger ?? "system_network",
       source: event.source ?? "unspecified",
+      available: event.available ?? null,
+      raw: event.raw ?? null,
       ...buildSystemNetworkLogContext(networkState)
     });
+  }
+
+  if (!networkState.connected) {
+    systemNetworkRecoveryPending = true;
+    startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    if (stateChanged) {
+      console.warn("[OctOP bridge] system network became unavailable", {
+        trigger: event.trigger ?? "system_network",
+        source: event.source ?? "unspecified",
+        ...buildSystemNetworkLogContext(networkState)
+      });
+    }
     return;
   }
 
-  const becameConnected = previousConnected === false;
+  const shouldAttemptRecovery = shouldAttemptSystemNetworkRecovery({
+    previousConnected,
+    previousStateSignature,
+    nextStateSignature,
+    recoveryPending: systemNetworkRecoveryPending,
+    networkConnected: networkState.connected
+  });
 
-  if (!becameConnected) {
+  if (!shouldAttemptRecovery) {
+    if (!systemNetworkRecoveryPending) {
+      stopSystemNetworkRecoveryPoll("network_stable");
+    }
     return;
   }
 
-  await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+  systemNetworkRecoveryPending = true;
+  startSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+
+  const recovered = await waitForNatsReplayAfterSystemNetworkRestore(event.trigger ?? "system_network");
+
+  if (recovered) {
+    systemNetworkRecoveryPending = false;
+    stopSystemNetworkRecoveryPoll(event.trigger ?? "system_network");
+    return;
+  }
+
+  systemNetworkRecoveryPending = true;
 }
 
 function buildSystemNetworkMonitorSpec() {
@@ -673,7 +766,9 @@ async function startSystemNetworkEventMonitor(reason = "startup") {
   }
 
   const spec = buildSystemNetworkMonitorSpec();
-  systemNetworkConnected = getSystemNetworkState(`monitor:${reason}`).connected;
+  const initialNetworkState = getSystemNetworkState(`monitor:${reason}`);
+  systemNetworkConnected = initialNetworkState.connected;
+  lastSystemNetworkStateSignature = buildSystemNetworkStateSignature(initialNetworkState);
   systemNetworkEventMonitor = spawn(spec.command, spec.args, {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
@@ -5478,7 +5573,6 @@ async function startTurnOnPhysicalThread(
         cwd,
         error
       });
-
       settlePhysicalThreadExecutionState(rootThreadId, {
         issue,
         status: "failed",
@@ -5600,6 +5694,30 @@ async function processIssueQueueOnce(userId, threadId, options = {}) {
         nextQueue.unshift(nextIssueId);
         refreshIssueQueuePositions(normalizedThreadId);
       }
+    }
+
+    if (shouldRestoreQueue && isRecoverableAppServerReconnectError(error)) {
+      appendDiagnosticLog(
+        "warn",
+        "thread.issue.start.pipeline.deferred",
+        "issue start deferred while app-server reconnects",
+        {
+          user_id: userId,
+          thread_id: normalizedThreadId,
+          issue_id: nextIssueId,
+          issue_status: issue?.status ?? null,
+          queue_snapshot: ensurePendingQueue(normalizedThreadId),
+          error_message: error.message
+        }
+      );
+      appServer.scheduleReconnect(`issue_start_pipeline:${normalizedThreadId}`);
+      await publishThreadState(userId, normalizedThreadId);
+      return {
+        accepted: true,
+        recovering: true,
+        deferred_issue_id: nextIssueId,
+        error: error.message
+      };
     }
 
     if (options.allowRecovery !== false) {
@@ -5741,6 +5859,46 @@ async function startThreadIssues(userId, payload = {}) {
     blocked_by_thread_id: null,
     issues: listThreadIssuesForClient(threadId)
   };
+}
+
+async function resumeQueuedIssuesAfterAppServerReady(trigger = "unspecified") {
+  if (queuedIssueResumePromise) {
+    return queuedIssueResumePromise;
+  }
+
+  queuedIssueResumePromise = (async () => {
+    const candidateUserIds = new Set([
+      ...users.keys(),
+      ...threadOwners.values()
+    ]);
+
+    for (const candidateUserId of candidateUserIds) {
+      const normalizedUserId = sanitizeUserId(candidateUserId);
+
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      try {
+        await scheduleQueuedIssuesForUser(normalizedUserId);
+      } catch (error) {
+        appendDiagnosticLog(
+          "warn",
+          "thread.issue.queue.resume.failed",
+          "queued issue auto-resume after app-server ready failed",
+          {
+            user_id: normalizedUserId,
+            trigger,
+            error
+          }
+        );
+      }
+    }
+  })().finally(() => {
+    queuedIssueResumePromise = null;
+  });
+
+  return queuedIssueResumePromise;
 }
 
 async function reorderThreadIssues(userId, payload = {}) {
@@ -6019,7 +6177,8 @@ async function interruptThreadIssue(userId, payload = {}) {
     interruptResult = await interruptThreadExecutionBestEffort(thread);
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
-    if (blockingStopErrors.length > 0) {      console.warn("[OctOP bridge] issue interrupt aborted due to stop attempt errors", {
+    if (blockingStopErrors.length > 0) {
+      console.warn("[OctOP bridge] issue interrupt aborted due to stop attempt errors", {
         ...buildLogContext({
           root_thread_id: issue.thread_id,
           physical_thread_id: thread.active_physical_thread_id ?? null,
@@ -8078,6 +8237,7 @@ class AppServerClient {
     });
     queueMicrotask(() => {
       void backfillRequestedRunningIssues(`ready:${reason}`);
+      void resumeQueuedIssuesAfterAppServerReady(`ready:${reason}`);
     });
     return this;
   }
@@ -8919,6 +9079,7 @@ class AppServerClient {
   }
 
   scheduleReconnect(trigger = "unspecified") {
+
     if (this.reconnectTimer || this.readyPromise) {
       return;
     }
@@ -8928,12 +9089,19 @@ class AppServerClient {
     }
 
     const attempt = this.reconnectAttempt + 1;
-    const delayMs = Math.max(100, APP_SERVER_RECONNECT_DELAY_MS * attempt);
+    const uncappedDelayMs = APP_SERVER_RECONNECT_DELAY_MS * attempt;
+    const delayMs = Math.max(
+      100,
+      APP_SERVER_RECONNECT_MAX_DELAY_MS > 0
+        ? Math.min(APP_SERVER_RECONNECT_MAX_DELAY_MS, uncappedDelayMs)
+        : uncappedDelayMs
+    );
     this.reconnectAttempt = attempt;
     console.warn("[OctOP bridge] scheduling app-server reconnect", {
       trigger,
       attempt,
-      delay_ms: delayMs
+      delay_ms: delayMs,
+      uncapped_delay_ms: uncappedDelayMs
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -9032,6 +9200,30 @@ function describeWebSocketErrorEvent(error) {
   }
 
   return details.join(", ") || "unknown";
+}
+
+function isRecoverableAppServerReconnectError(error) {
+  const message = String(error?.message ?? error ?? "").trim().toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  if (message.includes("codex app-server 인증")) {
+    return false;
+  }
+
+  return (
+    message.includes("app-server 연결에 실패") ||
+    message.includes("websocket open failed") ||
+    message.includes("app-server socket is not connected") ||
+    message.includes("app-server socket closed") ||
+    message.includes("app-server websocket forced reconnect") ||
+    message.includes("app-server request timeout") ||
+    message.includes("app-server not connected") ||
+    message.includes("econnrefused") ||
+    message.includes("socket hang up")
+  );
 }
 
 function extractAppServerErrorMessage(params = {}) {
@@ -9921,6 +10113,16 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     remoteStatus === "running" && !hasRecoverableRunningSnapshot
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
       : 0;
+  const degradedAgeMs = Math.max(
+    0,
+    Date.now() - Date.parse(
+      threadStateById.get(threadId)?.updated_at ??
+      thread.updated_at ??
+      meta?.lastActivityAt ??
+      0
+    )
+  );
+
   if (physicalThreadId && tokenUsageChanged) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
       ...tokenUsageState

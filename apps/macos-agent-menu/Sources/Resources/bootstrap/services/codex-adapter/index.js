@@ -24,6 +24,10 @@ import {
   sanitizeBridgeId,
   sanitizeUserId
 } from "./src/domain.js";
+import {
+  applyCommonBaseInstructionsToProjects,
+  deriveCommonBaseInstructions
+} from "./projectInstructionState.js";
 
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
@@ -61,6 +65,7 @@ const APP_SERVER_RECONNECT_DELAY_MS = Number(
 const THREAD_LIST_LIMIT = Number(process.env.OCTOP_APP_SERVER_THREAD_LIST_LIMIT ?? 50);
 const CODEX_APPROVAL_POLICY = process.env.OCTOP_CODEX_APPROVAL_POLICY ?? "on-request";
 const CODEX_SANDBOX = process.env.OCTOP_CODEX_SANDBOX ?? "danger-full-access";
+const CODEX_SANDBOX_DANGEROUSLY_BYPASS = "dangerously-bypass-approvals-and-sandbox";
 const CODEX_MODEL = normalizeCodexModel(process.env.OCTOP_CODEX_MODEL);
 const CODEX_REASONING_EFFORT = normalizeReasoningEffort(process.env.OCTOP_CODEX_REASONING_EFFORT);
 const THREAD_CONTEXT_ROLLOVER_ENABLED =
@@ -422,6 +427,20 @@ function normalizeReasoningEffort(value) {
   return null;
 }
 
+function resolveCodexExecutionPolicy() {
+  if (String(CODEX_SANDBOX).trim() === CODEX_SANDBOX_DANGEROUSLY_BYPASS) {
+    return {
+      approvalPolicy: undefined,
+      sandbox: undefined
+    };
+  }
+
+  return {
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandbox: CODEX_SANDBOX
+  };
+}
+
 function createIssueTitle(payload = {}) {
   const title = String(payload.title ?? "").trim();
 
@@ -485,8 +504,12 @@ function ensureUserState(userId) {
   if (!users.has(normalized)) {
     const projectEntry = loadProjectEntry(normalized);
     const restoredState = loadThreadsForUser(normalized);
+    const projects = loadProjectsForUser(normalized, projectEntry);
     users.set(normalized, {
-      projects: loadProjectsForUser(normalized, projectEntry),
+      projects,
+      commonBaseInstructions: normalizeInstructionText(
+        projectEntry.commonBaseInstructions ?? deriveCommonBaseInstructions(projects)
+      ),
       deletedWorkspacePaths: projectEntry.deletedWorkspacePaths,
       threadIds: restoredState.threadIds,
       todoChatIds: restoredState.todoChatIds,
@@ -503,11 +526,14 @@ function ensureUserState(userId) {
   }
 
   const discoveredProjects = discoverProjectsForUser(normalized, state.deletedWorkspacePaths);
-  const mergedProjects = mergeProjects(state.projects, discoveredProjects);
+  const mergedProjects = applyCommonBaseInstructionsToProjects(
+    mergeProjects(state.projects, discoveredProjects),
+    state.commonBaseInstructions
+  );
 
   if (hasProjectSetChanged(state.projects, mergedProjects)) {
     state.projects = mergedProjects;
-    persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
+    persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   }
 
   return state;
@@ -952,22 +978,32 @@ function loadProjectEntry(loginId) {
   if (Array.isArray(stored)) {
     return {
       projects: stored,
-      deletedWorkspacePaths: []
+      deletedWorkspacePaths: [],
+      commonBaseInstructions: deriveCommonBaseInstructions(stored)
     };
   }
 
   if (stored && typeof stored === "object") {
+    const storedProjects = Array.isArray(stored.projects) ? stored.projects : [];
+    const hasStoredCommonBaseInstructions =
+      Object.prototype.hasOwnProperty.call(stored, "common_base_instructions") ||
+      Object.prototype.hasOwnProperty.call(stored, "commonBaseInstructions");
+
     return {
-      projects: Array.isArray(stored.projects) ? stored.projects : [],
+      projects: storedProjects,
       deletedWorkspacePaths: Array.isArray(stored.deleted_workspace_paths)
         ? stored.deleted_workspace_paths.map((value) => resolve(String(value)))
-        : []
+        : [],
+      commonBaseInstructions: hasStoredCommonBaseInstructions
+        ? normalizeInstructionText(stored.common_base_instructions ?? stored.commonBaseInstructions)
+        : deriveCommonBaseInstructions(storedProjects)
     };
   }
 
   return {
     projects: [],
-    deletedWorkspacePaths: []
+    deletedWorkspacePaths: [],
+    commonBaseInstructions: ""
   };
 }
 
@@ -975,17 +1011,26 @@ function loadProjectsForUser(loginId, projectEntry = loadProjectEntry(loginId)) 
   const persisted = readProjectStorage();
   const storedProjects = projectEntry.projects;
   const discoveredProjects = discoverProjectsForUser(loginId, projectEntry.deletedWorkspacePaths);
+  const commonBaseInstructions = normalizeInstructionText(projectEntry.commonBaseInstructions);
 
   if (Array.isArray(storedProjects) && storedProjects.length > 0) {
-    return mergeProjects(
-      storedProjects.map((project) => normalizeProject(loginId, project)),
-      discoveredProjects
+    return applyCommonBaseInstructionsToProjects(
+      mergeProjects(
+        storedProjects.map((project) => normalizeProject(loginId, project)),
+        discoveredProjects
+      ),
+      commonBaseInstructions
     );
   }
 
   const project = discoveredProjects[0] ?? buildDefaultProject(loginId);
+  const mergedProjects = applyCommonBaseInstructionsToProjects(
+    mergeProjects([project], discoveredProjects),
+    commonBaseInstructions
+  );
   persisted[loginId] = {
-    projects: mergeProjects([project], discoveredProjects),
+    projects: mergedProjects,
+    common_base_instructions: commonBaseInstructions,
     deleted_workspace_paths: projectEntry.deletedWorkspacePaths,
     updated_at: now()
   };
@@ -2904,10 +2949,11 @@ function writeProjectStorage(payload) {
   writeFileSync(PROJECT_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
 }
 
-function persistUserProjects(loginId, projects, deletedWorkspacePaths = []) {
+function persistUserProjects(loginId, projects, deletedWorkspacePaths = [], commonBaseInstructions = "") {
   const storage = readProjectStorage();
   storage[loginId] = {
-    projects,
+    projects: applyCommonBaseInstructionsToProjects(projects, commonBaseInstructions),
+    common_base_instructions: normalizeInstructionText(commonBaseInstructions),
     deleted_workspace_paths: [...new Set(deletedWorkspacePaths.map((value) => resolve(String(value))))],
     updated_at: now()
   };
@@ -2934,6 +2980,7 @@ async function createProject(loginId, payload = {}) {
     key: requestedKey || name,
     name,
     description: payload.description ?? "",
+    base_instructions: state.commonBaseInstructions,
     workspace_path: workspacePath,
     source: "workspace"
   });
@@ -2950,10 +2997,10 @@ async function createProject(loginId, payload = {}) {
     throw new Error("같은 이름 또는 key의 프로젝트가 이미 있습니다.");
   }
 
-  state.projects = [project, ...state.projects];
+  state.projects = applyCommonBaseInstructionsToProjects([project, ...state.projects], state.commonBaseInstructions);
   state.deletedWorkspacePaths = state.deletedWorkspacePaths.filter((value) => value !== project.workspace_path);
   state.updated_at = now();
-  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
 
   return {
@@ -3004,16 +3051,13 @@ async function updateProject(loginId, payload = {}) {
   }
 
   const currentProject = state.projects[projectIndex];
+  const nextCommonBaseInstructions = hasBaseInstructionsUpdate
+    ? normalizeInstructionText(payload.base_instructions ?? payload.baseInstructions)
+    : normalizeInstructionText(state.commonBaseInstructions);
   const updatedProject = {
     ...currentProject,
     ...(hasNameUpdate ? { name } : {}),
-    ...(hasBaseInstructionsUpdate
-      ? {
-          base_instructions: normalizeInstructionText(
-            payload.base_instructions ?? payload.baseInstructions
-          )
-        }
-      : {}),
+    base_instructions: nextCommonBaseInstructions,
     ...(hasDeveloperInstructionsUpdate
       ? {
           developer_instructions: normalizeInstructionText(
@@ -3024,9 +3068,16 @@ async function updateProject(loginId, payload = {}) {
     updated_at: now()
   };
 
-  state.projects = state.projects.map((project) => (project.id === projectId ? updatedProject : project));
+  state.commonBaseInstructions = nextCommonBaseInstructions;
+  state.projects = state.projects.map((project) => (
+    project.id === projectId
+      ? updatedProject
+      : hasBaseInstructionsUpdate
+        ? { ...project, base_instructions: nextCommonBaseInstructions }
+        : project
+  ));
   state.updated_at = now();
-  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(loginId, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
   await publishEvent(loginId, "project.updated", { project: updatedProject, project_id: projectId });
   await publishEvent(loginId, "bridge.projects.updated", { projects: state.projects });
 
@@ -3428,17 +3479,16 @@ async function transferTodoMessage(userId, payload = {}) {
 }
 
 function getProjectInstructionOverrides(userId, projectId) {
-  if (!projectId) {
-    return {};
-  }
-
-  const project = ensureUserState(userId).projects.find((item) => item.id === projectId);
+  const state = ensureUserState(userId);
+  const project = projectId ? state.projects.find((item) => item.id === projectId) : null;
 
   if (!project) {
-    return {};
+    return normalizeInstructionText(state.commonBaseInstructions)
+      ? { baseInstructions: normalizeInstructionText(state.commonBaseInstructions) }
+      : {};
   }
 
-  const baseInstructions = normalizeInstructionText(project.base_instructions);
+  const baseInstructions = normalizeInstructionText(state.commonBaseInstructions);
   const developerInstructions = normalizeInstructionText(project.developer_instructions);
 
   return {
@@ -4087,11 +4137,12 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId) {
   const rootThread = threadStateById.get(physicalThread.root_thread_id);
   const cwd = resolveProjectWorkspace(userId, physicalThread.project_id);
   const instructionOverrides = getProjectInstructionOverrides(userId, physicalThread.project_id);
+  const executionPolicy = resolveCodexExecutionPolicy();
   await appServer.ensureReady("ensureCodexThreadForPhysicalThread");
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
@@ -4279,10 +4330,11 @@ async function startTurnOnPhysicalThread(
     try {
       const activePhysicalThread = physicalThreadStateById.get(physicalThreadId);
       const activeCodexThreadId = activePhysicalThread?.codex_thread_id ?? codexThreadId;
+      const executionPolicy = resolveCodexExecutionPolicy();
       const turnResponse = await appServer.request("turn/start", {
         threadId: activeCodexThreadId,
         cwd,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
+        ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
         input: [
           {
             type: "text",
@@ -5536,7 +5588,16 @@ function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physi
 
   const eventTurnId = extractNotificationTurnId(params);
   const trackedTurnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
-  return Boolean(eventTurnId && trackedTurnId && eventTurnId === trackedTurnId);
+
+  if (!trackedTurnId) {
+    return true;
+  }
+
+  if (!eventTurnId) {
+    return true;
+  }
+
+  return eventTurnId === trackedTurnId;
 }
 
 function normalizeThreadRecord(thread, fallback = {}) {
@@ -9459,12 +9520,13 @@ async function startThreadTurn(userId, threadId) {
   }
 
   const cwd = resolveProjectWorkspace(userId, current.project_id);
+  const executionPolicy = resolveCodexExecutionPolicy();
 
   try {
     const turnResponse = await appServer.request("turn/start", {
       threadId,
       cwd,
-      approvalPolicy: CODEX_APPROVAL_POLICY,
+      ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
       input: [
         {
           type: "text",
@@ -9539,12 +9601,13 @@ async function createQueuedIssue(userId, payload = {}) {
   const issueTitle = createIssueTitle(payload);
   const prompt = String(payload.prompt ?? "").trim();
   const instructionOverrides = getProjectInstructionOverrides(userId, projectId);
+  const executionPolicy = resolveCodexExecutionPolicy();
   await appServer.ensureReady("createQueuedIssue");
 
   const threadResponse = await appServer.request("thread/start", {
     cwd,
-    approvalPolicy: CODEX_APPROVAL_POLICY,
-    sandbox: CODEX_SANDBOX,
+    ...(executionPolicy.approvalPolicy ? { approvalPolicy: executionPolicy.approvalPolicy } : {}),
+    ...(executionPolicy.sandbox ? { sandbox: executionPolicy.sandbox } : {}),
     model: CODEX_MODEL,
     ...(CODEX_REASONING_EFFORT ? { reasoningEffort: CODEX_REASONING_EFFORT } : {}),
     personality: "pragmatic",
@@ -9736,7 +9799,7 @@ async function deleteProject(userId, payload = {}) {
     state.deletedWorkspacePaths = [...new Set([...state.deletedWorkspacePaths, project.workspace_path])];
   }
   state.updated_at = now();
-  persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths);
+  persistUserProjects(normalized, state.projects, state.deletedWorkspacePaths, state.commonBaseInstructions);
 
   await publishEvent(normalized, "project.deleted", { project_id: projectId });
   await publishEvent(normalized, "bridge.projects.updated", { projects: state.projects });
