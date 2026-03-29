@@ -103,6 +103,10 @@ const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const THREAD_RELOAD_MIN_INTERVAL_MS = 1_500;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
+const ACTIVE_ISSUE_POLL_FAILURE_BASE_BACKOFF_MS = 10_000;
+const ACTIVE_ISSUE_POLL_FAILURE_MAX_BACKOFF_MS = 60_000;
+const ACTIVE_ISSUE_POLL_RECOVERY_FAILURE_THRESHOLD = 2;
+const ACTIVE_ISSUE_POLL_RECOVERY_COOLDOWN_MS = 15_000;
 const API_REQUEST_TIMEOUT_MS = 20_000;
 const APP_RESUME_COALESCE_MS = 400;
 const BACKGROUND_THREAD_PRELOAD_COUNT = 2;
@@ -10895,6 +10899,14 @@ export default function App() {
   const threadHistoryLoadRequestIdByIdRef = useRef(new Map());
   const projectThreadListPromiseByKeyRef = useRef(new Map());
   const threadLiveProgressAtByIdRef = useRef(new Map());
+  const scheduleThreadMessagesReloadRef = useRef(null);
+  const activeIssuePollFailureStateRef = useRef({
+    threadId: "",
+    issueId: "",
+    consecutiveFailures: 0,
+    nextRetryAt: 0,
+    lastRecoveryAttemptAt: 0
+  });
   const lastForegroundResumeAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
@@ -11512,6 +11524,32 @@ export default function App() {
     () => findActiveIssueForThread(selectedThreadIssues, selectedThread?.active_physical_thread_id ?? null),
     [selectedThread?.active_physical_thread_id, selectedThreadIssues]
   );
+  const resetActiveIssuePollFailureState = useCallback((threadId = "", issueId = "") => {
+    activeIssuePollFailureStateRef.current = {
+      threadId: String(threadId ?? "").trim(),
+      issueId: String(issueId ?? "").trim(),
+      consecutiveFailures: 0,
+      nextRetryAt: 0,
+      lastRecoveryAttemptAt: 0
+    };
+  }, []);
+  const getActiveIssuePollFailureState = useCallback((threadId = "", issueId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+    const currentState = activeIssuePollFailureStateRef.current;
+
+    if (currentState.threadId === normalizedThreadId && currentState.issueId === normalizedIssueId) {
+      return currentState;
+    }
+
+    return {
+      threadId: normalizedThreadId,
+      issueId: normalizedIssueId,
+      consecutiveFailures: 0,
+      nextRetryAt: 0,
+      lastRecoveryAttemptAt: 0
+    };
+  }, []);
   const selectedProjectIdRef = useRef(selectedProjectId);
   const selectedTodoChatIdRef = useRef(selectedTodoChatId);
 
@@ -11838,6 +11876,51 @@ export default function App() {
         let normalizedThread = normalizeThread(cachedThread);
         let loadedIssueIds = cachedLoadedIssueIds;
 
+        const registerActiveIssuePollSuccess = (issueId = "") => {
+          if (!issueId) {
+            return;
+          }
+
+          resetActiveIssuePollFailureState(threadId, issueId);
+        };
+        const registerActiveIssuePollFailure = (issueId = "", requestError = null) => {
+          if (!issueId) {
+            return;
+          }
+
+          const currentFailureState = getActiveIssuePollFailureState(threadId, issueId);
+          const now = Date.now();
+          const consecutiveFailures = currentFailureState.consecutiveFailures + 1;
+          const backoffMs = Math.min(
+            ACTIVE_ISSUE_POLL_FAILURE_BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
+            ACTIVE_ISSUE_POLL_FAILURE_MAX_BACKOFF_MS
+          );
+          const shouldAttemptRecovery =
+            !BRIDGE_TRANSPORT_ERROR_STATUS_CODES.has(Number(requestError?.status ?? 0)) &&
+            consecutiveFailures >= ACTIVE_ISSUE_POLL_RECOVERY_FAILURE_THRESHOLD &&
+            now - Number(currentFailureState.lastRecoveryAttemptAt ?? 0) >= ACTIVE_ISSUE_POLL_RECOVERY_COOLDOWN_MS;
+
+          activeIssuePollFailureStateRef.current = {
+            threadId,
+            issueId,
+            consecutiveFailures,
+            nextRetryAt: now + backoffMs,
+            lastRecoveryAttemptAt: shouldAttemptRecovery ? now : Number(currentFailureState.lastRecoveryAttemptAt ?? 0)
+          };
+
+          if (shouldAttemptRecovery) {
+            window.setTimeout(() => {
+              scheduleThreadMessagesReloadRef.current?.(threadId, {
+                force: true,
+                mode: "full",
+                suppressLoadingIndicator: true,
+                bypassThrottle: true,
+                reason: "active_issue_poll_recovery"
+              });
+            }, 0);
+          }
+        };
+
         if (shouldLoadActiveIssueOnly) {
           const detail = await apiRequest(
             `/api/issues/${activeIssue.id}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
@@ -11853,6 +11936,7 @@ export default function App() {
           );
           normalizedThread = normalizeThread(detail?.thread) ?? normalizedThread;
           loadedIssueIds = normalizeIssueIdList([...cachedLoadedIssueIds, nextIssue.id], issues);
+          registerActiveIssuePollSuccess(nextIssue.id);
         } else {
           const issueList = await apiRequest(
             `/api/threads/${threadId}/issues?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
@@ -11887,6 +11971,7 @@ export default function App() {
             );
             normalizedThread = normalizeThread(detail?.thread) ?? normalizedThread;
             loadedIssueIds = normalizeIssueIdList([...loadedIssueIds, resolvedActiveIssue.id], issues);
+            registerActiveIssuePollSuccess(resolvedActiveIssue.id);
           }
         }
 
@@ -11945,6 +12030,20 @@ export default function App() {
           }
         }
       } catch (error) {
+        if (mode === "active") {
+          const cachedEntry = threadDetailsRef.current?.[threadId] ?? null;
+          const cachedThread = cachedEntry?.thread ?? threads.find((thread) => thread.id === threadId) ?? null;
+          const cachedIssues = (cachedEntry?.issues ?? [])
+            .map((issue) => normalizeIssue(issue, threadId))
+            .filter(Boolean)
+            .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+          const activeIssue = findActiveIssueForThread(cachedIssues, cachedThread?.active_physical_thread_id ?? null);
+
+          if (activeIssue?.id) {
+            registerActiveIssuePollFailure(activeIssue.id, error);
+          }
+        }
+
         if (threadLoadRequestIdByIdRef.current.get(threadId) !== nextRequestId) {
           releaseThreadLoadingState();
           return;
@@ -11967,7 +12066,7 @@ export default function App() {
         });
       }
     },
-    [selectedBridgeId, session?.loginId, threads]
+    [getActiveIssuePollFailureState, resetActiveIssuePollFailureState, selectedBridgeId, session?.loginId, threads]
   );
 
   const loadOlderThreadHistory = useCallback(
@@ -12235,7 +12334,6 @@ export default function App() {
       lastReason: reason
     });
   }, [loadThreadMessages]);
-  const scheduleThreadMessagesReloadRef = useRef(scheduleThreadMessagesReload);
   useEffect(() => {
     scheduleThreadMessagesReloadRef.current = scheduleThreadMessagesReload;
   }, [scheduleThreadMessagesReload]);
@@ -13012,6 +13110,7 @@ export default function App() {
         if (eventThreadId) {
           if (eventThreadId === activeThreadId && isLiveThreadProgressEvent(payload.type)) {
             threadLiveProgressAtByIdRef.current.set(eventThreadId, Date.now());
+            resetActiveIssuePollFailureState(eventThreadId, eventIssueId);
             clearPendingStartConfirmReload(eventThreadId);
           }
 
@@ -13595,6 +13694,10 @@ export default function App() {
   }, [projectComposerOpen, selectedBridgeId, session]);
 
   useEffect(() => {
+    resetActiveIssuePollFailureState(selectedThreadId, selectedActiveIssue?.id ?? "");
+  }, [resetActiveIssuePollFailureState, selectedActiveIssue?.id, selectedThreadId]);
+
+  useEffect(() => {
     if (
       !session?.loginId ||
       !selectedBridgeId ||
@@ -13652,6 +13755,12 @@ export default function App() {
         return;
       }
 
+      const failureState = getActiveIssuePollFailureState(selectedThreadId, selectedActiveIssue.id);
+
+      if (failureState.nextRetryAt > Date.now()) {
+        return;
+      }
+
       scheduleThreadMessagesReload(selectedThreadId, {
         force: true,
         mode: "active",
@@ -13666,6 +13775,7 @@ export default function App() {
       window.clearInterval(intervalId);
     };
   }, [
+    getActiveIssuePollFailureState,
     scheduleThreadMessagesReload,
     selectedActiveIssue,
     selectedBridgeId,
