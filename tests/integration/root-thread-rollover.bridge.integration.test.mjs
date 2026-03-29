@@ -190,6 +190,15 @@ class FakeAppServer {
     this.noResponseOnceMethods = new Set(
       Array.isArray(options.noResponseOnceMethods) ? options.noResponseOnceMethods : []
     );
+    this.noResponseRemainingCountByMethod = new Map(
+      Object.entries(
+        options.noResponseCountByMethod && typeof options.noResponseCountByMethod === "object"
+          ? options.noResponseCountByMethod
+          : {}
+      )
+        .map(([method, count]) => [String(method), Number(count)])
+        .filter(([, count]) => Number.isFinite(count) && count > 0)
+    );
     this.zombieAfterMethods = new Set(
       Array.isArray(options.zombieAfterMethods) ? options.zombieAfterMethods : []
     );
@@ -470,6 +479,7 @@ class FakeAppServer {
       ? this.options.noResponseMethods
       : [];
     const noResponseOnceMethods = this.noResponseOnceMethods;
+    const noResponseRemainingCountByMethod = this.noResponseRemainingCountByMethod;
     const zombieAfterMethods = this.zombieAfterMethods;
 
     const errorMethods = this.options.errorMethods && typeof this.options.errorMethods === "object"
@@ -480,6 +490,17 @@ class FakeAppServer {
       : null;
 
     if (noResponseMethods.includes(message.method)) {
+      return;
+    }
+
+    const remainingNoResponseCount = noResponseRemainingCountByMethod.get(message.method) ?? 0;
+
+    if (remainingNoResponseCount > 0) {
+      if (remainingNoResponseCount === 1) {
+        noResponseRemainingCountByMethod.delete(message.method);
+      } else {
+        noResponseRemainingCountByMethod.set(message.method, remainingNoResponseCount - 1);
+      }
       return;
     }
 
@@ -1052,6 +1073,74 @@ test("브리지 app-server 느린 pong에도 timeout으로 연결을 강제 종�
   assert.equal(fakeAppServer.connectionCount, 1);
   assert.equal(fakeAppServer.pingCount >= 1, true);
   assert.equal(fakeAppServer.getRequests("thread/list").length >= 1, true);
+});
+
+test("브리지 app-server 단발성 RPC timeout은 pong만 살아 있어도 즉시 재연결하지 않는다", { timeout: 60000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-request-timeout-defer-int-"));
+  const fakeAppServer = new FakeAppServer({
+    noResponseCountByMethod: {
+      "thread/list": 1
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-request-timeout-defer-token",
+    userId: "request-timeout-defer-user",
+    bridgeId: `request-timeout-defer-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "150",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "200",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES: "2"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Request timeout defer reconnect"
+    })
+  });
+  const rootThreadId = createThreadPayload.thread.id;
+
+  await sleep(250);
+
+  await assert.rejects(() =>
+    bridge.request(`/api/threads/${rootThreadId}/normalize`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "timeout_probe"
+      })
+    }),
+  /app-server request timeout: thread\/list/);
+
+  const normalizePayload = await bridge.request(`/api/threads/${rootThreadId}/normalize`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason: "retry_after_timeout"
+    })
+  });
+
+  const health = await bridge.request("/health");
+  assert.equal(normalizePayload.accepted, true);
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(fakeAppServer.connectionCount, 1);
+  assert.equal(fakeAppServer.getRequests("initialize").length, 1);
+  assert.equal(fakeAppServer.getRequests("thread/list").length >= 2, true);
 });
 
 test("브리지 app-server running issue 동안에도 heartbeat ping을 유지한다", { timeout: 60000 }, async (t) => {

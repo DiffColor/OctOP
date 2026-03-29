@@ -83,11 +83,14 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const APP_SERVER_REQUEST_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 20000
 );
+const APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES = Number(
+  process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES ?? 2
+);
 const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
-  process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 90000
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 20000
 );
 const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
-  process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 45000
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 10000
 );
 const APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES = Number(
   process.env.OCTOP_APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES ?? 2
@@ -8229,8 +8232,10 @@ class AppServerClient {
     this.socketConnectAttempt = 0;
     this.heartbeatTimer = null;
     this.lastSocketActivityAt = 0;
+    this.lastSocketMessageAt = 0;
     this.heartbeatProbeSentAt = 0;
     this.heartbeatTimeoutCount = 0;
+    this.requestTimeoutWithoutMessageCount = 0;
     this.lastSilentStateCheckAt = 0;
     this.lastSilentStateCheckError = null;
     this.silentStateCheckPromise = null;
@@ -8514,17 +8519,15 @@ class AppServerClient {
   }
 
   handleMessage(payload) {
-    this.markSocketActivity();
+    this.markSocketActivity({ message: true });
     const data = JSON.parse(extractWebSocketMessageText(payload));
 
     if (data.id) {
-      const pending = this.requests.get(String(data.id));
+      const pending = this.takePendingRequest(String(data.id));
 
       if (!pending) {
         return;
       }
-
-      this.requests.delete(String(data.id));
 
       if (data.error) {
         pending.reject(new Error(data.error.message ?? "app-server request failed"));
@@ -8855,14 +8858,28 @@ class AppServerClient {
     };
 
     return new Promise((resolve, reject) => {
-      this.requests.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify(payload));
-      setTimeout(() => {
-        if (!this.requests.has(id)) {
+      const requestedAt = Date.now();
+      const timeout = setTimeout(() => {
+        const pending = this.takePendingRequest(id);
+
+        if (!pending) {
           return;
         }
 
-        this.requests.delete(id);
+        this.lastError = `app-server request timeout: ${method}`;
+        const hadSocketActivitySinceRequest =
+          this.lastSocketActivityAt > 0 && this.lastSocketActivityAt >= requestedAt;
+        const hadMessageActivitySinceRequest =
+          this.lastSocketMessageAt > 0 && this.lastSocketMessageAt >= requestedAt;
+        const nextRequestTimeoutWithoutMessageCount =
+          hadMessageActivitySinceRequest
+            ? 0
+            : hadSocketActivitySinceRequest
+              ? Number(this.requestTimeoutWithoutMessageCount ?? 0) + 1
+              : Number(this.requestTimeoutWithoutMessageCount ?? 0);
+
+        this.requestTimeoutWithoutMessageCount = nextRequestTimeoutWithoutMessageCount;
+
         appendDiagnosticLog("error", "app_server.request.timeout", "app-server request timeout", {
           method,
           params,
@@ -8870,20 +8887,73 @@ class AppServerClient {
           socket_state: describeWebSocketReadyState(this.socket?.readyState),
           connected: this.connected,
           initialized: this.initialized,
+          had_socket_activity_since_request: hadSocketActivitySinceRequest,
+          had_message_activity_since_request: hadMessageActivitySinceRequest,
+          request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
           last_socket_activity_at: this.lastSocketActivityAt
             ? new Date(this.lastSocketActivityAt).toISOString()
+            : null,
+          last_socket_message_at: this.lastSocketMessageAt
+            ? new Date(this.lastSocketMessageAt).toISOString()
             : null
         });
         requestRunningIssueBackfill(`request_timeout:${method}`);
-        this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
-          method,
-          request_id: id,
-          last_socket_activity_at: this.lastSocketActivityAt
-            ? new Date(this.lastSocketActivityAt).toISOString()
-            : null
-        });
+
+        if (!hadSocketActivitySinceRequest) {
+          this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+            method,
+            request_id: id,
+            reason: "no_socket_activity_since_request",
+            last_socket_activity_at: this.lastSocketActivityAt
+              ? new Date(this.lastSocketActivityAt).toISOString()
+              : null
+          });
+        } else if (!hadMessageActivitySinceRequest) {
+          void this.checkLastKnownState(`request_timeout:${method}`, {
+            method,
+            request_id: id,
+            had_socket_activity_since_request: hadSocketActivitySinceRequest,
+            had_message_activity_since_request: hadMessageActivitySinceRequest,
+            request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount
+          });
+
+          if (
+            APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES > 0 &&
+            nextRequestTimeoutWithoutMessageCount >= APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
+          ) {
+            this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+              method,
+              request_id: id,
+              reason: "repeated_timeout_without_message_activity",
+              request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+              last_socket_activity_at: this.lastSocketActivityAt
+                ? new Date(this.lastSocketActivityAt).toISOString()
+                : null,
+              last_socket_message_at: this.lastSocketMessageAt
+                ? new Date(this.lastSocketMessageAt).toISOString()
+                : null
+            });
+          } else {
+            console.warn("[OctOP bridge] app-server request timeout observed without message activity; reconnect deferred", {
+              method,
+              request_id: id,
+              request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+              reconnect_after_misses: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
+            });
+          }
+        } else {
+          this.requestTimeoutWithoutMessageCount = 0;
+        }
+
         reject(new Error(`app-server request timeout: ${method}`));
       }, APP_SERVER_REQUEST_TIMEOUT_MS);
+      timeout.unref?.();
+      this.requests.set(id, {
+        resolve,
+        reject,
+        timeout
+      });
+      this.socket.send(JSON.stringify(payload));
     });
   }
 
@@ -8893,11 +8963,31 @@ class AppServerClient {
     return this.requestInternal(method, params);
   }
 
-  markSocketActivity() {
+  markSocketActivity({ message = false } = {}) {
     this.lastSocketActivityAt = Date.now();
+    if (message) {
+      this.lastSocketMessageAt = this.lastSocketActivityAt;
+      this.requestTimeoutWithoutMessageCount = 0;
+    }
     this.heartbeatProbeSentAt = 0;
     this.heartbeatTimeoutCount = 0;
     this.lastSilentStateCheckError = null;
+  }
+
+  takePendingRequest(id) {
+    const normalizedId = String(id);
+    const pending = this.requests.get(normalizedId);
+
+    if (!pending) {
+      return null;
+    }
+
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
+
+    this.requests.delete(normalizedId);
+    return pending;
   }
 
   startHeartbeat(ws, context = {}) {
@@ -9047,6 +9137,7 @@ class AppServerClient {
   resetSocketState(ws = null, reason = "app-server socket closed") {
     this.connected = false;
     this.initialized = false;
+    this.requestTimeoutWithoutMessageCount = 0;
 
     if (!ws || this.socket === ws) {
       this.socket = null;
@@ -9054,9 +9145,14 @@ class AppServerClient {
 
     this.stopHeartbeat(ws);
 
-    for (const [id, pending] of this.requests) {
+    for (const [id] of this.requests) {
+      const pending = this.takePendingRequest(id);
+
+      if (!pending) {
+        continue;
+      }
+
       pending.reject(new Error(reason));
-      this.requests.delete(id);
     }
   }
 
@@ -9707,6 +9803,9 @@ function collectBridgeStatus(userId) {
       last_socket_activity_at: appServer.lastSocketActivityAt
         ? new Date(appServer.lastSocketActivityAt).toISOString()
         : null,
+      last_socket_message_at: appServer.lastSocketMessageAt
+        ? new Date(appServer.lastSocketMessageAt).toISOString()
+        : null,
       heartbeat_probe_sent_at: appServer.heartbeatProbeSentAt
         ? new Date(appServer.heartbeatProbeSentAt).toISOString()
         : null,
@@ -9717,6 +9816,8 @@ function collectBridgeStatus(userId) {
       idle_only_heartbeat: false,
       heartbeat_interval_ms: APP_SERVER_HEARTBEAT_INTERVAL_MS,
       request_timeout_ms: APP_SERVER_REQUEST_TIMEOUT_MS,
+      request_timeout_force_reconnect_misses: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES,
+      request_timeout_without_message_count: appServer.requestTimeoutWithoutMessageCount,
       heartbeat_timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
       heartbeat_timeout_count: appServer.heartbeatTimeoutCount,
       active_heartbeat_force_reconnect_misses: APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES,
