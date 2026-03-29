@@ -83,14 +83,14 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const APP_SERVER_REQUEST_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 20000
 );
+const APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT = Number(
+  process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT ?? 3
+);
 const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 90000
 );
 const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 45000
-);
-const APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES = Number(
-  process.env.OCTOP_APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES ?? 2
 );
 const APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS = Number(
   process.env.OCTOP_APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS ?? 60000
@@ -199,9 +199,6 @@ const RUNNING_ISSUE_BACKFILL_INTERVAL_MS = Number(
 );
 const RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_THREAD_READ_SAMPLE_INTERVAL_MS ?? 15000
-);
-const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
-  process.env.OCTOP_RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT ?? 3
 );
 const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
@@ -8166,6 +8163,7 @@ class AppServerClient {
     this.silentStateCheckPromise = null;
     this.reconnectTimer = null;
     this.reconnectAttempt = 0;
+    this.requestTimeoutCount = 0;
   }
 
   async ensureReady(reason = "unspecified") {
@@ -8793,10 +8791,16 @@ class AppServerClient {
         }
 
         this.requests.delete(id);
+        const timeoutMessage = `app-server request timeout: ${method}`;
+        const timeoutCount = Number(this.requestTimeoutCount ?? 0) + 1;
+        this.requestTimeoutCount = timeoutCount;
+        this.lastError = timeoutMessage;
         appendDiagnosticLog("error", "app_server.request.timeout", "app-server request timeout", {
           method,
           params,
           request_id: id,
+          timeout_count: timeoutCount,
+          force_reconnect_threshold: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT,
           socket_state: describeWebSocketReadyState(this.socket?.readyState),
           connected: this.connected,
           initialized: this.initialized,
@@ -8805,14 +8809,27 @@ class AppServerClient {
             : null
         });
         requestRunningIssueBackfill(`request_timeout:${method}`);
-        this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
-          method,
-          request_id: id,
-          last_socket_activity_at: this.lastSocketActivityAt
-            ? new Date(this.lastSocketActivityAt).toISOString()
-            : null
-        });
-        reject(new Error(`app-server request timeout: ${method}`));
+        if (
+          APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT > 0 &&
+          timeoutCount >= APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT
+        ) {
+          this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+            method,
+            request_id: id,
+            timeout_count: timeoutCount,
+            last_socket_activity_at: this.lastSocketActivityAt
+              ? new Date(this.lastSocketActivityAt).toISOString()
+              : null
+          });
+        } else {
+          console.warn("[OctOP bridge] app-server request timeout tolerated without forced reconnect", {
+            method,
+            request_id: id,
+            timeout_count: timeoutCount,
+            force_reconnect_threshold: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT
+          });
+        }
+        reject(new Error(timeoutMessage));
       }, APP_SERVER_REQUEST_TIMEOUT_MS);
     });
   }
@@ -8827,6 +8844,7 @@ class AppServerClient {
     this.lastSocketActivityAt = Date.now();
     this.heartbeatProbeSentAt = 0;
     this.heartbeatTimeoutCount = 0;
+    this.requestTimeoutCount = 0;
     this.lastSilentStateCheckError = null;
   }
 
@@ -8867,20 +8885,12 @@ class AppServerClient {
             : null
         });
         this.heartbeatProbeSentAt = 0;
-        void this.checkLastKnownState("heartbeat_timeout", {
-          ...context,
-          idle: bridgeIdle,
-          timeout_count: timeoutCount,
-          probe_age_ms: probeAgeMs
-        });
+        this.lastError = `app-server heartbeat timeout (${timeoutCount})`;
 
-        if (
-          !bridgeIdle &&
-          APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES > 0 &&
-          timeoutCount >= APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES
-        ) {
-          this.forceReconnect(ws, "heartbeat_timeout_active", {
+        if (bridgeIdle) {
+          void this.checkLastKnownState("heartbeat_timeout", {
             ...context,
+            idle: bridgeIdle,
             timeout_count: timeoutCount,
             probe_age_ms: probeAgeMs,
             last_activity_at: this.lastSocketActivityAt
@@ -8977,6 +8987,7 @@ class AppServerClient {
   resetSocketState(ws = null, reason = "app-server socket closed") {
     this.connected = false;
     this.initialized = false;
+    this.requestTimeoutCount = 0;
 
     if (!ws || this.socket === ws) {
       this.socket = null;
@@ -9649,7 +9660,7 @@ function collectBridgeStatus(userId) {
       request_timeout_ms: APP_SERVER_REQUEST_TIMEOUT_MS,
       heartbeat_timeout_ms: APP_SERVER_HEARTBEAT_TIMEOUT_MS,
       heartbeat_timeout_count: appServer.heartbeatTimeoutCount,
-      active_heartbeat_force_reconnect_misses: APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES,
+      request_timeout_force_reconnect_count: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_COUNT,
       silent_state_check_interval_ms: APP_SERVER_SILENT_STATE_CHECK_INTERVAL_MS,
       idle: isBridgeIdle()
     },
@@ -10113,16 +10124,6 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     remoteStatus === "running" && !hasRecoverableRunningSnapshot
       ? Number(meta.noProgressBackfillCount ?? 0) + 1
       : 0;
-  const degradedAgeMs = Math.max(
-    0,
-    Date.now() - Date.parse(
-      threadStateById.get(threadId)?.updated_at ??
-      thread.updated_at ??
-      meta?.lastActivityAt ??
-      0
-    )
-  );
-
   if (physicalThreadId && tokenUsageChanged) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
       ...tokenUsageState
@@ -10399,40 +10400,6 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       markRunningIssueActivity(threadId, {
         lastActivityAt: shouldRestoreHealthyContinuity ? now() : refreshedMeta.lastActivityAt,
         ...threadReadDebugPatch
-      });
-    }
-  }
-
-  if (
-    remoteStatus === "running" &&
-    !hasRecoverableRunningSnapshot &&
-    nextNoProgressBackfillCount >= (
-      (threadStateById.get(threadId)?.continuity_status === "degraded" && degradedAgeMs >= RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS)
-        ? 1
-        : RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT
-    )
-  ) {
-    const activeSocket = appServer.socket;
-    if (activeSocket && appServer.connected && appServer.initialized) {
-      appServer.forceReconnect(activeSocket, "running_backfill_no_progress", {
-        thread_id: threadId,
-        issue_id: activeIssueId,
-        active_physical_thread_id: physicalThreadId,
-        codex_thread_id: remoteThread.id,
-        no_progress_backfill_count: nextNoProgressBackfillCount,
-        reason
-      });
-    }
-
-    const refreshedMeta = runningIssueMetaByThreadId.get(threadId);
-    if (refreshedMeta) {
-      markRunningIssueActivity(threadId, {
-        lastActivityAt: refreshedMeta.lastActivityAt,
-        backfillRequestedAt: refreshedMeta.backfillRequestedAt ?? now(),
-        backfillTrigger: `forced_reconnect:${reason}`,
-        backfillLastError: null,
-        backfillLastPolledAt: now(),
-        noProgressBackfillCount: 0
       });
     }
   }
