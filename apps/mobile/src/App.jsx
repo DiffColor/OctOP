@@ -2580,6 +2580,56 @@ function findActiveIssueForThread(issues = [], activePhysicalThreadId = null) {
   return prioritizedIssues.find((issue) => ["running", "awaiting_input"].includes(issue.status)) ?? prioritizedIssues[0] ?? null;
 }
 
+function buildOptimisticInterruptedIssue(issue, reason = "manual_interrupt") {
+  if (!issue?.id) {
+    return null;
+  }
+
+  const fallbackMessage =
+    reason === "drag_to_prep"
+      ? "Preparation으로 이동하면서 이슈를 중단했습니다."
+      : "수동으로 이슈를 중단했습니다.";
+
+  return normalizeIssue(
+    {
+      ...issue,
+      status: reason === "drag_to_prep" ? "staged" : "interrupted",
+      progress: 0,
+      queue_position: null,
+      prep_position: reason === "drag_to_prep" ? issue.prep_position ?? 0 : null,
+      last_event: "issue.interrupted",
+      last_message: String(issue.last_message ?? "").trim() || fallbackMessage,
+      updated_at: new Date().toISOString()
+    },
+    issue.thread_id ?? null
+  );
+}
+
+function buildOptimisticInterruptedThread(thread, reason = "manual_interrupt") {
+  if (!thread?.id) {
+    return null;
+  }
+
+  const fallbackMessage =
+    reason === "drag_to_prep"
+      ? "Preparation으로 이동하면서 현재 실행을 중단했습니다."
+      : "수동으로 현재 실행을 중단했습니다.";
+
+  return normalizeThread(
+    {
+      ...thread,
+      status: "interrupted",
+      progress: 0,
+      turn_id: null,
+      active_physical_thread_id: null,
+      last_event: "thread.status.changed",
+      last_message: String(thread.last_message ?? "").trim() || fallbackMessage,
+      updated_at: new Date().toISOString()
+    },
+    thread.project_id ?? null
+  );
+}
+
 function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = null, fallbackTimestamp = null) {
   const issueId = issue?.id ?? null;
 
@@ -2757,7 +2807,7 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
 }
 
 function isTerminalThreadStatus(status) {
-  return ["completed", "failed"].includes(status);
+  return ["completed", "failed", "interrupted"].includes(status);
 }
 
 function isInstantThread(thread) {
@@ -10788,6 +10838,8 @@ export default function App() {
   const refreshBridgeStatusRef = useRef(null);
   const loadBridgeWorkspaceRef = useRef(null);
   const bridgeWorkspaceReloadedAtRef = useRef(new Map());
+  const locallyInterruptedThreadIdsRef = useRef(new Set());
+  const locallyInterruptedIssueIdsRef = useRef(new Set());
   const dismissMobileNotice = useCallback((noticeId) => {
     const normalizedNoticeId = String(noticeId ?? "").trim();
 
@@ -11056,6 +11108,87 @@ export default function App() {
       threadReloadMetaByIdRef.current.delete(threadId);
       threadLoadRequestIdByIdRef.current.delete(threadId);
       threadLiveProgressAtByIdRef.current.delete(threadId);
+    }
+  }, []);
+  const holdLocalThreadInterrupt = useCallback((threadId, issueId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (normalizedThreadId) {
+      locallyInterruptedThreadIdsRef.current.add(normalizedThreadId);
+    }
+
+    if (normalizedIssueId) {
+      locallyInterruptedIssueIdsRef.current.add(normalizedIssueId);
+    }
+  }, []);
+  const releaseLocalThreadInterrupt = useCallback((threadId, issueId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (normalizedThreadId) {
+      locallyInterruptedThreadIdsRef.current.delete(normalizedThreadId);
+    }
+
+    if (normalizedIssueId) {
+      locallyInterruptedIssueIdsRef.current.delete(normalizedIssueId);
+    }
+  }, []);
+  const isLocalThreadInterruptHeld = useCallback((threadId, issueId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (normalizedThreadId && locallyInterruptedThreadIdsRef.current.has(normalizedThreadId)) {
+      return true;
+    }
+
+    if (normalizedIssueId && locallyInterruptedIssueIdsRef.current.has(normalizedIssueId)) {
+      return true;
+    }
+
+    return false;
+  }, []);
+  const applyThreadDetailSnapshot = useCallback((threadId, { thread = undefined, issues = undefined } = {}) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+
+    if (!normalizedThreadId) {
+      return;
+    }
+
+    const normalizedThread = thread === undefined ? undefined : normalizeThread(thread);
+    const hasIssues = Array.isArray(issues);
+    const normalizedIssues = hasIssues
+      ? issues.map((issue) => normalizeIssue(issue, normalizedThreadId)).filter(Boolean)
+      : null;
+
+    setThreadDetails((current) => {
+      const currentEntry = current[normalizedThreadId] ?? null;
+
+      if (!currentEntry && normalizedThread === null && !hasIssues) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [normalizedThreadId]: {
+          ...(currentEntry ?? {}),
+          ...(normalizedThread !== undefined ? { thread: normalizedThread } : {}),
+          ...(hasIssues ? { issues: normalizedIssues } : {}),
+          loading: false,
+          error: currentEntry?.error ?? ""
+        }
+      };
+    });
+
+    if (normalizedThread) {
+      setThreads((current) => upsertThread(current, normalizedThread));
+
+      if (normalizedThread.project_id) {
+        setThreadListsByProjectId((current) => ({
+          ...current,
+          [normalizedThread.project_id]: upsertThread(current[normalizedThread.project_id] ?? [], normalizedThread)
+        }));
+      }
     }
   }, []);
   const updateThreadComposerDraft = useCallback((draftKey, nextValue) => {
@@ -12753,6 +12886,8 @@ export default function App() {
         markStreamActivity();
         const payload = JSON.parse(event.data);
         const { threadId: eventThreadId, issueId: eventIssueId, projectId: eventProjectId } = getLiveEventContext(payload);
+        const localInterruptHeld = isLocalThreadInterruptHeld(eventThreadId, eventIssueId);
+        const liveStatusType = String(payload?.payload?.status?.type ?? "").trim();
         const activeThreadId = selectedThreadIdRef.current;
         const activeProjectId = selectedProjectIdRef.current;
         const activeTodoChatId = selectedTodoChatIdRef.current;
@@ -12782,6 +12917,16 @@ export default function App() {
             lastReason: `${lastReason}:cancelled_by_live_progress`
           });
         };
+
+        if (
+          localInterruptHeld &&
+          (
+            isLiveThreadProgressEvent(payload.type) ||
+            (payload.type === "thread.status.changed" && ["active", "running", "waitingForInput"].includes(liveStatusType))
+          )
+        ) {
+          return;
+        }
 
         if (payload.type === "thread.deleted" || payload.type === "rootThread.deleted") {
           if (eventThreadId) {
@@ -12972,6 +13117,7 @@ export default function App() {
         if (payload.type === "bridge.threadIssues.updated") {
           const threadId = payload.payload?.thread_id ?? "";
           const nextIssues = payload.payload?.issues ?? [];
+          const normalizedNextIssues = nextIssues.map((issue) => normalizeIssue(issue, threadId)).filter(Boolean);
 
           if (threadId) {
             const currentIssues = threadDetailsRef.current?.[threadId]?.issues ?? [];
@@ -12979,11 +13125,21 @@ export default function App() {
               threadId === activeThreadId &&
               shouldReloadThreadFromIssueSnapshot(currentIssues, nextIssues, threadId);
 
+            normalizedNextIssues.forEach((issue) => {
+              if (!["running", "awaiting_input"].includes(issue.status ?? "")) {
+                releaseLocalThreadInterrupt(threadId, issue.id);
+              }
+            });
+
+            if (!normalizedNextIssues.some((issue) => ["running", "awaiting_input"].includes(issue.status ?? ""))) {
+              releaseLocalThreadInterrupt(threadId);
+            }
+
             setThreadDetails((current) => ({
               ...current,
               [threadId]: {
                 ...(current[threadId] ?? {}),
-                issues: nextIssues
+                issues: normalizedNextIssues
               }
             }));
             if (scheduleReload && shouldReload) {
@@ -13079,10 +13235,12 @@ export default function App() {
     };
   }, [
     eventStreamReconnectToken,
+    isLocalThreadInterruptHeld,
     markBridgeSocketConnected,
     markBridgeSocketDisconnected,
     markBridgeStatusDisconnected,
     markStreamActivity,
+    releaseLocalThreadInterrupt,
     reloadBridgeWorkspaceOnReconnect,
     refreshBridgeStatus,
     setBridgeStatus,
@@ -13186,6 +13344,8 @@ export default function App() {
     setProjects(restoredWorkspaceSnapshot.projects);
     setThreads(resolveThreadsForScopeFromSnapshot(restoredWorkspaceSnapshot, restoredLayout.selectedScope));
     setStreamActivityAt(null);
+    locallyInterruptedThreadIdsRef.current.clear();
+    locallyInterruptedIssueIdsRef.current.clear();
     setSelectedScope(restoredLayout.selectedScope);
     setSelectedThreadId(restoredLayout.selectedThreadId);
     setInstantThreadId(restoredLayout.instantThreadId);
@@ -14160,10 +14320,13 @@ export default function App() {
       return false;
     }
 
+    const interruptReason = String(options.reason ?? "mobile_long_press").trim() || "mobile_long_press";
     const activePhysicalThreadId = selectedThread?.active_physical_thread_id ?? null;
-    const targetIssue = (currentThreadDetail?.issues ?? [])
+    const previousThread = pickPreferredThreadSnapshot(currentThreadDetail?.thread ?? null, selectedThread);
+    const previousIssues = (currentThreadDetail?.issues ?? [])
       .map((issue) => normalizeIssue(issue, selectedThreadId))
-      .find((issue) => issue?.id === issueId);
+      .filter(Boolean);
+    const targetIssue = previousIssues.find((issue) => issue?.id === issueId) ?? null;
 
     if (!activePhysicalThreadId || !targetIssue) {
       return false;
@@ -14187,38 +14350,90 @@ export default function App() {
       return false;
     }
 
+    const optimisticIssue = buildOptimisticInterruptedIssue(targetIssue, interruptReason);
+    const optimisticThread = buildOptimisticInterruptedThread(previousThread, interruptReason);
+
+    if (optimisticIssue || optimisticThread) {
+      holdLocalThreadInterrupt(selectedThreadId, targetIssue.id);
+      threadLiveProgressAtByIdRef.current.delete(selectedThreadId);
+      applyThreadDetailSnapshot(selectedThreadId, {
+        thread: optimisticThread ?? previousThread ?? undefined,
+        issues: optimisticIssue ? replaceIssueInList(previousIssues, optimisticIssue, selectedThreadId) : previousIssues
+      });
+    }
+
     try {
       const response = await apiRequest(
         `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
           body: JSON.stringify({
-            reason: String(options.reason ?? "mobile_long_press").trim() || "mobile_long_press"
+            reason: interruptReason
           })
         }
       );
 
-      if (Array.isArray(response?.issues)) {
-        setThreadDetails((current) => ({
-          ...current,
-          [selectedThreadId]: {
-            ...(current[selectedThreadId] ?? {}),
-            issues: response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
-          }
-        }));
+      const nextIssues = Array.isArray(response?.issues)
+        ? response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+        : undefined;
+      const nextThread = normalizeThread(response?.thread) ?? undefined;
+
+      if (nextThread || nextIssues) {
+        applyThreadDetailSnapshot(selectedThreadId, {
+          thread: nextThread,
+          issues: nextIssues
+        });
       }
 
-      await loadThreadMessages(selectedThreadId, { force: true });
+      releaseLocalThreadInterrupt(selectedThreadId, targetIssue.id);
+      void loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
+      releaseLocalThreadInterrupt(selectedThreadId, targetIssue.id);
+      applyThreadDetailSnapshot(selectedThreadId, {
+        thread: previousThread ?? undefined,
+        issues: previousIssues
+      });
+      void loadThreadMessages(selectedThreadId, { force: true });
       notifyError(error);
       return false;
     }
-  }, [currentThreadDetail?.issues, loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, selectedThread?.active_physical_thread_id, session, showMobileAlert]);
+  }, [
+    applyThreadDetailSnapshot,
+    currentThreadDetail?.issues,
+    currentThreadDetail?.thread,
+    holdLocalThreadInterrupt,
+    loadThreadMessages,
+    notifyError,
+    releaseLocalThreadInterrupt,
+    selectedBridgeId,
+    selectedThread,
+    selectedThreadId,
+    session,
+    showMobileAlert
+  ]);
 
   const handleStopThreadExecution = useCallback(async (options = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedThreadId) {
       return false;
+    }
+
+    const stopReason = String(options.reason ?? "mobile_stop_button").trim() || "mobile_stop_button";
+    const previousThread = pickPreferredThreadSnapshot(currentThreadDetail?.thread ?? null, selectedThread);
+    const previousIssues = (currentThreadDetail?.issues ?? [])
+      .map((issue) => normalizeIssue(issue, selectedThreadId))
+      .filter(Boolean);
+    const activeIssue = findActiveIssueForThread(previousIssues, previousThread?.active_physical_thread_id ?? null);
+    const optimisticIssue = buildOptimisticInterruptedIssue(activeIssue, stopReason);
+    const optimisticThread = buildOptimisticInterruptedThread(previousThread, stopReason);
+
+    if (activeIssue?.id && (optimisticIssue || optimisticThread)) {
+      holdLocalThreadInterrupt(selectedThreadId, activeIssue.id);
+      threadLiveProgressAtByIdRef.current.delete(selectedThreadId);
+      applyThreadDetailSnapshot(selectedThreadId, {
+        thread: optimisticThread ?? previousThread ?? undefined,
+        issues: optimisticIssue ? replaceIssueInList(previousIssues, optimisticIssue, selectedThreadId) : previousIssues
+      });
     }
 
     try {
@@ -14227,7 +14442,7 @@ export default function App() {
       const stopOptions = {
         method: "POST",
         body: JSON.stringify({
-          reason: String(options.reason ?? "mobile_stop_button").trim() || "mobile_stop_button"
+          reason: stopReason
         })
       };
       let response;
@@ -14246,42 +14461,43 @@ export default function App() {
       }
 
       const normalizedThread = normalizeThread(response?.thread);
+      const nextIssues = Array.isArray(response?.issues)
+        ? response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
+        : undefined;
 
-      if (normalizedThread) {
-        setThreads((current) => upsertThread(current, normalizedThread));
-        setThreadDetails((current) => ({
-          ...current,
-          [selectedThreadId]: {
-            ...(current[selectedThreadId] ?? {}),
-            thread: normalizedThread
-          }
-        }));
-
-        if (normalizedThread.project_id) {
-          setThreadListsByProjectId((current) => ({
-            ...current,
-            [normalizedThread.project_id]: upsertThread(current[normalizedThread.project_id] ?? [], normalizedThread)
-          }));
-        }
+      if (normalizedThread || nextIssues) {
+        applyThreadDetailSnapshot(selectedThreadId, {
+          thread: normalizedThread ?? undefined,
+          issues: nextIssues
+        });
       }
 
-      if (Array.isArray(response?.issues)) {
-        setThreadDetails((current) => ({
-          ...current,
-          [selectedThreadId]: {
-            ...(current[selectedThreadId] ?? {}),
-            issues: response.issues.map((issue) => normalizeIssue(issue, selectedThreadId)).filter(Boolean)
-          }
-        }));
-      }
-
-      await loadThreadMessages(selectedThreadId, { force: true });
+      releaseLocalThreadInterrupt(selectedThreadId, activeIssue?.id ?? "");
+      void loadThreadMessages(selectedThreadId, { force: true });
       return true;
     } catch (error) {
+      releaseLocalThreadInterrupt(selectedThreadId, activeIssue?.id ?? "");
+      applyThreadDetailSnapshot(selectedThreadId, {
+        thread: previousThread ?? undefined,
+        issues: previousIssues
+      });
+      void loadThreadMessages(selectedThreadId, { force: true });
       notifyError(error);
       return false;
     }
-  }, [loadThreadMessages, notifyError, selectedBridgeId, selectedThreadId, session?.loginId]);
+  }, [
+    applyThreadDetailSnapshot,
+    currentThreadDetail?.issues,
+    currentThreadDetail?.thread,
+    holdLocalThreadInterrupt,
+    loadThreadMessages,
+    notifyError,
+    releaseLocalThreadInterrupt,
+    selectedBridgeId,
+    selectedThread,
+    selectedThreadId,
+    session?.loginId
+  ]);
 
   const handleCreateInstantThread = useCallback(async () => {
     if (!session?.loginId || !selectedBridgeId) {

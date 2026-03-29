@@ -2399,6 +2399,32 @@ function findActiveIssueForThread(issues, activePhysicalThreadId) {
   return normalizedIssues.find((issue) => ["running", "awaiting_input"].includes(issue.status)) ?? normalizedIssues[0] ?? null;
 }
 
+function buildOptimisticInterruptedIssue(issue, reason = "manual_interrupt") {
+  if (!issue?.id) {
+    return null;
+  }
+
+  const nextStatus = reason === "drag_to_prep" ? "staged" : "interrupted";
+  const fallbackMessage =
+    reason === "drag_to_prep"
+      ? "Preparation으로 이동하면서 이슈를 중단했습니다."
+      : "수동으로 이슈를 중단했습니다.";
+
+  return normalizeIssue(
+    {
+      ...issue,
+      status: nextStatus,
+      progress: 0,
+      queue_position: null,
+      prep_position: nextStatus === "staged" ? issue.prep_position ?? 0 : null,
+      last_event: "issue.interrupted",
+      last_message: String(issue.last_message ?? "").trim() || fallbackMessage,
+      updated_at: new Date().toISOString()
+    },
+    issue.thread_id ?? null
+  );
+}
+
 function mergeIssues(currentIssues, nextIssues) {
   const nextById = new Map();
 
@@ -8046,6 +8072,7 @@ export default function App() {
   const foregroundResumeEnabledAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
+  const locallyInterruptedIssueIdsRef = useRef(new Set());
   const confirmationResolverRef = useRef(null);
   const detailStateRef = useRef({
     open: false,
@@ -8293,6 +8320,33 @@ export default function App() {
       return nextState;
     });
   }, []);
+  const holdLocalIssueInterrupt = useCallback((issueId) => {
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (!normalizedIssueId) {
+      return;
+    }
+
+    locallyInterruptedIssueIdsRef.current.add(normalizedIssueId);
+  }, []);
+  const releaseLocalIssueInterrupt = useCallback((issueId) => {
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (!normalizedIssueId) {
+      return;
+    }
+
+    locallyInterruptedIssueIdsRef.current.delete(normalizedIssueId);
+  }, []);
+  const isLocalIssueInterruptHeld = useCallback((issueId) => {
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (!normalizedIssueId) {
+      return false;
+    }
+
+    return locallyInterruptedIssueIdsRef.current.has(normalizedIssueId);
+  }, []);
   const persistArchivedIssuesState = useCallback(async (sessionArg, nextState, requestOptions = {}) => {
     if (!sessionArg?.loginId) {
       return;
@@ -8424,6 +8478,19 @@ export default function App() {
       allIssues: normalizedIssues
     };
   }, [replaceArchivedIssuesForCurrentScope, replaceVisibleIssuesForCurrentScope]);
+  const applyOptimisticIssueToScope = useCallback((bridgeId, threadId, nextIssue) => {
+    if (!bridgeId || !threadId || !nextIssue?.id) {
+      return;
+    }
+
+    const currentVisibleIssues =
+      visibleIssueSnapshotsRef.current[bridgeId]?.[threadId] ??
+      (selectedBridgeIdRef.current === bridgeId && selectedProjectThreadIdRef.current === threadId ? issuesRef.current : []);
+    const currentArchivedIssues = archivedIssueSnapshotsRef.current[bridgeId]?.[threadId] ?? [];
+    const combinedIssues = mergeIssues(currentVisibleIssues, currentArchivedIssues);
+
+    applyIssueStateForScope(bridgeId, threadId, mergeIssues(combinedIssues, [nextIssue]));
+  }, [applyIssueStateForScope]);
 
   const setBridgeStatus = useCallback((bridgeId, updater) => {
     const normalizedBridgeId = String(bridgeId ?? "").trim();
@@ -9214,6 +9281,7 @@ export default function App() {
 
   useEffect(() => {
     setStreamActivityAt(null);
+    locallyInterruptedIssueIdsRef.current.clear();
     foregroundResumeEnabledAtRef.current = Date.now() + DASHBOARD_RESUME_ENABLE_DELAY_MS;
   }, [selectedBridgeId]);
 
@@ -9267,6 +9335,19 @@ export default function App() {
         const activeBridgeId = selectedBridgeIdRef.current;
         const activeThreadId = selectedProjectThreadIdRef.current;
         const { threadId: eventThreadId, issueId: eventIssueId, projectId: eventProjectId } = getLiveEventContext(payload);
+        const localInterruptHeld = isLocalIssueInterruptHeld(eventIssueId);
+        const liveStatusType = String(payload?.payload?.status?.type ?? "").trim();
+
+        if (
+          localInterruptHeld &&
+          (
+            isLiveIssueProgressEvent(payload.type) ||
+            (payload.type === "thread.status.changed" && ["active", "running", "waitingForInput"].includes(liveStatusType))
+          )
+        ) {
+          return;
+        }
+
         const summary =
           payload?.payload?.thread?.title ??
           issuesRef.current.find((issue) => issue.id === eventIssueId)?.title ??
@@ -9401,6 +9482,11 @@ export default function App() {
           }
 
           const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
+          for (const nextIssue of nextIssues) {
+            if (nextIssue?.id && !["running", "awaiting_input"].includes(nextIssue.status ?? "")) {
+              releaseLocalIssueInterrupt(nextIssue.id);
+            }
+          }
           applyIssueStateForScope(activeBridgeId, targetThreadId || activeThreadId, nextIssues);
 
           if (!findActiveIssueForThread(nextIssues, projectThreadsRef.current.find((thread) => thread.id === (targetThreadId || activeThreadId))?.active_physical_thread_id ?? null)) {
@@ -9435,6 +9521,10 @@ export default function App() {
 
           if (!nextIssue) {
             return;
+          }
+
+          if (!["running", "awaiting_input"].includes(nextIssue.status ?? "")) {
+            releaseLocalIssueInterrupt(nextIssue.id);
           }
 
           const archivedIds = new Set(
@@ -9486,10 +9576,12 @@ export default function App() {
   }, [
     copy.alerts.sseReconnect,
     eventStreamReconnectToken,
+    isLocalIssueInterruptHeld,
     markBridgeSocketConnected,
     markBridgeSocketDisconnected,
     markBridgeStatusDisconnected,
     markStreamActivity,
+    releaseLocalIssueInterrupt,
     reloadBridgeWorkspaceOnReconnect,
     refreshBridgeStatus,
     session,
@@ -11417,6 +11509,33 @@ export default function App() {
 
     setInterruptingIssueId(issueId);
 
+    const previousDetailThread =
+      detailStateRef.current.open && detailStateRef.current.thread?.id === issueId ? detailStateRef.current.thread : null;
+    const previousIssue =
+      issuesRef.current.find((item) => item.id === issueId) ??
+      archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId]?.find((item) => item.id === issueId) ??
+      previousDetailThread ??
+      null;
+    const optimisticIssue = buildOptimisticInterruptedIssue(previousIssue, reason);
+
+    if (optimisticIssue) {
+      holdLocalIssueInterrupt(issueId);
+      applyOptimisticIssueToScope(selectedBridgeId, selectedProjectThreadId, optimisticIssue);
+      threadLiveProgressAtByIdRef.current.delete(selectedProjectThreadId);
+      activeIssuePollPausedUntilRef.current = Date.now() + ACTIVE_ISSUE_POLL_RESUME_GRACE_MS;
+
+      if (previousDetailThread) {
+        setDetailState((current) => ({
+          ...current,
+          loading: false,
+          thread: {
+            ...current.thread,
+            ...optimisticIssue
+          }
+        }));
+      }
+    }
+
     try {
       const response = await apiRequest(
         `/api/issues/${encodeURIComponent(issueId)}/interrupt?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
@@ -11448,7 +11567,29 @@ export default function App() {
       if (response?.thread?.id) {
         setProjectThreads((current) => upsertProjectThread(current, response.thread));
       }
+
+      releaseLocalIssueInterrupt(issueId);
     } catch (error) {
+      releaseLocalIssueInterrupt(issueId);
+
+      if (previousIssue) {
+        applyOptimisticIssueToScope(selectedBridgeId, selectedProjectThreadId, previousIssue);
+      }
+
+      if (previousDetailThread) {
+        setDetailState((current) => ({
+          ...current,
+          loading: false,
+          thread: previousDetailThread
+        }));
+      }
+
+      try {
+        await loadThreadIssues(session, selectedBridgeId, selectedProjectThreadId);
+      } catch {
+        // keep the last locally restored snapshot
+      }
+
       setRecentEvents((current) => [
         {
           id: createId(),
@@ -11462,7 +11603,10 @@ export default function App() {
       setInterruptingIssueId((current) => (current === issueId ? "" : current));
     }
   }, [
+    applyOptimisticIssueToScope,
     applyIssueStateForScope,
+    holdLocalIssueInterrupt,
+    releaseLocalIssueInterrupt,
     loadThreadIssues,
     selectedBridgeId,
     selectedProjectThreadId,
