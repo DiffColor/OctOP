@@ -1408,7 +1408,7 @@ app.MapPost("/api/issues/{issueId}/interrupt", async (
     return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
   }
 
-  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ThreadIssueInterrupt,
@@ -1581,7 +1581,7 @@ app.MapPost("/api/threads/{threadId}/rollover", async (
     return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
   }
 
-  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectThreadRollover,
@@ -1619,7 +1619,7 @@ app.MapPost("/api/threads/{threadId}/normalize", async (
     return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
   }
 
-  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectThreadNormalize,
@@ -1657,7 +1657,7 @@ app.MapPost("/api/threads/{threadId}/unlock", async (
     return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
   }
 
-  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectThreadUnlock,
@@ -1695,7 +1695,7 @@ app.MapPost("/api/threads/{threadId}/stop", async (
     return Results.Text("{\"accepted\":false,\"error\":\"bridge not found\"}", "application/json; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
   }
 
-  var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
+  var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
   var payload = await bridgeNatsClient.RequestAsync(
     subjects.ProjectThreadStop,
@@ -2113,6 +2113,24 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
 });
 
 app.Run();
+
+static async Task<JsonNode?> ReadOptionalJsonBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+{
+  if (request.ContentLength is 0)
+  {
+    return null;
+  }
+
+  using var reader = new StreamReader(request.Body, Encoding.UTF8, leaveOpen: true);
+  var rawBody = await reader.ReadToEndAsync(cancellationToken);
+
+  if (string.IsNullOrWhiteSpace(rawBody))
+  {
+    return null;
+  }
+
+  return JsonNode.Parse(rawBody);
+}
 
 static async Task<string?> ResolveBridgeIdAsync(
   HttpContext httpContext,

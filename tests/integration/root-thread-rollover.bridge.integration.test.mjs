@@ -3082,6 +3082,152 @@ test("todo issue를 preparation으로 되돌리면 queued issue가 staged로 이
   }
 });
 
+test("running issue 중단은 stale turn interrupt 오류가 있어도 realtime stop이 성공하면 즉시 반영된다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-issue-interrupt-stale-turn-int-"));
+  const fakeAppServer = new FakeAppServer({
+    errorMethods: {
+      "turn/interrupt": "turn not found: stale-turn"
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-issue-interrupt-stale-turn-token",
+    userId: "integration-user",
+    bridgeId: `issue-interrupt-stale-turn-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Interrupt With Stale Turn"
+    });
+
+    const interruptPayload = await bridge.request(`/api/issues/${activeIssueId}/interrupt`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_interrupt"
+      })
+    });
+
+    assert.equal(interruptPayload.accepted, true);
+    assert.equal(interruptPayload.action, "interrupted");
+    assert.equal(fakeAppServer.getRequests("turn/interrupt").length, 1);
+    assert.equal(fakeAppServer.getRequests("thread/realtime/stop").length, 1);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(issuePayload.issue?.status, "interrupted");
+      assert.equal(issuePayload.issue?.last_event, "issue.interrupted");
+      assert.equal(continuityPayload.active_physical_thread?.turn_id ?? null, null);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "issue interrupted despite stale turn interrupt error"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("thread stop는 원격 상태 반영이 늦어도 polling으로 API 오류 없이 성공한다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-stop-delayed-verify-int-"));
+  let delayedRunningReadCount = 0;
+  const fakeAppServer = new FakeAppServer({
+    onThreadRead: ({ server, threadPayload }) => {
+      if (!threadPayload || server.getRequests("thread/realtime/stop").length === 0) {
+        return undefined;
+      }
+
+      if (delayedRunningReadCount < 2) {
+        delayedRunningReadCount += 1;
+        return {
+          ...threadPayload,
+          status: {
+            type: "active"
+          },
+          turns: (threadPayload.turns ?? []).map((turn) => ({
+            ...turn,
+            status: turn.status === "interrupted" ? "running" : turn.status
+          }))
+        };
+      }
+
+      return undefined;
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-stop-delayed-verify-token",
+    userId: "integration-user",
+    bridgeId: `thread-stop-delayed-verify-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId, activeIssueId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Stop With Delayed Verification"
+    });
+
+    const stopPayload = await bridge.request(`/api/threads/${rootThreadId}/stop`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_stop"
+      })
+    });
+
+    assert.equal(stopPayload.accepted, true);
+    assert.equal(stopPayload.action, "stopped");
+    assert.equal(fakeAppServer.getRequests("turn/interrupt").length, 1);
+    assert.equal(fakeAppServer.getRequests("thread/realtime/stop").length, 1);
+    assert.equal(fakeAppServer.threadReadRequestCount >= 3, true);
+
+    await waitFor(async () => {
+      const issuePayload = await bridge.request(`/api/issues/${activeIssueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(issuePayload.issue?.status, "interrupted");
+      assert.equal(issuePayload.issue?.last_event, "thread.stop.completed");
+      assert.equal(continuityPayload.active_physical_thread?.turn_id ?? null, null);
+      return { issuePayload, continuityPayload };
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 250,
+      label: "thread stop completed after delayed verification"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("thread unlock manual_refresh는 stop timeout이어도 stale running 락을 강제 해제하고 queued issue를 재개한다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-unlock-stop-failed-int-"));
   const fakeAppServer = new FakeAppServer({

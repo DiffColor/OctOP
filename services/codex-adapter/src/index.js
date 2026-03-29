@@ -4733,6 +4733,24 @@ async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DEL
   }
 }
 
+function normalizeBestEffortErrorMessage(error) {
+  return String(error?.message ?? error ?? "unknown error").trim() || "unknown error";
+}
+
+function isMissingTurnInterruptError(message) {
+  const normalized = String(message ?? "").toLowerCase();
+  return (
+    normalized.includes("turn not found") ||
+    normalized.includes("unknown turn") ||
+    normalized.includes("no active turn") ||
+    normalized.includes("already completed") ||
+    normalized.includes("already interrupted") ||
+    normalized.includes("already canceled") ||
+    normalized.includes("already cancelled") ||
+    normalized.includes("already failed")
+  );
+}
+
 async function interruptThreadExecutionBestEffort(rootThread, options = {}) {
   const activePhysicalThread = rootThread?.id ? getActivePhysicalThread(rootThread.id) : null;
   const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
@@ -4754,36 +4772,39 @@ async function interruptThreadExecutionBestEffort(rootThread, options = {}) {
 
   let interrupted = false;
   let stoppedRealtime = false;
-
-  if (turnId) {
-    const interruptResult = await requestAppServerBestEffort(
-      "turn/interrupt",
+  const [interruptResult, realtimeStopResult] = await Promise.all([
+    turnId
+      ? requestAppServerBestEffort(
+          "turn/interrupt",
+          {
+            threadId: codexThreadId,
+            turnId
+          },
+          timeoutMs
+        )
+      : Promise.resolve(null),
+    requestAppServerBestEffort(
+      "thread/realtime/stop",
       {
-        threadId: codexThreadId,
-        turnId
+        threadId: codexThreadId
       },
       timeoutMs
-    );
+    )
+  ]);
 
-    interrupted = interruptResult.ok;
+  interrupted = Boolean(interruptResult?.ok);
+  stoppedRealtime = Boolean(realtimeStopResult?.ok);
 
-    if (!interruptResult.ok) {
-      errors.push(`turn/interrupt: ${interruptResult.error?.message ?? "unknown error"}`);
+  if (turnId && interruptResult && !interruptResult.ok) {
+    const errorMessage = normalizeBestEffortErrorMessage(interruptResult.error);
+
+    if (!(stoppedRealtime && isMissingTurnInterruptError(errorMessage))) {
+      errors.push(`turn/interrupt: ${errorMessage}`);
     }
   }
 
-  const realtimeStopResult = await requestAppServerBestEffort(
-    "thread/realtime/stop",
-    {
-      threadId: codexThreadId
-    },
-    timeoutMs
-  );
-
-  stoppedRealtime = realtimeStopResult.ok;
-
-  if (!realtimeStopResult.ok) {
-    errors.push(`thread/realtime/stop: ${realtimeStopResult.error?.message ?? "unknown error"}`);
+  if (realtimeStopResult && !realtimeStopResult.ok) {
+    errors.push(`thread/realtime/stop: ${normalizeBestEffortErrorMessage(realtimeStopResult.error)}`);
   }
 
   return {
@@ -4824,14 +4845,16 @@ async function readThreadSnapshotBestEffort(codexThreadId, reason = "unspecified
 
   if (!remoteThread) {
     return {
-      ok: false,
+      ok: true,
+      missing: true,
       thread: null,
-      error: new Error(`thread/read.${reason} 응답에 thread가 없습니다.`)
+      error: null
     };
   }
 
   return {
     ok: true,
+    missing: false,
     thread: remoteThread,
     error: null
   };
@@ -4846,6 +4869,11 @@ async function verifyThreadStopState(rootThread, options = {}) {
       : String(activePhysicalThread?.turn_id ?? rootThread?.turn_id ?? "").trim() || null;
   const timeoutMs = Number(options.timeoutMs ?? THREAD_DELETE_STOP_TIMEOUT_MS);
   const reason = String(options.reason ?? "manual_stop").trim() || "manual_stop";
+  const pollIntervalMs = Math.max(50, Number(options.pollIntervalMs ?? 150));
+  const startedAt = Date.now();
+  let lastError = null;
+  let lastRemoteStatus = null;
+  let lastRemoteTurnId = null;
 
   if (!codexThreadId) {
     return {
@@ -4857,31 +4885,68 @@ async function verifyThreadStopState(rootThread, options = {}) {
     };
   }
 
-  const readResult = await readThreadSnapshotBestEffort(codexThreadId, reason, timeoutMs);
+  while (true) {
+    const elapsedMs = Date.now() - startedAt;
+    const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+    const readTimeoutMs = Math.max(50, Math.min(remainingMs || timeoutMs, 1000));
+    const readResult = await readThreadSnapshotBestEffort(codexThreadId, reason, readTimeoutMs);
 
-  if (!readResult.ok) {
+    if (!readResult.ok) {
+      lastError = readResult.error?.message ?? "thread/read failed";
+    } else if (readResult.missing) {
+      return {
+        ok: true,
+        verifiedStopped: true,
+        remoteStatus: "missing",
+        remoteTurnId: null,
+        error: null
+      };
+    } else {
+      const remoteThread = readResult.thread;
+      const remoteTurn = selectRemoteTurnForBackfill(remoteThread, expectedTurnId);
+      const remoteStatus = normalizeRemoteTurnRuntimeStatus(
+        remoteThread,
+        remoteTurn,
+        rootThread?.status ?? "running"
+      );
+
+      lastError = null;
+      lastRemoteStatus = remoteStatus;
+      lastRemoteTurnId = remoteTurn?.id ?? null;
+
+      if (!["running", "awaiting_input"].includes(remoteStatus)) {
+        return {
+          ok: true,
+          verifiedStopped: true,
+          remoteStatus,
+          remoteTurnId: remoteTurn?.id ?? null,
+          error: null
+        };
+      }
+    }
+
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    await sleep(Math.min(pollIntervalMs, remainingMs));
+  }
+
+  if (lastError) {
     return {
       ok: false,
       verifiedStopped: false,
-      remoteStatus: null,
-      remoteTurnId: null,
-      error: readResult.error?.message ?? "thread/read failed"
+      remoteStatus: lastRemoteStatus,
+      remoteTurnId: lastRemoteTurnId,
+      error: lastError
     };
   }
 
-  const remoteThread = readResult.thread;
-  const remoteTurn = selectRemoteTurnForBackfill(remoteThread, expectedTurnId);
-  const remoteStatus = normalizeRemoteTurnRuntimeStatus(
-    remoteThread,
-    remoteTurn,
-    rootThread?.status ?? "running"
-  );
-
   return {
     ok: true,
-    verifiedStopped: !["running", "awaiting_input"].includes(remoteStatus),
-    remoteStatus,
-    remoteTurnId: remoteTurn?.id ?? null,
+    verifiedStopped: false,
+    remoteStatus: lastRemoteStatus,
+    remoteTurnId: lastRemoteTurnId,
     error: null
   };
 }
@@ -6413,6 +6478,11 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
         errors: interruptResult.errors
       }
     };
+  }
+
+  if (verification.remoteStatus === "missing") {
+    invalidateCodexThreadBinding(rootThreadId);
+    recoverySteps.push("invalidated_missing_binding");
   }
 
   const stopMessage =
