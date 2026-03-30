@@ -6836,6 +6836,21 @@ function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physi
   return eventTurnId === trackedTurnId;
 }
 
+function shouldApplyTurnCompleted(params = {}, rootThreadId, physicalThreadId = null) {
+  const eventTurnId = extractNotificationTurnId(params);
+  const trackedTurnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
+
+  if (!trackedTurnId) {
+    return true;
+  }
+
+  if (!eventTurnId) {
+    return true;
+  }
+
+  return eventTurnId === trackedTurnId;
+}
+
 function normalizeThreadRecord(thread, fallback = {}) {
   const current = threadStateById.get(thread.id) ?? {};
   const lastEvent = threadEventsById.get(thread.id);
@@ -8553,6 +8568,10 @@ class AppServerClient {
       threadId &&
       isTerminalThreadStatusType(params.status?.type) &&
       !shouldApplyTerminalThreadStatusChanged(params, threadId, physicalThreadId);
+    const ignoreTurnCompleted =
+      method === "turn/completed" &&
+      threadId &&
+      !shouldApplyTurnCompleted(params, threadId, physicalThreadId);
 
     if (
       (physicalThreadId && closedPhysicalThreadTombstonesById.has(physicalThreadId)) ||
@@ -8616,8 +8635,21 @@ class AppServerClient {
         });
       }
 
+      if (ignoreTurnCompleted) {
+        appendDiagnosticLog("info", "turn.completed.ignored", "ignored turn/completed due to turn mismatch", {
+          thread_id: threadId,
+          physical_thread_id: physicalThreadId,
+          issue_id: activeIssueId,
+          codex_thread_id: codexThreadId,
+          turn_status: params.turn?.status ?? null,
+          event_turn_id: extractNotificationTurnId(params),
+          tracked_turn_id: getTrackedExecutionTurnId(threadId, physicalThreadId)
+        });
+      }
+
       eventPatch = buildThreadPatch(method, params, threadId, physicalThreadId, {
-        allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+        allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged,
+        allowTurnCompleted: !ignoreTurnCompleted
       });
 
       if (eventPatch) {
@@ -8650,7 +8682,8 @@ class AppServerClient {
 
       if (activeIssueId) {
         issuePatch = buildIssuePatch(method, params, activeIssueId, {
-          allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+          allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged,
+          allowTurnCompleted: !ignoreTurnCompleted
         });
 
         if (issuePatch) {
@@ -8701,7 +8734,7 @@ class AppServerClient {
     }
 
     const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
-    if (!ignoreTerminalThreadStatusChanged) {
+    if (!ignoreTerminalThreadStatusChanged && !ignoreTurnCompleted) {
       await publishEvent(
         owner,
         method.replaceAll("/", "."),
@@ -9324,6 +9357,10 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
       };
     case "turn/completed":
       {
+        if (options.allowTurnCompleted === false) {
+          return null;
+        }
+
         const nextStatus = params.turn?.status === "completed" ? "idle" : "failed";
         const nextProgress = params.turn?.status === "completed" ? 100 : 0;
         const errorMessage = nextStatus === "failed" ? extractAppServerErrorMessage(params) : "";
@@ -9425,6 +9462,10 @@ function buildIssuePatch(method, params, issueId, options = {}) {
       return null;
     case "turn/completed":
       {
+        if (options.allowTurnCompleted === false) {
+          return null;
+        }
+
         const errorMessage = params.turn?.status === "completed" ? "" : extractAppServerErrorMessage(params);
         return {
           status: params.turn?.status === "completed" ? "completed" : "failed",
