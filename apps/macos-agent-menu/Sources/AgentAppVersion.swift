@@ -8,6 +8,13 @@ enum AgentAppVersion {
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> String {
     if let bundleTag = normalizeVersionTag(
+      (bundle.object(forInfoDictionaryKey: "OctOPReleaseTag") as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    ) {
+      return bundleTag
+    }
+
+    if let bundleTag = normalizeVersionTag(
       (bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
     ) {
