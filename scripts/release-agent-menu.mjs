@@ -158,6 +158,7 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   );
   writeFileSync(resolve(contentsRoot, "PkgInfo"), "APPL????", "utf8");
   signMacAppBundle(appRoot);
+  notarizeMacAppBundleIfConfigured(appRoot, resolve(stageRoot, "macos", "notarization"));
   verifyMacAppBundle(appRoot);
 
   cpSync(appRoot, standaloneAppPath, { recursive: true });
@@ -357,9 +358,66 @@ function signMacAppBundle(appRoot) {
   run("codesign", [...args, appRoot], dirname(appRoot));
 }
 
+function notarizeMacAppBundleIfConfigured(appRoot, notarizationRoot) {
+  const keyFile = process.env.OCTOP_MACOS_NOTARY_KEY_FILE?.trim();
+  const keyId = process.env.OCTOP_MACOS_NOTARY_KEY_ID?.trim();
+  const issuer = process.env.OCTOP_MACOS_NOTARY_ISSUER?.trim();
+
+  if (!keyFile && !keyId && !issuer) {
+    return;
+  }
+
+  if (!keyFile || !keyId || !issuer) {
+    throw new Error(
+      "macOS 노타리제이션 설정이 불완전합니다. OCTOP_MACOS_NOTARY_KEY_FILE, OCTOP_MACOS_NOTARY_KEY_ID, OCTOP_MACOS_NOTARY_ISSUER 를 모두 지정해 주세요."
+    );
+  }
+
+  mkdirSync(notarizationRoot, { recursive: true });
+  const notarizationArchivePath = resolve(notarizationRoot, `${basename(appRoot)}.zip`);
+  rmSync(notarizationArchivePath, { force: true });
+
+  run("ditto", [
+    "-c",
+    "-k",
+    "--sequesterRsrc",
+    "--keepParent",
+    appRoot,
+    notarizationArchivePath
+  ], dirname(appRoot));
+
+  run("xcrun", [
+    "notarytool",
+    "submit",
+    notarizationArchivePath,
+    "--key",
+    keyFile,
+    "--key-id",
+    keyId,
+    "--issuer",
+    issuer,
+    "--wait"
+  ], dirname(appRoot));
+
+  run("xcrun", ["stapler", "staple", "-v", appRoot], dirname(appRoot));
+}
+
 function verifyMacAppBundle(appRoot) {
   run("plutil", ["-lint", resolve(appRoot, "Contents", "Info.plist")], dirname(appRoot));
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appRoot], dirname(appRoot));
+
+  if (shouldRunGatekeeperValidation()) {
+    run("spctl", ["-a", "-t", "exec", "-vv", appRoot], dirname(appRoot));
+  }
+}
+
+function shouldRunGatekeeperValidation() {
+  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim() || "-";
+  const keyFile = process.env.OCTOP_MACOS_NOTARY_KEY_FILE?.trim();
+  const keyId = process.env.OCTOP_MACOS_NOTARY_KEY_ID?.trim();
+  const issuer = process.env.OCTOP_MACOS_NOTARY_ISSUER?.trim();
+
+  return identity !== "-" && Boolean(keyFile && keyId && issuer);
 }
 
 function parseArgs(argv) {

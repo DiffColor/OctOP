@@ -83,6 +83,62 @@ jobs:
         with:
           swift-version: "6.1"
 
+      - name: Validate macOS signing secrets
+        env:
+          OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
+          OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
+          OCTOP_MACOS_CODESIGN_IDENTITY: ${{ secrets.OCTOP_MACOS_CODESIGN_IDENTITY }}
+          OCTOP_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_P8_BASE64 }}
+          OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
+          OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
+        run: |
+          for name in \
+            OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 \
+            OCTOP_MACOS_CODESIGN_CERT_PASSWORD \
+            OCTOP_MACOS_CODESIGN_IDENTITY \
+            OCTOP_MACOS_NOTARY_KEY_P8_BASE64 \
+            OCTOP_MACOS_NOTARY_KEY_ID \
+            OCTOP_MACOS_NOTARY_ISSUER
+          do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Prepare macOS signing environment
+        env:
+          OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
+          OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
+          OCTOP_MACOS_CODESIGN_IDENTITY: ${{ secrets.OCTOP_MACOS_CODESIGN_IDENTITY }}
+          OCTOP_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_P8_BASE64 }}
+          OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
+          OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/octop-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          CERT_PATH="$RUNNER_TEMP/octop-release-cert.p12"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/octop-notary-key.p8"
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"')"
+
+          printf '%s' "$OCTOP_MACOS_CODESIGN_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$OCTOP_MACOS_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$OCTOP_MACOS_CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcrun
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          {
+            echo "OCTOP_MACOS_CODESIGN_IDENTITY=$OCTOP_MACOS_CODESIGN_IDENTITY"
+            echo "OCTOP_MACOS_NOTARY_KEY_FILE=$NOTARY_KEY_PATH"
+            echo "OCTOP_MACOS_NOTARY_KEY_ID=$OCTOP_MACOS_NOTARY_KEY_ID"
+            echo "OCTOP_MACOS_NOTARY_ISSUER=$OCTOP_MACOS_NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
+
       - name: Verify release exists
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
