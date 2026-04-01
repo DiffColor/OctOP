@@ -148,7 +148,7 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
   mkdirSync(resourcesRoot, { recursive: true });
 
   cpSync(executablePath, resolve(macOsRoot, "OctOPAgentMenu"));
-  cpSync(resourceBundlePath, resolve(appRoot, basename(resourceBundlePath)), { recursive: true });
+  cpSync(resourceBundlePath, resolve(resourcesRoot, basename(resourceBundlePath)), { recursive: true });
   buildMacIcon(iconSourcePath, iconPath, resolve(stageRoot, "macos", "AppIcon.iconset"));
 
   writeFileSync(
@@ -156,6 +156,10 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     createMacInfoPlist({ versionTag, numericVersion }),
     "utf8"
   );
+  writeFileSync(resolve(contentsRoot, "PkgInfo"), "APPL????", "utf8");
+  signMacAppBundle(appRoot);
+  notarizeMacAppBundleIfConfigured(appRoot, resolve(stageRoot, "macos", "notarization"));
+  verifyMacAppBundle(appRoot);
 
   cpSync(appRoot, standaloneAppPath, { recursive: true });
 
@@ -255,6 +259,8 @@ function normalizeAssemblyVersion(version) {
 }
 
 function createMacInfoPlist({ versionTag, numericVersion }) {
+  const marketingVersion = normalizeMacMarketingVersion(numericVersion);
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -271,8 +277,10 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
   <string>OctOP</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
+  <key>OctOPReleaseTag</key>
   <string>${versionTag}</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${marketingVersion}</string>
   <key>CFBundleVersion</key>
   <string>${normalizeAssemblyVersion(numericVersion)}</string>
   <key>LSMinimumSystemVersion</key>
@@ -282,6 +290,17 @@ function createMacInfoPlist({ versionTag, numericVersion }) {
 </dict>
 </plist>
 `;
+}
+
+function normalizeMacMarketingVersion(version) {
+  const stablePart = version.split("-", 1)[0].split("+", 1)[0];
+  const parts = stablePart.split(".").map((value) => Number.parseInt(value, 10)).filter(Number.isFinite);
+
+  while (parts.length < 3) {
+    parts.push(0);
+  }
+
+  return parts.slice(0, 3).join(".");
 }
 
 function buildMacIcon(sourceIconPath, outputIconPath, iconsetPath) {
@@ -324,6 +343,81 @@ function buildMacIcon(sourceIconPath, outputIconPath, iconsetPath) {
     "-o",
     outputIconPath
   ], workspaceRoot);
+}
+
+function signMacAppBundle(appRoot) {
+  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim() || "-";
+  const args = ["--force", "--sign", identity, "--deep"];
+
+  if (identity !== "-") {
+    args.push("--timestamp", "--options", "runtime");
+  } else {
+    args.push("--timestamp=none");
+  }
+
+  run("codesign", [...args, appRoot], dirname(appRoot));
+}
+
+function notarizeMacAppBundleIfConfigured(appRoot, notarizationRoot) {
+  const keyFile = process.env.OCTOP_MACOS_NOTARY_KEY_FILE?.trim();
+  const keyId = process.env.OCTOP_MACOS_NOTARY_KEY_ID?.trim();
+  const issuer = process.env.OCTOP_MACOS_NOTARY_ISSUER?.trim();
+
+  if (!keyFile && !keyId && !issuer) {
+    return;
+  }
+
+  if (!keyFile || !keyId || !issuer) {
+    throw new Error(
+      "macOS 노타리제이션 설정이 불완전합니다. OCTOP_MACOS_NOTARY_KEY_FILE, OCTOP_MACOS_NOTARY_KEY_ID, OCTOP_MACOS_NOTARY_ISSUER 를 모두 지정해 주세요."
+    );
+  }
+
+  mkdirSync(notarizationRoot, { recursive: true });
+  const notarizationArchivePath = resolve(notarizationRoot, `${basename(appRoot)}.zip`);
+  rmSync(notarizationArchivePath, { force: true });
+
+  run("ditto", [
+    "-c",
+    "-k",
+    "--sequesterRsrc",
+    "--keepParent",
+    appRoot,
+    notarizationArchivePath
+  ], dirname(appRoot));
+
+  run("xcrun", [
+    "notarytool",
+    "submit",
+    notarizationArchivePath,
+    "--key",
+    keyFile,
+    "--key-id",
+    keyId,
+    "--issuer",
+    issuer,
+    "--wait"
+  ], dirname(appRoot));
+
+  run("xcrun", ["stapler", "staple", "-v", appRoot], dirname(appRoot));
+}
+
+function verifyMacAppBundle(appRoot) {
+  run("plutil", ["-lint", resolve(appRoot, "Contents", "Info.plist")], dirname(appRoot));
+  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appRoot], dirname(appRoot));
+
+  if (shouldRunGatekeeperValidation()) {
+    run("spctl", ["-a", "-t", "exec", "-vv", appRoot], dirname(appRoot));
+  }
+}
+
+function shouldRunGatekeeperValidation() {
+  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim() || "-";
+  const keyFile = process.env.OCTOP_MACOS_NOTARY_KEY_FILE?.trim();
+  const keyId = process.env.OCTOP_MACOS_NOTARY_KEY_ID?.trim();
+  const issuer = process.env.OCTOP_MACOS_NOTARY_ISSUER?.trim();
+
+  return identity !== "-" && Boolean(keyFile && keyId && issuer);
 }
 
 function parseArgs(argv) {

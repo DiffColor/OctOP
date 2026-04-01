@@ -55,28 +55,13 @@ jobs:
           "name=$assetName" >> $env:GITHUB_OUTPUT
           "path=dist/releases/$env:RELEASE_TAG/$assetName" >> $env:GITHUB_OUTPUT
 
-      - name: Check whether Windows asset already exists
-        id: windows-exists
-        shell: pwsh
-        run: |
-          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
-          $exists = @($release.assets | Where-Object { $_.name -eq "${{ steps.windows-asset.outputs.name }}" }).Count -gt 0
-          if ($exists) {
-            Write-Host "Asset already exists: ${{ steps.windows-asset.outputs.name }}"
-            "exists=true" >> $env:GITHUB_OUTPUT
-          } else {
-            "exists=false" >> $env:GITHUB_OUTPUT
-          }
-
       - name: Build Windows artifact
-        if: ${{ steps.windows-exists.outputs.exists != 'true' }}
         shell: pwsh
         run: node ./scripts/release-agent-menu.mjs --platform windows --version "$env:RELEASE_TAG"
 
       - name: Upload Windows asset
-        if: ${{ steps.windows-exists.outputs.exists != 'true' }}
         shell: pwsh
-        run: gh release upload $env:RELEASE_TAG "${{ steps.windows-asset.outputs.path }}" --repo $env:GITHUB_REPOSITORY
+        run: gh release upload $env:RELEASE_TAG "${{ steps.windows-asset.outputs.path }}" --clobber --repo $env:GITHUB_REPOSITORY
 
   backfill-macos:
     if: ${{ inputs.platform == 'macos' || inputs.platform == 'all' }}
@@ -98,6 +83,62 @@ jobs:
         with:
           swift-version: "6.1"
 
+      - name: Validate macOS signing secrets
+        env:
+          OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
+          OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
+          OCTOP_MACOS_CODESIGN_IDENTITY: ${{ secrets.OCTOP_MACOS_CODESIGN_IDENTITY }}
+          OCTOP_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_P8_BASE64 }}
+          OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
+          OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
+        run: |
+          for name in \
+            OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 \
+            OCTOP_MACOS_CODESIGN_CERT_PASSWORD \
+            OCTOP_MACOS_CODESIGN_IDENTITY \
+            OCTOP_MACOS_NOTARY_KEY_P8_BASE64 \
+            OCTOP_MACOS_NOTARY_KEY_ID \
+            OCTOP_MACOS_NOTARY_ISSUER
+          do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Prepare macOS signing environment
+        env:
+          OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
+          OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
+          OCTOP_MACOS_CODESIGN_IDENTITY: ${{ secrets.OCTOP_MACOS_CODESIGN_IDENTITY }}
+          OCTOP_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_P8_BASE64 }}
+          OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
+          OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/octop-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          CERT_PATH="$RUNNER_TEMP/octop-release-cert.p12"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/octop-notary-key.p8"
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"')"
+
+          printf '%s' "$OCTOP_MACOS_CODESIGN_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$OCTOP_MACOS_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$OCTOP_MACOS_CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/xcrun
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          {
+            echo "OCTOP_MACOS_CODESIGN_IDENTITY=$OCTOP_MACOS_CODESIGN_IDENTITY"
+            echo "OCTOP_MACOS_NOTARY_KEY_FILE=$NOTARY_KEY_PATH"
+            echo "OCTOP_MACOS_NOTARY_KEY_ID=$OCTOP_MACOS_NOTARY_KEY_ID"
+            echo "OCTOP_MACOS_NOTARY_ISSUER=$OCTOP_MACOS_NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
+
       - name: Verify release exists
         run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
 
@@ -112,35 +153,11 @@ jobs:
           echo "standalone_app_name=${standalone_app_asset_name}" >> "$GITHUB_OUTPUT"
           echo "standalone_app_path=dist/releases/${RELEASE_TAG}/${standalone_app_asset_name}" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether macOS asset already exists
-        id: macos-exists
-        run: |
-          release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
-          update_asset_name='${{ steps.macos-asset.outputs.update_name }}'
-          standalone_app_asset_name='${{ steps.macos-asset.outputs.standalone_app_name }}'
-
-          if printf '%s' "$release_json" | jq -e --arg name "$update_asset_name" '.assets[] | select(.name == $name)' >/dev/null; then
-            echo "Update asset already exists: $update_asset_name"
-            echo "update_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "update_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if printf '%s' "$release_json" | jq -e --arg name "$standalone_app_asset_name" '.assets[] | select(.name == $name)' >/dev/null; then
-            echo "Standalone app asset already exists: $standalone_app_asset_name"
-            echo "standalone_app_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "standalone_app_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build macOS artifact
-        if: ${{ steps.macos-exists.outputs.update_exists != 'true' || steps.macos-exists.outputs.standalone_app_exists != 'true' }}
         run: node ./scripts/release-agent-menu.mjs --platform macos --version "$RELEASE_TAG"
 
       - name: Upload macOS update asset
-        if: ${{ steps.macos-exists.outputs.update_exists != 'true' }}
-        run: gh release upload "$RELEASE_TAG" "${{ steps.macos-asset.outputs.update_path }}" --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$RELEASE_TAG" "${{ steps.macos-asset.outputs.update_path }}" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload macOS standalone app asset
-        if: ${{ steps.macos-exists.outputs.standalone_app_exists != 'true' }}
-        run: gh release upload "$RELEASE_TAG" "${{ steps.macos-asset.outputs.standalone_app_path }}" --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$RELEASE_TAG" "${{ steps.macos-asset.outputs.standalone_app_path }}" --clobber --repo "$GITHUB_REPOSITORY"
