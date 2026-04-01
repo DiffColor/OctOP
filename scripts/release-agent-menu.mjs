@@ -157,7 +157,8 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     "utf8"
   );
   writeFileSync(resolve(contentsRoot, "PkgInfo"), "APPL????", "utf8");
-  signMacAppBundle(appRoot);
+  sanitizeMacAppBundle(appRoot);
+  signMacAppBundleIfConfigured(appRoot);
   notarizeMacAppBundleIfConfigured(appRoot, resolve(stageRoot, "macos", "notarization"));
   verifyMacAppBundle(appRoot);
 
@@ -345,17 +346,31 @@ function buildMacIcon(sourceIconPath, outputIconPath, iconsetPath) {
   ], workspaceRoot);
 }
 
-function signMacAppBundle(appRoot) {
-  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim() || "-";
-  const args = ["--force", "--sign", identity, "--deep"];
+function sanitizeMacAppBundle(appRoot) {
+  const executablePath = resolve(appRoot, "Contents", "MacOS", "OctOPAgentMenu");
 
-  if (identity !== "-") {
-    args.push("--timestamp", "--options", "runtime");
-  } else {
-    args.push("--timestamp=none");
+  run("chmod", ["-R", "a+rX", appRoot], dirname(appRoot));
+  run("chmod", ["+x", executablePath], dirname(appRoot));
+  run("xattr", ["-cr", appRoot], dirname(appRoot));
+}
+
+function signMacAppBundleIfConfigured(appRoot) {
+  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim();
+
+  if (!identity) {
+    return;
   }
 
-  run("codesign", [...args, appRoot], dirname(appRoot));
+  run("codesign", [
+    "--force",
+    "--sign",
+    identity,
+    "--deep",
+    "--timestamp",
+    "--options",
+    "runtime",
+    appRoot
+  ], dirname(appRoot));
 }
 
 function notarizeMacAppBundleIfConfigured(appRoot, notarizationRoot) {
@@ -404,7 +419,10 @@ function notarizeMacAppBundleIfConfigured(appRoot, notarizationRoot) {
 
 function verifyMacAppBundle(appRoot) {
   run("plutil", ["-lint", resolve(appRoot, "Contents", "Info.plist")], dirname(appRoot));
-  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appRoot], dirname(appRoot));
+
+  if (isMacCodeSigningConfigured()) {
+    run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appRoot], dirname(appRoot));
+  }
 
   if (shouldRunGatekeeperValidation()) {
     run("spctl", ["-a", "-t", "exec", "-vv", appRoot], dirname(appRoot));
@@ -412,12 +430,16 @@ function verifyMacAppBundle(appRoot) {
 }
 
 function shouldRunGatekeeperValidation() {
-  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim() || "-";
+  const identity = process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim();
   const keyFile = process.env.OCTOP_MACOS_NOTARY_KEY_FILE?.trim();
   const keyId = process.env.OCTOP_MACOS_NOTARY_KEY_ID?.trim();
   const issuer = process.env.OCTOP_MACOS_NOTARY_ISSUER?.trim();
 
-  return identity !== "-" && Boolean(keyFile && keyId && issuer);
+  return Boolean(identity && keyFile && keyId && issuer);
+}
+
+function isMacCodeSigningConfigured() {
+  return Boolean(process.env.OCTOP_MACOS_CODESIGN_IDENTITY?.trim());
 }
 
 function parseArgs(argv) {

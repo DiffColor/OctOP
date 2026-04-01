@@ -57,7 +57,7 @@ jobs:
         with:
           swift-version: "6.1"
 
-      - name: Validate macOS signing secrets
+      - name: Import macOS signing identity (optional)
         env:
           OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
           OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
@@ -66,37 +66,22 @@ jobs:
           OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
           OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
         run: |
-          for name in \
-            OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 \
-            OCTOP_MACOS_CODESIGN_CERT_PASSWORD \
-            OCTOP_MACOS_CODESIGN_IDENTITY \
-            OCTOP_MACOS_NOTARY_KEY_P8_BASE64 \
-            OCTOP_MACOS_NOTARY_KEY_ID \
-            OCTOP_MACOS_NOTARY_ISSUER
-          do
-            if [ -z "${!name}" ]; then
-              echo "Missing required secret: $name" >&2
-              exit 1
-            fi
-          done
+          if [ -z "${OCTOP_MACOS_CODESIGN_IDENTITY:-}" ]; then
+            echo "OCTOP_MACOS_CODESIGN_IDENTITY is not set. Build unsigned macOS app."
+            exit 0
+          fi
 
-      - name: Prepare macOS signing environment
-        env:
-          OCTOP_MACOS_CODESIGN_CERT_P12_BASE64: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_P12_BASE64 }}
-          OCTOP_MACOS_CODESIGN_CERT_PASSWORD: ${{ secrets.OCTOP_MACOS_CODESIGN_CERT_PASSWORD }}
-          OCTOP_MACOS_CODESIGN_IDENTITY: ${{ secrets.OCTOP_MACOS_CODESIGN_IDENTITY }}
-          OCTOP_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_P8_BASE64 }}
-          OCTOP_MACOS_NOTARY_KEY_ID: ${{ secrets.OCTOP_MACOS_NOTARY_KEY_ID }}
-          OCTOP_MACOS_NOTARY_ISSUER: ${{ secrets.OCTOP_MACOS_NOTARY_ISSUER }}
-        run: |
+          if [ -z "${OCTOP_MACOS_CODESIGN_CERT_P12_BASE64:-}" ] || [ -z "${OCTOP_MACOS_CODESIGN_CERT_PASSWORD:-}" ]; then
+            echo "Signing certificate is missing. Build unsigned macOS app."
+            exit 0
+          fi
+
           KEYCHAIN_PATH="$RUNNER_TEMP/octop-release.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
           CERT_PATH="$RUNNER_TEMP/octop-release-cert.p12"
-          NOTARY_KEY_PATH="$RUNNER_TEMP/octop-notary-key.p8"
           EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"')"
 
           printf '%s' "$OCTOP_MACOS_CODESIGN_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
-          printf '%s' "$OCTOP_MACOS_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -106,12 +91,19 @@ jobs:
           security default-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          {
-            echo "OCTOP_MACOS_CODESIGN_IDENTITY=$OCTOP_MACOS_CODESIGN_IDENTITY"
-            echo "OCTOP_MACOS_NOTARY_KEY_FILE=$NOTARY_KEY_PATH"
-            echo "OCTOP_MACOS_NOTARY_KEY_ID=$OCTOP_MACOS_NOTARY_KEY_ID"
-            echo "OCTOP_MACOS_NOTARY_ISSUER=$OCTOP_MACOS_NOTARY_ISSUER"
-          } >> "$GITHUB_ENV"
+          echo "OCTOP_MACOS_CODESIGN_IDENTITY=$OCTOP_MACOS_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+
+          if [ -n "${OCTOP_MACOS_NOTARY_KEY_P8_BASE64:-}" ] && [ -n "${OCTOP_MACOS_NOTARY_KEY_ID:-}" ] && [ -n "${OCTOP_MACOS_NOTARY_ISSUER:-}" ]; then
+            NOTARY_KEY_PATH="$RUNNER_TEMP/octop-notary-key.p8"
+            printf '%s' "$OCTOP_MACOS_NOTARY_KEY_P8_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
+            {
+              echo "OCTOP_MACOS_NOTARY_KEY_FILE=$NOTARY_KEY_PATH"
+              echo "OCTOP_MACOS_NOTARY_KEY_ID=$OCTOP_MACOS_NOTARY_KEY_ID"
+              echo "OCTOP_MACOS_NOTARY_ISSUER=$OCTOP_MACOS_NOTARY_ISSUER"
+            } >> "$GITHUB_ENV"
+          else
+            echo "Notary credentials are incomplete. Skip notarization."
+          fi
 
       - name: Build macOS release artifacts
         run: node ./scripts/release-agent-menu.mjs --platform macos --version "${{ env.RELEASE_VERSION }}"
