@@ -4,6 +4,8 @@ import App from "./App.jsx";
 import "./styles.css";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 
+document.documentElement.dataset.octopSurface = "mobile";
+
 if ("serviceWorker" in navigator) {
   const SERVICE_WORKER_BUILD_ID = typeof __APP_BUILD_ID__ === "string" ? __APP_BUILD_ID__ : "dev";
   const VERSION_METADATA_URL = "/version.json";

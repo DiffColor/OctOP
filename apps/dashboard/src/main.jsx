@@ -4,6 +4,8 @@ import App from "./App.jsx";
 import "./styles.css";
 import { startDashboardServiceWorker } from "./swRegistration.js";
 
+document.documentElement.dataset.octopSurface = "dashboard";
+
 startDashboardServiceWorker();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
