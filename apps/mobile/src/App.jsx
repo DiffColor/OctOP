@@ -3700,6 +3700,7 @@ function BottomSheet({
   children,
   variant = "bottom",
   headerActions = null,
+  headerActionsLayout = "inline",
   panelTestId = ""
 }) {
   if (!open) {
@@ -3707,6 +3708,7 @@ function BottomSheet({
   }
 
   const isCenterDialog = variant === "center";
+  const shouldStackHeaderActions = headerActionsLayout === "stacked" && Boolean(headerActions);
   const containerClassName = isCenterDialog
     ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/86 px-4 py-6 backdrop-blur-sm"
     : "fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 px-4 pb-4 pt-10 backdrop-blur-sm";
@@ -3729,23 +3731,43 @@ function BottomSheet({
       >
         <div className="border-b border-white/10 bg-white/5 px-5 py-4">
           {isCenterDialog ? null : <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />}
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-white">{title}</h2>
+          {shouldStackHeaderActions ? (
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">{title}</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">{headerActions}</div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {headerActions}
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </button>
+          ) : (
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">{title}</h2>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {headerActions}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
         <div className="telegram-scroll max-h-[80dvh] overflow-y-auto">{children}</div>
       </section>
@@ -5772,6 +5794,7 @@ function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onRetr
       onClose={busy ? () => {} : onClose}
       variant="center"
       panelTestId="thread-message-action-dialog"
+      headerActionsLayout="stacked"
       headerActions={
         <>
           {onCopy ? (
