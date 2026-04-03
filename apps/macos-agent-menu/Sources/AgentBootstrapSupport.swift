@@ -537,6 +537,73 @@ private struct AgentPreparedCodexAdapterSource {
   let sourceContentRevision: String
 }
 
+private struct SemanticVersion: Comparable {
+  let major: Int
+  let minor: Int
+  let patch: Int
+
+  init(major: Int, minor: Int, patch: Int) {
+    self.major = major
+    self.minor = minor
+    self.patch = patch
+  }
+
+  init?(_ rawValue: String) {
+    let trimmed = rawValue
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    guard !trimmed.isEmpty else {
+      return nil
+    }
+
+    let withoutPrefix = trimmed.hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
+    let normalized = withoutPrefix
+      .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
+      .first?
+      .split(separator: "+", maxSplits: 1, omittingEmptySubsequences: true)
+      .first
+      .map(String.init) ?? withoutPrefix
+    let components = normalized.split(separator: ".")
+    guard !components.isEmpty else {
+      return nil
+    }
+
+    guard let major = Int(components[0]) else {
+      return nil
+    }
+
+    let minor = components.count > 1 ? Int(components[1]) ?? 0 : 0
+    let patch = components.count > 2 ? Int(components[2]) ?? 0 : 0
+
+    self.init(major: major, minor: minor, patch: patch)
+  }
+
+  var displayString: String {
+    "v\(major).\(minor).\(patch)"
+  }
+
+  static func < (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
+    if lhs.major != rhs.major {
+      return lhs.major < rhs.major
+    }
+    if lhs.minor != rhs.minor {
+      return lhs.minor < rhs.minor
+    }
+    return lhs.patch < rhs.patch
+  }
+}
+
+private struct NodeExecutableState {
+  let url: URL
+  let versionText: String?
+  let version: SemanticVersion?
+  let supported: Bool
+  let npmAvailable: Bool
+}
+
+private let minimumSupportedNodeVersion = SemanticVersion(major: 18, minor: 17, patch: 0)
+private let nodeDistributionIndexURL = URL(string: "https://nodejs.org/dist/index.json")!
+
 struct AgentDiagnosticItem: Identifiable {
   let id = UUID()
   let title: String
@@ -735,6 +802,7 @@ enum AgentBootstrapError: LocalizedError {
   case appSupportUnavailable
   case bundleBootstrapUnavailable
   case nodeUnavailable
+  case nodeVersionUnsupported
   case codexUnavailable
   case npmUnavailable
 
@@ -746,6 +814,8 @@ enum AgentBootstrapError: LocalizedError {
       return "앱에 포함된 bootstrap 리소스를 찾지 못했습니다."
     case .nodeUnavailable:
       return "node를 설치하거나 가져오지 못했습니다."
+    case .nodeVersionUnsupported:
+      return "지원되지 않는 node 버전입니다. 최소 \(minimumSupportedNodeVersion.displayString) 이상이 필요합니다."
     case .codexUnavailable:
       return "codex를 설치하거나 가져오지 못했습니다."
     case .npmUnavailable:
@@ -1411,12 +1481,60 @@ final class AgentBootstrapStore: ObservableObject {
 
   func refreshDiagnostics() {
     let searchPaths = executableSearchPaths()
-    let managedNodeExists = FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path)
+    let managedNodeState = managedNodeExecutableState()
+    let systemNodeState = resolveBestSystemNodeState(searchPaths: searchPaths)
     let managedCodexExists = FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path)
     let activeRuntimeReleaseURL = currentRuntimeReleaseURL()
     let managedWorkspaceExists = activeRuntimeReleaseURL != nil
     let launchAgentExists = FileManager.default.fileExists(atPath: launchAgentURL.path)
     let bundleBootstrapExists = bundleBootstrapURL != nil
+
+    let nodeDiagnostic: AgentDiagnosticItem
+    if let managedNodeState,
+       managedNodeState.supported,
+       managedNodeState.npmAvailable {
+      let versionText = managedNodeState.versionText ?? minimumSupportedNodeVersion.displayString
+      nodeDiagnostic = buildDiagnostic(
+        title: "관리형 node",
+        detail: "\(runtimeNodeURL.path) (\(versionText))",
+        status: .ok
+      )
+    } else if let managedNodeState {
+      var details: [String] = [runtimeNodeURL.path]
+      if let versionText = managedNodeState.versionText {
+        details.append(versionText)
+      } else {
+        details.append("버전 확인 실패")
+      }
+      if !managedNodeState.supported {
+        details.append("최소 \(minimumSupportedNodeVersion.displayString) 이상 필요")
+      }
+      if !managedNodeState.npmAvailable {
+        details.append("npm 누락")
+      }
+      nodeDiagnostic = buildDiagnostic(
+        title: "관리형 node",
+        detail: details.joined(separator: " · "),
+        status: .warning
+      )
+    } else if let systemNodeState {
+      let versionText = systemNodeState.versionText ?? "버전 확인 실패"
+      let status: AgentDiagnosticItem.Status = systemNodeState.supported && systemNodeState.npmAvailable ? .warning : .missing
+      let detail = systemNodeState.supported && systemNodeState.npmAvailable
+        ? "시스템 node 사용 가능: \(systemNodeState.url.path) (\(versionText))"
+        : "시스템 node 미지원: \(systemNodeState.url.path) (\(versionText))"
+      nodeDiagnostic = buildDiagnostic(
+        title: "관리형 node",
+        detail: detail,
+        status: status
+      )
+    } else {
+      nodeDiagnostic = buildDiagnostic(
+        title: "관리형 node",
+        detail: "시스템 node 없음",
+        status: .missing
+      )
+    }
 
     diagnostics = [
       buildDiagnostic(
@@ -1425,12 +1543,7 @@ final class AgentBootstrapStore: ObservableObject {
         okDetail: activeRuntimeReleaseURL?.path ?? "",
         missingDetail: "아직 bootstrap 런타임이 스테이징되지 않았습니다."
       ),
-      buildDiagnostic(
-        title: "관리형 node",
-        exists: managedNodeExists,
-        okDetail: runtimeNodeURL.path,
-        missingDetail: resolveExecutable(named: "node", searchPaths: searchPaths)?.path ?? "시스템 node 없음"
-      ),
+      nodeDiagnostic,
       buildDiagnostic(
         title: "관리형 codex",
         exists: managedCodexExists,
@@ -1457,7 +1570,9 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   var requiresBootstrap: Bool {
-    if !FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path) {
+    guard let managedNodeState = managedNodeExecutableState(),
+          managedNodeState.supported,
+          managedNodeState.npmAvailable else {
       return true
     }
 
@@ -1499,8 +1614,16 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   func makeLaunchContext() throws -> AgentLaunchContext {
-    guard FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path) else {
+    guard let managedNodeState = managedNodeExecutableState() else {
       throw AgentBootstrapError.nodeUnavailable
+    }
+
+    guard managedNodeState.supported else {
+      throw AgentBootstrapError.nodeVersionUnsupported
+    }
+
+    guard managedNodeState.npmAvailable else {
+      throw AgentBootstrapError.npmUnavailable
     }
 
     guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
@@ -2352,32 +2475,54 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func ensureManagedNode(log: @escaping @MainActor (String) -> Void) async throws {
-    if FileManager.default.isExecutableFile(atPath: runtimeNodeURL.path) {
-      log("관리형 node가 이미 존재합니다: \(runtimeNodeURL.path)")
+    if let managedNodeState = managedNodeExecutableState(),
+       managedNodeState.supported,
+       managedNodeState.npmAvailable {
+      log("관리형 node를 재사용합니다: \(runtimeNodeURL.path) (\(managedNodeState.versionText ?? minimumSupportedNodeVersion.displayString))")
       return
     }
 
-    if let systemNode = resolveExecutable(named: "node", searchPaths: executableSearchPaths()) {
-      log("시스템 node를 가져옵니다: \(systemNode.path)")
-      try importNodePrefix(from: systemNode)
-      return
+    if let managedNodeState = managedNodeExecutableState() {
+      var reasons: [String] = []
+      if let versionText = managedNodeState.versionText {
+        reasons.append(versionText)
+      }
+      if !managedNodeState.supported {
+        reasons.append("최소 \(minimumSupportedNodeVersion.displayString) 이상 필요")
+      }
+      if !managedNodeState.npmAvailable {
+        reasons.append("npm 누락")
+      }
+      log("기존 관리형 node를 교체합니다: \(reasons.joined(separator: " · "))")
     }
 
-    log("시스템 node가 없어 Homebrew 설치를 시도합니다.")
-    try await ensureHomebrewInstalled(log: log)
-    try await runProcess(
-      executableURL: URL(fileURLWithPath: "/bin/bash"),
-      arguments: ["-lc", "brew install node"],
-      environment: buildProcessEnvironment(),
-      currentDirectoryURL: nil,
-      log: log
-    )
+    let searchPaths = executableSearchPaths()
+    let supportedSystemNodeState = resolveSupportedSystemNodeState(searchPaths: searchPaths)
+    let distribution = try await resolveLatestManagedNodeDistribution()
 
-    guard let brewNode = resolveExecutable(named: "node", searchPaths: executableSearchPaths()) else {
+    do {
+      log("관리형 node 최신 LTS를 설치합니다: \(distribution.versionText)")
+      try await installManagedNodeFromOfficialDistribution(distribution, log: log)
+    } catch {
+      guard let supportedSystemNodeState else {
+        throw error
+      }
+
+      log("공식 node 설치에 실패해 지원되는 시스템 node를 가져옵니다: \(supportedSystemNodeState.url.path) (\(supportedSystemNodeState.versionText ?? minimumSupportedNodeVersion.displayString))")
+      try importNodePrefix(from: supportedSystemNodeState.url)
+    }
+
+    guard let finalManagedNodeState = managedNodeExecutableState() else {
       throw AgentBootstrapError.nodeUnavailable
     }
 
-    try importNodePrefix(from: brewNode)
+    guard finalManagedNodeState.supported else {
+      throw AgentBootstrapError.nodeVersionUnsupported
+    }
+
+    guard finalManagedNodeState.npmAvailable else {
+      throw AgentBootstrapError.npmUnavailable
+    }
   }
 
   private func ensureManagedCodex(log: @escaping @MainActor (String) -> Void) async throws {
@@ -2667,6 +2812,184 @@ final class AgentBootstrapStore: ObservableObject {
     }
 
     try FileManager.default.copyItem(at: prefixURL, to: runtimeNodePrefixURL)
+  }
+
+  private func nodePrefixURL(for nodeExecutableURL: URL) -> URL {
+    nodeExecutableURL
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+  }
+
+  private func npmCliURL(for nodeExecutableURL: URL) -> URL {
+    nodePrefixURL(for: nodeExecutableURL)
+      .appendingPathComponent("lib/node_modules/npm/bin/npm-cli.js")
+  }
+
+  private func managedNodeExecutableState() -> NodeExecutableState? {
+    nodeExecutableState(
+      for: runtimeNodeURL,
+      npmCliURL: runtimeNpmCliURL
+    )
+  }
+
+  private func resolveBestSystemNodeState(searchPaths: [String]) -> NodeExecutableState? {
+    for nodeExecutableURL in resolveExecutables(named: "node", searchPaths: searchPaths) {
+      if let state = nodeExecutableState(
+        for: nodeExecutableURL,
+        npmCliURL: npmCliURL(for: nodeExecutableURL)
+      ) {
+        return state
+      }
+    }
+
+    return nil
+  }
+
+  private func resolveSupportedSystemNodeState(searchPaths: [String]) -> NodeExecutableState? {
+    for nodeExecutableURL in resolveExecutables(named: "node", searchPaths: searchPaths) {
+      if let state = nodeExecutableState(
+        for: nodeExecutableURL,
+        npmCliURL: npmCliURL(for: nodeExecutableURL)
+      ),
+         state.supported,
+         state.npmAvailable {
+        return state
+      }
+    }
+
+    return nil
+  }
+
+  private func nodeExecutableState(
+    for nodeExecutableURL: URL,
+    npmCliURL: URL
+  ) -> NodeExecutableState? {
+    guard FileManager.default.isExecutableFile(atPath: nodeExecutableURL.path) else {
+      return nil
+    }
+
+    let versionText = normalizedNodeVersionText(runCommand(nodeExecutableURL.path, arguments: ["--version"]))
+    let version = versionText.flatMap(SemanticVersion.init)
+    return NodeExecutableState(
+      url: nodeExecutableURL,
+      versionText: versionText,
+      version: version,
+      supported: version.map { $0 >= minimumSupportedNodeVersion } ?? false,
+      npmAvailable: FileManager.default.fileExists(atPath: npmCliURL.path)
+    )
+  }
+
+  private func normalizedNodeVersionText(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else {
+      return nil
+    }
+
+    return trimmed.hasPrefix("v") ? trimmed : "v\(trimmed)"
+  }
+
+  private func resolveLatestManagedNodeDistribution() async throws -> (versionText: String, archiveURL: URL) {
+    let (data, response) = try await URLSession.shared.data(from: nodeDistributionIndexURL)
+    guard let httpResponse = response as? HTTPURLResponse,
+          (200..<300).contains(httpResponse.statusCode) else {
+      throw AgentBootstrapError.nodeUnavailable
+    }
+
+    guard let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+      throw AgentBootstrapError.nodeUnavailable
+    }
+
+#if arch(arm64)
+    let architecture = "arm64"
+#else
+    let architecture = "x64"
+#endif
+
+    for item in json {
+      let lts = item["lts"]
+      let hasLtsLabel = (lts as? String).map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+      let isLts = hasLtsLabel || (lts as? Bool == true)
+      guard isLts,
+            let versionText = item["version"] as? String,
+            !versionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let version = SemanticVersion(versionText),
+            version >= minimumSupportedNodeVersion else {
+        continue
+      }
+
+      let archiveURL = URL(string: "https://nodejs.org/dist/\(versionText)/node-\(versionText)-darwin-\(architecture).tar.gz")
+      if let archiveURL {
+        return (versionText, archiveURL)
+      }
+    }
+
+    throw AgentBootstrapError.nodeUnavailable
+  }
+
+  private func installManagedNodeFromOfficialDistribution(
+    _ distribution: (versionText: String, archiveURL: URL),
+    log: @escaping @MainActor (String) -> Void
+  ) async throws {
+    let stagingURL = runtimeURL.appendingPathComponent(
+      ".node-install-\(UUID().uuidString.lowercased())",
+      isDirectory: true
+    )
+    let archiveURL = stagingURL.appendingPathComponent("node.tar.gz")
+    let extractURL = stagingURL.appendingPathComponent("extract", isDirectory: true)
+
+    if FileManager.default.fileExists(atPath: stagingURL.path) {
+      try? FileManager.default.removeItem(at: stagingURL)
+    }
+
+    try ensureDirectory(stagingURL)
+    defer {
+      try? FileManager.default.removeItem(at: stagingURL)
+    }
+
+    log("Node LTS 아카이브를 다운로드합니다: \(distribution.archiveURL.absoluteString)")
+    let (downloadedArchiveURL, response) = try await URLSession.shared.download(from: distribution.archiveURL)
+    guard let httpResponse = response as? HTTPURLResponse,
+          (200..<300).contains(httpResponse.statusCode) else {
+      throw AgentBootstrapError.nodeUnavailable
+    }
+
+    try FileManager.default.moveItem(at: downloadedArchiveURL, to: archiveURL)
+    try ensureDirectory(extractURL)
+
+    log("Node LTS 아카이브를 풉니다: \(distribution.versionText)")
+    try await runProcess(
+      executableURL: URL(fileURLWithPath: "/usr/bin/tar"),
+      arguments: ["-xzf", archiveURL.path, "-C", extractURL.path],
+      environment: buildProcessEnvironment(),
+      currentDirectoryURL: nil,
+      log: log
+    )
+
+    let extractedPrefixURL = try FileManager.default.contentsOfDirectory(
+      at: extractURL,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ).first {
+      ((try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false)
+    }
+
+    guard let extractedPrefixURL else {
+      throw AgentBootstrapError.nodeUnavailable
+    }
+
+    let installedNodeURL = extractedPrefixURL.appendingPathComponent("bin/node")
+    let installedNpmCliURL = extractedPrefixURL.appendingPathComponent("lib/node_modules/npm/bin/npm-cli.js")
+    guard let state = nodeExecutableState(for: installedNodeURL, npmCliURL: installedNpmCliURL),
+          state.supported,
+          state.npmAvailable else {
+      throw AgentBootstrapError.nodeVersionUnsupported
+    }
+
+    if FileManager.default.fileExists(atPath: runtimeNodePrefixURL.path) {
+      try FileManager.default.removeItem(at: runtimeNodePrefixURL)
+    }
+
+    try FileManager.default.moveItem(at: extractedPrefixURL, to: runtimeNodePrefixURL)
   }
 
   private func importCodexBinary(from sourceURL: URL) throws {
@@ -3620,14 +3943,28 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   private func resolveExecutable(named name: String, searchPaths: [String]) -> URL? {
+    resolveExecutables(named: name, searchPaths: searchPaths).first
+  }
+
+  private func resolveExecutables(named name: String, searchPaths: [String]) -> [URL] {
+    var resolvedURLs: [URL] = []
+    var seenPaths = Set<String>()
+
     for path in searchPaths {
       let candidate = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(name)
-      if FileManager.default.isExecutableFile(atPath: candidate.path) {
-        return candidate.resolvingSymlinksInPath()
+      guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
+        continue
       }
+
+      let resolvedURL = candidate.resolvingSymlinksInPath()
+      guard seenPaths.insert(resolvedURL.path).inserted else {
+        continue
+      }
+
+      resolvedURLs.append(resolvedURL)
     }
 
-    return nil
+    return resolvedURLs
   }
 
   private func buildDiagnostic(title: String, exists: Bool, okDetail: String, missingDetail: String) -> AgentDiagnosticItem {
@@ -3635,6 +3972,18 @@ final class AgentBootstrapStore: ObservableObject {
       title: title,
       detail: exists ? okDetail : missingDetail,
       status: exists ? .ok : .missing
+    )
+  }
+
+  private func buildDiagnostic(
+    title: String,
+    detail: String,
+    status: AgentDiagnosticItem.Status
+  ) -> AgentDiagnosticItem {
+    AgentDiagnosticItem(
+      title: title,
+      detail: detail,
+      status: status
     )
   }
 

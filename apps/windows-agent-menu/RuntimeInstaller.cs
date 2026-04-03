@@ -25,6 +25,7 @@ sealed class RuntimeInstaller
   }
 
   private const string NodeIndexUrl = "https://nodejs.org/dist/index.json";
+  private static readonly Version MinimumSupportedNodeVersion = new(18, 17, 0);
   private const string RuntimePackageJson = """
   {
     "name": "octop-local-agent-runtime",
@@ -134,8 +135,11 @@ sealed class RuntimeInstaller
       ? runtimeBuildInfo?.SourceContentRevision
       : runtimeBuildInfo?.SourceRevision;
     var appVersion = runtimeBuildInfo?.AppVersion;
-    var nodeVersion = paths.GetManagedNodeVersion();
-    var nodeInstalled = File.Exists(paths.GetNodeExecutablePath());
+    var nodeExecutablePath = paths.GetNodeExecutablePath();
+    var npmExecutablePath = paths.GetNpmExecutablePath();
+    var nodeVersion = await ReadNodeVersionAsync(nodeExecutablePath, cancellationToken) ?? paths.GetManagedNodeVersion();
+    var nodeInstalled = IsManagedNodeReady(nodeExecutablePath, npmExecutablePath, nodeVersion);
+    var nodeVersionDetail = DescribeManagedNode(nodeExecutablePath, npmExecutablePath, nodeVersion);
     var runtimeDependenciesInstalled =
       File.Exists(Path.Combine(paths.RuntimeRoot, "node_modules", "nats", "package.json")) &&
       File.Exists(Path.Combine(paths.RuntimeRoot, "node_modules", "ws", "package.json"));
@@ -162,7 +166,7 @@ sealed class RuntimeInstaller
       RuntimeCommitId = string.IsNullOrWhiteSpace(runtimeCommitId) ? "unknown" : runtimeCommitId,
       AppVersion = string.IsNullOrWhiteSpace(appVersion) ? "unknown" : appVersion,
       NodeInstalled = nodeInstalled,
-      NodeVersion = nodeVersion,
+      NodeVersion = nodeVersionDetail,
       RuntimeDependenciesInstalled = runtimeDependenciesInstalled,
       CodexInstalled = codexInstalled,
       CodexLoggedIn = codexLoggedIn,
@@ -588,6 +592,7 @@ sealed class RuntimeInstaller
     IProgress<string> progress,
     CancellationToken cancellationToken)
   {
+    await EnsureNodeAsync(paths, progress, cancellationToken);
     Directory.CreateDirectory(paths.RuntimeReleasesRoot);
     Directory.CreateDirectory(paths.RuntimeSourceCacheRoot);
 
@@ -818,23 +823,33 @@ sealed class RuntimeInstaller
 
   private async Task EnsureNodeAsync(OctopPaths paths, IProgress<string> progress, CancellationToken cancellationToken)
   {
-    if (File.Exists(paths.GetNodeExecutablePath()))
-    {
-      progress.Report($"Node 재사용: {paths.GetManagedNodeVersion() ?? "unknown"}");
-      return;
-    }
-
     progress.Report("Node 포터블 런타임 정보를 조회합니다.");
     var nodeVersion = await ResolveLatestLtsNodeVersionAsync(cancellationToken);
     var targetDirectory = Path.Combine(paths.NodeRoot, nodeVersion);
     var nodeExecutablePath = Path.Combine(targetDirectory, "node.exe");
+    var npmExecutablePath = Path.Combine(targetDirectory, "npm.cmd");
+    var currentNodeExecutablePath = paths.GetNodeExecutablePath();
+    var currentNpmExecutablePath = paths.GetNpmExecutablePath();
+    var currentNodeVersion = await ReadNodeVersionAsync(currentNodeExecutablePath, cancellationToken) ?? paths.GetManagedNodeVersion();
 
-    if (File.Exists(nodeExecutablePath))
+    if (IsManagedNodeReady(currentNodeExecutablePath, currentNpmExecutablePath, currentNodeVersion) &&
+        string.Equals(NormalizeNodeVersion(currentNodeVersion), NormalizeNodeVersion(nodeVersion), StringComparison.OrdinalIgnoreCase))
+    {
+      progress.Report($"Node 재사용: {NormalizeNodeVersion(currentNodeVersion) ?? nodeVersion}");
+      return;
+    }
+
+    if (File.Exists(nodeExecutablePath) && File.Exists(npmExecutablePath))
     {
       Directory.CreateDirectory(paths.NodeRoot);
       await File.WriteAllTextAsync(paths.NodeVersionMarkerPath, nodeVersion, new UTF8Encoding(false), cancellationToken);
       progress.Report($"Node 설치 재사용: {nodeVersion}");
       return;
+    }
+
+    if (!string.IsNullOrWhiteSpace(currentNodeVersion))
+    {
+      progress.Report($"Node 버전을 교체합니다: current={NormalizeNodeVersion(currentNodeVersion) ?? currentNodeVersion}, target={nodeVersion}");
     }
 
     Directory.CreateDirectory(paths.NodeRoot);
@@ -865,6 +880,122 @@ sealed class RuntimeInstaller
     File.Delete(archivePath);
     Directory.Delete(extractRoot, recursive: true);
     progress.Report($"Node 설치 완료: {nodeVersion}");
+  }
+
+  internal static bool IsSupportedNodeVersion(string? versionText)
+  {
+    var parsedVersion = ParseNodeVersion(versionText);
+    return parsedVersion is not null && parsedVersion >= MinimumSupportedNodeVersion;
+  }
+
+  private static bool IsManagedNodeReady(string? nodeExecutablePath, string? npmExecutablePath, string? versionText)
+  {
+    return !string.IsNullOrWhiteSpace(nodeExecutablePath) &&
+      File.Exists(nodeExecutablePath) &&
+      !string.IsNullOrWhiteSpace(npmExecutablePath) &&
+      File.Exists(npmExecutablePath) &&
+      IsSupportedNodeVersion(versionText);
+  }
+
+  private static string? DescribeManagedNode(string? nodeExecutablePath, string? npmExecutablePath, string? versionText)
+  {
+    if (string.IsNullOrWhiteSpace(nodeExecutablePath) || !File.Exists(nodeExecutablePath))
+    {
+      return null;
+    }
+
+    var normalizedVersion = NormalizeNodeVersion(versionText) ?? "버전 확인 실패";
+    var messages = new List<string> { normalizedVersion };
+
+    if (!IsSupportedNodeVersion(versionText))
+    {
+      messages.Add($"최소 {FormatNodeVersion(MinimumSupportedNodeVersion)} 이상 필요");
+    }
+
+    if (string.IsNullOrWhiteSpace(npmExecutablePath) || !File.Exists(npmExecutablePath))
+    {
+      messages.Add("npm 누락");
+    }
+
+    return string.Join(" · ", messages);
+  }
+
+  private static string? NormalizeNodeVersion(string? versionText)
+  {
+    var trimmed = versionText?.Trim() ?? string.Empty;
+    if (trimmed.Length == 0)
+    {
+      return null;
+    }
+
+    return trimmed.StartsWith('v') ? trimmed : $"v{trimmed}";
+  }
+
+  private static Version? ParseNodeVersion(string? versionText)
+  {
+    var normalized = NormalizeNodeVersion(versionText);
+    if (string.IsNullOrWhiteSpace(normalized))
+    {
+      return null;
+    }
+
+    var versionValue = normalized[1..];
+    var endIndex = versionValue.IndexOfAny(['-', '+']);
+    if (endIndex >= 0)
+    {
+      versionValue = versionValue[..endIndex];
+    }
+
+    var parts = versionValue.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length == 0 || !int.TryParse(parts[0], out var major))
+    {
+      return null;
+    }
+
+    var minor = parts.Length > 1 && int.TryParse(parts[1], out var parsedMinor) ? parsedMinor : 0;
+    var patch = parts.Length > 2 && int.TryParse(parts[2], out var parsedPatch) ? parsedPatch : 0;
+    return new Version(major, minor, patch);
+  }
+
+  private static string FormatNodeVersion(Version version)
+  {
+    return $"v{version.Major}.{version.Minor}.{(version.Build < 0 ? 0 : version.Build)}";
+  }
+
+  private static async Task<string?> ReadNodeVersionAsync(string? nodeExecutablePath, CancellationToken cancellationToken)
+  {
+    if (string.IsNullOrWhiteSpace(nodeExecutablePath) || !File.Exists(nodeExecutablePath))
+    {
+      return null;
+    }
+
+    try
+    {
+      var result = await RunCommandAsync(
+        new ProcessStartInfo
+        {
+          FileName = nodeExecutablePath,
+          UseShellExecute = false,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true,
+          CreateNoWindow = true,
+          StandardOutputEncoding = Encoding.UTF8,
+          StandardErrorEncoding = Encoding.UTF8,
+          Arguments = "--version"
+        },
+        cancellationToken: cancellationToken);
+
+      if (result.ExitCode != 0)
+      {
+        return null;
+      }
+
+      return NormalizeNodeVersion(result.StandardOutput.Trim());
+    }
+    catch
+    {
+      return null;
+    }
   }
 
   private async Task EnsureRuntimeDependenciesAsync(OctopPaths paths, string runtimeRoot, IProgress<string> progress, CancellationToken cancellationToken)

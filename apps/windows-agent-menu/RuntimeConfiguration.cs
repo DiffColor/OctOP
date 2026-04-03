@@ -270,7 +270,9 @@ sealed class RuntimeStatus
       string.IsNullOrWhiteSpace(AppVersion) || AppVersion == "unknown"
         ? "앱 버전 미확인"
         : $"앱 버전 {AppVersion}",
-      NodeInstalled ? $"Node {NodeVersion ?? "설치됨"}" : "Node 없음",
+      NodeInstalled
+        ? $"Node {NodeVersion ?? "설치됨"}"
+        : (string.IsNullOrWhiteSpace(NodeVersion) ? "Node 없음" : $"Node {NodeVersion}"),
       RuntimeDependenciesInstalled ? "bridge 의존성 설치됨" : "bridge 의존성 없음",
       CodexInstalled ? "Codex 설치됨" : "Codex 없음",
       $"로그인: {CodexLoginStatus}",

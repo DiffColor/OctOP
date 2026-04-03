@@ -187,7 +187,14 @@ sealed class SetupWindow : Window
       string.IsNullOrWhiteSpace(status.AppVersion) || status.AppVersion == "unknown"
         ? "미확인"
         : status.AppVersion);
-    UpdateDiagnostic("node", status.NodeInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.NodeInstalled ? (status.NodeVersion ?? "정상") : "누락");
+    UpdateDiagnostic(
+      "node",
+      status.NodeInstalled
+        ? DiagnosticState.Ok
+        : (string.IsNullOrWhiteSpace(status.NodeVersion) ? DiagnosticState.Missing : DiagnosticState.Warning),
+      status.NodeInstalled
+        ? (status.NodeVersion ?? "정상")
+        : (status.NodeVersion ?? "누락"));
     UpdateDiagnostic("dependencies", status.RuntimeDependenciesInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.RuntimeDependenciesInstalled ? "정상" : "누락");
     UpdateDiagnostic("codex", status.CodexInstalled ? DiagnosticState.Ok : DiagnosticState.Missing, status.CodexInstalled ? "정상" : "누락");
     UpdateDiagnostic("login", status.CodexLoggedIn ? DiagnosticState.Ok : DiagnosticState.Warning, status.CodexLoggedIn ? "정상" : status.CodexLoginStatus);
