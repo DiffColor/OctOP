@@ -46,6 +46,7 @@ const APP_SERVER_HEALTHCHECK_STARTUP_GRACE_MS = normalizePositiveNumber(
   env.OCTOP_APP_SERVER_HEALTHCHECK_STARTUP_GRACE_MS,
   Math.max(15000, APP_SERVER_RESTART_STABLE_WINDOW_MS)
 );
+const FULL_SERVICE_RESTART_DELAY_MS = 60000;
 const BRIDGE_HEALTHCHECK_TIMEOUT_MS = normalizePositiveNumber(
   env.OCTOP_BRIDGE_HEALTHCHECK_TIMEOUT_MS,
   1500
@@ -68,6 +69,8 @@ let appServerHealthMonitorTimer = null;
 let appServerHealthCheckInFlight = false;
 let appServerHealthFailureCount = 0;
 let pendingControlledAppServerRestartReason = "";
+let pendingFullServiceRestartReason = "";
+let fullServiceRestartTimer = null;
 let isShuttingDown = false;
 
 function normalizePositiveNumber(rawValue, fallback) {
@@ -94,6 +97,13 @@ function clearAppServerHealthMonitor() {
   }
 }
 
+function clearFullServiceRestartTimer() {
+  if (fullServiceRestartTimer) {
+    clearTimeout(fullServiceRestartTimer);
+    fullServiceRestartTimer = null;
+  }
+}
+
 function resetAppServerHealthFailures() {
   appServerHealthFailureCount = 0;
 }
@@ -106,14 +116,107 @@ function stopAll(signal = "SIGTERM") {
   isShuttingDown = true;
   clearAppServerRestartTimer();
   clearAppServerHealthMonitor();
+  clearFullServiceRestartTimer();
+  pendingFullServiceRestartReason = "";
 
-  if (appServerProcess && !appServerProcess.killed) {
+  if (isProcessRunning(appServerProcess) && !appServerProcess.killed) {
     appServerProcess.kill(signal);
   }
 
-  if (bridgeProcess && !bridgeProcess.killed) {
+  if (isProcessRunning(bridgeProcess) && !bridgeProcess.killed) {
     bridgeProcess.kill(signal);
   }
+}
+
+function isProcessRunning(process) {
+  return Boolean(process && process.exitCode === null);
+}
+
+function hasRunningServiceProcesses() {
+  return isProcessRunning(appServerProcess) || isProcessRunning(bridgeProcess);
+}
+
+function resetRuntimeStateForFullServiceRestart() {
+  clearAppServerRestartTimer();
+  clearAppServerHealthMonitor();
+  appServerHealthCheckInFlight = false;
+  appServerRestartCount = 0;
+  appServerStartedAt = 0;
+  pendingControlledAppServerRestartReason = "";
+  resetAppServerHealthFailures();
+}
+
+function scheduleFullServiceRestart(delayMs, reason) {
+  clearFullServiceRestartTimer();
+  fullServiceRestartTimer = setTimeout(() => {
+    fullServiceRestartTimer = null;
+    if (isShuttingDown) {
+      return;
+    }
+
+    const restartReason = pendingFullServiceRestartReason || reason;
+    pendingFullServiceRestartReason = "";
+    resetRuntimeStateForFullServiceRestart();
+    console.warn(`[OctOP] 전체 서비스 재시작 실행: ${restartReason}`);
+    startServices({ reason: restartReason, resetAppServerRestartCount: true });
+  }, Math.max(0, Number(delayMs) || 0));
+  fullServiceRestartTimer.unref?.();
+}
+
+function maybeScheduleFullServiceRestart(source = "unspecified") {
+  if (isShuttingDown || !pendingFullServiceRestartReason) {
+    return false;
+  }
+
+  if (hasRunningServiceProcesses()) {
+    return false;
+  }
+
+  if (fullServiceRestartTimer) {
+    return true;
+  }
+
+  resetRuntimeStateForFullServiceRestart();
+  console.warn(
+    `[OctOP] 전체 서비스 종료 및 초기화 완료. ${FULL_SERVICE_RESTART_DELAY_MS}ms 후 전체 서비스를 다시 시작합니다. (${source})`
+  );
+  scheduleFullServiceRestart(FULL_SERVICE_RESTART_DELAY_MS, pendingFullServiceRestartReason);
+  return true;
+}
+
+function requestFullServiceRestart(reason) {
+  if (isShuttingDown) {
+    return false;
+  }
+
+  if (pendingFullServiceRestartReason) {
+    return false;
+  }
+
+  pendingFullServiceRestartReason = String(reason ?? "").trim() || "app-server restart attempts exceeded";
+  clearAppServerRestartTimer();
+  clearAppServerHealthMonitor();
+  appServerHealthCheckInFlight = false;
+  pendingControlledAppServerRestartReason = "";
+  resetAppServerHealthFailures();
+
+  console.error(
+    `[OctOP] app-server 재시도 한도 초과. 서비스 중지와 동일한 정리를 수행한 뒤 ${FULL_SERVICE_RESTART_DELAY_MS}ms 후 전체 서비스를 다시 시작합니다.`
+  );
+
+  if (isProcessRunning(appServerProcess) && !appServerProcess.killed) {
+    appServerProcess.kill("SIGTERM");
+  }
+
+  if (isProcessRunning(bridgeProcess) && !bridgeProcess.killed) {
+    bridgeProcess.kill("SIGTERM");
+  }
+
+  if (!hasRunningServiceProcesses()) {
+    maybeScheduleFullServiceRestart("request_full_service_restart");
+  }
+
+  return true;
 }
 
 function scheduleAppServerRestart(delayMs, reason) {
@@ -167,6 +270,7 @@ function startAppServer() {
 
   appServerProcess.on("exit", (code, signal) => {
     const controlledRestartReason = pendingControlledAppServerRestartReason;
+    const fullServiceRestartReason = pendingFullServiceRestartReason;
     pendingControlledAppServerRestartReason = "";
 
     if (isShuttingDown) {
@@ -175,6 +279,12 @@ function startAppServer() {
     }
 
     appServerProcess = null;
+
+    if (fullServiceRestartReason) {
+      console.warn(`[OctOP] app-server 전체 서비스 재시작 대기: ${fullServiceRestartReason}`);
+      maybeScheduleFullServiceRestart("app_server_exit");
+      return;
+    }
 
     if (controlledRestartReason) {
       console.warn(`[OctOP] app-server 제어 재시작 진행: ${controlledRestartReason}`);
@@ -194,11 +304,7 @@ function startAppServer() {
 
     appServerRestartCount += 1;
     if (appServerRestartCount > APP_SERVER_RESTART_MAX_ATTEMPTS) {
-      console.error("[OctOP] app-server restart attempts exceeded limit. local-agent 종료.");
-      if (!isShuttingDown) {
-        stopAll("SIGTERM");
-      }
-
+      requestFullServiceRestart(`restart_limit_exceeded:${detail}`);
       return;
     }
 
@@ -349,38 +455,72 @@ function startBridgeHealthMonitor() {
 }
 
 const bridgeEntry = resolve(workspaceRoot, "scripts", "run-bridge.mjs");
-startAppServer();
-bridgeProcess = spawn(process.execPath, [bridgeEntry], {
-  cwd: workspaceRoot,
-  env: bridgeEnv,
-  stdio: "inherit"
-});
-startBridgeHealthMonitor();
 
-bridgeProcess.on("exit", (code, signal) => {
-  isShuttingDown = true;
-  clearAppServerRestartTimer();
-  clearAppServerHealthMonitor();
-
-  if (appServerProcess && !appServerProcess.killed) {
-    appServerProcess.kill("SIGTERM");
-  }
-
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-
-  process.exit(code ?? 0);
-});
-
-bridgeProcess.on("error", (error) => {
+function startBridge() {
   if (isShuttingDown) {
     return;
   }
 
-  console.error(`[OctOP] bridge process error: ${error.message}`);
-});
+  bridgeProcess = spawn(process.execPath, [bridgeEntry], {
+    cwd: workspaceRoot,
+    env: bridgeEnv,
+    stdio: "inherit"
+  });
+
+  bridgeProcess.on("exit", (code, signal) => {
+    const fullServiceRestartReason = pendingFullServiceRestartReason;
+    bridgeProcess = null;
+
+    if (fullServiceRestartReason) {
+      console.warn(`[OctOP] bridge 전체 서비스 재시작 대기: ${fullServiceRestartReason}`);
+      maybeScheduleFullServiceRestart("bridge_exit");
+      return;
+    }
+
+    isShuttingDown = true;
+    clearAppServerRestartTimer();
+    clearAppServerHealthMonitor();
+    clearFullServiceRestartTimer();
+
+    if (isProcessRunning(appServerProcess) && !appServerProcess.killed) {
+      appServerProcess.kill("SIGTERM");
+    }
+
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+
+    process.exit(code ?? 0);
+  });
+
+  bridgeProcess.on("error", (error) => {
+    if (isShuttingDown || pendingFullServiceRestartReason) {
+      return;
+    }
+
+    console.error(`[OctOP] bridge process error: ${error.message}`);
+  });
+}
+
+function startServices({ reason = "startup", resetAppServerRestartCount = false } = {}) {
+  if (isShuttingDown) {
+    return;
+  }
+
+  if (resetAppServerRestartCount) {
+    appServerRestartCount = 0;
+  }
+
+  appServerHealthCheckInFlight = false;
+  pendingControlledAppServerRestartReason = "";
+  console.warn(`[OctOP] 전체 서비스 시작: ${reason}`);
+  startAppServer();
+  startBridge();
+  startBridgeHealthMonitor();
+}
+
+startServices();
 
 for (const eventName of ["SIGINT", "SIGTERM"]) {
   process.on(eventName, () => stopAll(eventName));
