@@ -3089,13 +3089,9 @@ function updateProjectThreadSnapshot(threadId) {
       ? "queued"
       : latestIssue?.status === "running"
         ? "running"
-      : latestIssue?.status === "completed"
-        ? "completed"
-        : latestIssue?.status === "failed"
-          ? "failed"
-          : latestIssue?.status === "awaiting_input"
-            ? "awaiting_input"
-            : "idle";
+        : latestIssue?.status === "awaiting_input"
+          ? "awaiting_input"
+          : "idle";
 
   const nextThread = {
     ...thread,
@@ -8359,6 +8355,13 @@ class AppServerClient {
           activeIssueByPhysicalThreadId.delete(physicalThreadId);
         }
         clearRunningIssueTracking(threadId);
+        updateProjectThreadSnapshot(threadId);
+        persistThreadById(threadId);
+        await publishEvent(owner, "bridge.projectThreads.updated", {
+          scope: projectId ? "project" : "all",
+          project_id: projectId,
+          threads: listProjectThreads(owner, projectId)
+        });
         void scheduleQueuedIssuesForUser(owner, {
           preferredThreadId: threadId
         });

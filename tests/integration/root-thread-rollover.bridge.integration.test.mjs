@@ -1624,6 +1624,156 @@ test("실패한 issue 이후 다음 issue는 새 codex thread로 이어서 실�
   }
 });
 
+test("마지막 issue가 failed로 끝난 thread에서도 새 issue를 다시 실행할 수 있다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-last-failed-thread-restart-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-last-failed-thread-restart-token",
+    userId: "integration-user",
+    bridgeId: `last-failed-thread-restart-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const createThreadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Last Failed Thread Restart"
+      })
+    });
+    const rootThreadId = createThreadPayload.thread.id;
+
+    const failedIssuePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Failed Issue",
+        prompt: PROMPT
+      })
+    });
+    const failedIssueId = failedIssuePayload.issue.id;
+
+    await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [failedIssueId]
+      })
+    });
+
+    const runningContinuity = await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${failedIssueId}`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(issueDetail.issue?.status, "running");
+      assert.ok(continuity.active_physical_thread?.codex_thread_id);
+      assert.ok(continuity.active_physical_thread?.turn_id);
+      return continuity;
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "single issue running before failure"
+    });
+
+    const sourceCodexThreadId = runningContinuity.active_physical_thread.codex_thread_id;
+    const sourceTurnId = runningContinuity.active_physical_thread.turn_id;
+
+    fakeAppServer.notify("thread/status/changed", {
+      threadId: sourceCodexThreadId,
+      turn: {
+        id: sourceTurnId
+      },
+      status: {
+        type: "error"
+      }
+    });
+
+    await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${failedIssueId}`);
+      const threadPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`);
+      const projectThreadsPayload = await bridge.request(`/api/projects/${project.id}/threads`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(issueDetail.issue?.status, "failed");
+      assert.equal(threadPayload.thread?.status, "idle");
+      assert.equal(projectThreadsPayload.threads.find((thread) => thread.id === rootThreadId)?.status, "idle");
+      assert.equal(continuity.active_physical_thread?.codex_thread_id ?? null, null);
+      return { issueDetail, threadPayload, projectThreadsPayload, continuity };
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "single issue failed"
+    });
+
+    const resumedIssuePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Restart After Failure",
+        prompt: PROMPT
+      })
+    });
+    const resumedIssueId = resumedIssuePayload.issue.id;
+
+    const startPayload = await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [resumedIssueId]
+      })
+    });
+
+    assert.equal(startPayload.accepted, true);
+
+    const resumedContinuity = await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${resumedIssueId}`);
+      const failedIssueDetail = await bridge.request(`/api/issues/${failedIssueId}`);
+      const threadPayload = await bridge.request(`/api/threads/${rootThreadId}/issues`);
+      const continuity = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+
+      assert.equal(failedIssueDetail.issue?.status, "failed");
+      assert.equal(issueDetail.issue?.status, "running");
+      assert.equal(threadPayload.thread?.status, "running");
+      assert.ok(continuity.active_physical_thread?.codex_thread_id);
+      assert.notEqual(continuity.active_physical_thread.codex_thread_id, sourceCodexThreadId);
+      assert.ok(continuity.active_physical_thread?.turn_id);
+      return continuity;
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "restart issue after terminal failure"
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length, 2);
+    assert.equal(fakeAppServer.getRequests("turn/start").length, 2);
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: resumedContinuity.active_physical_thread.codex_thread_id,
+      turnId: "turn-last-failed-restart-completed"
+    });
+
+    await waitFor(async () => {
+      const issueDetail = await bridge.request(`/api/issues/${resumedIssueId}`);
+      assert.equal(issueDetail.issue?.status, "completed");
+      return issueDetail;
+    }, {
+      timeoutMs: 20000,
+      intervalMs: 250,
+      label: "restart issue completed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("thread 개발지침은 저장 후 재시작에도 유지되고 새 physical thread 시작에 함께 주입된다", { timeout: 60000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-instruction-int-"));
   const fakeAppServer = new FakeAppServer();
