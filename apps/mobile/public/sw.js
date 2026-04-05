@@ -215,23 +215,6 @@ const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
     targetClientMode === CLIENT_MODE_STANDALONE || Boolean(preferredStandaloneClient);
 
   if (shouldPreferStandaloneLaunch && preferredStandaloneClient) {
-    const standaloneAlreadyForeground =
-      preferredStandaloneClient.focused || preferredStandaloneClient.visibilityState === "visible";
-
-    if (standaloneAlreadyForeground) {
-      return focusNotificationClient(preferredStandaloneClient, targetUrl);
-    }
-  }
-
-  if (shouldPreferStandaloneLaunch || !preferredVisibleClient) {
-    const openedClient = await openWindowToTarget(targetUrl);
-
-    if (openedClient) {
-      return openedClient;
-    }
-  }
-
-  if (shouldPreferStandaloneLaunch && preferredStandaloneClient) {
     return focusNotificationClient(preferredStandaloneClient, targetUrl);
   }
 
