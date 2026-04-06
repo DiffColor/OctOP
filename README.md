@@ -145,6 +145,43 @@ npm run bridge:start -- -id <loginId> -name "My Mac"
 npm run local-agent:start -- -id <loginId> -name "My Mac"
 ```
 
+## Docker로 Linux Bridge 실행
+
+현재 코드 기준으로 Bridge는 Node.js 프로세스이며 내부에서 `codex app-server`를 함께 기동할 수 있습니다. 이를 위해 `docker/bridge/Dockerfile`과 Docker Hub 배포 워크플로를 추가했습니다.
+
+이미지 빌드:
+
+```bash
+docker build -f docker/bridge/Dockerfile -t <dockerhub-user>/octop-bridge:local .
+```
+
+로컬 실행 예시:
+
+```bash
+docker run --rm \
+  -p 4100:4100 \
+  -e OCTOP_NATS_URL=nats://host.docker.internal:4222 \
+  -e OCTOP_BRIDGE_TOKEN=change-me \
+  -e OCTOP_BRIDGE_OWNER_LOGIN_ID=<loginId> \
+  -e OCTOP_WORKSPACE_ROOTS=/workspace \
+  -v $(pwd):/workspace \
+  -v octop-bridge-state:/var/lib/octop \
+  -v octop-codex-home:/var/lib/codex \
+  <dockerhub-user>/octop-bridge:local
+```
+
+`CODEX_HOME`은 컨테이너 밖 볼륨에 유지하는 것을 권장합니다. OpenAI Codex 문서 기준으로 `CODEX_HOME` 안의 `auth.json`을 지속적으로 유지해야 Codex가 로그인 토큰을 갱신해 재사용할 수 있습니다. 브리지 컨테이너는 `CODEX_AUTH_JSON` 환경 변수가 주어졌고 `/var/lib/codex/auth.json`이 아직 없을 때만 초기 시드로 파일을 생성합니다.
+
+`docker/bridge/Dockerfile`은 기본적으로 전역 `@openai/codex@latest`를 설치합니다. 특정 버전으로 고정하려면 빌드 시 `--build-arg CODEX_NPM_VERSION=<version>`을 지정하시면 됩니다.
+
+Docker Hub 자동 배포는 `.github/workflows/docker-bridge-image.yml`에서 처리합니다. 필요한 GitHub Secrets/Variables는 아래와 같습니다.
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+- `DOCKERHUB_IMAGE_NAME` (선택, 기본값 `octop-bridge`)
+
+워크플로는 `main` 브랜치 푸시 시 `latest`와 브랜치/sha 태그를, `v*` 태그 푸시 시 릴리즈 태그 이미지를 Docker Hub로 업로드합니다.
+
 macOS 메뉴바에서 local agent를 시작/중지하고 로그를 보려면:
 
 ```bash
