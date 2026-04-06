@@ -2139,15 +2139,67 @@ static async Task<string?> ResolveBridgeIdAsync(
   CancellationToken cancellationToken)
 {
   var requested = BridgeSubjects.SanitizeBridgeId(httpContext.Request.Query["bridge_id"].ToString());
+  var routeScopedBridgeId = await ResolveRouteScopedBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
 
   if (!string.IsNullOrWhiteSpace(httpContext.Request.Query["bridge_id"]))
   {
+    if (!string.IsNullOrWhiteSpace(routeScopedBridgeId))
+    {
+      return await octopStore.ResolveCanonicalBridgeIdForUserAsync(userId, routeScopedBridgeId) ?? routeScopedBridgeId;
+    }
+
     return await octopStore.ResolveCanonicalBridgeIdForUserAsync(userId, requested) ?? requested;
+  }
+
+  if (!string.IsNullOrWhiteSpace(routeScopedBridgeId))
+  {
+    return await octopStore.ResolveCanonicalBridgeIdForUserAsync(userId, routeScopedBridgeId) ?? routeScopedBridgeId;
   }
 
   cancellationToken.ThrowIfCancellationRequested();
   var bridges = await octopStore.ListBridgesForUserAsync(userId);
   return bridges.OfType<JObject>().FirstOrDefault()?.Value<string>("bridge_id");
+}
+
+static async Task<string?> ResolveRouteScopedBridgeIdAsync(
+  HttpContext httpContext,
+  OctopStore octopStore,
+  string userId,
+  CancellationToken cancellationToken)
+{
+  cancellationToken.ThrowIfCancellationRequested();
+  var projectId = httpContext.Request.RouteValues["projectId"]?.ToString();
+  var threadId = httpContext.Request.RouteValues["threadId"]?.ToString();
+  var issueId = httpContext.Request.RouteValues["issueId"]?.ToString();
+  var chatId = httpContext.Request.RouteValues["chatId"]?.ToString();
+  var messageId = httpContext.Request.RouteValues["messageId"]?.ToString();
+
+  if (!string.IsNullOrWhiteSpace(projectId))
+  {
+    return await octopStore.ResolveBridgeIdForProjectAsync(userId, projectId, cancellationToken);
+  }
+
+  if (!string.IsNullOrWhiteSpace(threadId))
+  {
+    return await octopStore.ResolveBridgeIdForThreadAsync(userId, threadId, cancellationToken);
+  }
+
+  if (!string.IsNullOrWhiteSpace(issueId))
+  {
+    return await octopStore.ResolveBridgeIdForIssueAsync(userId, issueId, cancellationToken);
+  }
+
+  if (!string.IsNullOrWhiteSpace(chatId))
+  {
+    return await octopStore.ResolveBridgeIdForTodoChatAsync(userId, chatId, cancellationToken);
+  }
+
+  if (!string.IsNullOrWhiteSpace(messageId))
+  {
+    return await octopStore.ResolveBridgeIdForTodoMessageAsync(userId, messageId, cancellationToken);
+  }
+
+  return null;
 }
 
 static async Task<JsonNode?> GetBridgeStatusPayloadAsync(

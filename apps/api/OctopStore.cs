@@ -138,6 +138,144 @@ public sealed class OctopStore : IAsyncDisposable
     return canonical?.Value<string>("bridge_id") ?? matched.Value<string>("bridge_id");
   }
 
+  public async Task<string?> ResolveBridgeIdForProjectAsync(string userId, string projectId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+
+    if (string.IsNullOrWhiteSpace(projectId))
+    {
+      return null;
+    }
+
+    var connection = await GetConnectionAsync();
+    var projects = await ReadTableRowsAsync(connection, ProjectTable);
+    var ownedProject = projects.FirstOrDefault(project =>
+      string.Equals(project.Value<string>("id"), projectId, StringComparison.Ordinal) &&
+      string.Equals(project.Value<string>("owner_login_id") ?? project.Value<string>("owner_user_id"), userId, StringComparison.Ordinal));
+
+    if (!string.IsNullOrWhiteSpace(ownedProject?.Value<string>("bridge_id")))
+    {
+      return ownedProject.Value<string>("bridge_id");
+    }
+
+    var memberships = await ReadTableRowsAsync(connection, ProjectMemberTable);
+    var hasMembership = memberships.Any(membership =>
+      string.Equals(membership.Value<string>("project_id"), projectId, StringComparison.Ordinal) &&
+      string.Equals(membership.Value<string>("login_id") ?? membership.Value<string>("user_id"), userId, StringComparison.Ordinal));
+
+    if (!hasMembership)
+    {
+      return null;
+    }
+
+    var matchedProject = projects.FirstOrDefault(project =>
+      string.Equals(project.Value<string>("id"), projectId, StringComparison.Ordinal));
+
+    if (!string.IsNullOrWhiteSpace(matchedProject?.Value<string>("bridge_id")))
+    {
+      return matchedProject.Value<string>("bridge_id");
+    }
+
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    return bridges
+      .Select(bridge => bridge.Value<string>("bridge_id"))
+      .Where(value => !string.IsNullOrWhiteSpace(value))
+      .Cast<string>()
+      .Where(bridgeId => projectId.StartsWith($"{bridgeId}-", StringComparison.Ordinal))
+      .OrderByDescending(bridgeId => bridgeId.Length)
+      .FirstOrDefault();
+  }
+
+  public async Task<string?> ResolveBridgeIdForThreadAsync(string userId, string threadId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+
+    if (string.IsNullOrWhiteSpace(threadId))
+    {
+      return null;
+    }
+
+    var connection = await GetConnectionAsync();
+
+    foreach (var tableName in new[] { ThreadTable, ProjectThreadTable, RootThreadTable })
+    {
+      cancellationToken.ThrowIfCancellationRequested();
+      var bridgeId = await ResolveBridgeIdFromTableAsync(connection, tableName, userId, threadId, cancellationToken);
+
+      if (!string.IsNullOrWhiteSpace(bridgeId))
+      {
+        return bridgeId;
+      }
+    }
+
+    return await ResolveBridgeIdFromIdentifierPrefixAsync(userId, threadId);
+  }
+
+  public async Task<string?> ResolveBridgeIdForIssueAsync(string userId, string issueId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+
+    if (string.IsNullOrWhiteSpace(issueId))
+    {
+      return null;
+    }
+
+    var connection = await GetConnectionAsync();
+
+    foreach (var tableName in new[] { ThreadIssueCardTable, LogicalThreadIssueBoardTable })
+    {
+      cancellationToken.ThrowIfCancellationRequested();
+      var bridgeId = await ResolveBridgeIdFromTableAsync(connection, tableName, userId, issueId, cancellationToken);
+
+      if (!string.IsNullOrWhiteSpace(bridgeId))
+      {
+        return bridgeId;
+      }
+    }
+
+    return await ResolveBridgeIdFromIdentifierPrefixAsync(userId, issueId);
+  }
+
+  public async Task<string?> ResolveBridgeIdForTodoChatAsync(string userId, string chatId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+
+    if (string.IsNullOrWhiteSpace(chatId))
+    {
+      return null;
+    }
+
+    var connection = await GetConnectionAsync();
+    var bridgeId = await ResolveBridgeIdFromTableAsync(connection, TodoChatTable, userId, chatId, cancellationToken);
+
+    if (!string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return bridgeId;
+    }
+
+    return await ResolveBridgeIdFromIdentifierPrefixAsync(userId, chatId);
+  }
+
+  public async Task<string?> ResolveBridgeIdForTodoMessageAsync(string userId, string messageId, CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+
+    if (string.IsNullOrWhiteSpace(messageId))
+    {
+      return null;
+    }
+
+    var connection = await GetConnectionAsync();
+    var bridgeId = await ResolveBridgeIdFromTableAsync(connection, TodoMessageTable, userId, messageId, cancellationToken);
+
+    if (!string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return bridgeId;
+    }
+
+    return await ResolveBridgeIdFromIdentifierPrefixAsync(userId, messageId);
+  }
+
   public async Task<JArray> ListProjectsForUserAsync(string userId, string bridgeId)
   {
     var connection = await GetConnectionAsync();
@@ -465,6 +603,40 @@ public sealed class OctopStore : IAsyncDisposable
     return equivalentBridgeIds;
   }
 
+  private async Task<string?> ResolveBridgeIdFromTableAsync(
+    RethinkConnection connection,
+    string tableName,
+    string userId,
+    string entityId,
+    CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    var rows = await ReadTableRowsAsync(connection, tableName);
+    var matched = rows.FirstOrDefault(row =>
+      string.Equals(row.Value<string>("id"), entityId, StringComparison.Ordinal) &&
+      RowBelongsToUser(row, userId) &&
+      string.IsNullOrWhiteSpace(row.Value<string>("deleted_at")));
+
+    return matched?.Value<string>("bridge_id");
+  }
+
+  private async Task<string?> ResolveBridgeIdFromIdentifierPrefixAsync(string userId, string identifier)
+  {
+    if (string.IsNullOrWhiteSpace(identifier))
+    {
+      return null;
+    }
+
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    return bridges
+      .Select(bridge => bridge.Value<string>("bridge_id"))
+      .Where(value => !string.IsNullOrWhiteSpace(value))
+      .Cast<string>()
+      .Where(bridgeId => identifier.StartsWith($"{bridgeId}-", StringComparison.Ordinal))
+      .OrderByDescending(bridgeId => bridgeId.Length)
+      .FirstOrDefault();
+  }
+
   private static IReadOnlyList<JObject> CanonicalizeBridgeRows(IEnumerable<JObject> bridges)
   {
     return bridges
@@ -478,6 +650,26 @@ public sealed class OctopStore : IAsyncDisposable
       .OrderByDescending(GetBridgeLastSeenAt)
       .ThenByDescending(GetBridgeCreatedAt)
       .ToList();
+  }
+
+  private static bool RowBelongsToUser(JObject row, string userId)
+  {
+    foreach (var fieldName in new[] { "login_id", "user_id", "owner_login_id", "owner_user_id" })
+    {
+      var value = row.Value<string>(fieldName);
+
+      if (string.IsNullOrWhiteSpace(value))
+      {
+        continue;
+      }
+
+      if (string.Equals(value, userId, StringComparison.Ordinal))
+      {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private static string ResolveBridgeIdentityKey(JObject bridge)
