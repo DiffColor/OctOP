@@ -157,6 +157,7 @@ const rolloverCooldownByRootThreadId = new Map();
 const recentlyClosedPhysicalThreadIdsByRootThreadId = new Map();
 const closedPhysicalThreadTombstonesById = new Map();
 const deletedRootThreadTombstonesById = new Map();
+const locallyStoppedExecutionByThreadId = new Map();
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
@@ -176,6 +177,9 @@ const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
+const LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS = Number(
+  process.env.OCTOP_LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS ?? 60000
+);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
 const INTERRUPTED_THREAD_STATUS_TYPES = new Set(["interrupted", "cancelled", "canceled"]);
 
@@ -2362,6 +2366,24 @@ function cleanupExpiredEventDropTombstones() {
   }
 }
 
+function cleanupExpiredLocallyStoppedExecutions() {
+  const currentTime = Date.now();
+
+  for (const [threadId, record] of locallyStoppedExecutionByThreadId.entries()) {
+    if (Number(record?.expires_at_ms ?? 0) <= currentTime) {
+      locallyStoppedExecutionByThreadId.delete(threadId);
+    }
+  }
+}
+
+function clearLocallyStoppedExecution(threadId) {
+  if (!threadId) {
+    return false;
+  }
+
+  return locallyStoppedExecutionByThreadId.delete(threadId);
+}
+
 function trackRecentlyClosedPhysicalThread(rootThreadId, physicalThreadId, closedAt = now()) {
   const items = recentlyClosedPhysicalThreadIdsByRootThreadId.get(rootThreadId) ?? [];
   const closedAtMs = Date.parse(closedAt) || Date.now();
@@ -2488,6 +2510,112 @@ function markRunningIssueActivity(threadId, patch = {}) {
 
   runningIssueMetaByThreadId.set(threadId, next);
   return next;
+}
+
+function captureExecutionStopContext(rootThreadId, issue = null) {
+  const rootThread = threadStateById.get(rootThreadId) ?? null;
+  const preferredPhysicalThreadId =
+    issue?.executed_physical_thread_id ??
+    issue?.created_physical_thread_id ??
+    rootThread?.active_physical_thread_id ??
+    null;
+  const targetPhysicalThread = preferredPhysicalThreadId
+    ? physicalThreadStateById.get(preferredPhysicalThreadId) ?? null
+    : getActivePhysicalThread(rootThreadId);
+  const physicalThreadId = targetPhysicalThread?.id ?? preferredPhysicalThreadId ?? null;
+  const codexThreadId = String(
+    targetPhysicalThread?.codex_thread_id ??
+      rootThread?.codex_thread_id ??
+      ""
+  ).trim() || null;
+  const turnId = getTrackedExecutionTurnId(rootThreadId, physicalThreadId);
+
+  return {
+    rootThread,
+    physicalThreadId,
+    codexThreadId,
+    turnId
+  };
+}
+
+function suppressLocallyStoppedExecution(rootThreadId, issue = null, options = {}) {
+  if (!rootThreadId) {
+    return null;
+  }
+
+  const context = captureExecutionStopContext(rootThreadId, issue);
+  const ttlMs = Math.max(1000, Number(options.ttlMs ?? LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS) || 0);
+  const nextRecord = {
+    root_thread_id: rootThreadId,
+    issue_id: issue?.id ?? null,
+    physical_thread_id: context.physicalThreadId,
+    codex_thread_id: context.codexThreadId,
+    turn_id: context.turnId,
+    reason: String(options.reason ?? "manual_stop").trim() || "manual_stop",
+    created_at: now(),
+    expires_at_ms: Date.now() + ttlMs
+  };
+
+  locallyStoppedExecutionByThreadId.set(rootThreadId, nextRecord);
+  return nextRecord;
+}
+
+function isExecutionLifecycleNotification(method) {
+  return [
+    "thread/started",
+    "thread/status/changed",
+    "thread/tokenUsage/updated",
+    "turn/started",
+    "turn/plan/updated",
+    "turn/diff/updated",
+    "turn/completed",
+    "item/agentMessage/delta"
+  ].includes(method);
+}
+
+function shouldIgnoreLocallyStoppedExecutionNotification(
+  method,
+  {
+    rootThreadId = null,
+    physicalThreadId = null,
+    codexThreadId = null,
+    turnId = null
+  } = {}
+) {
+  if (!rootThreadId || !isExecutionLifecycleNotification(method)) {
+    return false;
+  }
+
+  cleanupExpiredLocallyStoppedExecutions();
+
+  const suppressedExecution = locallyStoppedExecutionByThreadId.get(rootThreadId) ?? null;
+
+  if (!suppressedExecution) {
+    return false;
+  }
+
+  if (
+    suppressedExecution.physical_thread_id &&
+    physicalThreadId &&
+    suppressedExecution.physical_thread_id !== physicalThreadId
+  ) {
+    return false;
+  }
+
+  if (
+    suppressedExecution.codex_thread_id &&
+    codexThreadId &&
+    suppressedExecution.codex_thread_id !== codexThreadId
+  ) {
+    return false;
+  }
+
+  if (suppressedExecution.turn_id && turnId && suppressedExecution.turn_id !== turnId) {
+    clearLocallyStoppedExecution(rootThreadId);
+    return false;
+  }
+
+  return true;
 }
 
 function areThreadTokenUsageStatesEqual(left = {}, right = {}) {
@@ -2650,6 +2778,7 @@ function resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, opt
   };
 
   physicalThreadStateById.set(physicalThreadId, nextPhysicalThread);
+  clearLocallyStoppedExecution(rootThreadId);
   threadStateById.set(rootThreadId, {
     ...currentRootThread,
     status: "running",
@@ -4246,17 +4375,11 @@ async function requestAppServerBestEffort(method, params, timeoutMs = THREAD_DEL
     };
   }
 
-  const requestPromise = appServer.requestInternal(method, params);
-  requestPromise.catch(() => {});
-
   try {
-    const response = await Promise.race([
-      requestPromise,
-      sleep(timeoutMs).then(() => {
-        throw new Error(`${method} timed out`);
-      })
-    ]);
-
+    const response = await appServer.requestInternal(method, params, {
+      timeoutMs,
+      affectConnectionHealth: false
+    });
     return {
       ok: true,
       response
@@ -5618,6 +5741,9 @@ async function deleteThreadIssue(userId, payload = {}) {
   const recoverySteps = [];
 
   if (wasActive) {
+    suppressLocallyStoppedExecution(issue.thread_id, issue, {
+      reason: "delete_issue"
+    });
     interruptResult = await interruptThreadExecutionBestEffort(thread);
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
@@ -5775,34 +5901,29 @@ async function interruptThreadIssue(userId, payload = {}) {
   let interruptResult = null;
 
   if (wasActive) {
+    suppressLocallyStoppedExecution(issue.thread_id, issue, {
+      reason: interruptReason
+    });
     interruptResult = await interruptThreadExecutionBestEffort(thread);
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
     if (blockingStopErrors.length > 0) {
-      console.warn("[OctOP bridge] issue interrupt aborted due to stop attempt errors", {
+      console.warn("[OctOP bridge] issue interrupt continuing with forced local stop after stop attempt errors", {
         ...buildLogContext({
           root_thread_id: issue.thread_id,
           physical_thread_id: thread.active_physical_thread_id ?? null,
           codex_thread_id: thread.codex_thread_id ?? null,
           issue_id: issueId,
-          event_type: "thread.issue.interrupt.stopBestEffort.failed"
+          event_type: "thread.issue.interrupt.stopBestEffort.forcedRecovery"
         }),
         errors: blockingStopErrors
       });
+      const invalidatedThread = invalidateCodexThreadBinding(issue.thread_id);
+      recoverySteps.push("forced_release_after_stop_failed");
 
-      return {
-        accepted: false,
-        action: "stop_failed",
-        error: "진행 중인 이슈를 안전하게 중단하지 못했습니다.",
-        thread,
-        issues: listThreadIssuesForClient(issue.thread_id),
-        issue_id: issueId,
-        interrupt_result: {
-          interrupted: interruptResult.interrupted,
-          stopped_realtime: interruptResult.stoppedRealtime,
-          errors: interruptResult.errors
-        }
-      };
+      if (invalidatedThread) {
+        recoverySteps.push("invalidated_active_binding");
+      }
     }
 
     clearRunningIssueTracking(issue.thread_id);
@@ -5918,10 +6039,39 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
   const codexThreadId = String(activePhysicalThread?.codex_thread_id ?? rootThread?.codex_thread_id ?? "").trim();
 
   if (!codexThreadId) {
+    suppressLocallyStoppedExecution(rootThreadId, trackedIssue, {
+      reason: stopReason
+    });
+    recoverySteps.push("forced_release_without_binding");
+    clearRunningIssueTracking(rootThreadId);
+    settlePhysicalThreadExecutionState(rootThreadId, {
+      issue: trackedIssue,
+      status: "idle",
+      progress: Math.max(0, Math.min(Number(trackedIssue.progress ?? 0), 99)),
+      lastEvent: "thread.stop.completed",
+      lastMessage:
+        String(trackedIssue.last_message ?? "").trim() ||
+        "수동으로 실행을 강제 중단했습니다."
+    });
+    updateIssueCard(trackedIssue.id, {
+      status: "interrupted",
+      progress: 0,
+      queue_position: null,
+      prep_position: null,
+      last_event: "thread.stop.completed",
+      last_message:
+        String(trackedIssue.last_message ?? "").trim() ||
+        "수동으로 실행을 강제 중단했습니다."
+    });
+    refreshIssueQueuePositions(rootThreadId);
+    updateProjectThreadSnapshot(rootThreadId);
+    persistThreadById(rootThreadId);
+    await publishThreadState(normalizedUserId, rootThreadId);
+
     return {
-      accepted: false,
-      action: "stop_unverified",
-      error: "활성 thread binding이 없어 안전하게 정지할 수 없습니다.",
+      accepted: true,
+      action: "stopped",
+      forced: true,
       thread: threadStateById.get(rootThreadId) ?? rootThread,
       issues: listThreadIssuesForClient(rootThreadId),
       stopped_issue_id: trackedIssue.id,
@@ -5937,6 +6087,9 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
     };
   }
 
+  suppressLocallyStoppedExecution(rootThreadId, trackedIssue, {
+    reason: stopReason
+  });
   const interruptResult = await interruptThreadExecutionBestEffort(rootThread, options);
   const verification = await verifyThreadStopState(rootThread, {
     reason: `threadStop:${stopReason}`,
@@ -5955,31 +6108,15 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       interrupt_errors: interruptResult.errors,
       verification_error: verification.error
     });
+    const invalidatedThread = invalidateCodexThreadBinding(rootThreadId);
+    recoverySteps.push("forced_release_after_stop_unverified");
 
-    return {
-      accepted: false,
-      action: "stop_unverified",
-      error: "원격 실행 중단 여부를 확인하지 못했습니다.",
-      thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssuesForClient(rootThreadId),
-      stopped_issue_id: trackedIssue.id,
-      recovery_steps: recoverySteps,
-      verification: {
-        ok: verification.ok,
-        verified_stopped: verification.verifiedStopped,
-        remote_status: verification.remoteStatus,
-        remote_turn_id: verification.remoteTurnId,
-        error: verification.error
-      },
-      interrupt_result: {
-        interrupted: interruptResult.interrupted,
-        stopped_realtime: interruptResult.stoppedRealtime,
-        errors: interruptResult.errors
-      }
-    };
+    if (invalidatedThread) {
+      recoverySteps.push("invalidated_active_binding");
+    }
   }
 
-  if (!verification.verifiedStopped) {
+  if (verification.ok && !verification.verifiedStopped) {
     console.warn("[OctOP bridge] thread safe stop rejected because remote execution is still active", {
       ...buildLogContext({
         root_thread_id: rootThreadId,
@@ -5992,28 +6129,12 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
       remote_status: verification.remoteStatus,
       remote_turn_id: verification.remoteTurnId
     });
+    const invalidatedThread = invalidateCodexThreadBinding(rootThreadId);
+    recoverySteps.push("forced_release_while_remote_still_running");
 
-    return {
-      accepted: false,
-      action: "still_running",
-      error: "원격 실행이 아직 중단되지 않았습니다.",
-      thread: threadStateById.get(rootThreadId) ?? rootThread,
-      issues: listThreadIssuesForClient(rootThreadId),
-      stopped_issue_id: trackedIssue.id,
-      recovery_steps: recoverySteps,
-      verification: {
-        ok: verification.ok,
-        verified_stopped: verification.verifiedStopped,
-        remote_status: verification.remoteStatus,
-        remote_turn_id: verification.remoteTurnId,
-        error: verification.error
-      },
-      interrupt_result: {
-        interrupted: interruptResult.interrupted,
-        stopped_realtime: interruptResult.stoppedRealtime,
-        errors: interruptResult.errors
-      }
-    };
+    if (invalidatedThread) {
+      recoverySteps.push("invalidated_active_binding");
+    }
   }
 
   if (verification.remoteStatus === "missing") {
@@ -6053,6 +6174,10 @@ async function stopThreadExecutionSafely(userId, rootThreadId, options = {}) {
   return {
     accepted: true,
     action: "stopped",
+    forced:
+      recoverySteps.includes("forced_release_without_binding") ||
+      recoverySteps.includes("forced_release_after_stop_unverified") ||
+      recoverySteps.includes("forced_release_while_remote_still_running"),
     thread: threadStateById.get(rootThreadId) ?? rootThread,
     issues: listThreadIssuesForClient(rootThreadId),
     stopped_issue_id: trackedIssue.id,
@@ -6130,6 +6255,9 @@ async function moveThreadIssue(userId, payload = {}) {
   let interruptResult = null;
 
   if (wasActive) {
+    suppressLocallyStoppedExecution(sourceThreadId, issue, {
+      reason: "move_issue"
+    });
     interruptResult = await interruptThreadExecutionBestEffort(sourceThread);
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
@@ -6532,7 +6660,17 @@ function publishNatsEventWithFallback(subject, event) {
     return event;
   } catch (error) {
     if (error?.code !== "MAX_PAYLOAD_EXCEEDED") {
-      throw error;
+      appendDiagnosticLog("error", "nats.publish.failed", "failed to publish bridge event", {
+        subject,
+        type: event?.type ?? null,
+        error
+      });
+      console.warn("[OctOP bridge] failed to publish NATS event", {
+        subject,
+        type: event?.type ?? null,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return null;
     }
 
     const chunkedEvent = publishChunkedDeltaEvent(subject, event);
@@ -8154,11 +8292,32 @@ class AppServerClient {
       : threadId
         ? activeIssueByThreadId.get(threadId) ?? null
         : null;
+    const notificationTurnId = extractNotificationTurnId(params);
     const ignoreTerminalThreadStatusChanged =
       method === "thread/status/changed" &&
       threadId &&
       isTerminalThreadStatusType(params.status?.type) &&
       !shouldApplyTerminalThreadStatusChanged(params, threadId, physicalThreadId);
+
+    if (
+      threadId &&
+      shouldIgnoreLocallyStoppedExecutionNotification(method, {
+        rootThreadId: threadId,
+        physicalThreadId,
+        codexThreadId,
+        turnId: notificationTurnId
+      })
+    ) {
+      appendDiagnosticLog("info", "thread.event.ignored_after_local_stop", "ignored late app-server notification after local stop", {
+        thread_id: threadId,
+        physical_thread_id: physicalThreadId,
+        codex_thread_id: codexThreadId,
+        issue_id: activeIssueId,
+        method,
+        event_turn_id: notificationTurnId
+      });
+      return;
+    }
 
     if (
       (physicalThreadId && closedPhysicalThreadTombstonesById.has(physicalThreadId)) ||
@@ -8384,11 +8543,16 @@ class AppServerClient {
     );
   }
 
-  requestInternal(method, params) {
+  requestInternal(method, params, options = {}) {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       throw new Error("app-server socket is not connected");
     }
 
+    const normalizedTimeoutMs = Number(options.timeoutMs ?? APP_SERVER_REQUEST_TIMEOUT_MS);
+    const timeoutMs = Number.isFinite(normalizedTimeoutMs)
+      ? Math.max(50, normalizedTimeoutMs)
+      : APP_SERVER_REQUEST_TIMEOUT_MS;
+    const affectConnectionHealth = options.affectConnectionHealth !== false;
     const id = randomUUID();
     const payload = {
       jsonrpc: "2.0",
@@ -8406,7 +8570,6 @@ class AppServerClient {
           return;
         }
 
-        this.lastError = `app-server request timeout: ${method}`;
         const hadSocketActivitySinceRequest =
           this.lastSocketActivityAt > 0 && this.lastSocketActivityAt >= requestedAt;
         const hadMessageActivitySinceRequest =
@@ -8417,8 +8580,6 @@ class AppServerClient {
             : hadSocketActivitySinceRequest
               ? Number(this.requestTimeoutWithoutMessageCount ?? 0) + 1
               : Number(this.requestTimeoutWithoutMessageCount ?? 0);
-
-        this.requestTimeoutWithoutMessageCount = nextRequestTimeoutWithoutMessageCount;
 
         appendDiagnosticLog("error", "app_server.request.timeout", "app-server request timeout", {
           method,
@@ -8437,56 +8598,71 @@ class AppServerClient {
             ? new Date(this.lastSocketMessageAt).toISOString()
             : null
         });
-        requestRunningIssueBackfill(`request_timeout:${method}`);
+        if (affectConnectionHealth) {
+          this.lastError = `app-server request timeout: ${method}`;
+          requestRunningIssueBackfill(`request_timeout:${method}`);
 
-        if (!hadSocketActivitySinceRequest) {
-          this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
-            method,
-            request_id: id,
-            reason: "no_socket_activity_since_request",
-            last_socket_activity_at: this.lastSocketActivityAt
-              ? new Date(this.lastSocketActivityAt).toISOString()
-              : null
-          });
-        } else if (!hadMessageActivitySinceRequest) {
-          void this.checkLastKnownState(`request_timeout:${method}`, {
-            method,
-            request_id: id,
-            had_socket_activity_since_request: hadSocketActivitySinceRequest,
-            had_message_activity_since_request: hadMessageActivitySinceRequest,
-            request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount
-          });
-
-          if (
-            APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES > 0 &&
-            nextRequestTimeoutWithoutMessageCount >= APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
-          ) {
+          if (!hadSocketActivitySinceRequest) {
             this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
               method,
               request_id: id,
-              reason: "repeated_timeout_without_message_activity",
-              request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+              reason: "no_socket_activity_since_request",
               last_socket_activity_at: this.lastSocketActivityAt
                 ? new Date(this.lastSocketActivityAt).toISOString()
-                : null,
-              last_socket_message_at: this.lastSocketMessageAt
-                ? new Date(this.lastSocketMessageAt).toISOString()
                 : null
             });
           } else {
-            console.warn("[OctOP bridge] app-server request timeout observed without message activity; reconnect deferred", {
-              method,
-              request_id: id,
-              request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
-              reconnect_after_misses: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
-            });
+            this.requestTimeoutWithoutMessageCount = nextRequestTimeoutWithoutMessageCount;
+
+            if (!hadMessageActivitySinceRequest) {
+              void this.checkLastKnownState(`request_timeout:${method}`, {
+                method,
+                request_id: id,
+                had_socket_activity_since_request: hadSocketActivitySinceRequest,
+                had_message_activity_since_request: hadMessageActivitySinceRequest,
+                request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount
+              });
+
+              if (
+                APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES > 0 &&
+                nextRequestTimeoutWithoutMessageCount >= APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
+              ) {
+                this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+                  method,
+                  request_id: id,
+                  reason: "repeated_timeout_without_message_activity",
+                  request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+                  last_socket_activity_at: this.lastSocketActivityAt
+                    ? new Date(this.lastSocketActivityAt).toISOString()
+                    : null,
+                  last_socket_message_at: this.lastSocketMessageAt
+                    ? new Date(this.lastSocketMessageAt).toISOString()
+                    : null
+                });
+              } else {
+                console.warn("[OctOP bridge] app-server request timeout observed without message activity; reconnect deferred", {
+                  method,
+                  request_id: id,
+                  request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+                  reconnect_after_misses: APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
+                });
+              }
+            } else {
+              this.requestTimeoutWithoutMessageCount = 0;
+            }
           }
         } else {
-          this.requestTimeoutWithoutMessageCount = 0;
+          console.warn("[OctOP bridge] app-server request timeout ignored for bridge health", {
+            method,
+            request_id: id,
+            timeout_ms: timeoutMs,
+            had_socket_activity_since_request: hadSocketActivitySinceRequest,
+            had_message_activity_since_request: hadMessageActivitySinceRequest
+          });
         }
 
         reject(new Error(`app-server request timeout: ${method}`));
-      }, APP_SERVER_REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       timeout.unref?.();
       this.requests.set(id, {
         resolve,
@@ -9345,6 +9521,27 @@ async function bridgeStatus(userId, { ensureReady = true } = {}) {
 
   return collectBridgeStatus(userId);
 }
+
+process.on("unhandledRejection", (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason ?? "unknown rejection"));
+  appendDiagnosticLog("error", "bridge.unhandled_rejection", "bridge unhandled promise rejection", {
+    error
+  });
+  console.error("[OctOP bridge] unhandled promise rejection", {
+    message: error.message,
+    stack: error.stack
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  appendDiagnosticLog("error", "bridge.uncaught_exception", "bridge uncaught exception", {
+    error
+  });
+  console.error("[OctOP bridge] uncaught exception", {
+    message: error?.message ?? String(error),
+    stack: error?.stack ?? null
+  });
+});
 
 async function syncThreadListFromAppServer() {
   const response = await appServer.request(
@@ -10345,6 +10542,9 @@ async function unlockCurrentThreadExecution(userId, rootThreadId, options = {}) 
   let interruptResult = null;
 
   if (trackedIssue && ["running", "awaiting_input"].includes(trackedIssue.status)) {
+    suppressLocallyStoppedExecution(rootThreadId, trackedIssue, {
+      reason: unlockReason
+    });
     interruptResult = await interruptThreadExecutionBestEffort(rootThread);
     const blockingStopErrors = interruptResult.errors.filter((error) => error !== "codex thread not bound");
 
@@ -11214,7 +11414,18 @@ async function respond(message, payload) {
     return;
   }
 
-  nc.publish(message.reply, sc.encode(JSON.stringify(payload)));
+  try {
+    nc.publish(message.reply, sc.encode(JSON.stringify(payload)));
+  } catch (error) {
+    appendDiagnosticLog("error", "nats.reply.failed", "failed to publish bridge reply", {
+      reply: message.reply,
+      error
+    });
+    console.warn("[OctOP bridge] failed to publish NATS reply", {
+      reply: message.reply,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 async function subscribeRequests(connection = nc) {

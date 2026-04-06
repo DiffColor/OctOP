@@ -3467,6 +3467,193 @@ test("thread stop는 원격 상태 반영이 늦어도 polling으로 API 오류 
   }
 });
 
+test("thread stop best-effort timeout이어도 즉시 강제 중단하고 bridge reconnect를 유발하지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-stop-timeout-no-reconnect-int-"));
+  const fakeAppServer = new FakeAppServer({
+    noResponseMethods: ["thread/realtime/stop"],
+    onThreadRead: ({ threadPayload }) => {
+      if (!threadPayload) {
+        return threadPayload;
+      }
+
+      return {
+        ...threadPayload,
+        status: {
+          type: "active"
+        },
+        turns: (threadPayload.turns ?? []).map((turn) => ({
+          ...turn,
+          status: "running"
+        }))
+      };
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-thread-stop-timeout-no-reconnect-token",
+    userId: "integration-user",
+    bridgeId: `thread-stop-timeout-no-reconnect-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS: "200",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS: "900",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES: "1",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "150"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const { rootThreadId } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Stop Timeout Should Not Reconnect"
+    });
+
+    const stopPayload = await bridge.request(`/api/threads/${rootThreadId}/stop`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_stop"
+      })
+    });
+    assert.equal(stopPayload.accepted, true);
+    assert.equal(stopPayload.action, "stopped");
+    assert.equal(stopPayload.forced, true);
+
+    const stopRetryPayload = await bridge.request(`/api/threads/${rootThreadId}/stop`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_stop_retry"
+      })
+    });
+    assert.equal(stopRetryPayload.accepted, true);
+    assert.equal(["stopped", "noop"].includes(stopRetryPayload.action), true);
+
+    await sleep(1800);
+
+    const health = await bridge.request("/health");
+    assert.equal(health.ok, true);
+    assert.equal(health.status?.app_server?.initialized, true);
+    assert.equal(fakeAppServer.connectionCount, 1);
+    assert.equal(fakeAppServer.getRequests("initialize").length, 1);
+    assert.equal(fakeAppServer.getRequests("thread/realtime/stop").length, 1);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("running issue interrupt timeout이어도 즉시 강제 중단하고 late delta buffer를 버린다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-issue-interrupt-timeout-buffer-int-"));
+  const fakeAppServer = new FakeAppServer({
+    noResponseMethods: ["thread/realtime/stop"],
+    onThreadRead: ({ threadPayload }) => {
+      if (!threadPayload) {
+        return threadPayload;
+      }
+
+      return {
+        ...threadPayload,
+        status: {
+          type: "active"
+        },
+        turns: (threadPayload.turns ?? []).map((turn) => ({
+          ...turn,
+          status: "running"
+        }))
+      };
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-issue-interrupt-timeout-buffer-token",
+    userId: "integration-user",
+    bridgeId: `issue-interrupt-timeout-buffer-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS: "200",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS: "900",
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES: "1",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "150"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const scenario = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Interrupt Timeout Should Drop Late Buffer"
+    });
+
+    const interruptPayload = await bridge.request(`/api/issues/${scenario.activeIssueId}/interrupt`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "manual_interrupt"
+      })
+    });
+
+    assert.equal(interruptPayload.accepted, true);
+    assert.equal(interruptPayload.action, "interrupted");
+    assert.equal(interruptPayload.recovery_steps.includes("forced_release_after_stop_failed"), true);
+
+    fakeAppServer.notify("item/agentMessage/delta", {
+      threadId: scenario.sourceCodexThreadId,
+      root_thread_id: scenario.rootThreadId,
+      physical_thread_id: scenario.sourcePhysicalThreadId,
+      delta: "late buffered assistant delta"
+    });
+    fakeAppServer.notify("thread/status/changed", {
+      threadId: scenario.sourceCodexThreadId,
+      root_thread_id: scenario.rootThreadId,
+      physical_thread_id: scenario.sourcePhysicalThreadId,
+      status: {
+        type: "active"
+      }
+    });
+
+    await sleep(1200);
+
+    const issuePayload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const continuityPayload = await bridge.request(`/api/threads/${scenario.rootThreadId}/continuity`);
+    const health = await bridge.request("/health");
+
+    assert.equal(issuePayload.issue?.status, "interrupted");
+    assert.equal(issuePayload.issue?.last_event, "issue.interrupted");
+    assert.equal(
+      issuePayload.messages.some((message) => String(message.content ?? "").includes("late buffered assistant delta")),
+      false
+    );
+    assert.equal(continuityPayload.active_physical_thread?.turn_id ?? null, null);
+    assert.equal(continuityPayload.root_thread?.status, "idle");
+    assert.equal(health.status?.app_server?.initialized, true);
+    assert.equal(fakeAppServer.connectionCount, 1);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("thread unlock manual_refresh는 stop timeout이어도 stale running 락을 강제 해제하고 queued issue를 재개한다", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-thread-unlock-stop-failed-int-"));
   const fakeAppServer = new FakeAppServer({
