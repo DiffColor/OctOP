@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using Xunit;
 
@@ -333,5 +334,22 @@ public sealed class RuntimeInstallerTests
       RestoreEnvironmentVariable("OCTOP_WINDOWS_RUNTIME_REPO_BRANCH", originalRepoBranch);
       CleanupRuntimePath(root);
     }
+  }
+
+  [Fact]
+  public void EmbeddedRuntimeHealthScript_IncludesLatestHealthRecoveryLogic()
+  {
+    const string resourceName = "OctOP.WindowsAgentMenu.Runtime.scripts.local-agent-health.mjs";
+    var assembly = typeof(RuntimeInstaller).Assembly;
+
+    using var stream = assembly.GetManifestResourceStream(resourceName);
+    Assert.NotNull(stream);
+
+    using var reader = new StreamReader(stream!);
+    var script = reader.ReadToEnd();
+
+    Assert.Contains("const healthCheckError = status.lastSilentStateCheckError;", script);
+    Assert.Contains("Boolean(healthCheckError);", script);
+    Assert.DoesNotContain("Boolean(status.lastError)", script);
   }
 }
