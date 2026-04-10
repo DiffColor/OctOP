@@ -51,6 +51,28 @@ test("연속 실패 임계치에 도달하면 app-server 제어 재시작을 요
   assert.equal(evaluation.reason, "thread/list request timeout");
 });
 
+test("작업 실패로 last_error만 남은 경우에는 app-server 제어 재시작을 요청하지 않는다", () => {
+  const evaluation = evaluateBridgeAppServerRecovery({
+    health: {
+      status: {
+        app_server: {
+          connected: true,
+          initialized: true,
+          last_error: "running issue backfill failed"
+        }
+      }
+    },
+    consecutiveFailures: 2,
+    failureThreshold: 3
+  });
+
+  assert.equal(evaluation.healthy, true);
+  assert.equal(evaluation.recoverable, false);
+  assert.equal(evaluation.nextConsecutiveFailures, 0);
+  assert.equal(evaluation.shouldRestart, false);
+  assert.match(evaluation.summary, /last_error=running issue backfill failed/);
+});
+
 test("인증 오류는 재시작 대상에서 제외한다", () => {
   assert.equal(
     isBridgeAppServerAuthenticationError(

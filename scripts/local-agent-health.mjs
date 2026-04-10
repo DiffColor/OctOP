@@ -78,11 +78,12 @@ export function evaluateBridgeAppServerRecovery({
   const authenticationError =
     isBridgeAppServerAuthenticationError(status.lastError) ||
     isBridgeAppServerAuthenticationError(status.lastSilentStateCheckError);
+  const healthCheckError = status.lastSilentStateCheckError;
   const bridgeConnectionReady = status.connected && status.initialized;
   const healthy =
     bridgeConnectionReady &&
-    !status.lastError &&
-    !status.lastSilentStateCheckError;
+    !authenticationError &&
+    !healthCheckError;
 
   if (healthy) {
     return {
@@ -110,15 +111,12 @@ export function evaluateBridgeAppServerRecovery({
 
   const recoverable =
     !authenticationError &&
-    (
-      Boolean(status.lastError) ||
-      Boolean(status.lastSilentStateCheckError)
-    );
+    Boolean(healthCheckError);
   const nextConsecutiveFailures = recoverable
     ? Math.max(0, Number(consecutiveFailures) || 0) + 1
     : 0;
   const reason =
-    status.lastSilentStateCheckError ||
+    healthCheckError ||
     status.lastError ||
     (!status.connected ? "app-server bridge disconnected" : "") ||
     (!status.initialized ? "app-server bridge uninitialized" : "") ||
