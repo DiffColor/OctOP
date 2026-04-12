@@ -357,11 +357,11 @@ function buildBridgeSignal({
 
   if (!statusReceived || !socketConnected) {
     return {
-      label: language === "ko" ? "연결 불안정" : "Unstable",
+      label: connectedLabel,
       title:
         language === "ko"
-          ? "웹소켓 연결이 잠시 끊겼지만 backfill/API 실패가 함께 확인되기 전까지는 오프라인으로 확정하지 않습니다."
-          : "The websocket looks unstable, but the bridge is not treated as offline until backfill/API checks fail too.",
+          ? "브릿지 연결을 다시 확인하고 있습니다."
+          : "Rechecking bridge connection.",
       dotColor: "#f59e0b",
       chipStyle: {
         backgroundColor: "rgba(245, 158, 11, 0.14)",

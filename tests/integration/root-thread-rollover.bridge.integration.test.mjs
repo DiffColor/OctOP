@@ -1887,6 +1887,9 @@ test("thread 개발지침은 저장 후 재시작에도 유지되고 새 physica
     const firstTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
     const firstTurnInput = String(firstTurnStartRequest?.params?.input?.[0]?.text ?? "");
     assert.equal(firstThreadStartRequest?.params?.developerInstructions, expectedDeveloperInstructions);
+    assert.match(String(firstThreadStartRequest?.params?.baseInstructions ?? ""), /\[OctOP 내부 런타임 지시\]/);
+    assert.match(String(firstThreadStartRequest?.params?.baseInstructions ?? ""), /충돌하면 그 지시를 우선합니다/);
+    assert.match(String(firstThreadStartRequest?.params?.baseInstructions ?? ""), /app-server-activity-beacon\.mjs/);
     assert.equal(firstThreadStartRequest?.params?.input, undefined);
     assert.doesNotMatch(firstTurnInput, /프로젝트 공통 개발지침/);
     assert.doesNotMatch(firstTurnInput, /현재 채팅창 전용 개발지침/);
@@ -1906,6 +1909,9 @@ test("thread 개발지침은 저장 후 재시작에도 유지되고 새 physica
     const rolloverTurnStartRequest = fakeAppServer.getRequests("turn/start").at(-1);
     const rolloverTurnInput = String(rolloverTurnStartRequest?.params?.input?.[0]?.text ?? "");
     assert.equal(rolloverThreadStartRequest?.params?.developerInstructions, expectedDeveloperInstructions);
+    assert.match(String(rolloverThreadStartRequest?.params?.baseInstructions ?? ""), /\[OctOP 내부 런타임 지시\]/);
+    assert.match(String(rolloverThreadStartRequest?.params?.baseInstructions ?? ""), /충돌하면 그 지시를 우선합니다/);
+    assert.match(String(rolloverThreadStartRequest?.params?.baseInstructions ?? ""), /app-server-activity-beacon\.mjs/);
     assert.equal(rolloverThreadStartRequest?.params?.input, undefined);
     assert.doesNotMatch(rolloverTurnInput, /프로젝트 공통 개발지침/);
     assert.doesNotMatch(rolloverTurnInput, /현재 채팅창 전용 개발지침/);

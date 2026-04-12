@@ -28,7 +28,8 @@ import {
 } from "./domain.js";
 import {
   applyCommonBaseInstructionsToProjects,
-  deriveCommonBaseInstructions
+  deriveCommonBaseInstructions,
+  ensureDefaultCommonBaseInstructions
 } from "./projectInstructionState.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
@@ -671,7 +672,7 @@ function ensureUserState(userId) {
     const projects = loadProjectsForUser(normalized, projectEntry);
     users.set(normalized, {
       projects,
-      commonBaseInstructions: normalizeInstructionText(
+      commonBaseInstructions: ensureDefaultCommonBaseInstructions(
         projectEntry.commonBaseInstructions ?? deriveCommonBaseInstructions(projects)
       ),
       deletedWorkspacePaths: projectEntry.deletedWorkspacePaths,
@@ -1159,7 +1160,7 @@ function loadProjectEntry(loginId) {
         ? stored.deleted_workspace_paths.map((value) => resolve(String(value)))
         : [],
       commonBaseInstructions: hasStoredCommonBaseInstructions
-        ? normalizeInstructionText(stored.common_base_instructions ?? stored.commonBaseInstructions)
+        ? ensureDefaultCommonBaseInstructions(stored.common_base_instructions ?? stored.commonBaseInstructions)
         : deriveCommonBaseInstructions(storedProjects)
     };
   }
@@ -1167,7 +1168,7 @@ function loadProjectEntry(loginId) {
   return {
     projects: [],
     deletedWorkspacePaths: [],
-    commonBaseInstructions: ""
+    commonBaseInstructions: ensureDefaultCommonBaseInstructions("")
   };
 }
 
@@ -1175,7 +1176,7 @@ function loadProjectsForUser(loginId, projectEntry = loadProjectEntry(loginId)) 
   const persisted = readProjectStorage();
   const storedProjects = projectEntry.projects;
   const discoveredProjects = discoverProjectsForUser(loginId, projectEntry.deletedWorkspacePaths);
-  const commonBaseInstructions = normalizeInstructionText(projectEntry.commonBaseInstructions);
+  const commonBaseInstructions = ensureDefaultCommonBaseInstructions(projectEntry.commonBaseInstructions);
 
   if (Array.isArray(storedProjects) && storedProjects.length > 0) {
     return applyCommonBaseInstructionsToProjects(
@@ -3654,9 +3655,10 @@ function writeProjectStorage(payload) {
 
 function persistUserProjects(loginId, projects, deletedWorkspacePaths = [], commonBaseInstructions = "") {
   const storage = readProjectStorage();
+  const normalizedCommonBaseInstructions = ensureDefaultCommonBaseInstructions(commonBaseInstructions);
   storage[loginId] = {
-    projects: applyCommonBaseInstructionsToProjects(projects, commonBaseInstructions),
-    common_base_instructions: normalizeInstructionText(commonBaseInstructions),
+    projects: applyCommonBaseInstructionsToProjects(projects, normalizedCommonBaseInstructions),
+    common_base_instructions: normalizedCommonBaseInstructions,
     deleted_workspace_paths: [...new Set(deletedWorkspacePaths.map((value) => resolve(String(value))))],
     updated_at: now()
   };
@@ -3755,8 +3757,8 @@ async function updateProject(loginId, payload = {}) {
 
   const currentProject = state.projects[projectIndex];
   const nextCommonBaseInstructions = hasBaseInstructionsUpdate
-    ? normalizeInstructionText(payload.base_instructions ?? payload.baseInstructions)
-    : normalizeInstructionText(state.commonBaseInstructions);
+    ? ensureDefaultCommonBaseInstructions(payload.base_instructions ?? payload.baseInstructions)
+    : ensureDefaultCommonBaseInstructions(state.commonBaseInstructions);
   const updatedProject = {
     ...currentProject,
     ...(hasNameUpdate ? { name } : {}),
