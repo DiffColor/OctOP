@@ -3,16 +3,34 @@ const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-icon-192.png", "/octop-home-icon-512.png", "/octop-home-icon-180.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 const CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
+const NOTIFICATION_LAUNCH_MESSAGE_TYPE = "octop.push.launch";
 const CLIENT_MODE_STANDALONE = "standalone";
 const CLIENT_MODE_BROWSER = "browser";
 const MOBILE_APP_ID = "mobile-web";
+const STANDALONE_LAUNCH_URL = "/?client_mode=standalone";
 const clientContextById = new Map();
+const pendingNotificationLaunchByClientId = new Map();
 
 const normalizeLaunchUrl = (value) => {
   try {
     return new URL(typeof value === "string" ? value : "/", self.location.origin).toString();
   } catch {
     return new URL("/", self.location.origin).toString();
+  }
+};
+
+const toOpenWindowUrl = (targetUrl) => {
+  try {
+    const url = new URL(normalizeLaunchUrl(targetUrl));
+
+    if (url.origin === self.location.origin) {
+      return `${url.pathname}${url.search}${url.hash}` || "/";
+    }
+
+    return url.toString();
+  } catch {
+    const normalizedTargetUrl = String(targetUrl ?? "").trim();
+    return normalizedTargetUrl || "/";
   }
 };
 
@@ -140,6 +158,50 @@ const pruneClientContexts = (clients) => {
       clientContextById.delete(clientId);
     }
   }
+
+  for (const clientId of pendingNotificationLaunchByClientId.keys()) {
+    if (!activeIds.has(clientId)) {
+      pendingNotificationLaunchByClientId.delete(clientId);
+    }
+  }
+};
+
+const rememberPendingNotificationLaunch = (client, targetUrl) => {
+  const clientId = String(client?.id ?? "").trim();
+
+  if (!clientId) {
+    return;
+  }
+
+  pendingNotificationLaunchByClientId.set(clientId, {
+    targetUrl: normalizeLaunchUrl(targetUrl),
+    queuedAt: Date.now()
+  });
+};
+
+const deliverPendingNotificationLaunch = (client) => {
+  const clientId = String(client?.id ?? "").trim();
+
+  if (!clientId) {
+    return false;
+  }
+
+  const pendingLaunch = pendingNotificationLaunchByClientId.get(clientId);
+
+  if (!pendingLaunch?.targetUrl || typeof client.postMessage !== "function") {
+    return false;
+  }
+
+  try {
+    client.postMessage({
+      type: NOTIFICATION_LAUNCH_MESSAGE_TYPE,
+      launchUrl: pendingLaunch.targetUrl
+    });
+    pendingNotificationLaunchByClientId.delete(clientId);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const scoreNotificationClient = (client, targetUrl) => {
@@ -170,38 +232,58 @@ const focusNotificationClient = async (client, targetUrl) => {
     return null;
   }
 
+  let activeClient = client;
+
   try {
-    if (normalizeLaunchUrl(client.url) !== targetUrl && typeof client.navigate === "function") {
-      await client.navigate(targetUrl);
+    if (normalizeLaunchUrl(activeClient.url) !== targetUrl && typeof activeClient.navigate === "function") {
+      const navigatedClient = await activeClient.navigate(targetUrl);
+
+      if (navigatedClient) {
+        activeClient = navigatedClient;
+      }
     }
   } catch {
     // navigate 실패 시에도 focus는 계속 시도
   }
 
-  if (typeof client.focus === "function") {
+  if (normalizeLaunchUrl(activeClient.url) !== targetUrl) {
+    rememberPendingNotificationLaunch(activeClient, targetUrl);
+    deliverPendingNotificationLaunch(activeClient);
+  }
+
+  if (typeof activeClient.focus === "function") {
     try {
-      await client.focus();
+      await activeClient.focus();
     } catch {
       // 일부 플랫폼은 background client focus를 무시할 수 있으므로 실패를 삼킨다.
     }
   }
 
-  return client;
+  return activeClient;
 };
 
-const openWindowToTarget = async (targetUrl) => {
+const openWindowToTarget = async (targetUrl, targetClientMode = CLIENT_MODE_BROWSER) => {
   if (typeof self.clients.openWindow !== "function") {
     return null;
   }
 
+  const normalizedTargetUrl = normalizeLaunchUrl(targetUrl);
+  const directOpenWindowUrl = toOpenWindowUrl(normalizedTargetUrl);
+  const preferredOpenWindowUrl =
+    normalizeClientMode(targetClientMode) === CLIENT_MODE_STANDALONE ? STANDALONE_LAUNCH_URL : directOpenWindowUrl;
+
   try {
-    const openedClient = await self.clients.openWindow(targetUrl);
+    let openedClient = await self.clients.openWindow(preferredOpenWindowUrl);
+
+    if (!openedClient && preferredOpenWindowUrl !== directOpenWindowUrl) {
+      openedClient = await self.clients.openWindow(directOpenWindowUrl);
+    }
 
     if (!openedClient) {
       return null;
     }
 
-    return focusNotificationClient(openedClient, targetUrl);
+    return focusNotificationClient(openedClient, normalizedTargetUrl);
   } catch {
     return null;
   }
@@ -231,7 +313,7 @@ const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
       return focusNotificationClient(preferredStandaloneClient, targetUrl);
     }
 
-    return openWindowToTarget(targetUrl);
+    return openWindowToTarget(targetUrl, targetClientMode);
   }
 
   const preferredClient =
@@ -243,7 +325,7 @@ const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
     return focusNotificationClient(preferredClient, targetUrl);
   }
 
-  return openWindowToTarget(targetUrl);
+  return openWindowToTarget(targetUrl, targetClientMode);
 };
 
 const getContentType = (response) => response?.headers?.get("content-type")?.toLowerCase() ?? "";
@@ -327,6 +409,10 @@ self.addEventListener("message", (event) => {
       mode: normalizeClientMode(event.data.clientMode),
       updatedAt: Date.now()
     });
+
+    if (event.source) {
+      deliverPendingNotificationLaunch(event.source);
+    }
   }
 });
 
