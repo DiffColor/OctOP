@@ -12078,6 +12078,7 @@ export default function App() {
   });
   const [bridgeDisconnectOverrideById, setBridgeDisconnectOverrideById] = useState({});
   const viewportWidth = useVisualViewportWidth();
+  const wideThreadSplitEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX;
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
   const pwaUpdateActivationInFlightRef = useRef(false);
@@ -12303,7 +12304,6 @@ export default function App() {
   );
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
-  const wideThreadSplitEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX;
   const threadPanelVisible =
     Boolean(selectedThreadId) &&
     selectedScope.kind === "project" &&
