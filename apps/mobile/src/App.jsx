@@ -88,6 +88,7 @@ const bridgeSupportsThreadDeveloperInstructions = (status) =>
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const SERVICE_WORKER_CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
+const SERVICE_WORKER_CLIENT_CONTEXT_REQUEST_MESSAGE_TYPE = "octop.client.context.request";
 const SERVICE_WORKER_NOTIFICATION_LAUNCH_MESSAGE_TYPE = "octop.push.launch";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
@@ -300,6 +301,11 @@ function clearPushDeepLink() {
   url.searchParams.delete("project_id");
   url.searchParams.delete("thread_id");
   url.searchParams.delete("issue_id");
+
+  if (!isStandaloneDisplayMode()) {
+    url.searchParams.delete("client_mode");
+  }
+
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
@@ -308,20 +314,15 @@ function isStandaloneDisplayMode() {
     return false;
   }
 
-  const standaloneClientMode =
-    (() => {
-      try {
-        return new URL(window.location.href).searchParams.get("client_mode") === "standalone";
-      } catch {
-        return false;
-      }
-    })();
+  try {
+    if (window.matchMedia?.("(display-mode: standalone)").matches) {
+      return true;
+    }
+  } catch {
+    // ignore unsupported display-mode queries
+  }
 
-  return (
-    standaloneClientMode ||
-    window.matchMedia?.("(display-mode: standalone)").matches ||
-    window.navigator.standalone === true
-  );
+  return window.navigator.standalone === true;
 }
 
 function hasStandaloneVisibleNestedView({
@@ -15050,6 +15051,11 @@ export default function App() {
     }
 
     const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type === SERVICE_WORKER_CLIENT_CONTEXT_REQUEST_MESSAGE_TYPE) {
+        void publishServiceWorkerClientContext();
+        return;
+      }
+
       if (event.data?.type !== SERVICE_WORKER_NOTIFICATION_LAUNCH_MESSAGE_TYPE) {
         return;
       }

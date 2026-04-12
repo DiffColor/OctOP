@@ -3,11 +3,13 @@ const CACHE_NAME = `octop-pocket-${BUILD_ID}`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/octop-home-icon-192.png", "/octop-home-icon-512.png", "/octop-home-icon-180.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 const CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
+const CLIENT_CONTEXT_REQUEST_MESSAGE_TYPE = "octop.client.context.request";
 const NOTIFICATION_LAUNCH_MESSAGE_TYPE = "octop.push.launch";
 const CLIENT_MODE_STANDALONE = "standalone";
 const CLIENT_MODE_BROWSER = "browser";
 const MOBILE_APP_ID = "mobile-web";
 const STANDALONE_LAUNCH_URL = "/?client_mode=standalone";
+const CLIENT_CONTEXT_REFRESH_WAIT_MS = 250;
 const clientContextById = new Map();
 const pendingNotificationLaunchByClientId = new Map();
 
@@ -123,15 +125,6 @@ const isSameOriginClient = (client) => {
 
 const readClientMode = (client) => normalizeClientMode(clientContextById.get(client?.id)?.mode);
 
-const readClientModeFromUrl = (client) => {
-  try {
-    const url = new URL(client?.url ?? "", self.location.origin);
-    return normalizeClientMode(url.searchParams.get("client_mode"));
-  } catch {
-    return CLIENT_MODE_BROWSER;
-  }
-};
-
 const readClientModeFromLaunchUrl = (launchUrl) => {
   try {
     const url = new URL(normalizeLaunchUrl(launchUrl));
@@ -141,12 +134,7 @@ const readClientModeFromLaunchUrl = (launchUrl) => {
   }
 };
 
-const resolveClientModeForClient = (client) => {
-  const reportedClientMode = readClientMode(client);
-  return reportedClientMode === CLIENT_MODE_STANDALONE
-    ? CLIENT_MODE_STANDALONE
-    : readClientModeFromUrl(client);
-};
+const resolveClientModeForClient = (client) => readClientMode(client);
 
 const isStandaloneClient = (client) => resolveClientModeForClient(client) === CLIENT_MODE_STANDALONE;
 
@@ -201,6 +189,35 @@ const deliverPendingNotificationLaunch = (client) => {
     return true;
   } catch {
     return false;
+  }
+};
+
+const wait = (ms) =>
+  new Promise((resolve) => {
+    self.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+
+const requestClientContextRefresh = async (clients) => {
+  const sameOriginClients = Array.isArray(clients) ? clients.filter((client) => isSameOriginClient(client)) : [];
+  let requestSent = false;
+
+  for (const client of sameOriginClients) {
+    if (typeof client.postMessage !== "function") {
+      continue;
+    }
+
+    try {
+      client.postMessage({
+        type: CLIENT_CONTEXT_REQUEST_MESSAGE_TYPE
+      });
+      requestSent = true;
+    } catch {
+      // ignore postMessage failures
+    }
+  }
+
+  if (requestSent) {
+    await wait(CLIENT_CONTEXT_REFRESH_WAIT_MS);
   }
 };
 
@@ -292,11 +309,17 @@ const openWindowToTarget = async (targetUrl, targetClientMode = CLIENT_MODE_BROW
 const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
   const targetClientMode = resolveTargetClientMode(payload, launchUrl);
   const targetUrl = withClientModeLaunchUrl(normalizeLaunchUrl(launchUrl), targetClientMode);
-  const clients = await self.clients.matchAll({
+  let clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true
   });
 
+  pruneClientContexts(clients);
+  await requestClientContextRefresh(clients);
+  clients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true
+  });
   pruneClientContexts(clients);
 
   const sameOriginClients = [...clients]
