@@ -16,3 +16,5 @@ backend alias
 playwright-report
 blob-report
 test-results
+outputs/
+tmp/
