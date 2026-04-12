@@ -49,6 +49,18 @@ function installStandaloneModeMock(page) {
 
     const originalMatchMedia = window.matchMedia?.bind(window);
     window.matchMedia = (query) => createStandaloneMatchMediaResult(query, originalMatchMedia);
+    const originalHistoryBack = window.history.back.bind(window.history);
+    const originalWindowClose = window.close.bind(window);
+    window.__octopHistoryBackCalls = 0;
+    window.__octopWindowCloseCalls = 0;
+    window.history.back = (...args) => {
+      window.__octopHistoryBackCalls += 1;
+      return originalHistoryBack(...args);
+    };
+    window.close = (...args) => {
+      window.__octopWindowCloseCalls += 1;
+      return originalWindowClose(...args);
+    };
     Object.defineProperty(window.navigator, "standalone", {
       configurable: true,
       get() {
@@ -313,5 +325,18 @@ test.describe("모바일 PWA standalone 히스토리 안정성", () => {
     const confirmDialog = page.getByTestId("mobile-confirm-dialog");
     await expect(confirmDialog.getByText("OctOP 앱을 종료하시겠습니까?")).toBeVisible();
     await expect(confirmDialog.getByRole("button", { name: "종료" })).toBeVisible();
+    await confirmDialog.getByRole("button", { name: "종료" }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          backCalls: window.__octopHistoryBackCalls,
+          closeCalls: window.__octopWindowCloseCalls
+        }))
+      )
+      .toMatchObject({
+        backCalls: 3,
+        closeCalls: 2
+      });
   });
 });

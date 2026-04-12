@@ -574,6 +574,7 @@ const MOBILE_NOTICE_ERROR_DISMISS_MS = 6_000;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 const BOTTOM_BOUNDARY_HEADER_GUARD_PX = 24;
 const BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS = 180;
+const DEFAULT_VOICE_PLAYBACK_LANGUAGE = "ko-KR";
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
@@ -2775,6 +2776,59 @@ function getVoiceTranscriptDelta(nextTranscript, previousTranscript) {
   }
 
   return next;
+}
+
+function supportsSpeechSynthesisPlayback() {
+  return (
+    typeof window !== "undefined" &&
+    "speechSynthesis" in window &&
+    typeof window.SpeechSynthesisUtterance === "function"
+  );
+}
+
+function pickPreferredSpeechSynthesisVoice(voices = [], preferredLanguage = DEFAULT_VOICE_PLAYBACK_LANGUAGE) {
+  if (!Array.isArray(voices) || voices.length === 0) {
+    return null;
+  }
+
+  const normalizedLanguage = String(preferredLanguage ?? DEFAULT_VOICE_PLAYBACK_LANGUAGE).trim().toLowerCase();
+  const normalizedBaseLanguage = normalizedLanguage.split("-")[0];
+  const normalizedVoices = voices.filter(Boolean);
+
+  return (
+    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase() === normalizedLanguage) ??
+    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase().startsWith(`${normalizedBaseLanguage}-`)) ??
+    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase().startsWith(normalizedBaseLanguage)) ??
+    normalizedVoices[0] ??
+    null
+  );
+}
+
+function buildSpeechFriendlyMessageText(content) {
+  return String(content ?? "")
+    .replace(/```[\s\S]*?```/g, " 코드 블록 ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, " 이미지 ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/[*#>~-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildVoicePlaybackMessageKey(message = null) {
+  if (!message) {
+    return "";
+  }
+
+  const id = String(message.id ?? "").trim();
+  const timestamp = String(message.timestamp ?? "").trim();
+  const content = buildSpeechFriendlyMessageText(message.content);
+
+  if (!id && !timestamp && !content) {
+    return "";
+  }
+
+  return `${id}:${timestamp}:${content}`;
 }
 
 function parseResponseBody(response, text) {
@@ -5900,6 +5954,7 @@ function InlineIssueComposer({
 
   const attachmentCount = attachments.length;
   const actionBusy = busy || attachmentBusy;
+  const canToggleVoiceCapture = Boolean(selectedProject) && !disabled && !busy;
   const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
 
   return (
@@ -5978,34 +6033,42 @@ function InlineIssueComposer({
                     {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  data-testid="thread-prompt-attach-button"
-                  onPointerDown={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    fileInputRef.current?.click();
-                  }}
-                  disabled={actionBusy || !selectedProject || disabled || attachmentCount >= MAX_MESSAGE_ATTACHMENTS}
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-300 transition hover:bg-white/[0.09] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
-                  aria-label="첨부 파일 추가"
-                  title={
-                    attachmentCount > 0
-                      ? `이미지 또는 텍스트 파일 첨부 · ${attachmentCount}/${MAX_MESSAGE_ATTACHMENTS}`
-                      : "이미지 또는 텍스트 파일 첨부"
-                  }
-                >
-                  {attachmentBusy ? (
-                    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  ) : (
-                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                    </svg>
-                  )}
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {isRecording ? (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[10px] font-semibold text-rose-200">
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-300 animate-pulse" />
+                      듣는 중
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-testid="thread-prompt-attach-button"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={actionBusy || !selectedProject || disabled || attachmentCount >= MAX_MESSAGE_ATTACHMENTS}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-300 transition hover:bg-white/[0.09] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    aria-label="첨부 파일 추가"
+                    title={
+                      attachmentCount > 0
+                        ? `이미지 또는 텍스트 파일 첨부 · ${attachmentCount}/${MAX_MESSAGE_ATTACHMENTS}`
+                        : "이미지 또는 텍스트 파일 첨부"
+                    }
+                  >
+                    {attachmentBusy ? (
+                      <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    ) : (
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
               <textarea
                 rows="1"
@@ -6042,44 +6105,88 @@ function InlineIssueComposer({
                 )}
               </button>
             ) : (
-              <button
-                type="button"
-                onPointerDown={handleSendPointerDown}
-                onPointerUp={handleSendPointerUp}
-                onPointerLeave={handleSendPointerLeave}
-                onPointerCancel={handleSendPointerLeave}
-                onClick={handleSendClick}
-                onContextMenu={(event) => event.preventDefault()}
-                disabled={!canSubmit}
-                aria-pressed={isRecording}
-                className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
-                  isRecording
-                    ? "border-rose-500 bg-rose-500/20 text-rose-50"
-                    : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
-                } disabled:cursor-not-allowed disabled:opacity-45`}
-              >
-                {isRecording ? (
-                  <>
-                    <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
+              <div className="flex shrink-0 items-end gap-2">
+                {supportsSpeechRecognition ? (
+                  <button
+                    type="button"
+                    onClick={toggleVoiceCapture}
+                    disabled={!canToggleVoiceCapture}
+                    aria-pressed={isRecording}
+                    aria-label={isRecording ? "음성 입력 중지" : "음성 입력 시작"}
+                    title={isRecording ? "음성 입력 중지" : "음성 입력 시작"}
+                    className={`relative flex h-14 w-14 items-center justify-center rounded-full border text-white transition ${
+                      isRecording
+                        ? "border-rose-400/60 bg-rose-500/18 text-rose-50"
+                        : "border-white/10 bg-white/[0.05] hover:bg-white/[0.09]"
+                    } disabled:cursor-not-allowed disabled:opacity-45`}
+                  >
+                    {isRecording ? (
+                      <>
+                        <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.25)]" />
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                          />
+                          <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                          <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                        </svg>
+                      </>
+                    ) : (
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path
+                          d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                        />
+                        <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                        <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      </svg>
+                    )}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onPointerDown={handleSendPointerDown}
+                  onPointerUp={handleSendPointerUp}
+                  onPointerLeave={handleSendPointerLeave}
+                  onPointerCancel={handleSendPointerLeave}
+                  onClick={handleSendClick}
+                  onContextMenu={(event) => event.preventDefault()}
+                  disabled={!canSubmit}
+                  aria-pressed={isRecording}
+                  className={`relative flex h-14 w-14 items-center justify-center rounded-full border-2 text-lg transition ${
+                    isRecording
+                      ? "border-rose-500 bg-rose-500/20 text-rose-50"
+                      : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+                  } disabled:cursor-not-allowed disabled:opacity-45`}
+                >
+                  {isRecording ? (
+                    <>
+                      <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
+                      <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path
+                          d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                        />
+                        <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                        <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      </svg>
+                    </>
+                  ) : actionBusy ? (
+                    <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="2"
-                      />
-                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                      <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
                     </svg>
-                  </>
-                ) : actionBusy ? (
-                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                ) : (
-                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                )}
-              </button>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -8331,6 +8438,12 @@ function ThreadDetail({
   const [activeMessageAction, setActiveMessageAction] = useState(null);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const { alert: showAlert } = useMobileFeedback();
+  const supportsSpeechSynthesis = supportsSpeechSynthesisPlayback();
+  const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState(false);
+  const [availableSpeechVoices, setAvailableSpeechVoices] = useState([]);
+  const speechUtteranceRef = useRef(null);
+  const lastSpokenMessageKeyRef = useRef("");
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -8548,6 +8661,33 @@ function ThreadDetail({
         .join("|"),
     [visibleChatTimeline]
   );
+  const latestAssistantMessage = useMemo(
+    () =>
+      [...chatTimeline]
+        .reverse()
+        .find((entry) => entry.role === "assistant" && buildSpeechFriendlyMessageText(entry.content)),
+    [chatTimeline]
+  );
+  const latestAssistantSpeechText = useMemo(
+    () => buildSpeechFriendlyMessageText(latestAssistantMessage?.content),
+    [latestAssistantMessage?.content]
+  );
+  const latestAssistantMessageKey = useMemo(
+    () => buildVoicePlaybackMessageKey(latestAssistantMessage),
+    [latestAssistantMessage]
+  );
+  const preferredSpeechVoice = useMemo(
+    () => pickPreferredSpeechSynthesisVoice(availableSpeechVoices, DEFAULT_VOICE_PLAYBACK_LANGUAGE),
+    [availableSpeechVoices]
+  );
+  const threadReadyForVoicePlayback = !["running"].includes(String(thread?.status ?? "").trim());
+  const voiceStatusLabel = isVoiceSpeaking
+    ? "응답 읽는 중"
+    : thread?.status === "running"
+      ? "응답 생성 중"
+      : latestAssistantSpeechText
+        ? "최신 응답 준비됨"
+        : "읽을 응답 없음";
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9151,6 +9291,182 @@ function ThreadDetail({
     }
   }, [showAlert]);
 
+  const stopVoicePlayback = useCallback(() => {
+    if (!supportsSpeechSynthesis || typeof window === "undefined") {
+      setIsVoiceSpeaking(false);
+      speechUtteranceRef.current = null;
+      return;
+    }
+
+    speechUtteranceRef.current = null;
+    setIsVoiceSpeaking(false);
+    window.speechSynthesis.cancel();
+  }, [supportsSpeechSynthesis]);
+
+  const playAssistantVoiceResponse = useCallback(
+    ({ force = false, manual = false } = {}) => {
+      if (!supportsSpeechSynthesis || typeof window === "undefined") {
+        if (manual) {
+          showAlert("이 브라우저에서는 음성 응답 재생을 지원하지 않습니다.", {
+            tone: "error",
+            title: "음성 응답"
+          });
+        }
+        return false;
+      }
+
+      if (!latestAssistantSpeechText) {
+        if (manual) {
+          showAlert("아직 읽어 줄 최신 응답이 없습니다.", {
+            tone: "error",
+            title: "음성 응답"
+          });
+        }
+        return false;
+      }
+
+      if (!force && latestAssistantMessageKey && lastSpokenMessageKeyRef.current === latestAssistantMessageKey) {
+        return true;
+      }
+
+      stopVoicePlayback();
+
+      const utterance = new window.SpeechSynthesisUtterance(latestAssistantSpeechText);
+      utterance.lang = preferredSpeechVoice?.lang ?? DEFAULT_VOICE_PLAYBACK_LANGUAGE;
+      utterance.rate = 1;
+      utterance.pitch = 1;
+
+      if (preferredSpeechVoice) {
+        utterance.voice = preferredSpeechVoice;
+      }
+
+      utterance.onstart = () => {
+        speechUtteranceRef.current = utterance;
+        setIsVoiceSpeaking(true);
+      };
+      utterance.onend = () => {
+        if (speechUtteranceRef.current === utterance) {
+          speechUtteranceRef.current = null;
+        }
+        setIsVoiceSpeaking(false);
+      };
+      utterance.onerror = () => {
+        if (speechUtteranceRef.current === utterance) {
+          speechUtteranceRef.current = null;
+        }
+        setIsVoiceSpeaking(false);
+
+        if (manual) {
+          showAlert("응답을 음성으로 재생하지 못했습니다.", {
+            tone: "error",
+            title: "음성 응답"
+          });
+        }
+      };
+
+      speechUtteranceRef.current = utterance;
+      lastSpokenMessageKeyRef.current = latestAssistantMessageKey;
+
+      try {
+        window.speechSynthesis.speak(utterance);
+        return true;
+      } catch (error) {
+        speechUtteranceRef.current = null;
+        setIsVoiceSpeaking(false);
+
+        if (manual) {
+          showAlert(error?.message ?? "응답을 음성으로 재생하지 못했습니다.", {
+            tone: "error",
+            title: "음성 응답"
+          });
+        }
+
+        return false;
+      }
+    },
+    [
+      latestAssistantMessageKey,
+      latestAssistantSpeechText,
+      preferredSpeechVoice,
+      showAlert,
+      stopVoicePlayback,
+      supportsSpeechSynthesis
+    ]
+  );
+
+  const handleToggleVoiceMode = useCallback(() => {
+    if (!supportsSpeechSynthesis) {
+      showAlert("이 브라우저에서는 음성 응답 재생을 지원하지 않습니다.", {
+        tone: "error",
+        title: "음성 모드"
+      });
+      return;
+    }
+
+    if (voiceModeEnabled) {
+      setVoiceModeEnabled(false);
+      stopVoicePlayback();
+      return;
+    }
+
+    setVoiceModeEnabled(true);
+
+    if (threadReadyForVoicePlayback && latestAssistantSpeechText) {
+      playAssistantVoiceResponse({ force: true, manual: true });
+    }
+  }, [
+    latestAssistantSpeechText,
+    playAssistantVoiceResponse,
+    showAlert,
+    stopVoicePlayback,
+    supportsSpeechSynthesis,
+    voiceModeEnabled,
+    threadReadyForVoicePlayback
+  ]);
+
+  useEffect(() => {
+    if (!supportsSpeechSynthesis || typeof window === "undefined") {
+      setAvailableSpeechVoices([]);
+      return undefined;
+    }
+
+    const synthesis = window.speechSynthesis;
+    const syncVoices = () => {
+      setAvailableSpeechVoices(synthesis.getVoices());
+    };
+
+    syncVoices();
+    synthesis.addEventListener?.("voiceschanged", syncVoices);
+
+    return () => {
+      synthesis.removeEventListener?.("voiceschanged", syncVoices);
+    };
+  }, [supportsSpeechSynthesis]);
+
+  useEffect(() => () => stopVoicePlayback(), [stopVoicePlayback]);
+
+  useEffect(() => {
+    stopVoicePlayback();
+    lastSpokenMessageKeyRef.current = "";
+  }, [stopVoicePlayback, thread?.id]);
+
+  useEffect(() => {
+    if (!voiceModeEnabled || !threadReadyForVoicePlayback || !latestAssistantMessageKey) {
+      return;
+    }
+
+    if (lastSpokenMessageKeyRef.current === latestAssistantMessageKey) {
+      return;
+    }
+
+    playAssistantVoiceResponse();
+  }, [
+    latestAssistantMessageKey,
+    playAssistantVoiceResponse,
+    threadReadyForVoicePlayback,
+    voiceModeEnabled
+  ]);
+
   useEffect(() => {
     setActiveMessageAction(null);
     setInterruptingIssueId("");
@@ -9266,6 +9582,48 @@ function ThreadDetail({
                 {filter.label}
               </button>
             ))}
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-slate-300">
+              {voiceStatusLabel}
+            </span>
+
+            {supportsSpeechSynthesis ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleToggleVoiceMode}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition ${
+                    voiceModeEnabled
+                      ? "border-sky-300/40 bg-sky-400/12 text-sky-100"
+                      : "border-white/10 bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
+                  }`}
+                >
+                  {voiceModeEnabled ? "음성 모드 켜짐" : "음성 모드"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isVoiceSpeaking) {
+                      stopVoicePlayback();
+                      return;
+                    }
+
+                    playAssistantVoiceResponse({ force: true, manual: true });
+                  }}
+                  disabled={!latestAssistantSpeechText && !isVoiceSpeaking}
+                  className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {isVoiceSpeaking ? "읽기 중지" : "최신 응답 듣기"}
+                </button>
+              </>
+            ) : (
+              <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1 text-[11px] text-amber-100">
+                음성 응답 미지원 브라우저
+              </span>
+            )}
           </div>
 
         </div>
@@ -12075,7 +12433,7 @@ export default function App() {
   const pendingUpdateActivatorRef = useRef(null);
   const pwaUpdateActivationInFlightRef = useRef(false);
   const standaloneBackNavigationInFlightRef = useRef(false);
-  const allowStandaloneNativeBackRef = useRef(false);
+  const allowStandaloneNativeBackCountRef = useRef(0);
   const threadLoadRequestIdByIdRef = useRef(new Map());
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
@@ -17027,7 +17385,7 @@ export default function App() {
       return;
     }
 
-    allowStandaloneNativeBackRef.current = true;
+    allowStandaloneNativeBackCountRef.current = Math.max(allowStandaloneNativeBackCountRef.current, 2);
 
     window.setTimeout(() => {
       try {
@@ -17265,7 +17623,7 @@ export default function App() {
     }
 
     const pushStandaloneBackGuard = () => {
-      if (allowStandaloneNativeBackRef.current) {
+      if (allowStandaloneNativeBackCountRef.current > 0) {
         return;
       }
 
@@ -17273,8 +17631,21 @@ export default function App() {
     };
 
     const handleStandalonePopState = (event) => {
-      if (allowStandaloneNativeBackRef.current) {
-        allowStandaloneNativeBackRef.current = false;
+      if (allowStandaloneNativeBackCountRef.current > 0) {
+        allowStandaloneNativeBackCountRef.current -= 1;
+
+        if (allowStandaloneNativeBackCountRef.current > 0) {
+          window.setTimeout(() => {
+            try {
+              window.close();
+            } catch {
+              // noop
+            }
+
+            window.history.back();
+          }, 0);
+        }
+
         return;
       }
 
@@ -17340,7 +17711,7 @@ export default function App() {
     return () => {
       window.removeEventListener("popstate", handleStandalonePopState);
       standaloneBackNavigationInFlightRef.current = false;
-      allowStandaloneNativeBackRef.current = false;
+      allowStandaloneNativeBackCountRef.current = 0;
       mainPageBackHandlerRef.current = null;
     };
   }, [confirmMobileAction, consumeStandaloneBackPress, handleBackToMainPage, requestStandaloneAppExit, session]);

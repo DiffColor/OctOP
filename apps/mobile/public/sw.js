@@ -208,8 +208,8 @@ const openWindowToTarget = async (targetUrl) => {
 };
 
 const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
-  const targetUrl = normalizeLaunchUrl(launchUrl);
-  const targetClientMode = resolveTargetClientMode(payload, targetUrl);
+  const targetClientMode = resolveTargetClientMode(payload, launchUrl);
+  const targetUrl = withClientModeLaunchUrl(normalizeLaunchUrl(launchUrl), targetClientMode);
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true
@@ -220,20 +220,24 @@ const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
   const sameOriginClients = [...clients]
     .filter((client) => isSameOriginClient(client))
     .sort((left, right) => scoreNotificationClient(right, targetUrl) - scoreNotificationClient(left, targetUrl));
-  const preferredClient = sameOriginClients[0] ?? null;
-  const preferredVisibleClient =
-    sameOriginClients.find((client) => client.focused || client.visibilityState === "visible") ?? null;
-  const preferredStandaloneClient = sameOriginClients.find((client) => isStandaloneClient(client)) ?? null;
-  const shouldPreferStandaloneLaunch =
-    targetClientMode === CLIENT_MODE_STANDALONE || Boolean(preferredStandaloneClient);
+  const standaloneClients = sameOriginClients.filter((client) => isStandaloneClient(client));
+  const preferredStandaloneClient =
+    standaloneClients.find((client) => client.focused || client.visibilityState === "visible") ??
+    standaloneClients[0] ??
+    null;
 
-  if (shouldPreferStandaloneLaunch && preferredStandaloneClient) {
-    return focusNotificationClient(preferredStandaloneClient, targetUrl);
+  if (targetClientMode === CLIENT_MODE_STANDALONE) {
+    if (preferredStandaloneClient) {
+      return focusNotificationClient(preferredStandaloneClient, targetUrl);
+    }
+
+    return openWindowToTarget(targetUrl);
   }
 
-  if (preferredVisibleClient) {
-    return focusNotificationClient(preferredVisibleClient, targetUrl);
-  }
+  const preferredClient =
+    sameOriginClients.find((client) => client.focused || client.visibilityState === "visible") ??
+    sameOriginClients[0] ??
+    null;
 
   if (preferredClient) {
     return focusNotificationClient(preferredClient, targetUrl);
