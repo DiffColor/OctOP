@@ -311,6 +311,33 @@ function isStandaloneDisplayMode() {
   );
 }
 
+function hasStandaloneVisibleNestedView({
+  activeView = "inbox",
+  selectedScopeKind = "project",
+  selectedThreadId = "",
+  selectedTodoChatId = "",
+  draftThreadProjectId = "",
+  wideSplitEnabled = false
+} = {}) {
+  if (String(draftThreadProjectId ?? "").trim()) {
+    return true;
+  }
+
+  if (activeView === "thread" || activeView === "todo") {
+    return true;
+  }
+
+  if (!wideSplitEnabled) {
+    return false;
+  }
+
+  if (selectedScopeKind === "todo") {
+    return Boolean(String(selectedTodoChatId ?? "").trim());
+  }
+
+  return Boolean(String(selectedThreadId ?? "").trim());
+}
+
 function hasCoarsePointerDevice() {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return false;
@@ -12084,7 +12111,9 @@ export default function App() {
   const selectedThreadIdRef = useRef("");
   const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
+  const selectedScopeKindRef = useRef(selectedScope.kind);
   const draftThreadProjectIdRef = useRef(draftThreadProjectId);
+  const wideThreadSplitEnabledRef = useRef(wideThreadSplitEnabled);
   const utilityOpenRef = useRef(utilityOpen);
   const projectComposerOpenRef = useRef(projectComposerOpen);
   const threadCreateDialogOpenRef = useRef(threadCreateDialogOpen);
@@ -12747,6 +12776,14 @@ export default function App() {
   useEffect(() => {
     draftThreadProjectIdRef.current = draftThreadProjectId;
   }, [draftThreadProjectId]);
+
+  useEffect(() => {
+    selectedScopeKindRef.current = selectedScope.kind;
+  }, [selectedScope.kind]);
+
+  useEffect(() => {
+    wideThreadSplitEnabledRef.current = wideThreadSplitEnabled;
+  }, [wideThreadSplitEnabled]);
 
   useEffect(() => {
     threadPanelVisibleRef.current = threadPanelVisible;
@@ -17270,11 +17307,14 @@ export default function App() {
 
       void (async () => {
         try {
-          const hasNestedView =
-            activeViewRef.current !== "inbox" ||
-            Boolean(selectedThreadIdRef.current) ||
-            Boolean(selectedTodoChatIdRef.current) ||
-            Boolean(draftThreadProjectIdRef.current);
+          const hasNestedView = hasStandaloneVisibleNestedView({
+            activeView: activeViewRef.current,
+            selectedScopeKind: selectedScopeKindRef.current,
+            selectedThreadId: selectedThreadIdRef.current,
+            selectedTodoChatId: selectedTodoChatIdRef.current,
+            draftThreadProjectId: draftThreadProjectIdRef.current,
+            wideSplitEnabled: wideThreadSplitEnabledRef.current
+          });
 
           if (hasNestedView) {
             handleBackToMainPage();
