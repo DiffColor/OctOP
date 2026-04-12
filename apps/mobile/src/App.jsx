@@ -9601,7 +9601,8 @@ function MainPage({
   onRefresh,
   bridgeListSyncing,
   onLogout,
-  onBackToInbox
+  onBackToInbox,
+  onRegisterBackHandler
 }) {
   const { confirm: confirmMobileAction } = useMobileFeedback();
   const [searchOpen, setSearchOpen] = useState(false);
@@ -9764,6 +9765,65 @@ function MainPage({
     chatId: selectedTodoChat?.id ?? todoChatDetail?.chat?.id ?? selectedTodoChatId
   });
   const todoComposerDraft = todoComposerDraftKey ? threadComposerDrafts[todoComposerDraftKey] ?? "" : "";
+
+  useEffect(() => {
+    if (typeof onRegisterBackHandler !== "function") {
+      return undefined;
+    }
+
+    onRegisterBackHandler(() => {
+      if (todoTransferOpen) {
+        setTodoTransferOpen(false);
+        return true;
+      }
+
+      if (todoMessageEditorOpen) {
+        setTodoMessageEditorOpen(false);
+        return true;
+      }
+
+      if (activeTodoMessage) {
+        setActiveTodoMessage(null);
+        return true;
+      }
+
+      if (todoChatBeingEdited) {
+        setTodoChatBeingEdited(null);
+        return true;
+      }
+
+      if (projectActionTarget) {
+        setProjectActionProjectId("");
+        return true;
+      }
+
+      if (threadSelectionMode) {
+        setThreadSelectionMode(false);
+        setSelectedThreadIds([]);
+        return true;
+      }
+
+      if (searchOpen) {
+        setSearchOpen(false);
+        return true;
+      }
+
+      return false;
+    });
+
+    return () => {
+      onRegisterBackHandler(null);
+    };
+  }, [
+    activeTodoMessage,
+    onRegisterBackHandler,
+    projectActionTarget,
+    searchOpen,
+    threadSelectionMode,
+    todoChatBeingEdited,
+    todoMessageEditorOpen,
+    todoTransferOpen
+  ]);
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
       const matchesSearch =
@@ -11942,6 +12002,8 @@ export default function App() {
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
   const pwaUpdateActivationInFlightRef = useRef(false);
+  const standaloneBackNavigationInFlightRef = useRef(false);
+  const allowStandaloneNativeBackRef = useRef(false);
   const threadLoadRequestIdByIdRef = useRef(new Map());
   const todoChatLoadRequestIdRef = useRef(0);
   const threadReloadTimersByIdRef = useRef(new Map());
@@ -11966,9 +12028,22 @@ export default function App() {
   const threadDeleteDialogResolverRef = useRef(null);
   const mobileNoticeTimersRef = useRef(new Map());
   const mobileConfirmResolverRef = useRef(null);
+  const mainPageBackHandlerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
+  const draftThreadProjectIdRef = useRef(draftThreadProjectId);
+  const utilityOpenRef = useRef(utilityOpen);
+  const projectComposerOpenRef = useRef(projectComposerOpen);
+  const threadCreateDialogOpenRef = useRef(threadCreateDialogOpen);
+  const projectInstructionDialogOpenRef = useRef(projectInstructionDialogOpen);
+  const projectInstructionBusyRef = useRef(projectInstructionBusy);
+  const projectEditDialogOpenRef = useRef(projectEditDialogOpen);
+  const projectEditBusyRef = useRef(projectEditBusy);
+  const threadInstructionDialogOpenRef = useRef(threadInstructionDialogOpen);
+  const threadInstructionBusyRef = useRef(threadInstructionBusy);
+  const threadDeleteDialogOpenRef = useRef(threadDeleteDialog.open);
+  const threadBusyRef = useRef(threadBusy);
   const sessionRef = useRef(session);
   const bridgeStatusByIdRef = useRef({});
   const bridgeWorkspaceRequestIdRef = useRef(0);
@@ -12618,6 +12693,10 @@ export default function App() {
   }, [activeView]);
 
   useEffect(() => {
+    draftThreadProjectIdRef.current = draftThreadProjectId;
+  }, [draftThreadProjectId]);
+
+  useEffect(() => {
     threadPanelVisibleRef.current = threadPanelVisible;
   }, [threadPanelVisible]);
 
@@ -12645,6 +12724,50 @@ export default function App() {
   useEffect(() => {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
+
+  useEffect(() => {
+    utilityOpenRef.current = utilityOpen;
+  }, [utilityOpen]);
+
+  useEffect(() => {
+    projectComposerOpenRef.current = projectComposerOpen;
+  }, [projectComposerOpen]);
+
+  useEffect(() => {
+    threadCreateDialogOpenRef.current = threadCreateDialogOpen;
+  }, [threadCreateDialogOpen]);
+
+  useEffect(() => {
+    projectInstructionDialogOpenRef.current = projectInstructionDialogOpen;
+  }, [projectInstructionDialogOpen]);
+
+  useEffect(() => {
+    projectInstructionBusyRef.current = projectInstructionBusy;
+  }, [projectInstructionBusy]);
+
+  useEffect(() => {
+    projectEditDialogOpenRef.current = projectEditDialogOpen;
+  }, [projectEditDialogOpen]);
+
+  useEffect(() => {
+    projectEditBusyRef.current = projectEditBusy;
+  }, [projectEditBusy]);
+
+  useEffect(() => {
+    threadInstructionDialogOpenRef.current = threadInstructionDialogOpen;
+  }, [threadInstructionDialogOpen]);
+
+  useEffect(() => {
+    threadInstructionBusyRef.current = threadInstructionBusy;
+  }, [threadInstructionBusy]);
+
+  useEffect(() => {
+    threadDeleteDialogOpenRef.current = threadDeleteDialog.open;
+  }, [threadDeleteDialog.open]);
+
+  useEffect(() => {
+    threadBusyRef.current = threadBusy;
+  }, [threadBusy]);
 
   useEffect(() => {
     const knownThreadsById = new Map();
@@ -16739,6 +16862,103 @@ export default function App() {
     setThreadInstructionTarget(null);
   };
 
+  const handleBackToMainPage = useCallback(() => {
+    clearInstantThreadIfNeeded();
+    setSelectedThreadId("");
+    setSelectedTodoChatId("");
+    setDraftThreadProjectId("");
+    setActiveView("inbox");
+    activeViewRef.current = "inbox";
+  }, [clearInstantThreadIfNeeded]);
+
+  const consumeStandaloneBackPress = useCallback(() => {
+    if (mobileConfirmResolverRef.current) {
+      resolveMobileConfirm(false);
+      return true;
+    }
+
+    if (threadDeleteDialogOpenRef.current) {
+      if (threadBusyRef.current) {
+        return true;
+      }
+
+      closeThreadDeleteDialog(false);
+      return true;
+    }
+
+    if (threadInstructionDialogOpenRef.current) {
+      if (threadInstructionBusyRef.current) {
+        return true;
+      }
+
+      setThreadInstructionError("");
+      setThreadInstructionDialogOpen(false);
+      setThreadInstructionTarget(null);
+      return true;
+    }
+
+    if (projectEditDialogOpenRef.current) {
+      if (projectEditBusyRef.current) {
+        return true;
+      }
+
+      setProjectEditError("");
+      setProjectEditDialogOpen(false);
+      setProjectEditTargetId("");
+      return true;
+    }
+
+    if (projectInstructionDialogOpenRef.current) {
+      if (projectInstructionBusyRef.current) {
+        return true;
+      }
+
+      setProjectInstructionDialogOpen(false);
+      return true;
+    }
+
+    if (threadCreateDialogOpenRef.current) {
+      if (threadBusyRef.current) {
+        return true;
+      }
+
+      setThreadCreateDialogOpen(false);
+      return true;
+    }
+
+    if (projectComposerOpenRef.current) {
+      setProjectComposerOpen(false);
+      setSelectedWorkspacePath("");
+      setFolderState({ path: "", parent_path: null, entries: [] });
+      return true;
+    }
+
+    if (utilityOpenRef.current) {
+      setUtilityOpen(false);
+      return true;
+    }
+
+    return false;
+  }, [closeThreadDeleteDialog, resolveMobileConfirm]);
+
+  const requestStandaloneAppExit = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    allowStandaloneNativeBackRef.current = true;
+
+    window.setTimeout(() => {
+      try {
+        window.close();
+      } catch {
+        // noop
+      }
+
+      window.history.back();
+    }, 0);
+  }, []);
+
   const handleSubmitThreadInstruction = async ({ title, developerInstructions }) => {
     const threadId = String(threadInstructionTarget?.id ?? "").trim();
     const nextTitle = String(title ?? "").trim();
@@ -16954,6 +17174,93 @@ export default function App() {
     }
   }, []);
 
+  const registerMainPageBackHandler = useCallback((handler) => {
+    mainPageBackHandlerRef.current = typeof handler === "function" ? handler : null;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.history?.pushState || !session || !isStandaloneDisplayMode()) {
+      return undefined;
+    }
+
+    const pushStandaloneBackGuard = () => {
+      if (allowStandaloneNativeBackRef.current) {
+        return;
+      }
+
+      window.history.pushState({ octopStandaloneBackGuard: true }, "", window.location.href);
+    };
+
+    const handleStandalonePopState = (event) => {
+      if (allowStandaloneNativeBackRef.current) {
+        allowStandaloneNativeBackRef.current = false;
+        return;
+      }
+
+      event?.preventDefault?.();
+
+      if (consumeStandaloneBackPress()) {
+        pushStandaloneBackGuard();
+        return;
+      }
+
+      if (typeof mainPageBackHandlerRef.current === "function" && mainPageBackHandlerRef.current() === true) {
+        pushStandaloneBackGuard();
+        return;
+      }
+
+      if (standaloneBackNavigationInFlightRef.current) {
+        pushStandaloneBackGuard();
+        return;
+      }
+
+      standaloneBackNavigationInFlightRef.current = true;
+
+      void (async () => {
+        try {
+          const hasNestedView =
+            activeViewRef.current !== "inbox" ||
+            Boolean(selectedThreadIdRef.current) ||
+            Boolean(selectedTodoChatIdRef.current) ||
+            Boolean(draftThreadProjectIdRef.current);
+
+          if (hasNestedView) {
+            handleBackToMainPage();
+            pushStandaloneBackGuard();
+            return;
+          }
+
+          const confirmed = await confirmMobileAction({
+            title: "앱 종료",
+            message: "OctOP 앱을 종료하시겠습니까?",
+            confirmLabel: "종료",
+            cancelLabel: "취소",
+            tone: "danger"
+          });
+
+          if (confirmed) {
+            requestStandaloneAppExit();
+            return;
+          }
+
+          pushStandaloneBackGuard();
+        } finally {
+          standaloneBackNavigationInFlightRef.current = false;
+        }
+      })();
+    };
+
+    pushStandaloneBackGuard();
+    window.addEventListener("popstate", handleStandalonePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handleStandalonePopState);
+      standaloneBackNavigationInFlightRef.current = false;
+      allowStandaloneNativeBackRef.current = false;
+      mainPageBackHandlerRef.current = null;
+    };
+  }, [confirmMobileAction, consumeStandaloneBackPress, handleBackToMainPage, requestStandaloneAppExit, session]);
+
   if (!session) {
     return (
       <LoginPage
@@ -17114,6 +17421,7 @@ export default function App() {
         bridgeListSyncing={bridgeListSyncing}
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}
+        onRegisterBackHandler={registerMainPageBackHandler}
       />
       <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
       <MobileNoticeCenter notices={mobileNotices} onDismiss={dismissMobileNotice} />
