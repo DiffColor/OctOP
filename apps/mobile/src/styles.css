@@ -103,6 +103,32 @@ svg {
   background: rgba(148, 163, 184, 0.45);
 }
 
+.project-chip-row {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.22) transparent;
+}
+
+.project-chip-row::-webkit-scrollbar {
+  height: 2px;
+}
+
+.project-chip-row::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.project-chip-row::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.project-chip-button {
+  min-height: 2.25rem;
+  line-height: 1;
+}
+
 .touch-scroll-boundary-lock {
   overscroll-behavior-y: contain;
   overscroll-behavior-x: none;

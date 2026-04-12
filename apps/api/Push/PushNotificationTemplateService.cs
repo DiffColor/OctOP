@@ -15,6 +15,7 @@ public sealed partial class PushNotificationTemplateService
   private const string DefaultCompletedTagTemplate = "issue-{issueId}-completed";
   private const string DefaultFailedTagTemplate = "issue-{issueId}-failed";
   private const string DefaultUrlTemplate = "/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}";
+  private const string DefaultMobileUrlTemplate = "/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}&client_mode=standalone";
 
   public PushNotificationTemplateService()
   {
@@ -28,7 +29,7 @@ public sealed partial class PushNotificationTemplateService
     FailedTagTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_FAILED_TAG", DefaultFailedTagTemplate);
     UrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_URL", DefaultUrlTemplate);
     DashboardUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_DASHBOARD_URL", UrlTemplate);
-    MobileUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_MOBILE_URL", UrlTemplate);
+    MobileUrlTemplate = ReadTemplate("OCTOP_PUSH_TEMPLATE_MOBILE_URL", DefaultMobileUrlTemplate);
   }
 
   public string CompletedTitleTemplate { get; }

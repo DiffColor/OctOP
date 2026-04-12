@@ -5,6 +5,7 @@ const PUSH_MESSAGE_TYPE = "octop.push.received";
 const CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
 const CLIENT_MODE_STANDALONE = "standalone";
 const CLIENT_MODE_BROWSER = "browser";
+const MOBILE_APP_ID = "mobile-web";
 const clientContextById = new Map();
 
 const normalizeLaunchUrl = (value) => {
@@ -36,13 +37,27 @@ const withClientModeLaunchUrl = (launchUrl, clientMode) => {
   }
 };
 
+const resolveTargetClientMode = (payload, launchUrl = "/") => {
+  const normalizedTargetAppId = String(payload?.targetAppId ?? "").trim().toLowerCase();
+
+  if (normalizedTargetAppId === MOBILE_APP_ID) {
+    return CLIENT_MODE_STANDALONE;
+  }
+
+  if (normalizeClientMode(payload?.clientMode) === CLIENT_MODE_STANDALONE) {
+    return CLIENT_MODE_STANDALONE;
+  }
+
+  return readClientModeFromLaunchUrl(launchUrl);
+};
+
 const buildLaunchUrl = (payload) => {
   const explicitUrl = [payload?.launchUrl, payload?.url]
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .find(Boolean);
 
   if (explicitUrl) {
-    return withClientModeLaunchUrl(explicitUrl, payload?.clientMode);
+    return withClientModeLaunchUrl(explicitUrl, resolveTargetClientMode(payload, explicitUrl));
   }
 
   const bridgeId = String(payload?.bridgeId ?? "").trim();
@@ -72,7 +87,8 @@ const buildLaunchUrl = (payload) => {
     url.searchParams.set("issue_id", issueId);
   }
 
-  return withClientModeLaunchUrl(`${url.pathname}${url.search}${url.hash}`, payload?.clientMode);
+  const nextLaunchUrl = `${url.pathname}${url.search}${url.hash}`;
+  return withClientModeLaunchUrl(nextLaunchUrl, resolveTargetClientMode(payload, nextLaunchUrl));
 };
 
 const isSameOriginClient = (client) => {
@@ -193,10 +209,7 @@ const openWindowToTarget = async (targetUrl) => {
 
 const focusOrOpenNotificationTarget = async (launchUrl, payload = null) => {
   const targetUrl = normalizeLaunchUrl(launchUrl);
-  const targetClientMode =
-    normalizeClientMode(payload?.clientMode) === CLIENT_MODE_STANDALONE
-      ? CLIENT_MODE_STANDALONE
-      : readClientModeFromLaunchUrl(targetUrl);
+  const targetClientMode = resolveTargetClientMode(payload, targetUrl);
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true

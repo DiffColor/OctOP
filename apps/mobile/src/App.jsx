@@ -9658,15 +9658,15 @@ function MainPage({
   const wideThreadSplitLeftWeight = Math.max(1, Math.round(wideThreadSplitRatio * 100));
   const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
   const projectChipRow = (
-    <div className="border-b border-white/10 px-4 pb-3 pt-2">
+    <div className="border-b border-white/10 px-4 py-1.5">
       <div
         ref={projectChipRowRef}
-        className={`flex gap-2 overflow-x-auto pb-1 ${draggingProjectChipId ? "cursor-grabbing" : ""}`}
+        className={`project-chip-row -mx-1 flex gap-1.5 overflow-x-auto px-1 ${draggingProjectChipId ? "cursor-grabbing" : ""}`}
       >
         <button
           type="button"
           onClick={() => onSelectTodoScope()}
-          className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium transition select-none touch-manipulation ${
+          className={`project-chip-button shrink-0 rounded-full px-3.5 text-[12px] font-medium transition select-none touch-manipulation ${
             isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
           }`}
         >
@@ -9709,7 +9709,7 @@ function MainPage({
                 onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
                 onContextMenu={(event) => handleProjectChipContextMenu(event, project)}
                 title={project.name}
-                className={`max-w-[72vw] overflow-hidden text-ellipsis whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium select-none touch-manipulation ${
+                className={`project-chip-button max-w-[68vw] overflow-hidden text-ellipsis whitespace-nowrap rounded-full px-3.5 text-[12px] font-medium select-none touch-manipulation ${
                   isDraggingProjectChip ? "w-full" : "shrink-0"
                 } ${
                   isDraggingProjectChip
