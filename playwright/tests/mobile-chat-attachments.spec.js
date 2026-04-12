@@ -428,6 +428,57 @@ test.describe('모바일 채팅 첨부', () => {
     await expect(bubbleImage).toBeVisible();
   });
 
+  test('본문의 마크다운 이미지 문법이 실제 이미지로 렌더링된다', async ({ page }) => {
+    await mockMobileApi(page, {
+      issueDetail: {
+        issue: {
+          ...baseIssue,
+          attachments: []
+        },
+        messages: [
+          {
+            id: 'message-user-markdown-image',
+            role: 'user',
+            kind: 'prompt',
+            content: '이미지를 보여줘.',
+            timestamp: '2026-04-12T10:05:00.000Z'
+          },
+          {
+            id: 'message-assistant-markdown-image',
+            role: 'assistant',
+            kind: 'response',
+            content: `네, 바로 보여드리겠습니다.\n\n![본문 이미지](${dataPngUrl})`,
+            timestamp: '2026-04-12T10:05:30.000Z'
+          }
+        ]
+      }
+    });
+    await seedMobileSession(page, {
+      issueOverrides: {
+        attachments: []
+      }
+    });
+
+    await page.goto(baseUrl);
+
+    const inlineMarkdownImage = page.locator('img[alt="본문 이미지"]').first();
+    await expect(inlineMarkdownImage).toBeVisible();
+    await expect(page.getByText(`![본문 이미지](${dataPngUrl})`)).toHaveCount(0);
+  });
+
+  test('첨부 버튼이 채팅 입력창 내부 헤더 우측에 표시된다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+
+    await page.goto(baseUrl);
+
+    const promptSurface = page.getByTestId('thread-prompt-surface');
+    const attachButton = promptSurface.getByTestId('thread-prompt-attach-button');
+
+    await expect(promptSurface).toBeVisible();
+    await expect(attachButton).toBeVisible();
+  });
+
   test('첨부만으로 이슈를 생성하면 첨부 payload가 전송되고 버블에 이미지가 표시된다', async ({ page }) => {
     const createIssueRequests = [];
     const startIssueRequests = [];

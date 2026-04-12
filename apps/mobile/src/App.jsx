@@ -3857,6 +3857,7 @@ function summarizeMessageContent(content, limit = 160) {
 
 const FENCED_CODE_BLOCK_PATTERN = /```([^\n`]*)\n?([\s\S]*?)```/g;
 const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\(([^)]+)\)/g;
 const SHELL_CODE_LANGUAGES = new Set(["sh", "shell", "bash", "zsh", "console", "terminal", "shellscript"]);
 
 function parseRichMessageContent(content) {
@@ -3962,6 +3963,99 @@ function renderInlineCodeTokens(text, inlineCodeClassName, keyPrefix) {
   return nodes.length > 0 ? nodes : normalized;
 }
 
+function extractMarkdownImageDestination(rawDestination) {
+  const normalized = String(rawDestination ?? "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.startsWith("<")) {
+    const closingIndex = normalized.indexOf(">");
+
+    if (closingIndex > 1) {
+      return normalized.slice(1, closingIndex).trim();
+    }
+  }
+
+  const firstWhitespaceIndex = normalized.search(/\s/);
+  return firstWhitespaceIndex >= 0 ? normalized.slice(0, firstWhitespaceIndex).trim() : normalized;
+}
+
+function resolveRichMessageImageSource(rawDestination) {
+  const destination = extractMarkdownImageDestination(rawDestination);
+
+  if (!destination) {
+    return null;
+  }
+
+  if (/^(?:blob:|data:image\/)/i.test(destination)) {
+    return destination;
+  }
+
+  try {
+    const baseUrl = typeof window !== "undefined" ? window.location.href : API_BASE_URL;
+    const resolved = new URL(destination, baseUrl);
+
+    if (!["http:", "https:"].includes(resolved.protocol)) {
+      return null;
+    }
+
+    return resolved.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseRichTextInlineTokens(text) {
+  const normalized = String(text ?? "");
+
+  if (!normalized) {
+    return [];
+  }
+
+  const tokens = [];
+  let lastIndex = 0;
+  MARKDOWN_IMAGE_PATTERN.lastIndex = 0;
+
+  for (const match of normalized.matchAll(MARKDOWN_IMAGE_PATTERN)) {
+    const [raw, alt = "", destination = ""] = match;
+    const matchIndex = match.index ?? 0;
+    const source = resolveRichMessageImageSource(destination);
+
+    if (!source) {
+      continue;
+    }
+
+    if (matchIndex > lastIndex) {
+      tokens.push({
+        type: "text",
+        value: normalized.slice(lastIndex, matchIndex)
+      });
+    }
+
+    tokens.push({
+      type: "image",
+      alt: String(alt ?? "").trim(),
+      source
+    });
+    lastIndex = matchIndex + raw.length;
+  }
+
+  if (lastIndex < normalized.length) {
+    tokens.push({
+      type: "text",
+      value: normalized.slice(lastIndex)
+    });
+  }
+
+  return tokens;
+}
+
+function trimRichTextTokenValue(value) {
+  return String(value ?? "").replace(/^\n+/, "").replace(/\n+$/, "");
+}
+
 function RichMessageContent({ content, tone = "light" }) {
   const segments = parseRichMessageContent(content);
   const inlineCodeClassName =
@@ -3970,6 +4064,14 @@ function RichMessageContent({ content, tone = "light" }) {
       : tone === "system"
         ? "border-white/10 bg-white/10 text-slate-50"
         : "border-slate-950/10 bg-slate-950/5 text-slate-950";
+  const imageCardClassName =
+    tone === "brand"
+      ? "border-white/15 bg-slate-950/15"
+      : tone === "system"
+        ? "border-white/10 bg-white/10"
+        : "border-slate-900/10 bg-slate-950/5";
+  const imageCaptionClassName =
+    tone === "brand" || tone === "system" ? "border-white/10" : "border-slate-900/10";
 
   if (segments.length === 0) {
     return null;
@@ -4015,13 +4117,81 @@ function RichMessageContent({ content, tone = "light" }) {
           return null;
         }
 
+        const inlineTokens = parseRichTextInlineTokens(segment.value);
+        const hasInlineImage = inlineTokens.some((token) => token.type === "image");
+
+        if (!hasInlineImage) {
+          return (
+            <p
+              key={`text-${index}`}
+              className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6"
+            >
+              {renderInlineCodeTokens(segment.value, inlineCodeClassName, `segment-${index}`)}
+            </p>
+          );
+        }
+
         return (
-          <p
-            key={`text-${index}`}
-            className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6"
-          >
-            {renderInlineCodeTokens(segment.value, inlineCodeClassName, `segment-${index}`)}
-          </p>
+          <div key={`text-${index}`} className="space-y-3">
+            {inlineTokens.map((token, tokenIndex) => {
+              if (token.type === "image") {
+                const imageAlt = token.alt || "메시지 이미지";
+
+                return (
+                  <button
+                    key={`image-${index}-${tokenIndex}`}
+                    type="button"
+                    data-message-attachment-interactive="true"
+                    aria-label={`${imageAlt} 이미지 열기`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+
+                      if (typeof window === "undefined") {
+                        return;
+                      }
+
+                      const opened = window.open(token.source, "_blank", "noopener,noreferrer");
+
+                      if (!opened) {
+                        window.location.href = token.source;
+                      }
+                    }}
+                    className={`group block w-full overflow-hidden rounded-2xl border text-left ${imageCardClassName}`}
+                  >
+                    <div className="overflow-hidden bg-black/10">
+                      <img
+                        src={token.source}
+                        alt={imageAlt}
+                        className="max-h-[22rem] w-full object-contain bg-black/5 transition duration-200 group-hover:scale-[1.01]"
+                        loading="lazy"
+                      />
+                    </div>
+                    {token.alt ? (
+                      <p className={`border-t px-3 py-2 text-xs font-medium opacity-80 ${imageCaptionClassName}`}>
+                        {token.alt}
+                      </p>
+                    ) : null}
+                  </button>
+                );
+              }
+
+              const tokenValue = trimRichTextTokenValue(token.value);
+
+              if (!tokenValue.trim()) {
+                return null;
+              }
+
+              return (
+                <p
+                  key={`text-${index}-${tokenIndex}`}
+                  className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6"
+                >
+                  {renderInlineCodeTokens(tokenValue, inlineCodeClassName, `segment-${index}-${tokenIndex}`)}
+                </p>
+              );
+            })}
+          </div>
         );
       })}
     </div>
@@ -5725,31 +5895,46 @@ function InlineIssueComposer({
           />
 
           <div className="flex items-end gap-3">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={actionBusy || !selectedProject || disabled || attachmentCount >= MAX_MESSAGE_ATTACHMENTS}
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/10 bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
-              aria-label="첨부 파일 추가"
-              title="이미지 또는 텍스트 파일 첨부"
-            >
-              {attachmentBusy ? (
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              ) : (
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              )}
-            </button>
-
             <div
               data-testid="thread-prompt-surface"
               onPointerDown={focusPromptTextareaFromSurface}
               onClick={focusPromptTextareaFromSurface}
               className="min-w-0 flex-1 cursor-text rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2"
             >
-              <div className="mb-1 text-[11px] text-slate-500">
-                {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+              <div className="mb-1 flex min-h-6 items-center justify-between gap-2">
+                <div className="min-w-0 flex-1 text-[11px] text-slate-500">
+                  <p className="truncate">
+                    {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="thread-prompt-attach-button"
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={actionBusy || !selectedProject || disabled || attachmentCount >= MAX_MESSAGE_ATTACHMENTS}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-300 transition hover:bg-white/[0.09] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  aria-label="첨부 파일 추가"
+                  title={
+                    attachmentCount > 0
+                      ? `이미지 또는 텍스트 파일 첨부 · ${attachmentCount}/${MAX_MESSAGE_ATTACHMENTS}`
+                      : "이미지 또는 텍스트 파일 첨부"
+                  }
+                >
+                  {attachmentBusy ? (
+                    <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
+                  )}
+                </button>
               </div>
               <textarea
                 rows="1"

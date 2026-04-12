@@ -19,6 +19,7 @@ export const DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS = [
   [
     "실제 코드를 읽기 시작한 뒤의 상태 보고는 반드시 별도 섹션으로 유지하십시오.",
     "[진행 내역]",
+    "- `[진행 내역]` 제목은 한 번만 쓰고, 같은 제목이나 접두어를 반복하지 않습니다.",
     "- 실제로 확인한 코드와 수행한 작업만 짧게 누적합니다.",
     "- 각 진행 항목은 줄바꿈 후 한 줄 공백을 두고 이어서 적습니다.",
     "- 작업 계획과 같은 문단에 섞지 말고, 줄바꿈으로 구분해 이어갑니다.",
@@ -38,6 +39,36 @@ export const DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS = [
 export const DEFAULT_COMMON_BASE_INSTRUCTIONS =
   DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS.join("\n\n");
 
+function resolveMissingSections(normalized = "") {
+  const missingSections = [];
+
+  for (const section of DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS) {
+    if (normalized.includes(section)) {
+      continue;
+    }
+
+    const sectionLines = section
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const hasPartialLine = sectionLines.some((line) => normalized.includes(line));
+
+    if (!hasPartialLine || sectionLines.length <= 1) {
+      missingSections.push(section);
+      continue;
+    }
+
+    const missingLines = sectionLines.filter((line) => !normalized.includes(line));
+
+    if (missingLines.length > 0) {
+      missingSections.push(missingLines.join("\n"));
+    }
+  }
+
+  return missingSections;
+}
+
 export function ensureDefaultCommonBaseInstructions(value = "") {
   const normalized = normalizeInstructionText(value);
 
@@ -45,8 +76,7 @@ export function ensureDefaultCommonBaseInstructions(value = "") {
     return DEFAULT_COMMON_BASE_INSTRUCTIONS;
   }
 
-  const missingSections = DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS
-    .filter((section) => !normalized.includes(section));
+  const missingSections = resolveMissingSections(normalized);
 
   if (missingSections.length === 0) {
     return normalized;
