@@ -295,7 +295,20 @@ function isStandaloneDisplayMode() {
     return false;
   }
 
-  return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  const standaloneClientMode =
+    (() => {
+      try {
+        return new URL(window.location.href).searchParams.get("client_mode") === "standalone";
+      } catch {
+        return false;
+      }
+    })();
+
+  return (
+    standaloneClientMode ||
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    window.navigator.standalone === true
+  );
 }
 
 function hasCoarsePointerDevice() {
