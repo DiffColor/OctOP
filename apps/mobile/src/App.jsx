@@ -327,15 +327,7 @@ function hasStandaloneVisibleNestedView({
     return true;
   }
 
-  if (!wideSplitEnabled) {
-    return false;
-  }
-
-  if (selectedScopeKind === "todo") {
-    return Boolean(String(selectedTodoChatId ?? "").trim());
-  }
-
-  return Boolean(String(selectedThreadId ?? "").trim());
+  return false;
 }
 
 function hasCoarsePointerDevice() {
