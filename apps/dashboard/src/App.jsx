@@ -2808,7 +2808,6 @@ function normalizeIssueAttachment(attachment) {
 
   const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim();
   const textContent = attachment.text_content == null ? null : String(attachment.text_content);
-  const previewUrl = attachment.preview_url == null ? null : String(attachment.preview_url);
   const uploadId =
     attachment.upload_id == null && attachment.uploadId == null
       ? null
@@ -2825,11 +2824,18 @@ function normalizeIssueAttachment(attachment) {
     attachment.uploaded_at == null && attachment.uploadedAt == null
       ? null
       : String(attachment.uploaded_at ?? attachment.uploadedAt).trim() || null;
+  const kind = attachment.kind === "image" || isImageAttachmentMimeType(mimeType) ? "image" : "file";
+  const previewUrl =
+    attachment.preview_url == null && attachment.previewUrl == null
+      ? kind === "image"
+        ? downloadUrl
+        : null
+      : String(attachment.preview_url ?? attachment.previewUrl).trim() || (kind === "image" ? downloadUrl : null);
 
   return {
     id: String(attachment.id ?? createIssueAttachmentId()).trim() || createIssueAttachmentId(),
     name,
-    kind: attachment.kind === "image" || isImageAttachmentMimeType(mimeType) ? "image" : "file",
+    kind,
     mime_type: mimeType || null,
     size_bytes: Number.isFinite(Number(attachment.size_bytes ?? attachment.sizeBytes))
       ? Number(attachment.size_bytes ?? attachment.sizeBytes)
@@ -3156,6 +3162,117 @@ function IssueAttachmentInput({ language, attachments, errorMessage, busy, onApp
       ) : null}
 
       {errorMessage ? <p className="text-xs text-rose-300">{errorMessage}</p> : null}
+    </div>
+  );
+}
+
+function IssueMessageAttachmentPreview({ attachments, bubbleTone = "dark", language }) {
+  const normalizedAttachments = normalizeIssueAttachments(attachments);
+
+  if (normalizedAttachments.length === 0) {
+    return null;
+  }
+
+  const imageAttachments = normalizedAttachments.filter((attachment) => attachment.kind === "image" && attachment.preview_url);
+  const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind !== "image" || !attachment.preview_url);
+  const fileCardClassName =
+    bubbleTone === "brand"
+      ? "border-slate-950/10 bg-slate-950/10 text-slate-950"
+      : "border-white/10 bg-black/20 text-slate-100";
+
+  return (
+    <div className="mt-3 space-y-2.5">
+      {imageAttachments.length > 0 ? (
+        <div className={`grid gap-2 ${imageAttachments.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+          {imageAttachments.slice(0, 4).map((attachment, index) => {
+            const remainingCount = imageAttachments.length - 4;
+            const showOverflow = index === 3 && remainingCount > 0;
+            const imageHref = attachment.download_url || attachment.preview_url || null;
+            const imageNode = (
+              <>
+                <div className="aspect-[4/3] w-full overflow-hidden bg-black/20">
+                  <img
+                    src={attachment.preview_url}
+                    alt={attachment.name}
+                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
+                    loading="lazy"
+                  />
+                </div>
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent px-3 pb-2 pt-6">
+                  <p className="truncate text-[11px] font-medium text-white">{attachment.name}</p>
+                </div>
+                {showOverflow ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-lg font-semibold text-white">
+                    +{remainingCount}
+                  </div>
+                ) : null}
+              </>
+            );
+
+            return imageHref ? (
+              <a
+                key={attachment.id}
+                href={imageHref}
+                target="_blank"
+                rel="noreferrer"
+                className="group relative overflow-hidden rounded-2xl border border-black/10 bg-black/10"
+              >
+                {imageNode}
+              </a>
+            ) : (
+              <div
+                key={attachment.id}
+                className="group relative overflow-hidden rounded-2xl border border-black/10 bg-black/10"
+              >
+                {imageNode}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {fileAttachments.length > 0 ? (
+        <div className="space-y-2">
+          {fileAttachments.map((attachment) => {
+            const hasDownload = Boolean(attachment.download_url);
+            const content = (
+              <>
+                <div className="shrink-0">
+                  <IssueAttachmentBadge attachment={attachment} compact />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{attachment.name}</p>
+                  <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] opacity-70">
+                    <span className="shrink-0">{formatIssueAttachmentSize(attachment.size_bytes, language)}</span>
+                    {attachment.text_content ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="truncate">{attachment.text_truncated ? "본문 일부 포함" : "본문 포함"}</span>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            );
+
+            return hasDownload ? (
+              <a
+                key={attachment.id}
+                href={attachment.download_url}
+                target="_blank"
+                rel="noreferrer"
+                className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-3 ${fileCardClassName}`}
+              >
+                {content}
+              </a>
+            ) : (
+              <div key={attachment.id} className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-3 ${fileCardClassName}`}>
+                {content}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3835,8 +3952,9 @@ function IssueComposer({ language, open, busy, selectedBridgeId, selectedProject
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    const normalizedAttachments = normalizeIssueAttachments(attachments);
 
-    if (!prompt.trim() || !selectedThread?.id) {
+    if ((!prompt.trim() && normalizedAttachments.length === 0) || !selectedThread?.id) {
       return;
     }
 
@@ -3846,7 +3964,7 @@ function IssueComposer({ language, open, busy, selectedBridgeId, selectedProject
       await onSubmit({
         title: title.trim(),
         prompt: prompt.trim(),
-        attachments: normalizeIssueAttachments(attachments)
+        attachments: normalizedAttachments
       });
     } catch (error) {
       skipCleanupOnCloseRef.current = false;
@@ -4019,8 +4137,9 @@ function IssueEditor({ language, open, busy, selectedBridgeId, issue, onClose, o
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    const normalizedAttachments = normalizeIssueAttachments(attachments);
 
-    if (!prompt.trim()) {
+    if (!prompt.trim() && normalizedAttachments.length === 0) {
       return;
     }
 
@@ -4030,7 +4149,7 @@ function IssueEditor({ language, open, busy, selectedBridgeId, issue, onClose, o
       await onSubmit({
         title: title.trim(),
         prompt: prompt.trim(),
-        attachments: normalizeIssueAttachments(attachments)
+        attachments: normalizedAttachments
       });
     } catch (error) {
       skipCleanupOnCloseRef.current = false;
@@ -5272,6 +5391,13 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
               <div className="space-y-4">
                 {messages.map((message) => {
                   const userMessage = message.role === "user";
+                  const attachments = normalizeIssueAttachments(
+                    Array.isArray(message.attachments) && message.attachments.length > 0
+                      ? message.attachments
+                      : userMessage
+                        ? thread?.attachments
+                        : []
+                  );
 
                   return (
                     <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
@@ -5291,6 +5417,11 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
                           </span>
                         </div>
                         <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
+                        <IssueMessageAttachmentPreview
+                          attachments={attachments}
+                          bubbleTone={userMessage ? "brand" : "dark"}
+                          language={language}
+                        />
                       </div>
                     </div>
                   );

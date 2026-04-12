@@ -2008,7 +2008,6 @@ function normalizeMessageAttachment(attachment) {
 
   const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim();
   const textContent = attachment.text_content == null ? null : String(attachment.text_content);
-  const previewUrl = attachment.preview_url == null ? null : String(attachment.preview_url);
   const uploadId =
     attachment.upload_id == null && attachment.uploadId == null
       ? null
@@ -2025,11 +2024,18 @@ function normalizeMessageAttachment(attachment) {
     attachment.uploaded_at == null && attachment.uploadedAt == null
       ? null
       : String(attachment.uploaded_at ?? attachment.uploadedAt).trim() || null;
+  const kind = attachment.kind === "image" || isImageAttachmentMimeType(mimeType) ? "image" : "file";
+  const previewUrl =
+    attachment.preview_url == null && attachment.previewUrl == null
+      ? kind === "image"
+        ? downloadUrl
+        : null
+      : String(attachment.preview_url ?? attachment.previewUrl).trim() || (kind === "image" ? downloadUrl : null);
 
   return {
     id: String(attachment.id ?? createId()).trim() || createId(),
     name,
-    kind: attachment.kind === "image" || isImageAttachmentMimeType(mimeType) ? "image" : "file",
+    kind,
     mime_type: mimeType || null,
     size_bytes: Number.isFinite(Number(attachment.size_bytes ?? attachment.sizeBytes))
       ? Number(attachment.size_bytes ?? attachment.sizeBytes)
@@ -4138,7 +4144,8 @@ function AttachmentPreviewDialog({ attachment, onClose }) {
     return null;
   }
 
-  const isImage = attachment.kind === "image" && attachment.preview_url;
+  const imageSource = attachment.preview_url || attachment.download_url || null;
+  const isImage = attachment.kind === "image" && imageSource;
   const hasTextPreview = !isImage && attachment.text_content;
 
   return createPortal(
@@ -4181,7 +4188,7 @@ function AttachmentPreviewDialog({ attachment, onClose }) {
           {isImage ? (
             <div className="flex max-h-[calc(100vh-10rem)] items-center justify-center bg-black px-3 py-3">
               <img
-                src={attachment.preview_url}
+                src={imageSource}
                 alt={attachment.name}
                 className="max-h-[calc(100vh-12rem)] w-auto max-w-full rounded-2xl object-contain"
               />
@@ -15772,7 +15779,8 @@ export default function App() {
               timestamp: optimisticTimestamp,
               issue_id: optimisticIssue.id,
               issue_title: optimisticIssue.title ?? payload.title ?? "",
-              issue_status: optimisticIssue.status
+              issue_status: optimisticIssue.status,
+              attachments: normalizeMessageAttachments(optimisticIssue.attachments ?? payload.attachments)
             }
           ]
         : [];
@@ -15922,7 +15930,8 @@ export default function App() {
             timestamp: optimisticTimestamp,
             issue_id: optimisticIssue?.id ?? null,
             issue_title: optimisticIssue?.title ?? createThreadTitleFromPrompt(prompt),
-            issue_status: optimisticIssue?.status ?? "running"
+            issue_status: optimisticIssue?.status ?? "running",
+            attachments: normalizeMessageAttachments(optimisticIssue?.attachments ?? payload.attachments)
           }
         ];
 

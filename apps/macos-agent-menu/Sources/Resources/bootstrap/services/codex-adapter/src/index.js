@@ -4999,8 +4999,8 @@ async function createThreadIssue(userId, payload = {}) {
     throw new Error("이슈를 등록할 thread가 필요합니다.");
   }
 
-  if (!prompt) {
-    throw new Error("프롬프트를 입력해 주세요.");
+  if (!prompt && attachments.length === 0) {
+    throw new Error("프롬프트 또는 첨부를 입력해 주세요.");
   }
 
   const thread = threadStateById.get(threadId);
@@ -5033,7 +5033,8 @@ async function createThreadIssue(userId, payload = {}) {
   pushIssueMessage(issue.id, {
     role: "user",
     kind: "prompt",
-    content: prompt
+    content: prompt,
+    attachments
   });
   updateProjectThreadSnapshot(threadId);
   persistThreadById(threadId);
@@ -6509,10 +6510,6 @@ async function updateThreadIssue(userId, payload = {}) {
     throw new Error("수정할 이슈 id가 필요합니다.");
   }
 
-  if (!prompt) {
-    throw new Error("프롬프트를 입력해 주세요.");
-  }
-
   const issue = issueCardsById.get(issueId);
 
   if (!issue || issue.deleted_at) {
@@ -6530,6 +6527,10 @@ async function updateThreadIssue(userId, payload = {}) {
   }
 
   const attachments = normalizeIssueAttachmentsWithExisting(payload.attachments, issue.attachments);
+
+  if (!prompt && attachments.length === 0) {
+    throw new Error("프롬프트 또는 첨부를 입력해 주세요.");
+  }
 
   await cleanupRemovedIssueAttachments(issue.attachments, attachments);
 
@@ -6549,13 +6550,15 @@ async function updateThreadIssue(userId, payload = {}) {
     messages[promptIndex] = {
       ...messages[promptIndex],
       content: prompt,
+      attachments,
       timestamp: now()
     };
   } else {
     pushIssueMessage(issueId, {
       role: "user",
       kind: "prompt",
-      content: prompt
+      content: prompt,
+      attachments
     });
   }
 
