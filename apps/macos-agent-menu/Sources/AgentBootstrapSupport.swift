@@ -1940,6 +1940,11 @@ final class AgentBootstrapStore: ObservableObject {
     try copyDirectoryContents(from: sourceURL, to: stagingSourceURL)
 
     if let preparedCodexAdapter = try await prepareLatestCodexAdapterSource(log: log) {
+      if let repositoryURL = gitRepositoryURL(containing: preparedCodexAdapter.sourceURL),
+         try overlayLatestRuntimeWorkspaceFiles(from: repositoryURL, to: stagingSourceURL) {
+        log("최신 런타임 스크립트를 함께 반영합니다.")
+      }
+
       let targetURL = stagingSourceURL.appendingPathComponent("services/codex-adapter", isDirectory: true)
       if FileManager.default.fileExists(atPath: targetURL.path) {
         try FileManager.default.removeItem(at: targetURL)
@@ -1971,6 +1976,47 @@ final class AgentBootstrapStore: ObservableObject {
       sourceRevision: nil,
       sourceContentRevision: bundledContentRevision
     )
+  }
+
+  private func overlayLatestRuntimeWorkspaceFiles(from repositoryURL: URL, to runtimeSourceURL: URL) throws -> Bool {
+    let relativePaths = [
+      "scripts/shared-env.mjs",
+      "scripts/app-server-runtime-state.mjs",
+      "scripts/app-server-activity-beacon.mjs",
+      "scripts/local-agent-health.mjs",
+      "scripts/run-local-agent.mjs",
+      "scripts/run-bridge.mjs",
+      "services/codex-adapter/package.json",
+      "services/codex-adapter/src/index.js",
+      "services/codex-adapter/src/domain.js",
+      "services/codex-adapter/src/projectInstructionState.js"
+    ]
+
+    let sourcePaths = relativePaths.map {
+      repositoryURL.appendingPathComponent($0, isDirectory: false)
+    }
+
+    guard sourcePaths.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+      return false
+    }
+
+    for relativePath in relativePaths {
+      let sourceURL = repositoryURL.appendingPathComponent(relativePath, isDirectory: false)
+      let targetURL = runtimeSourceURL.appendingPathComponent(relativePath, isDirectory: false)
+
+      try FileManager.default.createDirectory(
+        at: targetURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+
+      if FileManager.default.fileExists(atPath: targetURL.path) {
+        try FileManager.default.removeItem(at: targetURL)
+      }
+
+      try FileManager.default.copyItem(at: sourceURL, to: targetURL)
+    }
+
+    return true
   }
 
   private func prepareLatestCodexAdapterSource(
@@ -3842,6 +3888,8 @@ final class AgentBootstrapStore: ObservableObject {
 
   private func requiredRuntimeWorkspacePaths(in runtimeReleaseURL: URL) -> [URL] {
     [
+      runtimeReleaseURL.appendingPathComponent("scripts/app-server-runtime-state.mjs"),
+      runtimeReleaseURL.appendingPathComponent("scripts/app-server-activity-beacon.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/run-local-agent.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/run-bridge.mjs"),
       runtimeReleaseURL.appendingPathComponent("scripts/shared-env.mjs"),
@@ -3849,7 +3897,8 @@ final class AgentBootstrapStore: ObservableObject {
       runtimeReleaseURL.appendingPathComponent("scripts/login-via-app-server.mjs"),
       runtimeReleaseURL.appendingPathComponent("services/codex-adapter/package.json"),
       runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/index.js"),
-      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/domain.js")
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/domain.js"),
+      runtimeReleaseURL.appendingPathComponent("services/codex-adapter/src/projectInstructionState.js")
     ]
   }
 

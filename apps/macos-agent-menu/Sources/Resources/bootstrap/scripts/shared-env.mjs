@@ -88,7 +88,7 @@ export function loadOctopEnv(workspaceRoot) {
   env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
   env.OCTOP_CODEX_APPROVAL_POLICY = withDefault(env.OCTOP_CODEX_APPROVAL_POLICY, "on-request");
   env.OCTOP_CODEX_SANDBOX = withDefault(env.OCTOP_CODEX_SANDBOX, "danger-full-access");
-  const codexExecutable = resolveExecutable(env, "codex") ?? "codex";
+  const codexExecutable = resolveExecutable(env, "codex");
   env.OCTOP_APP_SERVER_COMMAND = withDefault(
     env.OCTOP_APP_SERVER_COMMAND,
     buildAppServerCommand({
@@ -110,7 +110,7 @@ export function loadOctopEnv(workspaceRoot) {
 }
 
 function buildAppServerCommand({ codexExecutable, appServerWsUrl, sandboxMode }) {
-  const tokens = [shellEscape(codexExecutable)];
+  const tokens = [formatCommandToken(codexExecutable)];
 
   if (String(sandboxMode ?? "").trim() === DANGEROUSLY_BYPASS_APPROVALS_AND_SANDBOX) {
     tokens.push("--dangerously-bypass-approvals-and-sandbox");
@@ -406,7 +406,7 @@ function normalizeFingerprintValue(value) {
 function buildExecutablePath(env) {
   const directories = [];
   const seen = new Set();
-  const pathEntries = String(env.PATH ?? "")
+  const pathEntries = String(readEnvValue(env, "PATH") ?? "")
     .split(delimiter)
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -472,12 +472,12 @@ function buildExecutablePath(env) {
 }
 
 function resolveExecutable(env, executableName) {
-  const directories = String(env.PATH ?? "")
+  const directories = String(readEnvValue(env, "PATH") ?? "")
     .split(delimiter)
     .map((entry) => entry.trim())
     .filter(Boolean);
   const extensions = process.platform === "win32"
-    ? ["", ...(env.PATHEXT ?? ".EXE;.CMD;.BAT")
+    ? ["", ...(readEnvValue(env, "PATHEXT") ?? ".EXE;.CMD;.BAT")
         .split(";")
         .map((entry) => entry.trim().toLowerCase())
         .filter(Boolean)]
@@ -494,6 +494,28 @@ function resolveExecutable(env, executableName) {
   }
 
   return null;
+}
+
+function readEnvValue(env, key) {
+  const targetKey = String(key ?? "").trim().toLowerCase();
+
+  for (const [entryKey, entryValue] of Object.entries(env ?? {})) {
+    if (String(entryKey).trim().toLowerCase() === targetKey) {
+      return entryValue;
+    }
+  }
+
+  return undefined;
+}
+
+function formatCommandToken(value) {
+  const text = String(value ?? "").trim() || "codex";
+
+  if (process.platform === "win32" && !/[\\/\s"]/u.test(text)) {
+    return text;
+  }
+
+  return shellEscape(text);
 }
 
 function shellEscape(value) {

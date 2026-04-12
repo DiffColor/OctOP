@@ -103,6 +103,8 @@ function buildMacRelease({ workspaceRoot, stageRoot, outputRoot, versionTag, num
     throw new Error("macOS 릴리즈 빌드는 macOS 호스트에서만 실행할 수 있습니다.");
   }
 
+  run(process.execPath, [resolve(workspaceRoot, "scripts", "sync-macos-bootstrap.mjs")], workspaceRoot);
+
   const architectures = resolveMacArchitectures(options, workspaceRoot);
 
   const swiftBuildArgs = [

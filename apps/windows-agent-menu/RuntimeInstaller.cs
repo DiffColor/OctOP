@@ -43,6 +43,8 @@ sealed class RuntimeInstaller
   private static readonly IReadOnlyDictionary<string, string> RuntimeResources = new Dictionary<string, string>
   {
     ["OctOP.WindowsAgentMenu.Runtime.scripts.shared-env.mjs"] = "scripts/shared-env.mjs",
+    ["OctOP.WindowsAgentMenu.Runtime.scripts.app-server-runtime-state.mjs"] = "scripts/app-server-runtime-state.mjs",
+    ["OctOP.WindowsAgentMenu.Runtime.scripts.app-server-activity-beacon.mjs"] = "scripts/app-server-activity-beacon.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.local-agent-health.mjs"] = "scripts/local-agent-health.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-local-agent.mjs"] = "scripts/run-local-agent.mjs",
     ["OctOP.WindowsAgentMenu.Runtime.scripts.run-bridge.mjs"] = "scripts/run-bridge.mjs",
@@ -51,6 +53,21 @@ sealed class RuntimeInstaller
     ["OctOP.WindowsAgentMenu.Runtime.services.codex-adapter.src.domain.js"] = "services/codex-adapter/src/domain.js",
     ["OctOP.WindowsAgentMenu.Runtime.packages.domain.src.index.js"] = "packages/domain/src/index.js"
   };
+  internal static readonly IReadOnlyList<string> RequiredRuntimeRelativePaths =
+  [
+    "scripts/shared-env.mjs",
+    "scripts/app-server-runtime-state.mjs",
+    "scripts/app-server-activity-beacon.mjs",
+    "scripts/local-agent-health.mjs",
+    "scripts/run-local-agent.mjs",
+    "scripts/run-bridge.mjs",
+    "services/codex-adapter/package.json",
+    "services/codex-adapter/src/index.js",
+    "services/codex-adapter/src/domain.js",
+    "packages/domain/src/index.js",
+    ".env.local",
+    "build-info.json"
+  ];
 
   private readonly Assembly _assembly = Assembly.GetExecutingAssembly();
 
@@ -1525,21 +1542,9 @@ sealed class RuntimeInstaller
 
   private static void ValidatePreparedRuntimeRelease(string runtimeRoot)
   {
-    var requiredPaths = new[]
+    foreach (var requiredRelativePath in RequiredRuntimeRelativePaths)
     {
-      Path.Combine(runtimeRoot, "scripts", "run-local-agent.mjs"),
-      Path.Combine(runtimeRoot, "scripts", "run-bridge.mjs"),
-      Path.Combine(runtimeRoot, "scripts", "shared-env.mjs"),
-      Path.Combine(runtimeRoot, "services", "codex-adapter", "package.json"),
-      Path.Combine(runtimeRoot, "services", "codex-adapter", "src", "index.js"),
-      Path.Combine(runtimeRoot, "services", "codex-adapter", "src", "domain.js"),
-      Path.Combine(runtimeRoot, "packages", "domain", "src", "index.js"),
-      Path.Combine(runtimeRoot, ".env.local"),
-    Path.Combine(runtimeRoot, "build-info.json")
-  };
-
-    foreach (var requiredPath in requiredPaths)
-    {
+      var requiredPath = Path.Combine(runtimeRoot, requiredRelativePath.Replace('/', Path.DirectorySeparatorChar));
       if (!File.Exists(requiredPath))
       {
         throw new InvalidOperationException($"준비된 런타임 릴리즈 검증 실패: 필수 파일이 없습니다. path={requiredPath}");

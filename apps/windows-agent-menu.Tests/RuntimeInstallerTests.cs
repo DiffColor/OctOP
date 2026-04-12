@@ -352,4 +352,28 @@ public sealed class RuntimeInstallerTests
     Assert.Contains("Boolean(healthCheckError);", script);
     Assert.DoesNotContain("Boolean(status.lastError)", script);
   }
+
+  [Fact]
+  public void EmbeddedRuntimeBundle_IncludesRuntimeTrackerScripts()
+  {
+    var assembly = typeof(RuntimeInstaller).Assembly;
+    var requiredResourceNames = new[]
+    {
+      "OctOP.WindowsAgentMenu.Runtime.scripts.app-server-runtime-state.mjs",
+      "OctOP.WindowsAgentMenu.Runtime.scripts.app-server-activity-beacon.mjs"
+    };
+
+    foreach (var resourceName in requiredResourceNames)
+    {
+      using var stream = assembly.GetManifestResourceStream(resourceName);
+      Assert.True(stream is not null, $"embedded runtime resource missing: {resourceName}");
+    }
+  }
+
+  [Fact]
+  public void RequiredRuntimeRelativePaths_IncludeRuntimeTrackerScripts()
+  {
+    Assert.Contains("scripts/app-server-runtime-state.mjs", RuntimeInstaller.RequiredRuntimeRelativePaths);
+    Assert.Contains("scripts/app-server-activity-beacon.mjs", RuntimeInstaller.RequiredRuntimeRelativePaths);
+  }
 }

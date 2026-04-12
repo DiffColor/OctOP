@@ -110,6 +110,43 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
     XCTAssertEqual(releaseNames.count, 1)
   }
 
+  func testBundledBootstrapRuntimeFilesStaySyncedWithWorkspaceSources() throws {
+    let repositoryRootURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .standardizedFileURL
+    let bootstrapRootURL = repositoryRootURL
+      .appendingPathComponent("apps/macos-agent-menu/Sources/Resources/bootstrap", isDirectory: true)
+      .standardizedFileURL
+    let relativePaths = [
+      "scripts/shared-env.mjs",
+      "scripts/app-server-runtime-state.mjs",
+      "scripts/app-server-activity-beacon.mjs",
+      "scripts/local-agent-health.mjs",
+      "scripts/run-local-agent.mjs",
+      "scripts/run-bridge.mjs",
+      "services/codex-adapter/package.json",
+      "services/codex-adapter/src/index.js",
+      "services/codex-adapter/src/domain.js",
+      "services/codex-adapter/src/projectInstructionState.js"
+    ]
+
+    for relativePath in relativePaths {
+      let sourceURL = repositoryRootURL.appendingPathComponent(relativePath)
+      let bundledURL = bootstrapRootURL.appendingPathComponent(relativePath)
+
+      XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path), "소스 파일 누락: \(relativePath)")
+      XCTAssertTrue(FileManager.default.fileExists(atPath: bundledURL.path), "번들 bootstrap 파일 누락: \(relativePath)")
+      XCTAssertEqual(
+        try String(contentsOf: sourceURL, encoding: .utf8),
+        try String(contentsOf: bundledURL, encoding: .utf8),
+        "bootstrap 동기화 필요: \(relativePath)"
+      )
+    }
+  }
+
   @MainActor
   func testPrepareRuntimeReleaseCreatesNewReleaseWhenBootstrapChanges() async throws {
     let bootstrap = makeBootstrap()
@@ -1010,6 +1047,29 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       export function applyBridgeCliArgs(env) { return env; }
       export async function resolveBridgeRuntimeEnv(env) { return env; }
       """,
+      "scripts/app-server-runtime-state.mjs": """
+      export function applyAppServerRuntimeEnv(env) { return env; }
+      export function createAppServerRuntimeTracker() {
+        return {
+          env: process.env,
+          markProcessLaunching() {},
+          attachChild() {},
+          markStdoutActivity() {},
+          markStderrActivity() {},
+          markProcessExit() {},
+          markProcessError() {}
+        };
+      }
+      export function readAppServerRuntimeSnapshot() {
+        return {
+          runtime: { processAlive: false, heartbeatFresh: false, state: "idle", lastError: "" },
+          activityBeacon: { fresh: false, active: false, activeCount: 0, lastLabel: "" }
+        };
+      }
+      """,
+      "scripts/app-server-activity-beacon.mjs": """
+      console.log("activity beacon placeholder");
+      """,
       "scripts/local-agent-health.mjs": """
       export function evaluateBridgeAppServerRecovery() {
         return {
@@ -1059,6 +1119,11 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       """,
       "services/codex-adapter/src/domain.js": """
       export const domain = "test";
+      """,
+      "services/codex-adapter/src/projectInstructionState.js": """
+      export function applyCommonBaseInstructionsToProjects(projects = []) { return projects; }
+      export function deriveCommonBaseInstructions() { return ""; }
+      export function ensureDefaultCommonBaseInstructions(value = "") { return value; }
       """
     ]
 
@@ -1120,6 +1185,11 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
       """,
       "src/domain.js": """
       export const domain = "test-source";
+      """,
+      "src/projectInstructionState.js": """
+      export function applyCommonBaseInstructionsToProjects(projects = []) { return projects; }
+      export function deriveCommonBaseInstructions() { return ""; }
+      export function ensureDefaultCommonBaseInstructions(value = "") { return value; }
       """
     ]
 
