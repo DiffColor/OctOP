@@ -4273,14 +4273,15 @@ async function transferTodoMessage(userId, payload = {}) {
 function getProjectInstructionOverrides(userId, projectId) {
   const state = ensureUserState(userId);
   const project = projectId ? state.projects.find((item) => item.id === projectId) : null;
+  const normalizedCommonBaseInstructions = ensureDefaultCommonBaseInstructions(state.commonBaseInstructions);
 
   if (!project) {
-    return normalizeInstructionText(state.commonBaseInstructions)
-      ? { baseInstructions: normalizeInstructionText(state.commonBaseInstructions) }
+    return normalizeInstructionText(normalizedCommonBaseInstructions)
+      ? { baseInstructions: normalizeInstructionText(normalizedCommonBaseInstructions) }
       : {};
   }
 
-  const baseInstructions = normalizeInstructionText(state.commonBaseInstructions);
+  const baseInstructions = normalizeInstructionText(normalizedCommonBaseInstructions);
   const developerInstructions = normalizeInstructionText(project.developer_instructions);
 
   return {
