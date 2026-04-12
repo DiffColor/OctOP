@@ -65,7 +65,7 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_STARTUP_TIMEOUT_MS ?? 15000
 );
 const APP_SERVER_REQUEST_TIMEOUT_MS = Number(
-  process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 20000
+  process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 60000
 );
 const APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES = Number(
   process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES ?? 2
@@ -74,7 +74,7 @@ const APP_SERVER_HEARTBEAT_INTERVAL_MS = Number(
   process.env.OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS ?? 20000
 );
 const APP_SERVER_HEARTBEAT_TIMEOUT_MS = Number(
-  process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 10000
+  process.env.OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS ?? 30000
 );
 const APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES = Number(
   process.env.OCTOP_APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES ?? 2
@@ -8738,16 +8738,30 @@ class AppServerClient {
         if (affectConnectionHealth) {
           this.lastError = `app-server request timeout: ${method}`;
           requestRunningIssueBackfill(`request_timeout:${method}`);
+          const reconnectGuard = getAppServerAggressiveReconnectGuard();
 
           if (!hadSocketActivitySinceRequest) {
-            this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
-              method,
-              request_id: id,
-              reason: "no_socket_activity_since_request",
-              last_socket_activity_at: this.lastSocketActivityAt
-                ? new Date(this.lastSocketActivityAt).toISOString()
-                : null
-            });
+            if (reconnectGuard.suppressAggressiveReconnect) {
+              console.warn("[OctOP bridge] app-server request timeout reconnect deferred", {
+                method,
+                request_id: id,
+                guard_reason: reconnectGuard.reason,
+                activity_beacon_label: reconnectGuard.runtimeSnapshot.activityBeacon.lastLabel ?? null,
+                reason: "no_socket_activity_since_request",
+                last_socket_activity_at: this.lastSocketActivityAt
+                  ? new Date(this.lastSocketActivityAt).toISOString()
+                  : null
+              });
+            } else {
+              this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+                method,
+                request_id: id,
+                reason: "no_socket_activity_since_request",
+                last_socket_activity_at: this.lastSocketActivityAt
+                  ? new Date(this.lastSocketActivityAt).toISOString()
+                  : null
+              });
+            }
           } else {
             this.requestTimeoutWithoutMessageCount = nextRequestTimeoutWithoutMessageCount;
 
@@ -8764,18 +8778,35 @@ class AppServerClient {
                 APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES > 0 &&
                 nextRequestTimeoutWithoutMessageCount >= APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES
               ) {
-                this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
-                  method,
-                  request_id: id,
-                  reason: "repeated_timeout_without_message_activity",
-                  request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
-                  last_socket_activity_at: this.lastSocketActivityAt
-                    ? new Date(this.lastSocketActivityAt).toISOString()
-                    : null,
-                  last_socket_message_at: this.lastSocketMessageAt
-                    ? new Date(this.lastSocketMessageAt).toISOString()
-                    : null
-                });
+                if (reconnectGuard.suppressAggressiveReconnect) {
+                  console.warn("[OctOP bridge] app-server request timeout reconnect deferred", {
+                    method,
+                    request_id: id,
+                    guard_reason: reconnectGuard.reason,
+                    activity_beacon_label: reconnectGuard.runtimeSnapshot.activityBeacon.lastLabel ?? null,
+                    reason: "repeated_timeout_without_message_activity",
+                    request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+                    last_socket_activity_at: this.lastSocketActivityAt
+                      ? new Date(this.lastSocketActivityAt).toISOString()
+                      : null,
+                    last_socket_message_at: this.lastSocketMessageAt
+                      ? new Date(this.lastSocketMessageAt).toISOString()
+                      : null
+                  });
+                } else {
+                  this.forceReconnect(this.socket ?? null, `request_timeout:${method}`, {
+                    method,
+                    request_id: id,
+                    reason: "repeated_timeout_without_message_activity",
+                    request_timeout_without_message_count: nextRequestTimeoutWithoutMessageCount,
+                    last_socket_activity_at: this.lastSocketActivityAt
+                      ? new Date(this.lastSocketActivityAt).toISOString()
+                      : null,
+                    last_socket_message_at: this.lastSocketMessageAt
+                      ? new Date(this.lastSocketMessageAt).toISOString()
+                      : null
+                  });
+                }
               } else {
                 console.warn("[OctOP bridge] app-server request timeout observed without message activity; reconnect deferred", {
                   method,
@@ -8892,14 +8923,29 @@ class AppServerClient {
           APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES > 0 &&
           timeoutCount >= APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES
         ) {
-          this.forceReconnect(ws, "heartbeat_timeout_active", {
-            ...context,
-            timeout_count: timeoutCount,
-            probe_age_ms: probeAgeMs,
-            last_activity_at: this.lastSocketActivityAt
-              ? new Date(this.lastSocketActivityAt).toISOString()
-              : null
-          });
+          const reconnectGuard = getAppServerAggressiveReconnectGuard();
+
+          if (reconnectGuard.suppressAggressiveReconnect) {
+            console.warn("[OctOP bridge] app-server heartbeat reconnect deferred", {
+              ...context,
+              timeout_count: timeoutCount,
+              probe_age_ms: probeAgeMs,
+              guard_reason: reconnectGuard.reason,
+              activity_beacon_label: reconnectGuard.runtimeSnapshot.activityBeacon.lastLabel ?? null,
+              last_activity_at: this.lastSocketActivityAt
+                ? new Date(this.lastSocketActivityAt).toISOString()
+                : null
+            });
+          } else {
+            this.forceReconnect(ws, "heartbeat_timeout_active", {
+              ...context,
+              timeout_count: timeoutCount,
+              probe_age_ms: probeAgeMs,
+              last_activity_at: this.lastSocketActivityAt
+                ? new Date(this.lastSocketActivityAt).toISOString()
+                : null
+            });
+          }
         }
         return;
       }
@@ -9582,6 +9628,23 @@ function hasLocalLiveExecution() {
 
 function isBridgeIdle() {
   return !hasLocalLiveExecution();
+}
+
+function getAppServerAggressiveReconnectGuard() {
+  const runtimeSnapshot = readAppServerRuntimeSnapshot({
+    env: process.env,
+    workspaceRoot: REPO_ROOT
+  });
+  const liveExecution = hasLocalLiveExecution();
+  const activityBeaconActive =
+    runtimeSnapshot.activityBeacon.active === true && runtimeSnapshot.activityBeacon.fresh === true;
+
+  return {
+    suppressAggressiveReconnect: liveExecution && activityBeaconActive,
+    reason: activityBeaconActive ? "activity_beacon" : "",
+    liveExecution,
+    runtimeSnapshot
+  };
 }
 
 const appServer = new AppServerClient();

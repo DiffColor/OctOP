@@ -8,6 +8,10 @@ import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import net from "node:net";
 import test from "node:test";
+import {
+  createActivitySession,
+  stopActivitySession
+} from "../../scripts/app-server-runtime-state.mjs";
 
 const REPO_ROOT = "/Users/jazzlife/Documents/Workspaces/Products/OctOP";
 const BRIDGE_ENTRY = join(REPO_ROOT, "services", "codex-adapter", "src", "index.js");
@@ -1234,6 +1238,73 @@ test("브리지 app-server running issue heartbeat 연속 timeout 시 강제 재
   const health = await bridge.request("/health");
   assert.equal(health.ok, true);
   assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(issueDetail.issue?.status, "running");
+});
+
+test("브리지 app-server running issue heartbeat timeout이어도 활동 비컨이 살아 있으면 강제 재연결하지 않는다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-running-heartbeat-beacon-int-"));
+  const fakeAppServer = new FakeAppServer({
+    ignorePongCount: 6
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridgeId = `running-heartbeat-beacon-${randomUUID().slice(0, 8)}`;
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-running-heartbeat-beacon-token",
+    userId: "running-heartbeat-beacon-user",
+    bridgeId,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "500",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "250",
+      OCTOP_APP_SERVER_ACTIVE_HEARTBEAT_FORCE_RECONNECT_MISSES: "2"
+    }
+  });
+
+  const activityEnv = {
+    ...process.env,
+    OCTOP_STATE_HOME: resolve(homeDir, ".octop"),
+    OCTOP_BRIDGE_ID: bridgeId
+  };
+  let activitySession = null;
+
+  t.after(async () => {
+    if (activitySession) {
+      stopActivitySession({
+        activityDir: activitySession.activityDir,
+        sessionId: activitySession.sessionId,
+        status: "completed"
+      });
+    }
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Running heartbeat beacon guard"
+  });
+
+  activitySession = createActivitySession({
+    env: activityEnv,
+    workspaceRoot: REPO_ROOT,
+    label: "장시간 빌드"
+  });
+
+  await sleep(1800);
+
+  const issueDetail = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+  const health = await bridge.request("/health");
+  assert.equal(fakeAppServer.connectionCount, 1);
+  assert.equal(health.ok, true);
+  assert.equal(health.status?.app_server?.initialized, true);
+  assert.equal(health.status?.app_server?.activity_beacon?.active, true);
   assert.equal(issueDetail.issue?.status, "running");
 });
 
