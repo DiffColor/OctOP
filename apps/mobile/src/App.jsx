@@ -88,6 +88,7 @@ const bridgeSupportsThreadDeveloperInstructions = (status) =>
 const PWA_PROMPT_DISMISSED_KEY = "octop.mobile.pwa.install.dismissed";
 const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const SERVICE_WORKER_CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
+const SERVICE_WORKER_NOTIFICATION_LAUNCH_MESSAGE_TYPE = "octop.push.launch";
 const DEFAULT_API_BASE_URL =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -254,12 +255,20 @@ function shouldInferBridgeTransportFailure(path, method = "GET") {
   return Boolean(extractBridgeIdFromPath(path));
 }
 
-function readPushDeepLink() {
+function readPushDeepLinkFromValue(value) {
   if (typeof window === "undefined") {
     return null;
   }
 
-  const params = new URLSearchParams(window.location.search);
+  let url;
+
+  try {
+    url = new URL(typeof value === "string" && value ? value : window.location.href, window.location.origin);
+  } catch {
+    return null;
+  }
+
+  const params = url.searchParams;
   const bridgeId = String(params.get("bridge_id") ?? "").trim();
   const projectId = String(params.get("project_id") ?? "").trim();
   const threadId = String(params.get("thread_id") ?? "").trim();
@@ -275,6 +284,10 @@ function readPushDeepLink() {
     threadId,
     issueId
   };
+}
+
+function readPushDeepLink() {
+  return readPushDeepLinkFromValue(typeof window === "undefined" ? "" : window.location.href);
 }
 
 function clearPushDeepLink() {
@@ -5954,23 +5967,20 @@ function InlineIssueComposer({
 
   const attachmentCount = attachments.length;
   const actionBusy = busy || attachmentBusy;
-  const canToggleVoiceCapture = Boolean(selectedProject) && !disabled && !busy;
+  const canStartVoiceCapture =
+    Boolean(selectedProject) && !disabled && !busy && !attachmentBusy && supportsSpeechRecognition;
   const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
+  const canPressSendButton = isRecording || canSubmit || canStartVoiceCapture;
+  const sendButtonLabel = isRecording
+    ? "음성 입력 중지"
+    : canSubmit
+      ? "메시지 전송"
+      : supportsSpeechRecognition
+        ? "길게 눌러 음성 입력"
+        : "메시지 전송";
 
   return (
-    <>
-      {isRecording && typeof document !== "undefined"
-        ? createPortal(
-            <div className="pointer-events-none fixed inset-x-0 top-3 z-[80] flex justify-center px-4">
-              <div className="flex items-center gap-2 rounded-full bg-rose-500/95 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-rose-900/40">
-                <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" />
-                <span>음성 입력 중</span>
-              </div>
-            </div>,
-            document.body
-          )
-        : null}
-      <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
+    <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
         <div className="space-y-2.5">
           {attachmentCount > 0 ? (
             <div className="overflow-x-auto pb-1">
@@ -6106,48 +6116,6 @@ function InlineIssueComposer({
               </button>
             ) : (
               <div className="flex shrink-0 items-end gap-2">
-                {supportsSpeechRecognition ? (
-                  <button
-                    type="button"
-                    onClick={toggleVoiceCapture}
-                    disabled={!canToggleVoiceCapture}
-                    aria-pressed={isRecording}
-                    aria-label={isRecording ? "음성 입력 중지" : "음성 입력 시작"}
-                    title={isRecording ? "음성 입력 중지" : "음성 입력 시작"}
-                    className={`relative flex h-14 w-14 items-center justify-center rounded-full border text-white transition ${
-                      isRecording
-                        ? "border-rose-400/60 bg-rose-500/18 text-rose-50"
-                        : "border-white/10 bg-white/[0.05] hover:bg-white/[0.09]"
-                    } disabled:cursor-not-allowed disabled:opacity-45`}
-                  >
-                    {isRecording ? (
-                      <>
-                        <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.25)]" />
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path
-                            d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                          />
-                          <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                          <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                        </svg>
-                      </>
-                    ) : (
-                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="2"
-                        />
-                        <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                        <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                      </svg>
-                    )}
-                  </button>
-                ) : null}
                 <button
                   type="button"
                   onPointerDown={handleSendPointerDown}
@@ -6156,12 +6124,16 @@ function InlineIssueComposer({
                   onPointerCancel={handleSendPointerLeave}
                   onClick={handleSendClick}
                   onContextMenu={(event) => event.preventDefault()}
-                  disabled={!canSubmit}
+                  disabled={!canPressSendButton}
                   aria-pressed={isRecording}
+                  aria-label={sendButtonLabel}
+                  title={sendButtonLabel}
                   className={`relative flex h-14 w-14 items-center justify-center rounded-full border-2 text-lg transition ${
                     isRecording
                       ? "border-rose-500 bg-rose-500/20 text-rose-50"
-                      : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+                      : canSubmit
+                        ? "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+                        : "border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/[0.09]"
                   } disabled:cursor-not-allowed disabled:opacity-45`}
                 >
                   {isRecording ? (
@@ -6191,7 +6163,6 @@ function InlineIssueComposer({
           </div>
         </div>
       </form>
-    </>
   );
 }
 
@@ -8681,13 +8652,6 @@ function ThreadDetail({
     [availableSpeechVoices]
   );
   const threadReadyForVoicePlayback = !["running"].includes(String(thread?.status ?? "").trim());
-  const voiceStatusLabel = isVoiceSpeaking
-    ? "응답 읽는 중"
-    : thread?.status === "running"
-      ? "응답 생성 중"
-      : latestAssistantSpeechText
-        ? "최신 응답 준비됨"
-        : "읽을 응답 없음";
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9585,10 +9549,6 @@ function ThreadDetail({
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-slate-300">
-              {voiceStatusLabel}
-            </span>
-
             {supportsSpeechSynthesis ? (
               <>
                 <button
@@ -15083,6 +15043,40 @@ export default function App() {
       window.removeEventListener("online", handleOnline);
     };
   }, [scheduleAppForegroundResume]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+      return undefined;
+    }
+
+    const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type !== SERVICE_WORKER_NOTIFICATION_LAUNCH_MESSAGE_TYPE) {
+        return;
+      }
+
+      const launchUrl = typeof event.data?.launchUrl === "string" ? event.data.launchUrl.trim() : "";
+      const pendingLaunch = readPushDeepLinkFromValue(launchUrl);
+
+      if (!pendingLaunch) {
+        return;
+      }
+
+      pendingPushDeepLinkRef.current = pendingLaunch;
+
+      try {
+        const nextUrl = new URL(launchUrl, window.location.origin);
+        window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+      } catch {
+        // ignore malformed launch URL
+      }
+    };
+
+    navigator.serviceWorker.addEventListener("message", handleServiceWorkerMessage);
+
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handleServiceWorkerMessage);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
