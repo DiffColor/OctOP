@@ -16,6 +16,12 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
+import {
+  mkdir as mkdirAsync,
+  open as openFile,
+  rename as renameAsync,
+  unlink as unlinkAsync
+} from "node:fs/promises";
 import os from "node:os";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,6 +182,10 @@ const recentlyClosedPhysicalThreadIdsByRootThreadId = new Map();
 const closedPhysicalThreadTombstonesById = new Map();
 const deletedRootThreadTombstonesById = new Map();
 const locallyStoppedExecutionByThreadId = new Map();
+let threadStorageCache = null;
+let threadStorageDirty = false;
+let threadStorageFlushTimer = null;
+let threadStorageFlushPromise = null;
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
@@ -195,6 +205,9 @@ const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
+const THREAD_STATE_PERSIST_DEBOUNCE_MS = Number(
+  process.env.OCTOP_THREAD_STATE_PERSIST_DEBOUNCE_MS ?? 250
+);
 const LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS = Number(
   process.env.OCTOP_LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS ?? 60000
 );
@@ -212,6 +225,7 @@ if (
   });
 }
 
+cleanupStaleAtomicWriteTempFiles(THREAD_STATE_PATH);
 cleanupIssueAttachmentStageRootOnStartup();
 
 function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
@@ -446,6 +460,30 @@ function cleanupIssueAttachmentStageRootOnStartup() {
     console.warn("[OctOP bridge] failed to reset issue attachment staging directory", {
       root: ISSUE_ATTACHMENT_STAGE_ROOT,
       error: error.message
+    });
+  }
+}
+
+function cleanupStaleAtomicWriteTempFiles(targetPath) {
+  try {
+    const targetDir = dirname(targetPath);
+    const targetBaseName = basename(targetPath);
+
+    for (const entry of readdirSync(targetDir)) {
+      if (!entry.startsWith(`${targetBaseName}.`) || !entry.endsWith(".tmp")) {
+        continue;
+      }
+
+      rmSync(resolve(targetDir, entry), { force: true });
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+
+    console.warn("[OctOP bridge] stale atomic temp cleanup failed", {
+      path: targetPath,
+      error: error instanceof Error ? error.message : String(error)
     });
   }
 }
@@ -755,20 +793,28 @@ function ensureUserState(userId) {
 }
 
 function readThreadStorage() {
+  if (threadStorageCache) {
+    return threadStorageCache;
+  }
+
   if (!existsSync(THREAD_STATE_PATH)) {
-    return {};
+    threadStorageCache = {};
+    return threadStorageCache;
   }
 
   try {
     const parsed = JSON.parse(readFileSync(THREAD_STATE_PATH, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
+    threadStorageCache = parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return {};
+    threadStorageCache = {};
   }
+
+  return threadStorageCache;
 }
 
-function writeThreadStorage(payload) {
-  writeJsonFileAtomic(THREAD_STATE_PATH, payload);
+async function writeThreadStorage(payload) {
+  threadStorageCache = payload;
+  return writeJsonFileAtomicAsync(THREAD_STATE_PATH, payload);
 }
 
 function writeJsonFileAtomic(path, payload) {
@@ -804,6 +850,123 @@ function writeJsonFileAtomic(path, payload) {
     }
 
     throw error;
+  }
+}
+
+async function writeJsonFileAtomicAsync(path, payload) {
+  await mkdirAsync(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const serialized = JSON.stringify(payload, null, 2);
+  let fileHandle = null;
+
+  try {
+    fileHandle = await openFile(tempPath, "w");
+    await fileHandle.writeFile(serialized, "utf8");
+    await fileHandle.sync();
+    await fileHandle.close();
+    fileHandle = null;
+    await renameAsync(tempPath, path);
+    return Buffer.byteLength(serialized, "utf8");
+  } catch (error) {
+    if (fileHandle) {
+      try {
+        await fileHandle.close();
+      } catch {
+        // ignore close failure on error path
+      }
+    }
+
+    try {
+      await unlinkAsync(tempPath);
+    } catch (cleanupError) {
+      console.warn("[OctOP bridge] atomic write temp cleanup failed", {
+        path,
+        tempPath,
+        error: cleanupError.message
+      });
+    }
+
+    throw error;
+  }
+}
+
+function scheduleThreadStorageFlush() {
+  threadStorageDirty = true;
+
+  if (threadStorageFlushTimer || threadStorageFlushPromise) {
+    return;
+  }
+
+  threadStorageFlushTimer = setTimeout(() => {
+    threadStorageFlushTimer = null;
+    void flushThreadStorage().catch((error) => {
+      appendDiagnosticLog("error", "thread_storage.flush.failed", "thread storage flush failed", {
+        error
+      });
+      console.warn("[OctOP bridge] thread storage flush failed", {
+        message: error.message
+      });
+    });
+  }, Math.max(0, THREAD_STATE_PERSIST_DEBOUNCE_MS));
+
+  threadStorageFlushTimer.unref?.();
+}
+
+async function flushThreadStorage() {
+  if (!threadStorageDirty) {
+    return;
+  }
+
+  if (threadStorageFlushPromise) {
+    return threadStorageFlushPromise;
+  }
+
+  const flushStartedAt = Date.now();
+  threadStorageDirty = false;
+  threadStorageFlushPromise = (async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    const payload = threadStorageCache ?? {};
+    const bytes = await writeThreadStorage(payload);
+    const durationMs = Date.now() - flushStartedAt;
+
+    if (durationMs >= 1000) {
+      appendDiagnosticLog("warn", "thread_storage.flush.slow", "thread storage flush took longer than expected", {
+        duration_ms: durationMs,
+        size_bytes: bytes,
+        thread_state_path: THREAD_STATE_PATH
+      });
+    }
+  })();
+
+  try {
+    await threadStorageFlushPromise;
+  } finally {
+    threadStorageFlushPromise = null;
+
+    if (threadStorageDirty && !threadStorageFlushTimer) {
+      scheduleThreadStorageFlush();
+    }
+  }
+}
+
+function flushThreadStorageSyncOnExit() {
+  if (!threadStorageDirty) {
+    return;
+  }
+
+  if (threadStorageFlushTimer) {
+    clearTimeout(threadStorageFlushTimer);
+    threadStorageFlushTimer = null;
+  }
+
+  threadStorageDirty = false;
+
+  try {
+    writeJsonFileAtomic(THREAD_STATE_PATH, threadStorageCache ?? {});
+  } catch (error) {
+    process.stderr.write(
+      `[OctOP bridge] thread storage exit flush failed: ${error instanceof Error ? error.message : String(error)}\n`
+    );
   }
 }
 
@@ -906,7 +1069,8 @@ function persistThreadsForUser(loginId) {
     updated_at: now()
   };
 
-  writeThreadStorage(storage);
+  threadStorageCache = storage;
+  scheduleThreadStorageFlush();
 }
 
 function persistThreadById(threadId) {
@@ -9778,6 +9942,10 @@ process.on("uncaughtException", (error) => {
     message: error?.message ?? String(error),
     stack: error?.stack ?? null
   });
+});
+
+process.on("exit", () => {
+  flushThreadStorageSyncOnExit();
 });
 
 async function syncThreadListFromAppServer() {

@@ -16,6 +16,12 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
+import {
+  mkdir as mkdirAsync,
+  open as openFile,
+  rename as renameAsync,
+  unlink as unlinkAsync
+} from "node:fs/promises";
 import os from "node:os";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +41,7 @@ import {
   deriveCommonBaseInstructions,
   ensureDefaultCommonBaseInstructions
 } from "./projectInstructionState.js";
+import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 
 // Runtime update verification marker: non-functional comment for atomic update validation.
 // Runtime update verification marker 2: second non-functional comment for follow-up validation.
@@ -175,6 +182,10 @@ const recentlyClosedPhysicalThreadIdsByRootThreadId = new Map();
 const closedPhysicalThreadTombstonesById = new Map();
 const deletedRootThreadTombstonesById = new Map();
 const locallyStoppedExecutionByThreadId = new Map();
+let threadStorageCache = null;
+let threadStorageDirty = false;
+let threadStorageFlushTimer = null;
+let threadStorageFlushPromise = null;
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
@@ -194,6 +205,9 @@ const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
+const THREAD_STATE_PERSIST_DEBOUNCE_MS = Number(
+  process.env.OCTOP_THREAD_STATE_PERSIST_DEBOUNCE_MS ?? 250
+);
 const LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS = Number(
   process.env.OCTOP_LOCAL_STOP_EVENT_SUPPRESSION_TTL_MS ?? 60000
 );
@@ -211,6 +225,7 @@ if (
   });
 }
 
+cleanupStaleAtomicWriteTempFiles(THREAD_STATE_PATH);
 cleanupIssueAttachmentStageRootOnStartup();
 
 function resolveRolloverThreshold(rawValue, fallbackPercent = 85) {
@@ -445,6 +460,30 @@ function cleanupIssueAttachmentStageRootOnStartup() {
     console.warn("[OctOP bridge] failed to reset issue attachment staging directory", {
       root: ISSUE_ATTACHMENT_STAGE_ROOT,
       error: error.message
+    });
+  }
+}
+
+function cleanupStaleAtomicWriteTempFiles(targetPath) {
+  try {
+    const targetDir = dirname(targetPath);
+    const targetBaseName = basename(targetPath);
+
+    for (const entry of readdirSync(targetDir)) {
+      if (!entry.startsWith(`${targetBaseName}.`) || !entry.endsWith(".tmp")) {
+        continue;
+      }
+
+      rmSync(resolve(targetDir, entry), { force: true });
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+
+    console.warn("[OctOP bridge] stale atomic temp cleanup failed", {
+      path: targetPath,
+      error: error instanceof Error ? error.message : String(error)
     });
   }
 }
@@ -754,20 +793,28 @@ function ensureUserState(userId) {
 }
 
 function readThreadStorage() {
+  if (threadStorageCache) {
+    return threadStorageCache;
+  }
+
   if (!existsSync(THREAD_STATE_PATH)) {
-    return {};
+    threadStorageCache = {};
+    return threadStorageCache;
   }
 
   try {
     const parsed = JSON.parse(readFileSync(THREAD_STATE_PATH, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
+    threadStorageCache = parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return {};
+    threadStorageCache = {};
   }
+
+  return threadStorageCache;
 }
 
-function writeThreadStorage(payload) {
-  writeJsonFileAtomic(THREAD_STATE_PATH, payload);
+async function writeThreadStorage(payload) {
+  threadStorageCache = payload;
+  return writeJsonFileAtomicAsync(THREAD_STATE_PATH, payload);
 }
 
 function writeJsonFileAtomic(path, payload) {
@@ -803,6 +850,123 @@ function writeJsonFileAtomic(path, payload) {
     }
 
     throw error;
+  }
+}
+
+async function writeJsonFileAtomicAsync(path, payload) {
+  await mkdirAsync(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const serialized = JSON.stringify(payload, null, 2);
+  let fileHandle = null;
+
+  try {
+    fileHandle = await openFile(tempPath, "w");
+    await fileHandle.writeFile(serialized, "utf8");
+    await fileHandle.sync();
+    await fileHandle.close();
+    fileHandle = null;
+    await renameAsync(tempPath, path);
+    return Buffer.byteLength(serialized, "utf8");
+  } catch (error) {
+    if (fileHandle) {
+      try {
+        await fileHandle.close();
+      } catch {
+        // ignore close failure on error path
+      }
+    }
+
+    try {
+      await unlinkAsync(tempPath);
+    } catch (cleanupError) {
+      console.warn("[OctOP bridge] atomic write temp cleanup failed", {
+        path,
+        tempPath,
+        error: cleanupError.message
+      });
+    }
+
+    throw error;
+  }
+}
+
+function scheduleThreadStorageFlush() {
+  threadStorageDirty = true;
+
+  if (threadStorageFlushTimer || threadStorageFlushPromise) {
+    return;
+  }
+
+  threadStorageFlushTimer = setTimeout(() => {
+    threadStorageFlushTimer = null;
+    void flushThreadStorage().catch((error) => {
+      appendDiagnosticLog("error", "thread_storage.flush.failed", "thread storage flush failed", {
+        error
+      });
+      console.warn("[OctOP bridge] thread storage flush failed", {
+        message: error.message
+      });
+    });
+  }, Math.max(0, THREAD_STATE_PERSIST_DEBOUNCE_MS));
+
+  threadStorageFlushTimer.unref?.();
+}
+
+async function flushThreadStorage() {
+  if (!threadStorageDirty) {
+    return;
+  }
+
+  if (threadStorageFlushPromise) {
+    return threadStorageFlushPromise;
+  }
+
+  const flushStartedAt = Date.now();
+  threadStorageDirty = false;
+  threadStorageFlushPromise = (async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    const payload = threadStorageCache ?? {};
+    const bytes = await writeThreadStorage(payload);
+    const durationMs = Date.now() - flushStartedAt;
+
+    if (durationMs >= 1000) {
+      appendDiagnosticLog("warn", "thread_storage.flush.slow", "thread storage flush took longer than expected", {
+        duration_ms: durationMs,
+        size_bytes: bytes,
+        thread_state_path: THREAD_STATE_PATH
+      });
+    }
+  })();
+
+  try {
+    await threadStorageFlushPromise;
+  } finally {
+    threadStorageFlushPromise = null;
+
+    if (threadStorageDirty && !threadStorageFlushTimer) {
+      scheduleThreadStorageFlush();
+    }
+  }
+}
+
+function flushThreadStorageSyncOnExit() {
+  if (!threadStorageDirty) {
+    return;
+  }
+
+  if (threadStorageFlushTimer) {
+    clearTimeout(threadStorageFlushTimer);
+    threadStorageFlushTimer = null;
+  }
+
+  threadStorageDirty = false;
+
+  try {
+    writeJsonFileAtomic(THREAD_STATE_PATH, threadStorageCache ?? {});
+  } catch (error) {
+    process.stderr.write(
+      `[OctOP bridge] thread storage exit flush failed: ${error instanceof Error ? error.message : String(error)}\n`
+    );
   }
 }
 
@@ -905,7 +1069,8 @@ function persistThreadsForUser(loginId) {
     updated_at: now()
   };
 
-  writeThreadStorage(storage);
+  threadStorageCache = storage;
+  scheduleThreadStorageFlush();
 }
 
 function persistThreadById(threadId) {
@@ -3128,7 +3293,7 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
 
   if (lastMessage?.role === "assistant" && (lastMessage.physical_thread_id ?? null) === resolvedPhysicalThreadId) {
-    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
     lastMessage.timestamp = now();
     return;
   }
@@ -3140,7 +3305,7 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     role: "assistant",
     kind: "message",
     message_class: "assistant",
-    content: String(delta ?? ""),
+    content: normalizeAssistantMessageContent(String(delta ?? "")),
     timestamp: now()
   });
 }
@@ -3170,7 +3335,7 @@ function findLatestAssistantMessage(issueId, physicalThreadId = null) {
 
 function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId = null) {
   const issue = issueCardsById.get(issueId) ?? null;
-  const normalizedText = String(fullText ?? "");
+  const normalizedText = normalizeAssistantMessageContent(fullText);
   const resolvedPhysicalThreadId =
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
 
@@ -6920,7 +7085,7 @@ function appendAssistantDelta(threadId, delta = "") {
   const lastMessage = messages.at(-1);
 
   if (lastMessage?.role === "assistant") {
-    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
     lastMessage.timestamp = now();
     persistThreadById(threadId);
     return;
@@ -6930,7 +7095,7 @@ function appendAssistantDelta(threadId, delta = "") {
     id: randomUUID(),
     role: "assistant",
     kind: "message",
-    content: String(delta ?? ""),
+    content: normalizeAssistantMessageContent(String(delta ?? "")),
     timestamp: now()
   });
   persistThreadById(threadId);
@@ -9341,7 +9506,9 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
+        last_message: normalizeAssistantMessageContent(
+          `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
+        )
       };
     case "turn/completed":
       {
@@ -9408,7 +9575,7 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${current.last_message ?? ""}${params.delta ?? ""}`
+        last_message: normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`)
       };
     case "thread/status/changed":
       if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
@@ -9777,6 +9944,10 @@ process.on("uncaughtException", (error) => {
   });
 });
 
+process.on("exit", () => {
+  flushThreadStorageSyncOnExit();
+});
+
 async function syncThreadListFromAppServer() {
   const response = await appServer.request(
     "thread/list",
@@ -9942,7 +10113,7 @@ function collectTextFromRemoteMessageContent(content) {
 
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
-  return joinBackfillTextSegments(
+  return normalizeAssistantMessageContent(joinBackfillTextSegments(
     items
       .map((item) => {
         if (!item || typeof item !== "object") {
@@ -9967,7 +10138,7 @@ function collectAssistantTextFromRemoteTurn(turn) {
         return "";
       })
       .filter(Boolean)
-  );
+  ));
 }
 
 function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {

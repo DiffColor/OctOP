@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   describeBridgeAppServerHealth,
+  evaluateBridgeHealthAvailability,
   evaluateBridgeAppServerRecovery,
   isBridgeAppServerAuthenticationError
 } from "../../scripts/local-agent-health.mjs";
@@ -183,4 +184,51 @@ test("bridge health 응답이 없어도 런타임 heartbeat가 신선하면 정�
   assert.equal(evaluation.protected, true);
   assert.equal(evaluation.shouldRestart, false);
   assert.match(evaluation.summary, /runtime_process_alive=true/);
+});
+
+test("bridge health 응답 불능은 app-server 생존 여부와 별개로 bridge 재시작 대상으로 누적한다", () => {
+  const evaluation = evaluateBridgeHealthAvailability({
+    health: null,
+    runtimeSnapshot: {
+      runtime: {
+        processAlive: true,
+        heartbeatFresh: true,
+        state: "running"
+      },
+      activityBeacon: {
+        active: false,
+        fresh: false,
+        activeCount: 0
+      }
+    },
+    consecutiveFailures: 2,
+    failureThreshold: 3
+  });
+
+  assert.equal(evaluation.healthy, false);
+  assert.equal(evaluation.protected, true);
+  assert.equal(evaluation.recoverable, true);
+  assert.equal(evaluation.nextConsecutiveFailures, 3);
+  assert.equal(evaluation.shouldRestart, true);
+  assert.match(evaluation.reason, /bridge health unavailable/i);
+  assert.match(evaluation.summary, /runtime_process_alive=true/);
+});
+
+test("bridge health 응답이 복구되면 bridge 재시작 누적도 즉시 해제한다", () => {
+  const evaluation = evaluateBridgeHealthAvailability({
+    health: {
+      status: {
+        app_server: {
+          connected: true,
+          initialized: true
+        }
+      }
+    },
+    consecutiveFailures: 5,
+    failureThreshold: 3
+  });
+
+  assert.equal(evaluation.healthy, true);
+  assert.equal(evaluation.nextConsecutiveFailures, 0);
+  assert.equal(evaluation.shouldRestart, false);
 });

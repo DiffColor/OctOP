@@ -20,6 +20,7 @@ const runtimeFiles = [
   "scripts/run-bridge.mjs",
   "services/codex-adapter/package.json",
   "services/codex-adapter/src/index.js",
+  "services/codex-adapter/src/assistantMessageNormalization.js",
   "services/codex-adapter/src/domain.js",
   "services/codex-adapter/src/projectInstructionState.js"
 ];

@@ -146,6 +146,49 @@ export function describeBridgeAppServerHealth(health = {}, runtimeSnapshot = nul
   return segments.join(", ");
 }
 
+export function evaluateBridgeHealthAvailability({
+  health = null,
+  runtimeSnapshot = null,
+  consecutiveFailures = 0,
+  failureThreshold = 3
+} = {}) {
+  const threshold = Number.isFinite(Number(failureThreshold)) && Number(failureThreshold) > 0
+    ? Number(failureThreshold)
+    : 3;
+  const status = normalizeBridgeAppServerStatus(health, runtimeSnapshot);
+  const summary = describeBridgeAppServerHealth(health, runtimeSnapshot);
+
+  if (status.available) {
+    return {
+      healthy: true,
+      protected: false,
+      recoverable: false,
+      nextConsecutiveFailures: 0,
+      shouldRestart: false,
+      reason: "",
+      summary
+    };
+  }
+
+  const nextConsecutiveFailures = Number(consecutiveFailures ?? 0) + 1;
+  const protectedFromRestart =
+    status.activityBeaconFresh ||
+    (status.runtimeProcessAlive && status.runtimeHeartbeatFresh);
+
+  return {
+    healthy: false,
+    protected: protectedFromRestart,
+    recoverable: true,
+    nextConsecutiveFailures,
+    shouldRestart: nextConsecutiveFailures >= threshold,
+    reason:
+      status.runtimeProcessAlive && status.runtimeHeartbeatFresh
+        ? "bridge health unavailable while app-server runtime heartbeat is fresh"
+        : "bridge health unavailable",
+    summary
+  };
+}
+
 export function evaluateBridgeAppServerRecovery({
   health = null,
   runtimeSnapshot = null,
