@@ -29,6 +29,44 @@ import {
   deriveCommonBaseInstructions
 } from "./projectInstructionState.js";
 
+function normalizeAssistantMessageContent(content = "") {
+  const normalized = String(content ?? "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized.split("\n");
+  const result = [];
+  let seenProgressHistoryHeading = false;
+  let skippedDuplicateHeading = false;
+
+  for (const line of lines) {
+    const trimmed = String(line ?? "").trim();
+
+    if (trimmed === "[진행 내역]") {
+      if (seenProgressHistoryHeading) {
+        skippedDuplicateHeading = true;
+        continue;
+      }
+
+      seenProgressHistoryHeading = true;
+      skippedDuplicateHeading = false;
+      result.push("[진행 내역]");
+      continue;
+    }
+
+    if (skippedDuplicateHeading && trimmed === "" && String(result.at(-1) ?? "").trim() === "") {
+      continue;
+    }
+
+    skippedDuplicateHeading = false;
+    result.push(line);
+  }
+
+  return result.join("\n");
+}
+
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
@@ -2393,7 +2431,7 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
 
   if (lastMessage?.role === "assistant" && (lastMessage.physical_thread_id ?? null) === resolvedPhysicalThreadId) {
-    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
     lastMessage.timestamp = now();
     return;
   }
@@ -2405,7 +2443,7 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     role: "assistant",
     kind: "message",
     message_class: "assistant",
-    content: String(delta ?? ""),
+    content: normalizeAssistantMessageContent(String(delta ?? "")),
     timestamp: now()
   });
 }
@@ -2435,7 +2473,7 @@ function findLatestAssistantMessage(issueId, physicalThreadId = null) {
 
 function syncAssistantSnapshotToIssue(issueId, fullText = "", physicalThreadId = null) {
   const issue = issueCardsById.get(issueId) ?? null;
-  const normalizedText = String(fullText ?? "");
+  const normalizedText = normalizeAssistantMessageContent(fullText);
   const resolvedPhysicalThreadId =
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
 
@@ -5816,7 +5854,7 @@ function appendAssistantDelta(threadId, delta = "") {
   const lastMessage = messages.at(-1);
 
   if (lastMessage?.role === "assistant") {
-    lastMessage.content = `${lastMessage.content ?? ""}${delta}`;
+    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
     lastMessage.timestamp = now();
     persistThreadById(threadId);
     return;
@@ -5826,7 +5864,7 @@ function appendAssistantDelta(threadId, delta = "") {
     id: randomUUID(),
     role: "assistant",
     kind: "message",
-    content: String(delta ?? ""),
+    content: normalizeAssistantMessageContent(String(delta ?? "")),
     timestamp: now()
   });
   persistThreadById(threadId);
@@ -7690,7 +7728,9 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
+        last_message: normalizeAssistantMessageContent(
+          `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
+        )
       };
     case "turn/completed":
       {
@@ -7757,7 +7797,7 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: `${current.last_message ?? ""}${params.delta ?? ""}`
+        last_message: normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`)
       };
     case "thread/status/changed":
       if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
@@ -8189,7 +8229,7 @@ function collectTextFromRemoteMessageContent(content) {
 
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
-  return items
+  return normalizeAssistantMessageContent(items
     .map((item) => {
       if (!item || typeof item !== "object") {
         return "";
@@ -8213,7 +8253,7 @@ function collectAssistantTextFromRemoteTurn(turn) {
       return "";
     })
     .filter(Boolean)
-    .join("");
+    .join(""));
 }
 
 function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {

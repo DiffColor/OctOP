@@ -3529,7 +3529,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         status: "running",
         progress: Math.max(currentThread?.progress ?? 0, 90),
         last_event: "item.agentMessage.delta",
-        last_message: `${currentThread?.last_message ?? ""}${payload.delta ?? ""}`,
+        last_message: normalizeAssistantMessageContent(`${currentThread?.last_message ?? ""}${payload.delta ?? ""}`),
         updated_at: new Date().toISOString()
       };
     case "turn.completed":
@@ -3611,7 +3611,7 @@ function appendLiveAssistantMessage(messages, event, fallback = {}) {
   if (lastMessage?.role === "assistant" && (lastMessage.issue_id ?? "") === issueId) {
     next[next.length - 1] = {
       ...lastMessage,
-      content: `${lastMessage.content ?? ""}${payload.delta}`,
+      content: normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${payload.delta}`),
       timestamp: new Date().toISOString()
     };
     return next;
@@ -3621,7 +3621,7 @@ function appendLiveAssistantMessage(messages, event, fallback = {}) {
     id: `${issueId || "assistant"}-${Date.now()}`,
     role: "assistant",
     kind: "message",
-    content: String(payload.delta ?? ""),
+    content: normalizeAssistantMessageContent(String(payload.delta ?? "")),
     timestamp: new Date().toISOString(),
     issue_id: issueId || fallback.issue_id || null,
     issue_title: fallback.issue_title ?? "",
@@ -3913,6 +3913,44 @@ function parseRichMessageContent(content) {
   return segments;
 }
 
+function normalizeAssistantMessageContent(content) {
+  const normalized = String(content ?? "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized.split("\n");
+  const result = [];
+  let seenProgressHistoryHeading = false;
+  let skippedDuplicateHeading = false;
+
+  for (const line of lines) {
+    const trimmed = String(line ?? "").trim();
+
+    if (trimmed === "[진행 내역]") {
+      if (seenProgressHistoryHeading) {
+        skippedDuplicateHeading = true;
+        continue;
+      }
+
+      seenProgressHistoryHeading = true;
+      skippedDuplicateHeading = false;
+      result.push("[진행 내역]");
+      continue;
+    }
+
+    if (skippedDuplicateHeading && trimmed === "" && String(result.at(-1) ?? "").trim() === "") {
+      continue;
+    }
+
+    skippedDuplicateHeading = false;
+    result.push(line);
+  }
+
+  return result.join("\n");
+}
+
 function inferCodeBlockLabel(language, content) {
   const normalizedLanguage = String(language ?? "").trim().toLowerCase();
 
@@ -4070,7 +4108,8 @@ function trimRichTextTokenValue(value) {
 }
 
 function RichMessageContent({ content, tone = "light" }) {
-  const segments = parseRichMessageContent(content);
+  const normalizedContent = tone === "brand" ? String(content ?? "") : normalizeAssistantMessageContent(content);
+  const segments = parseRichMessageContent(normalizedContent);
   const inlineCodeClassName =
     tone === "brand"
       ? "border-slate-950/10 bg-slate-950/10 text-slate-950"
