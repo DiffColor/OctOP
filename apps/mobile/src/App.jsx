@@ -8703,6 +8703,8 @@ function MainPage({
     [draggingProjectChipId, draggingProjectChipProjectedIds, draggingProjectChipShiftDistance, orderedProjectIds]
   );
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  const selectedProjectName = String(selectedProject?.name ?? "").trim();
+  const appHeaderTitle = !isTodoScope && selectedProjectName ? selectedProjectName : "OctOP";
   const threadInstructionProject =
     projects.find((project) => project.id === threadInstructionTarget?.project_id) ??
     selectedProject ??
@@ -10007,7 +10009,7 @@ function MainPage({
           </button>
 
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
+            <h1 className="truncate text-base font-semibold text-white">{appHeaderTitle}</h1>
             <div className="mt-0.5">
               <BridgeDropdown
                 bridges={bridges}
@@ -10497,7 +10499,7 @@ function MainPage({
               </button>
 
               <div className="min-w-0 flex-1">
-                <h1 className="truncate text-base font-semibold text-white">OctOP</h1>
+                <h1 className="truncate text-base font-semibold text-white">{appHeaderTitle}</h1>
                 <div className="mt-0.5">
                   <BridgeDropdown
                     bridges={bridges}
