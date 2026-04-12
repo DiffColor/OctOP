@@ -113,7 +113,8 @@ const BACKGROUND_THREAD_PRELOAD_COUNT = 2;
 const BACKGROUND_THREAD_PRELOAD_DELAY_MS = 220;
 const MESSAGE_BUBBLE_LONG_PRESS_DELAY_MS = 600;
 const MESSAGE_BUBBLE_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
-const MESSAGE_BUBBLE_LONG_PRESS_IGNORE_SELECTOR = "[data-message-code-scroll='true']";
+const MESSAGE_BUBBLE_LONG_PRESS_IGNORE_SELECTOR =
+  "[data-message-code-scroll='true'], [data-message-attachment-interactive='true']";
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
 const VIEWPORT_METRICS_STORAGE_KEY = "octop.mobile.viewport.metrics.v1";
 const VIEWPORT_STORAGE_REUSE_TOLERANCE_PX = 96;
@@ -123,6 +124,67 @@ const MAX_CACHED_THREAD_ISSUES_PER_THREAD = 24;
 const MAX_CACHED_PROJECTS_PER_SCOPE = 40;
 const MAX_CACHED_THREADS_PER_PROJECT = 120;
 const MAX_CACHED_TODO_CHATS_PER_SCOPE = 80;
+const MAX_MESSAGE_ATTACHMENTS = 8;
+const MAX_MESSAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_MESSAGE_ATTACHMENT_TEXT_CHARS = 20_000;
+const TEXT_ATTACHMENT_FILE_PATTERN =
+  /\.(?:txt|md|markdown|json|jsonc|ya?ml|xml|csv|ts|tsx|js|jsx|mjs|cjs|css|scss|sass|html|htm|cs|java|kt|swift|py|rb|php|go|rs|sh|zsh|bash|ps1|sql|toml|ini|cfg|conf|env|gitignore|dockerfile)$/i;
+const MESSAGE_ATTACHMENT_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
+const MESSAGE_ATTACHMENT_TEXT_EXTENSIONS = [
+  "txt",
+  "md",
+  "markdown",
+  "json",
+  "jsonc",
+  "yaml",
+  "yml",
+  "xml",
+  "csv",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "css",
+  "scss",
+  "sass",
+  "html",
+  "htm",
+  "c",
+  "cpp",
+  "cs",
+  "java",
+  "kt",
+  "swift",
+  "py",
+  "rb",
+  "php",
+  "go",
+  "rs",
+  "sh",
+  "zsh",
+  "bash",
+  "ps1",
+  "sql",
+  "toml",
+  "ini",
+  "cfg",
+  "conf",
+  "env",
+  "tex"
+];
+const MESSAGE_ATTACHMENT_SPECIAL_FILE_NAMES = [".gitignore", "dockerfile"];
+const MESSAGE_ATTACHMENT_SUPPORTED_EXTENSIONS = [
+  ...MESSAGE_ATTACHMENT_IMAGE_EXTENSIONS,
+  ...MESSAGE_ATTACHMENT_TEXT_EXTENSIONS
+];
+const MESSAGE_ATTACHMENT_SUPPORTED_EXTENSION_SET = new Set(MESSAGE_ATTACHMENT_SUPPORTED_EXTENSIONS);
+const MESSAGE_ATTACHMENT_SPECIAL_FILE_NAME_SET = new Set(MESSAGE_ATTACHMENT_SPECIAL_FILE_NAMES);
+const MESSAGE_ATTACHMENT_ACCEPT = [
+  ...MESSAGE_ATTACHMENT_SUPPORTED_EXTENSIONS.map((extension) => `.${extension}`),
+  ...MESSAGE_ATTACHMENT_SPECIAL_FILE_NAMES
+].join(",");
 const THREAD_HISTORY_LAZY_PAGE_SIZE = 2;
 const THREAD_HISTORY_PRELOAD_SCROLL_TOP_PX = 480;
 const bridgeRequestFailureListeners = new Set();
@@ -1435,7 +1497,8 @@ function normalizeCachedThreadMessages(messages = []) {
         timestamp,
         issue_id: message.issue_id ?? null,
         issue_title: typeof message.issue_title === "string" ? message.issue_title : String(message.issue_title ?? ""),
-        issue_status: typeof message.issue_status === "string" ? message.issue_status : String(message.issue_status ?? "")
+        issue_status: typeof message.issue_status === "string" ? message.issue_status : String(message.issue_status ?? ""),
+        attachments: normalizeMessageAttachments(message.attachments)
       };
     })
     .filter(Boolean)
@@ -1804,6 +1867,361 @@ function createId() {
   }
 
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isImageAttachmentMimeType(mimeType = "") {
+  return String(mimeType ?? "")
+    .trim()
+    .toLowerCase()
+    .startsWith("image/");
+}
+
+function getMessageAttachmentFileName(value = "") {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function getMessageAttachmentFileExtension(fileName = "") {
+  const normalized = getMessageAttachmentFileName(fileName);
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (MESSAGE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(normalized)) {
+    return normalized;
+  }
+
+  if (normalized.startsWith(".") && normalized.indexOf(".", 1) < 0) {
+    return normalized;
+  }
+
+  const extensionIndex = normalized.lastIndexOf(".");
+
+  if (extensionIndex <= 0 || extensionIndex === normalized.length - 1) {
+    return "";
+  }
+
+  return normalized.slice(extensionIndex + 1);
+}
+
+function isSupportedMessageAttachmentFile(file) {
+  const fileName = getMessageAttachmentFileName(file?.name);
+  const extension = getMessageAttachmentFileExtension(fileName);
+
+  if (!fileName) {
+    return false;
+  }
+
+  if (MESSAGE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(fileName)) {
+    return true;
+  }
+
+  if (!extension) {
+    return false;
+  }
+
+  return MESSAGE_ATTACHMENT_SUPPORTED_EXTENSION_SET.has(extension);
+}
+
+function shouldInlineTextAttachment(file) {
+  const mimeType = String(file?.type ?? "")
+    .trim()
+    .toLowerCase();
+  const fileName = String(file?.name ?? "").trim();
+  const extension = getMessageAttachmentFileExtension(fileName);
+
+  return (
+    mimeType.startsWith("text/") ||
+    mimeType.includes("json") ||
+    mimeType.includes("xml") ||
+    MESSAGE_ATTACHMENT_SPECIAL_FILE_NAME_SET.has(getMessageAttachmentFileName(fileName)) ||
+    MESSAGE_ATTACHMENT_TEXT_EXTENSIONS.includes(extension) ||
+    TEXT_ATTACHMENT_FILE_PATTERN.test(fileName)
+  );
+}
+
+function truncateAttachmentTextContent(text) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+
+  if (normalized.length <= MAX_MESSAGE_ATTACHMENT_TEXT_CHARS) {
+    return {
+      text: normalized,
+      truncated: false
+    };
+  }
+
+  return {
+    text: normalized.slice(0, MAX_MESSAGE_ATTACHMENT_TEXT_CHARS),
+    truncated: true
+  };
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("파일을 읽지 못했습니다."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function createImageThumbnailDataUrl(file) {
+  const sourceUrl = await fileToDataUrl(file);
+
+  if (typeof document === "undefined") {
+    return sourceUrl;
+  }
+
+  const image = await new Promise((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("이미지 미리보기를 생성하지 못했습니다."));
+    element.src = sourceUrl;
+  });
+  const maxEdge = 240;
+  const width = Number(image.width) || maxEdge;
+  const height = Number(image.height) || maxEdge;
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return sourceUrl;
+  }
+
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/webp", 0.82);
+}
+
+function normalizeMessageAttachment(attachment) {
+  if (!attachment) {
+    return null;
+  }
+
+  const name = String(attachment.name ?? "").trim();
+
+  if (!name) {
+    return null;
+  }
+
+  const mimeType = String(attachment.mime_type ?? attachment.mimeType ?? "").trim();
+  const textContent = attachment.text_content == null ? null : String(attachment.text_content);
+  const previewUrl = attachment.preview_url == null ? null : String(attachment.preview_url);
+  const uploadId =
+    attachment.upload_id == null && attachment.uploadId == null
+      ? null
+      : String(attachment.upload_id ?? attachment.uploadId).trim() || null;
+  const downloadUrl =
+    attachment.download_url == null && attachment.downloadUrl == null
+      ? null
+      : String(attachment.download_url ?? attachment.downloadUrl).trim() || null;
+  const cleanupUrl =
+    attachment.cleanup_url == null && attachment.cleanupUrl == null
+      ? null
+      : String(attachment.cleanup_url ?? attachment.cleanupUrl).trim() || null;
+  const uploadedAt =
+    attachment.uploaded_at == null && attachment.uploadedAt == null
+      ? null
+      : String(attachment.uploaded_at ?? attachment.uploadedAt).trim() || null;
+
+  return {
+    id: String(attachment.id ?? createId()).trim() || createId(),
+    name,
+    kind: attachment.kind === "image" || isImageAttachmentMimeType(mimeType) ? "image" : "file",
+    mime_type: mimeType || null,
+    size_bytes: Number.isFinite(Number(attachment.size_bytes ?? attachment.sizeBytes))
+      ? Number(attachment.size_bytes ?? attachment.sizeBytes)
+      : 0,
+    preview_url: previewUrl || null,
+    text_content: textContent && textContent.length > 0 ? textContent : null,
+    text_truncated: Boolean(attachment.text_truncated ?? attachment.textTruncated),
+    upload_id: uploadId,
+    download_url: downloadUrl,
+    cleanup_url: cleanupUrl,
+    uploaded_at: uploadedAt
+  };
+}
+
+function normalizeMessageAttachments(attachments) {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  return attachments.map((attachment) => normalizeMessageAttachment(attachment)).filter(Boolean);
+}
+
+async function uploadMessageAttachmentFile(file, bridgeId = "") {
+  const formData = new FormData();
+  formData.set("file", file);
+  const query = bridgeId ? `?bridge_id=${encodeURIComponent(bridgeId)}` : "";
+  const response = await apiRequest(`/api/attachments${query}`, {
+    method: "POST",
+    body: formData
+  });
+
+  return normalizeMessageAttachment(response?.attachment) ?? {};
+}
+
+async function cleanupMessageAttachmentUpload(attachment) {
+  const cleanupUrl = String(attachment?.cleanup_url ?? attachment?.cleanupUrl ?? "").trim();
+
+  if (!cleanupUrl) {
+    return;
+  }
+
+  try {
+    await fetch(cleanupUrl, {
+      method: "DELETE",
+      keepalive: true
+    });
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
+async function cleanupMessageAttachmentUploads(attachments) {
+  const normalizedAttachments = normalizeMessageAttachments(attachments);
+
+  await Promise.allSettled(
+    normalizedAttachments
+      .filter((attachment) => attachment.cleanup_url)
+      .map((attachment) => cleanupMessageAttachmentUpload(attachment))
+  );
+}
+
+async function createMessageAttachmentFromFile(file, bridgeId = "") {
+  const mimeType = String(file?.type ?? "").trim();
+  const attachment = {
+    id: createId(),
+    name: String(file?.name ?? "").trim() || "attachment",
+    kind: isImageAttachmentMimeType(mimeType) ? "image" : "file",
+    mime_type: mimeType || null,
+    size_bytes: Number(file?.size ?? 0) || 0,
+    preview_url: null,
+    text_content: null,
+    text_truncated: false
+  };
+  const shouldInlineText = shouldInlineTextAttachment(file);
+
+  if (attachment.kind === "image") {
+    const uploaded = await uploadMessageAttachmentFile(file, bridgeId);
+    attachment.preview_url = await createImageThumbnailDataUrl(file);
+    attachment.upload_id = uploaded.upload_id ?? null;
+    attachment.download_url = uploaded.download_url ?? null;
+    attachment.cleanup_url = uploaded.cleanup_url ?? null;
+    attachment.uploaded_at = uploaded.uploaded_at ?? null;
+    attachment.size_bytes = Number(uploaded.size_bytes ?? attachment.size_bytes) || attachment.size_bytes;
+    return attachment;
+  }
+
+  if (shouldInlineText) {
+    const { text, truncated } = truncateAttachmentTextContent(await file.text());
+    attachment.text_content = text;
+    attachment.text_truncated = truncated;
+
+    if (!truncated) {
+      return attachment;
+    }
+  }
+
+  const uploaded = await uploadMessageAttachmentFile(file, bridgeId);
+  attachment.upload_id = uploaded.upload_id ?? null;
+  attachment.download_url = uploaded.download_url ?? null;
+  attachment.cleanup_url = uploaded.cleanup_url ?? null;
+  attachment.uploaded_at = uploaded.uploaded_at ?? null;
+  attachment.size_bytes = Number(uploaded.size_bytes ?? attachment.size_bytes) || attachment.size_bytes;
+  return attachment;
+}
+
+async function appendMessageAttachments(currentAttachments, files, bridgeId = "") {
+  const attachments = [...normalizeMessageAttachments(currentAttachments)];
+  const dedupeKeys = new Set(
+    attachments.map((attachment) => `${attachment.name}:${attachment.size_bytes}:${attachment.mime_type ?? ""}`)
+  );
+  let rejectedCount = 0;
+
+  for (const file of files) {
+    if (attachments.length >= MAX_MESSAGE_ATTACHMENTS) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    if (!isSupportedMessageAttachmentFile(file)) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    if ((Number(file?.size ?? 0) || 0) > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    const dedupeKey = `${String(file?.name ?? "").trim()}:${Number(file?.size ?? 0) || 0}:${String(file?.type ?? "").trim()}`;
+
+    if (dedupeKeys.has(dedupeKey)) {
+      continue;
+    }
+
+    try {
+      const attachment = await createMessageAttachmentFromFile(file, bridgeId);
+      attachments.push(attachment);
+      dedupeKeys.add(dedupeKey);
+    } catch {
+      rejectedCount += 1;
+    }
+  }
+
+  return {
+    attachments,
+    rejectedCount
+  };
+}
+
+function formatMessageAttachmentSize(sizeBytes) {
+  const size = Math.max(0, Number(sizeBytes) || 0);
+
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveMessageAttachmentBadge(fileName = "", mimeType = "") {
+  const extension = getMessageAttachmentFileExtension(fileName);
+  const label = (() => {
+    if (extension === ".gitignore") {
+      return "GIT";
+    }
+
+    if (extension === "dockerfile") {
+      return "DKR";
+    }
+
+    if (!extension) {
+      return "FILE";
+    }
+
+    return extension.replace(/^\./, "").slice(0, 4).toUpperCase();
+  })();
+
+  if (isImageAttachmentMimeType(mimeType) || MESSAGE_ATTACHMENT_IMAGE_EXTENSIONS.includes(extension)) {
+    return {
+      label,
+      className: "border-fuchsia-400/40 bg-fuchsia-500/15 text-fuchsia-100"
+    };
+  }
+
+  return {
+    label,
+    className: "border-slate-400/30 bg-white/10 text-white/90"
+  };
 }
 
 function getViewportOrientation(width, height) {
@@ -2488,6 +2906,7 @@ async function apiRequest(path, options = {}) {
   } = options;
   const requestUrl = `${API_BASE_URL}${path}`;
   const { signal, cleanup } = createRequestSignalWithTimeout(externalSignal, timeoutMs);
+  const isFormDataBody = typeof FormData !== "undefined" && fetchOptions.body instanceof FormData;
   let response;
 
   try {
@@ -2497,7 +2916,7 @@ async function apiRequest(path, options = {}) {
       cache: fetchOptions.cache ?? "no-store",
       headers: {
         Accept: "application/json",
-        ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...(!isFormDataBody && fetchOptions.body ? { "Content-Type": "application/json" } : {}),
         ...(fetchOptions.headers ?? {})
       }
     });
@@ -2616,6 +3035,7 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     created_at: issue.created_at ?? new Date().toISOString(),
     updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
     prompt: issue.prompt ?? "",
+    attachments: normalizeMessageAttachments(issue.attachments),
     queue_position: Number.isFinite(Number(issue.queue_position)) ? Number(issue.queue_position) : null,
     prep_position: Number.isFinite(Number(issue.prep_position)) ? Number(issue.prep_position) : null,
     source_app_id: issue.source_app_id ?? null,
@@ -2722,7 +3142,8 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
     issue_id: issueId,
     issue_title: issue?.title ?? "",
     issue_status: issue?.status ?? "staged",
-    timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString()
+    timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString(),
+    attachments: normalizeMessageAttachments(message.attachments)
   }));
 
   return [...preservedMessages, ...normalizedMessages].sort(
@@ -3386,6 +3807,7 @@ function normalizeTodoMessage(message) {
     id: message.id,
     todo_chat_id: message.todo_chat_id ?? null,
     content: message.content ?? "",
+    attachments: normalizeMessageAttachments(message.attachments),
     status: message.status ?? "open",
     created_at: message.created_at ?? new Date().toISOString(),
     updated_at: message.updated_at ?? message.created_at ?? new Date().toISOString()
@@ -3597,6 +4019,191 @@ function RichMessageContent({ content, tone = "light" }) {
         );
       })}
     </div>
+  );
+}
+
+function MessageAttachmentBadge({ attachment, compact = false }) {
+  const badge = resolveMessageAttachmentBadge(attachment?.name, attachment?.mime_type);
+
+  return (
+    <span
+      className={`inline-flex items-center justify-center border font-semibold tracking-[0.18em] ${
+        compact ? "h-7 min-w-[2.6rem] rounded-lg px-2 text-[10px]" : "h-8 min-w-[3rem] rounded-xl px-2 text-[11px]"
+      } ${badge.className}`}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
+function MessageAttachmentPreview({
+  attachments,
+  bubbleTone = "light",
+  onOpenAttachment
+}) {
+  const normalizedAttachments = normalizeMessageAttachments(attachments);
+
+  if (normalizedAttachments.length === 0) {
+    return null;
+  }
+
+  const imageAttachments = normalizedAttachments.filter((attachment) => attachment.kind === "image" && attachment.preview_url);
+  const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind !== "image" || !attachment.preview_url);
+  const fileCardClassName =
+    bubbleTone === "brand"
+      ? "border-white/15 bg-slate-950/15 text-white"
+      : "border-slate-900/10 bg-slate-950/5 text-slate-900";
+
+  return (
+    <div className="mt-3 space-y-2.5">
+      {imageAttachments.length > 0 ? (
+        <div className={`grid gap-2 ${imageAttachments.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+          {imageAttachments.slice(0, 4).map((attachment, index) => {
+            const remainingCount = imageAttachments.length - 4;
+            const showOverflow = index === 3 && remainingCount > 0;
+
+            return (
+              <button
+                key={attachment.id}
+                type="button"
+                data-message-attachment-interactive="true"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onOpenAttachment?.(attachment);
+                }}
+                className="group relative overflow-hidden rounded-2xl border border-black/10 bg-black/10 text-left"
+              >
+                <div className="aspect-[4/3] w-full overflow-hidden bg-black/20">
+                  <img
+                    src={attachment.preview_url}
+                    alt={attachment.name}
+                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
+                    loading="lazy"
+                  />
+                </div>
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent px-3 pb-2 pt-6">
+                  <p className="truncate text-[11px] font-medium text-white">{attachment.name}</p>
+                </div>
+                {showOverflow ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-lg font-semibold text-white">
+                    +{remainingCount}
+                  </div>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {fileAttachments.length > 0 ? (
+        <div className="space-y-2">
+          {fileAttachments.map((attachment) => (
+            <button
+              key={attachment.id}
+              type="button"
+              data-message-attachment-interactive="true"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onOpenAttachment?.(attachment);
+              }}
+              className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-3 text-left ${fileCardClassName}`}
+            >
+              <div className="shrink-0">
+                <MessageAttachmentBadge attachment={attachment} compact />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{attachment.name}</p>
+                <div className="mt-1 flex items-center gap-1.5 text-[11px] opacity-70">
+                  <span>{formatMessageAttachmentSize(attachment.size_bytes)}</span>
+                  {attachment.text_content ? (
+                    <>
+                      <span>·</span>
+                      <span>{attachment.text_truncated ? "본문 일부 포함" : "본문 포함"}</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AttachmentPreviewDialog({ attachment, onClose }) {
+  if (!attachment || typeof document === "undefined") {
+    return null;
+  }
+
+  const isImage = attachment.kind === "image" && attachment.preview_url;
+  const hasTextPreview = !isImage && attachment.text_content;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[90] bg-slate-950/92 backdrop-blur-sm">
+      <button
+        type="button"
+        aria-label="첨부 미리보기 닫기"
+        className="absolute right-4 top-4 z-[1] flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/30 text-white"
+        onClick={onClose}
+      >
+        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+        </svg>
+      </button>
+
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex h-full w-full items-center justify-center px-4 pb-8 pt-16"
+        onClick={onClose}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
+      >
+        <div
+          className="max-h-full w-full max-w-4xl overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_24px_72px_rgba(2,6,23,0.55)]"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="border-b border-white/10 px-5 py-4">
+            <p className="truncate text-sm font-semibold text-white">{attachment.name}</p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              {formatMessageAttachmentSize(attachment.size_bytes)}
+              {attachment.mime_type ? ` · ${attachment.mime_type}` : ""}
+            </p>
+          </div>
+
+          {isImage ? (
+            <div className="flex max-h-[calc(100vh-10rem)] items-center justify-center bg-black px-3 py-3">
+              <img
+                src={attachment.preview_url}
+                alt={attachment.name}
+                className="max-h-[calc(100vh-12rem)] w-auto max-w-full rounded-2xl object-contain"
+              />
+            </div>
+          ) : hasTextPreview ? (
+            <div className="max-h-[calc(100vh-12rem)] overflow-auto px-5 py-4">
+              <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-slate-100">
+                {attachment.text_content}
+              </pre>
+              {attachment.text_truncated ? (
+                <p className="mt-3 text-xs text-amber-200">본문이 일부만 포함되어 있습니다.</p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="px-5 py-6 text-sm text-slate-200">
+              미리보기를 표시할 수 없는 첨부입니다.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -4319,6 +4926,7 @@ function BridgeDropdown({
 
 function InlineIssueComposer({
   busy,
+  bridgeId = "",
   selectedProject,
   onSubmit,
   label,
@@ -4338,7 +4946,10 @@ function InlineIssueComposer({
   const normalizedDraftKey = String(draftKey ?? "").trim();
   const normalizedDraftValue = normalizeComposerDraftValue(draftValue);
   const [internalPrompt, setInternalPrompt] = useState(() => normalizedDraftValue);
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
   const speechRecognitionRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const longPressTimerRef = useRef(null);
@@ -4361,6 +4972,7 @@ function InlineIssueComposer({
     typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
   const prompt = internalPrompt;
   const promptRef = useRef(prompt);
+  const attachmentsRef = useRef([]);
   const lastHydratedDraftRef = useRef({
     key: normalizedDraftKey,
     value: normalizedDraftValue
@@ -4369,6 +4981,10 @@ function InlineIssueComposer({
   useEffect(() => {
     promptRef.current = prompt;
   }, [prompt]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     const lastHydratedDraft = lastHydratedDraftRef.current;
@@ -4382,6 +4998,11 @@ function InlineIssueComposer({
       return;
     }
 
+    if (keyChanged) {
+      attachmentsRef.current = [];
+      setAttachments([]);
+    }
+
     setInternalPrompt(normalizedDraftValue);
     promptRef.current = normalizedDraftValue;
     lastHydratedDraftRef.current = {
@@ -4392,11 +5013,11 @@ function InlineIssueComposer({
 
   useEffect(
     () => () => {
-      if (typeof onDraftPersist !== "function" || !normalizedDraftKey) {
-        return;
+      if (typeof onDraftPersist === "function" && normalizedDraftKey) {
+        onDraftPersist(normalizedDraftKey, promptRef.current);
       }
 
-      onDraftPersist(normalizedDraftKey, promptRef.current);
+      void cleanupMessageAttachmentUploads(attachmentsRef.current);
     },
     [normalizedDraftKey, onDraftPersist]
   );
@@ -4806,17 +5427,80 @@ function InlineIssueComposer({
   useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
   useEffect(() => () => clearVoiceRestartTimer(), [clearVoiceRestartTimer]);
 
+  const handleRemoveAttachment = useCallback((attachmentId) => {
+    setAttachments((current) => {
+      const target = current.find((attachment) => attachment.id === attachmentId) ?? null;
+      const next = current.filter((attachment) => attachment.id !== attachmentId);
+
+      if (target) {
+        void cleanupMessageAttachmentUpload(target);
+      }
+
+      attachmentsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleAttachmentFiles = useCallback(
+    async (files) => {
+      if (!selectedProject || busy || disabled || attachmentBusy) {
+        return;
+      }
+
+      setAttachmentBusy(true);
+
+      try {
+        const result = await appendMessageAttachments(attachmentsRef.current, files, bridgeId);
+        attachmentsRef.current = result.attachments;
+        setAttachments(result.attachments);
+
+        if (result.rejectedCount > 0) {
+          showAlert(`지원하지 않거나 너무 큰 파일 ${result.rejectedCount}개는 제외되었습니다.`, {
+            title: "첨부 파일",
+            tone: "error"
+          });
+        }
+      } finally {
+        setAttachmentBusy(false);
+      }
+    },
+    [attachmentBusy, bridgeId, busy, disabled, selectedProject, showAlert]
+  );
+
+  const handleAttachmentChange = useCallback(
+    async (event) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = "";
+
+      if (files.length === 0) {
+        return;
+      }
+
+      await handleAttachmentFiles(files);
+    },
+    [handleAttachmentFiles]
+  );
+
   const handlePromptSubmit = useCallback(async () => {
     const normalizedPrompt = prompt.trim();
     const normalizedTitle = createThreadTitleFromPrompt(normalizedPrompt);
+    const normalizedAttachments = normalizeMessageAttachments(attachmentsRef.current);
 
-    if (!normalizedPrompt || !selectedProject?.id || disabled || submitInFlightRef.current) {
+    if (
+      (!normalizedPrompt && normalizedAttachments.length === 0) ||
+      !selectedProject?.id ||
+      disabled ||
+      submitInFlightRef.current ||
+      attachmentBusy
+    ) {
       return;
     }
 
     submitInFlightRef.current = true;
 
     setInternalPrompt("");
+    attachmentsRef.current = [];
+    setAttachments([]);
     promptRef.current = "";
     lastHydratedDraftRef.current = {
       key: normalizedDraftKey,
@@ -4829,6 +5513,8 @@ function InlineIssueComposer({
 
     const restorePrompt = () => {
       setInternalPrompt(normalizedPrompt);
+      attachmentsRef.current = normalizedAttachments;
+      setAttachments(normalizedAttachments);
       promptRef.current = normalizedPrompt;
       lastHydratedDraftRef.current = {
         key: normalizedDraftKey,
@@ -4844,7 +5530,8 @@ function InlineIssueComposer({
       const accepted = await onSubmit({
         title: normalizedTitle,
         prompt: normalizedPrompt,
-        project_id: selectedProject.id
+        project_id: selectedProject.id,
+        attachments: normalizedAttachments
       });
 
       if (accepted === false) {
@@ -4856,7 +5543,7 @@ function InlineIssueComposer({
     } finally {
       submitInFlightRef.current = false;
     }
-  }, [disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
+  }, [attachmentBusy, disabled, normalizedDraftKey, onDraftPersist, onSubmit, prompt, selectedProject?.id]);
 
   const handleFormSubmit = useCallback(
     (event) => {
@@ -4882,13 +5569,13 @@ function InlineIssueComposer({
 
       event.preventDefault();
 
-      if (busy || disabled || !selectedProject) {
+      if (busy || disabled || !selectedProject || attachmentBusy) {
         return;
       }
 
       void handlePromptSubmit();
     },
-    [busy, disabled, handlePromptSubmit, selectedProject, shouldPreserveEnterForSoftKeyboard]
+    [attachmentBusy, busy, disabled, handlePromptSubmit, selectedProject, shouldPreserveEnterForSoftKeyboard]
   );
 
   const toggleVoiceCapture = useCallback(() => {
@@ -4910,7 +5597,7 @@ function InlineIssueComposer({
 
   const handleSendPointerDown = useCallback(
     (event) => {
-      if (!selectedProject || busy || disabled) {
+      if (!selectedProject || busy || disabled || attachmentBusy) {
         return;
       }
 
@@ -4926,7 +5613,7 @@ function InlineIssueComposer({
         toggleVoiceCapture();
       }, LONG_PRESS_THRESHOLD_MS);
     },
-    [busy, clearLongPressTimer, disabled, selectedProject, toggleVoiceCapture]
+    [attachmentBusy, busy, clearLongPressTimer, disabled, selectedProject, toggleVoiceCapture]
   );
 
   const handleSendPointerUp = useCallback(() => {
@@ -4954,14 +5641,18 @@ function InlineIssueComposer({
         return;
       }
 
-      if (busy || disabled || !selectedProject) {
+      if (busy || disabled || !selectedProject || attachmentBusy) {
         return;
       }
 
       void handlePromptSubmit();
     },
-    [busy, disabled, handlePromptSubmit, selectedProject, toggleVoiceCapture]
+    [attachmentBusy, busy, disabled, handlePromptSubmit, selectedProject, toggleVoiceCapture]
   );
+
+  const attachmentCount = attachments.length;
+  const actionBusy = busy || attachmentBusy;
+  const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
 
   return (
     <>
@@ -4977,93 +5668,159 @@ function InlineIssueComposer({
           )
         : null}
       <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
-        <div className="flex items-end gap-3">
-          <div
-            data-testid="thread-prompt-surface"
-            onPointerDown={focusPromptTextareaFromSurface}
-            onClick={focusPromptTextareaFromSurface}
-            className="min-w-0 flex-1 cursor-text rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2"
-          >
-            <div className="mb-1 text-[11px] text-slate-500">
-              {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+        <div className="space-y-2.5">
+          {attachmentCount > 0 ? (
+            <div className="overflow-x-auto pb-1">
+              <div className="flex min-w-max gap-2">
+                {attachments.map((attachment) => {
+                  const hasImagePreview = attachment.kind === "image" && attachment.preview_url;
+
+                  return (
+                    <div
+                      key={attachment.id}
+                      className="flex min-w-[11rem] max-w-[14rem] items-center gap-2 rounded-2xl border border-white/10 bg-slate-900/85 px-2.5 py-2.5 text-white"
+                    >
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/20">
+                        {hasImagePreview ? (
+                          <img src={attachment.preview_url} alt={attachment.name} className="h-full w-full object-cover" />
+                        ) : (
+                          <MessageAttachmentBadge attachment={attachment} compact />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{attachment.name}</p>
+                        <p className="mt-0.5 text-[11px] text-slate-400">
+                          {formatMessageAttachmentSize(attachment.size_bytes)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAttachment(attachment.id)}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/10 text-sm text-white/80"
+                        aria-label={`${attachment.name} 제거`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <textarea
-              rows="1"
-              ref={textareaRef}
-              data-testid="thread-prompt-input"
-              value={prompt}
-              onChange={handlePromptChange}
-              onKeyDown={handlePromptKeyDown}
-              onCompositionStart={() => {
-                isPromptComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                isPromptComposingRef.current = false;
-              }}
-              onFocus={handlePromptFocus}
-              onBlur={handlePromptBlur}
-              placeholder=""
-              disabled={!selectedProject || busy || disabled}
-              enterKeyHint="enter"
-              className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
-            />
-          </div>
-          {onStop ? (
+          ) : null}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={MESSAGE_ATTACHMENT_ACCEPT}
+            className="hidden"
+            onChange={handleAttachmentChange}
+          />
+
+          <div className="flex items-end gap-3">
             <button
               type="button"
-              onClick={() => void onStop()}
-              disabled={stopBusy}
-              className="flex h-16 min-w-[5.25rem] shrink-0 items-center justify-center rounded-full bg-rose-500 px-4 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={actionBusy || !selectedProject || disabled || attachmentCount >= MAX_MESSAGE_ATTACHMENTS}
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/10 bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="첨부 파일 추가"
+              title="이미지 또는 텍스트 파일 첨부"
             >
-              {stopBusy ? (
-                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              {attachmentBusy ? (
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
               ) : (
-                stopLabel
-              )}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onPointerDown={handleSendPointerDown}
-              onPointerUp={handleSendPointerUp}
-              onPointerLeave={handleSendPointerLeave}
-              onPointerCancel={handleSendPointerLeave}
-              onClick={handleSendClick}
-              onContextMenu={(event) => event.preventDefault()}
-              disabled={busy || !selectedProject || disabled}
-              aria-pressed={isRecording}
-              className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
-                isRecording
-                  ? "border-rose-500 bg-rose-500/20 text-rose-50"
-                  : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
-              } disabled:cursor-not-allowed disabled:opacity-45`}
-            >
-              {isRecording ? (
-                <>
-                  <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
-                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                    />
-                    <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                    <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                </>
-              ) : busy ? (
-                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              ) : (
-                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
                 </svg>
               )}
             </button>
-          )}
-          
-      </div>
-    </form>
+
+            <div
+              data-testid="thread-prompt-surface"
+              onPointerDown={focusPromptTextareaFromSurface}
+              onClick={focusPromptTextareaFromSurface}
+              className="min-w-0 flex-1 cursor-text rounded-[1.35rem] border border-white/10 bg-slate-900 px-3 py-2"
+            >
+              <div className="mb-1 text-[11px] text-slate-500">
+                {selectedProject ? `${selectedProject.name} · ${label ?? "프롬프트"}` : "프로젝트를 선택해 주세요"}
+              </div>
+              <textarea
+                rows="1"
+                ref={textareaRef}
+                data-testid="thread-prompt-input"
+                value={prompt}
+                onChange={handlePromptChange}
+                onKeyDown={handlePromptKeyDown}
+                onCompositionStart={() => {
+                  isPromptComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  isPromptComposingRef.current = false;
+                }}
+                onFocus={handlePromptFocus}
+                onBlur={handlePromptBlur}
+                placeholder=""
+                disabled={!selectedProject || actionBusy || disabled}
+                enterKeyHint="enter"
+                className="min-h-[24px] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-sm leading-5 text-white outline-none ring-0 focus:ring-0"
+              />
+            </div>
+            {onStop ? (
+              <button
+                type="button"
+                onClick={() => void onStop()}
+                disabled={stopBusy}
+                className="flex h-16 min-w-[5.25rem] shrink-0 items-center justify-center rounded-full bg-rose-500 px-4 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {stopBusy ? (
+                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                ) : (
+                  stopLabel
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onPointerDown={handleSendPointerDown}
+                onPointerUp={handleSendPointerUp}
+                onPointerLeave={handleSendPointerLeave}
+                onPointerCancel={handleSendPointerLeave}
+                onClick={handleSendClick}
+                onContextMenu={(event) => event.preventDefault()}
+                disabled={!canSubmit}
+                aria-pressed={isRecording}
+                className={`relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-2 text-lg transition ${
+                  isRecording
+                    ? "border-rose-500 bg-rose-500/20 text-rose-50"
+                    : "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+                } disabled:cursor-not-allowed disabled:opacity-45`}
+              >
+                {isRecording ? (
+                  <>
+                    <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
+                    <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                      />
+                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
+                  </>
+                ) : actionBusy ? (
+                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                ) : (
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path d="M20 4L4 12l6 2 2 6 8-16z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                  </svg>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      </form>
     </>
   );
 }
@@ -6039,6 +6796,7 @@ function TodoTransferSheet({
 
 function TodoChatDetail({
   chat,
+  bridgeId = "",
   messages,
   loading,
   error,
@@ -6058,12 +6816,41 @@ function TodoChatDetail({
   const fakeProject = useMemo(() => ({ id: TODO_SCOPE_ID, name: "ToDo" }), []);
   const safeMessages = Array.isArray(messages) ? messages : [];
   const scrollRef = useRef(null);
+  const [previewAttachment, setPreviewAttachment] = useState(null);
+  const { alert: showAlert } = useMobileFeedback();
   useTouchScrollBoundaryLock(scrollRef);
   const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
   const rootClassName = standalone
     ? "telegram-screen flex min-h-0 flex-col overflow-hidden"
     : "telegram-screen flex h-full min-h-0 flex-col overflow-hidden";
   const contentWidthClassName = standalone ? "max-w-3xl" : "max-w-none";
+  const handleOpenAttachment = useCallback((attachment) => {
+    const normalizedAttachment = normalizeMessageAttachment(attachment);
+
+    if (!normalizedAttachment) {
+      return;
+    }
+
+    if ((normalizedAttachment.kind === "image" && normalizedAttachment.preview_url) || normalizedAttachment.text_content) {
+      setPreviewAttachment(normalizedAttachment);
+      return;
+    }
+
+    if (normalizedAttachment.download_url && typeof window !== "undefined") {
+      const opened = window.open(normalizedAttachment.download_url, "_blank", "noopener,noreferrer");
+
+      if (!opened) {
+        window.location.href = normalizedAttachment.download_url;
+      }
+
+      return;
+    }
+
+    showAlert("이 첨부는 현재 열 수 없습니다.", {
+      tone: "error",
+      title: "첨부 미리보기"
+    });
+  }, [showAlert]);
 
   return (
     <div className={rootClassName} style={rootStyle}>
@@ -6146,6 +6933,7 @@ function TodoChatDetail({
             >
               <MessageBubble align="right" tone="brand" title="메모" meta={formatRelativeTime(message.updated_at)}>
                 <RichMessageContent content={message.content} tone="brand" />
+                <MessageAttachmentPreview attachments={message.attachments} bubbleTone="brand" onOpenAttachment={handleOpenAttachment} />
               </MessageBubble>
             </button>
           ))}
@@ -6168,8 +6956,9 @@ function TodoChatDetail({
         <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
             busy={submitBusy}
+            bridgeId={bridgeId}
             selectedProject={fakeProject}
-            onSubmit={({ prompt }) => onSubmitMessage(prompt)}
+            onSubmit={onSubmitMessage}
             label="메모"
             draftKey={composerDraftKey}
             draftValue={composerDraft}
@@ -6177,6 +6966,8 @@ function TodoChatDetail({
           />
         </div>
       </div>
+
+      <AttachmentPreviewDialog attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
     </div>
   );
 }
@@ -7225,6 +8016,7 @@ function RunTimeline({ entries }) {
 function ThreadDetail({
   thread,
   project,
+  bridgeId = "",
   messages,
   issues = [],
   historyLoading = false,
@@ -7274,6 +8066,7 @@ function ThreadDetail({
   const [retryingIssueId, setRetryingIssueId] = useState("");
   const [deletingIssueId, setDeletingIssueId] = useState("");
   const [activeMessageAction, setActiveMessageAction] = useState(null);
+  const [previewAttachment, setPreviewAttachment] = useState(null);
   const { alert: showAlert } = useMobileFeedback();
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
@@ -7324,12 +8117,16 @@ function ThreadDetail({
             : "user";
       const content = String(message.content ?? "").trim();
       const timestamp = message.timestamp ?? thread.updated_at ?? thread.created_at ?? new Date().toISOString();
+      const issueAttachments =
+        role === "user" && message.issue_id ? issueById.get(message.issue_id)?.attachments ?? [] : [];
+      const attachments = normalizeMessageAttachments(message.attachments?.length ? message.attachments : issueAttachments);
       const base = {
         id: message.id ?? `${role}-${index}`,
         role,
         content,
         timestamp,
-        issueId: message.issue_id ?? null
+        issueId: message.issue_id ?? null,
+        attachments
       };
 
       if (role === "system") {
@@ -7364,7 +8161,7 @@ function ThreadDetail({
     });
 
     return normalized;
-  }, [messages, thread?.created_at, thread?.updated_at]);
+  }, [issueById, messages, thread?.created_at, thread?.updated_at]);
   const conversationTimeline = useMemo(() => {
     const fallbackTimestamp = thread?.updated_at ?? thread?.created_at ?? new Date().toISOString();
     const safeMessages = Array.isArray(messages) ? messages : [];
@@ -7481,10 +8278,40 @@ function ThreadDetail({
   const visibleChatTimelineSignature = useMemo(
     () =>
       visibleChatTimeline
-        .map((entry) => `${entry.id}:${entry.timestamp ?? ""}:${entry.role}:${String(entry.content ?? "").length}`)
+        .map(
+          (entry) =>
+            `${entry.id}:${entry.timestamp ?? ""}:${entry.role}:${String(entry.content ?? "").length}:${entry.attachments?.length ?? 0}`
+        )
         .join("|"),
     [visibleChatTimeline]
   );
+  const handleOpenAttachment = useCallback((attachment) => {
+    const normalizedAttachment = normalizeMessageAttachment(attachment);
+
+    if (!normalizedAttachment) {
+      return;
+    }
+
+    if ((normalizedAttachment.kind === "image" && normalizedAttachment.preview_url) || normalizedAttachment.text_content) {
+      setPreviewAttachment(normalizedAttachment);
+      return;
+    }
+
+    if (normalizedAttachment.download_url && typeof window !== "undefined") {
+      const opened = window.open(normalizedAttachment.download_url, "_blank", "noopener,noreferrer");
+
+      if (!opened) {
+        window.location.href = normalizedAttachment.download_url;
+      }
+
+      return;
+    }
+
+    showAlert("이 첨부는 현재 열 수 없습니다.", {
+      tone: "error",
+      title: "첨부 미리보기"
+    });
+  }, [showAlert]);
   const visibleContentSignature = useMemo(() => {
     if (messageFilter === "runs") {
       return runTimeline.map((entry) => `${entry.id}:${entry.timestamp ?? ""}`).join("|");
@@ -8281,6 +9108,7 @@ function ThreadDetail({
                       }
                       tone={message.tone}
                     />
+                    <MessageAttachmentPreview attachments={message.attachments} bubbleTone={message.tone} onOpenAttachment={handleOpenAttachment} />
                   </MessageBubble>
                 </div>
               );
@@ -8446,6 +9274,7 @@ function ThreadDetail({
         <div className={`mx-auto w-full ${contentWidthClassName}`}>
           <InlineIssueComposer
             busy={submitBusy}
+            bridgeId={bridgeId}
             selectedProject={project}
             onSubmit={onSubmitPrompt}
             label={isDraft ? "첫 프롬프트" : "프롬프트"}
@@ -8461,6 +9290,8 @@ function ThreadDetail({
           />
         </div>
       </div>
+
+      <AttachmentPreviewDialog attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
     </div>
   );
 }
@@ -10212,6 +11043,7 @@ function MainPage({
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <TodoChatDetail
           chat={selectedTodoChat ?? todoChatDetail?.chat ?? null}
+          bridgeId={selectedBridgeId}
           messages={todoChatMessages}
           loading={todoChatLoading}
           error={todoChatError}
@@ -10358,6 +11190,7 @@ function MainPage({
                 selectedTodoChatId ? (
                   <TodoChatDetail
                     chat={selectedTodoChat ?? todoChatDetail?.chat ?? null}
+                    bridgeId={selectedBridgeId}
                     messages={todoChatMessages}
                     loading={todoChatLoading}
                     error={todoChatError}
@@ -10396,6 +11229,7 @@ function MainPage({
                 <ThreadDetail
                   thread={resolvedThread}
                   project={threadProject}
+                  bridgeId={selectedBridgeId}
                   messages={resolvedThread ? threadDetailMessages : []}
                   issues={resolvedThread ? threadDetail?.issues ?? [] : []}
                   historyLoading={threadDetail?.history_loading ?? false}
@@ -10414,7 +11248,7 @@ function MainPage({
                   threadInstructionSupported={threadInstructionSupported}
                   onSubmitPrompt={(payload) => {
                     if (resolvedThread?.id) {
-                      return onAppendThreadMessage(resolvedThread.id, payload.prompt);
+                      return onAppendThreadMessage(resolvedThread.id, payload);
                     }
 
                     return onCreateThread(payload, { stayOnThread: true });
@@ -10446,6 +11280,7 @@ function MainPage({
         <ThreadDetail
           thread={resolvedThread}
           project={threadProject}
+          bridgeId={selectedBridgeId}
           messages={resolvedThread ? threadDetailMessages : []}
           issues={resolvedThread ? threadDetail?.issues ?? [] : []}
           historyLoading={threadDetail?.history_loading ?? false}
@@ -10464,7 +11299,7 @@ function MainPage({
           threadInstructionSupported={threadInstructionSupported}
           onSubmitPrompt={(payload) => {
             if (resolvedThread?.id) {
-              return onAppendThreadMessage(resolvedThread.id, payload.prompt);
+              return onAppendThreadMessage(resolvedThread.id, payload);
             }
 
             return onCreateThread(payload, { stayOnThread: true });
@@ -14102,7 +14937,7 @@ export default function App() {
     todoChats
   ]);
 
-  const handleSubmitTodoMessage = useCallback(async (content) => {
+  const handleSubmitTodoMessage = useCallback(async (payload = {}) => {
     if (!session?.loginId || !selectedBridgeId || !selectedTodoChatId) {
       return false;
     }
@@ -14114,7 +14949,10 @@ export default function App() {
         `/api/todo/chats/${encodeURIComponent(selectedTodoChatId)}/messages?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`,
         {
           method: "POST",
-          body: JSON.stringify({ content })
+          body: JSON.stringify({
+            content: String(payload.prompt ?? payload.content ?? "").trim(),
+            attachments: normalizeMessageAttachments(payload.attachments)
+          })
         }
       );
 
@@ -15011,10 +15849,12 @@ export default function App() {
     }
   };
 
-  const handleAppendThreadMessage = async (threadId, prompt) => {
+  const handleAppendThreadMessage = async (threadId, payload = {}) => {
     if (!session?.loginId || !selectedBridgeId || !threadId) {
       return false;
     }
+
+    const prompt = String(payload.prompt ?? "").trim();
 
     setThreadBusy(true);
 
@@ -15025,6 +15865,7 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           prompt,
+          attachments: normalizeMessageAttachments(payload.attachments),
           source_app_id: ISSUE_SOURCE_APP_ID
         })
       };

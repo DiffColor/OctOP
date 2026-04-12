@@ -1734,6 +1734,7 @@ function serializeIssueAttachmentForClient(attachment = {}) {
     mime_type: normalized.mime_type,
     size_bytes: normalized.size_bytes,
     preview_url: normalized.preview_url,
+    download_url: normalized.download_url,
     text_content: normalized.text_content,
     text_truncated: normalized.text_truncated
   };
@@ -1974,6 +1975,7 @@ function normalizeTodoMessage(loginId, message = {}) {
     bridge_id: BRIDGE_ID,
     login_id: sanitizeUserId(message.login_id ?? loginId),
     content: String(message.content ?? "").trim(),
+    attachments: normalizeIssueAttachments(message.attachments),
     status: String(message.status ?? "open").trim() || "open",
     moved_to_project_id: String(message.moved_to_project_id ?? "").trim() || null,
     moved_to_thread_id: String(message.moved_to_thread_id ?? "").trim() || null,
@@ -2098,9 +2100,24 @@ function syncTodoChatSnapshot(chatId) {
 
   const openMessages = listTodoMessagesByChatId(chatId).filter((message) => message.status === "open");
   const latestMessage = openMessages.at(-1) ?? null;
+  const latestMessagePreview = (() => {
+    const content = String(latestMessage?.content ?? "").trim();
+
+    if (content) {
+      return content;
+    }
+
+    const attachmentCount = normalizeIssueAttachments(latestMessage?.attachments).length;
+
+    if (attachmentCount > 0) {
+      return attachmentCount === 1 ? "첨부 파일 1개" : `첨부 파일 ${attachmentCount}개`;
+    }
+
+    return "";
+  })();
   const nextChat = {
     ...chat,
-    last_message: latestMessage?.content ?? "",
+    last_message: latestMessagePreview,
     message_count: openMessages.length,
     updated_at: latestMessage?.updated_at ?? chat.updated_at
   };
@@ -3993,13 +4010,14 @@ async function createTodoMessage(userId, payload = {}) {
   const normalized = sanitizeUserId(userId);
   const chatId = String(payload.todo_chat_id ?? payload.todoChatId ?? payload.chat_id ?? payload.chatId ?? "").trim();
   const content = String(payload.content ?? "").trim();
+  const attachments = normalizeIssueAttachments(payload.attachments);
 
   if (!chatId) {
     throw new Error("메시지를 저장할 ToDo 채팅 id가 필요합니다.");
   }
 
-  if (!content) {
-    throw new Error("내용을 입력해 주세요.");
+  if (!content && attachments.length === 0) {
+    throw new Error("내용 또는 첨부를 입력해 주세요.");
   }
 
   const chat = todoChatsById.get(chatId);
@@ -4012,6 +4030,7 @@ async function createTodoMessage(userId, payload = {}) {
     id: createTodoMessageId(),
     todo_chat_id: chatId,
     content,
+    attachments,
     status: "open"
   });
 
@@ -4044,10 +4063,6 @@ async function updateTodoMessage(userId, payload = {}) {
     throw new Error("수정할 ToDo 메시지 id가 필요합니다.");
   }
 
-  if (!content) {
-    throw new Error("내용을 입력해 주세요.");
-  }
-
   const current = todoMessagesById.get(messageId);
 
   if (!current || current.deleted_at || current.login_id !== normalized) {
@@ -4058,9 +4073,22 @@ async function updateTodoMessage(userId, payload = {}) {
     throw new Error("이동되지 않은 ToDo 메시지만 수정할 수 있습니다.");
   }
 
+  const attachments = Array.isArray(payload.attachments)
+    ? normalizeIssueAttachmentsWithExisting(payload.attachments, current.attachments)
+    : normalizeIssueAttachments(current.attachments);
+
+  if (!content && attachments.length === 0) {
+    throw new Error("내용 또는 첨부를 입력해 주세요.");
+  }
+
+  if (Array.isArray(payload.attachments)) {
+    await cleanupRemovedIssueAttachments(current.attachments, attachments);
+  }
+
   const next = normalizeTodoMessage(normalized, {
     ...current,
     content,
+    attachments,
     updated_at: now()
   });
 
@@ -4095,6 +4123,14 @@ async function deleteTodoMessage(userId, payload = {}) {
 
   if (!current || current.deleted_at || current.login_id !== normalized) {
     throw new Error("ToDo 메시지를 찾을 수 없습니다.");
+  }
+
+  if (current.status !== "moved") {
+    await cleanupIssueAttachmentResources(messageId, {
+      attachments: current.attachments,
+      removeRemote: true,
+      forgetIssue: true
+    });
   }
 
   const next = normalizeTodoMessage(normalized, {
@@ -4179,10 +4215,12 @@ async function transferTodoMessage(userId, payload = {}) {
     targetThread = created.thread;
   }
 
+  const transferPrompt = String(message.content ?? "").trim() || "첨부 파일을 확인해 주세요.";
   const createdIssueResult = await createThreadIssue(normalized, {
     thread_id: targetThread.id,
-    title: createIssueTitle({ prompt: message.content }),
-    prompt: message.content
+    title: createIssueTitle({ prompt: transferPrompt }),
+    prompt: transferPrompt,
+    attachments: message.attachments ?? []
   });
   const createdIssue = createdIssueResult?.issue ?? null;
   const createdIssueId = createdIssue?.id ?? null;

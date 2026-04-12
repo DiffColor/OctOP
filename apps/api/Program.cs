@@ -655,7 +655,8 @@ app.MapPost("/api/todo/chats/{chatId}/messages", async (
       user_id = userId,
       bridge_id = bridgeId,
       todo_chat_id = chatId,
-      content = body?["content"]?.GetValue<string>()
+      content = body?["content"]?.GetValue<string>(),
+      attachments = body?["attachments"]
     },
     cancellationToken
   );
@@ -696,7 +697,8 @@ app.MapPatch("/api/todo/messages/{messageId}", async (
       user_id = userId,
       bridge_id = bridgeId,
       todo_message_id = messageId,
-      content = body?["content"]?.GetValue<string>()
+      content = body?["content"]?.GetValue<string>(),
+      attachments = body?["attachments"]
     },
     cancellationToken
   );
