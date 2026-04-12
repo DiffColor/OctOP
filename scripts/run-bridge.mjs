@@ -1,16 +1,21 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { applyAppServerRuntimeEnv } from "./app-server-runtime-state.mjs";
 import { applyBridgeCliArgs, loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
 
 const workspaceRoot = process.cwd();
-const env = await resolveBridgeRuntimeEnv(
-  applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2))
+const env = applyAppServerRuntimeEnv(
+  await resolveBridgeRuntimeEnv(
+    applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2))
+  ),
+  workspaceRoot
 );
 
 console.log("OctOP bridge launcher");
 console.log(`- bridge: http://${env.OCTOP_BRIDGE_HOST}:${env.OCTOP_BRIDGE_PORT}`);
 console.log(`- nats: ${env.OCTOP_NATS_URL}`);
 console.log(`- app-server: ${env.OCTOP_APP_SERVER_WS_URL}`);
+console.log(`- app-server-runtime-status: ${env.OCTOP_APP_SERVER_RUNTIME_STATUS_PATH}`);
 console.log(`- bridge-id: ${env.OCTOP_BRIDGE_ID}`);
 console.log(`- device: ${env.OCTOP_BRIDGE_DEVICE_NAME}`);
 console.log(`- owner-login: ${env.OCTOP_BRIDGE_OWNER_LOGIN_ID}`);

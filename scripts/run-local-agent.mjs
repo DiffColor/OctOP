@@ -1,15 +1,24 @@
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import {
+  createAppServerRuntimeTracker,
+  readAppServerRuntimeSnapshot
+} from "./app-server-runtime-state.mjs";
 import { applyBridgeCliArgs, loadOctopEnv, resolveBridgeRuntimeEnv } from "./shared-env.mjs";
 import {
   evaluateBridgeAppServerRecovery
 } from "./local-agent-health.mjs";
 
 const workspaceRoot = process.cwd();
-const env = await prepareLocalAgentEnv(await resolveBridgeRuntimeEnv(
-  applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2))
-));
+const runtimeTracker = createAppServerRuntimeTracker({
+  env: await prepareLocalAgentEnv(await resolveBridgeRuntimeEnv(
+    applyBridgeCliArgs(loadOctopEnv(workspaceRoot), process.argv.slice(2))
+  )),
+  workspaceRoot,
+  launcher: "run-local-agent"
+});
+const env = runtimeTracker.env;
 const bridgeEnv = {
   ...env,
   OCTOP_APP_SERVER_AUTOSTART: "false"
@@ -261,17 +270,29 @@ function startAppServer() {
   appServerStartedAt = Date.now();
   pendingControlledAppServerRestartReason = "";
   resetAppServerHealthFailures();
+  runtimeTracker.markProcessLaunching({ command: env.OCTOP_APP_SERVER_COMMAND });
   appServerProcess = spawn(env.OCTOP_APP_SERVER_COMMAND, {
     cwd: workspaceRoot,
     env,
     stdio: "inherit",
     shell: true
   });
+  runtimeTracker.attachChild(appServerProcess, {
+    command: env.OCTOP_APP_SERVER_COMMAND
+  });
 
   appServerProcess.on("exit", (code, signal) => {
     const controlledRestartReason = pendingControlledAppServerRestartReason;
     const fullServiceRestartReason = pendingFullServiceRestartReason;
     pendingControlledAppServerRestartReason = "";
+    runtimeTracker.markProcessExit({
+      code,
+      signal,
+      reason:
+        controlledRestartReason ||
+        fullServiceRestartReason ||
+        (signal ? `app-server exited via ${signal}` : "")
+    });
 
     if (isShuttingDown) {
       appServerProcess = null;
@@ -319,6 +340,7 @@ function startAppServer() {
       return;
     }
 
+    runtimeTracker.markProcessError(error);
     console.error(`[OctOP] app-server process error: ${error.message}`);
   });
 }
@@ -403,8 +425,13 @@ async function monitorBridgeHealth() {
 
   try {
     const health = await readBridgeHealth();
+    const runtimeSnapshot = readAppServerRuntimeSnapshot({
+      env,
+      workspaceRoot
+    });
     const evaluation = evaluateBridgeAppServerRecovery({
       health,
+      runtimeSnapshot,
       consecutiveFailures: appServerHealthFailureCount,
       failureThreshold: APP_SERVER_HEALTHCHECK_FAILURE_THRESHOLD
     });
