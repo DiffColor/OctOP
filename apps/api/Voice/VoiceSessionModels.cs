@@ -27,3 +27,8 @@ public sealed class VoiceToolInvocationRequest
   public string? ProjectId { get; init; }
   public string? ThreadId { get; init; }
 }
+
+public sealed class VoiceNarrationRequest
+{
+  public string? Text { get; init; }
+}

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  createRealtimeNarrationEvent,
   DEFAULT_VOICE_LEVEL_HISTORY,
   describeVoiceError,
   parseRealtimeJson,
@@ -74,6 +73,9 @@ export default function useRealtimeVoiceSession({
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const narrationAudioRef = useRef(null);
+  const narrationObjectUrlRef = useRef("");
+  const narrationAbortControllerRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const analyserDataRef = useRef(null);
@@ -107,6 +109,26 @@ export default function useRealtimeVoiceSession({
       };
     });
   }, [latestAssistantText, latestUserText]);
+
+  const stopNarrationPlayback = useCallback(() => {
+    narrationAbortControllerRef.current?.abort?.();
+    narrationAbortControllerRef.current = null;
+
+    const narrationAudio = narrationAudioRef.current;
+
+    if (narrationAudio) {
+      narrationAudio.onended = null;
+      narrationAudio.onerror = null;
+      narrationAudio.pause?.();
+      narrationAudio.src = "";
+    }
+
+    if (narrationObjectUrlRef.current && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(narrationObjectUrlRef.current);
+    }
+
+    narrationObjectUrlRef.current = "";
+  }, []);
 
   const refreshInputDevices = useCallback(async (preferredDeviceId = "") => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -231,6 +253,8 @@ export default function useRealtimeVoiceSession({
       remoteAudioRef.current.srcObject = null;
     }
 
+    stopNarrationPlayback();
+
     peerConnectionRef.current = null;
     dataChannelRef.current = null;
     localStreamRef.current = null;
@@ -256,7 +280,7 @@ export default function useRealtimeVoiceSession({
     }));
 
     disconnectingRef.current = false;
-  }, []);
+  }, [stopNarrationPlayback]);
 
   useEffect(() => {
     if (!enabled) {
@@ -331,25 +355,91 @@ export default function useRealtimeVoiceSession({
   const narrateAssistantText = useCallback(async (text) => {
     const narration = String(text ?? "").trim();
 
-    if (!narration) {
+    if (!narration || !loginId || !bridgeId) {
       return false;
     }
 
-    const dataChannel = dataChannelRef.current;
-
-    if (!dataChannel || dataChannel.readyState !== "open") {
-      return false;
-    }
+    stopNarrationPlayback();
 
     assistantTranscriptBufferRef.current = narration;
     setState((current) => ({
       ...current,
       latestAssistantTranscript: narration,
+      isResponding: true,
       error: ""
     }));
-    dataChannel.send(JSON.stringify(createRealtimeNarrationEvent(narration)));
+
+    const abortController = new AbortController();
+    narrationAbortControllerRef.current = abortController;
+    const response = await fetch(
+      `/api/voice/narrations?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+      {
+        method: "POST",
+        signal: abortController.signal,
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: narration
+        })
+      }
+    );
+    const responseText = await response.text();
+    const payload = parseRealtimeJson(responseText);
+
+    if (!response.ok) {
+      const message =
+        payload?.error ??
+        payload?.message ??
+        payload?.detail ??
+        `음성 응답 오디오를 생성하지 못했습니다. (${response.status})`;
+      throw new Error(message);
+    }
+
+    const audioBase64 = String(payload?.audio_base64 ?? "").trim();
+
+    if (!audioBase64) {
+      throw new Error("음성 응답 오디오 데이터가 비어 있습니다.");
+    }
+
+    const contentType = String(payload?.content_type ?? "audio/mpeg").trim() || "audio/mpeg";
+    const binary = typeof window !== "undefined" && typeof window.atob === "function" ? window.atob(audioBase64) : atob(audioBase64);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+    narrationObjectUrlRef.current = objectUrl;
+
+    const narrationAudio = narrationAudioRef.current ?? new Audio();
+    narrationAudio.autoplay = true;
+    narrationAudio.playsInline = true;
+    narrationAudioRef.current = narrationAudio;
+    narrationAudio.onended = () => {
+      setState((current) => ({
+        ...current,
+        isResponding: false
+      }));
+    };
+    narrationAudio.onerror = () => {
+      setState((current) => ({
+        ...current,
+        isResponding: false,
+        error: "음성 응답 오디오를 재생하지 못했습니다."
+      }));
+    };
+    narrationAudio.src = objectUrl;
+    await narrationAudio.play();
+    setState((current) => ({
+      ...current,
+      isResponding: false
+    }));
     return true;
-  }, []);
+  }, [bridgeId, loginId, stopNarrationPlayback]);
 
   const handleRealtimeEvent = useCallback(
     async (event) => {
@@ -435,55 +525,6 @@ export default function useRealtimeVoiceSession({
           return;
         }
 
-        case "response.created": {
-          assistantTranscriptBufferRef.current = "";
-          setState((current) => ({
-            ...current,
-            isResponding: true
-          }));
-          return;
-        }
-
-        case "response.output_audio_transcript.delta":
-        case "response.output_text.delta": {
-          const delta = String(event?.delta ?? "");
-
-          if (!delta) {
-            return;
-          }
-
-          assistantTranscriptBufferRef.current += delta;
-          setState((current) => ({
-            ...current,
-            latestAssistantTranscript: assistantTranscriptBufferRef.current
-          }));
-          return;
-        }
-
-        case "response.output_audio_transcript.done":
-        case "response.output_text.done": {
-          const transcript = String(event?.transcript ?? event?.text ?? "").trim();
-
-          if (!transcript) {
-            return;
-          }
-
-          assistantTranscriptBufferRef.current = transcript;
-          setState((current) => ({
-            ...current,
-            latestAssistantTranscript: transcript
-          }));
-          return;
-        }
-
-        case "response.done": {
-          setState((current) => ({
-            ...current,
-            isResponding: false
-          }));
-          return;
-        }
-
         case "error": {
           setState((current) => ({
             ...current,
@@ -521,6 +562,10 @@ export default function useRealtimeVoiceSession({
         }
       })
       .catch((error) => {
+        if (String(error?.name ?? "").trim() === "AbortError") {
+          return;
+        }
+
         setState((current) => ({
           ...current,
           error: describeVoiceError(error)

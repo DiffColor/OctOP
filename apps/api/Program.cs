@@ -35,6 +35,7 @@ builder.Services.AddSingleton<PushSubscriptionService>();
 builder.Services.AddSingleton<WebPushNotificationService>();
 builder.Services.AddSingleton<PushNotificationTemplateService>();
 builder.Services.AddSingleton<VoicePromptBuilder>();
+builder.Services.AddSingleton<VoiceNarrationService>();
 builder.Services.AddSingleton<VoiceSessionService>();
 builder.Services.AddSingleton<VoiceToolInvocationService>();
 builder.Services.AddHostedService<PushNotificationEventMonitorService>();
@@ -241,6 +242,71 @@ app.MapPost("/api/voice/sessions", async (
         ["ok"] = false,
         ["error"] = "failed to create OpenAI realtime client secret",
         ["code"] = "voice_session_openai_error",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status502BadGateway);
+  }
+});
+
+app.MapPost("/api/voice/narrations", async (
+  HttpContext httpContext,
+  OctopStore octopStore,
+  VoiceNarrationService voiceNarrationService,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  try
+  {
+    var request = await httpContext.Request.ReadFromJsonAsync<VoiceNarrationRequest>(cancellationToken: cancellationToken)
+      ?? new VoiceNarrationRequest();
+    var narrationPayload = await voiceNarrationService.CreateNarrationAsync(request, cancellationToken);
+
+    return Results.Text(
+      narrationPayload.ToJsonString(),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status200OK);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_narration_disabled", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"voice narration disabled\",\"code\":\"voice_narration_disabled\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_api_key_missing", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"OPENAI_API_KEY is required\",\"code\":\"voice_session_api_key_missing\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_narration_text_required", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"narration text is required\",\"code\":\"voice_narration_text_required\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_narration_openai_error:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_narration_openai_error:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to create OpenAI voice narration",
+        ["code"] = "voice_narration_openai_error",
         ["detail"] = detail
       }),
       "application/json; charset=utf-8",

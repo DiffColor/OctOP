@@ -199,6 +199,7 @@ async function installVoiceBrowserMocks(page) {
     window.__voiceTest = {
       getUserMediaCalls: [],
       realtimeFetchCalls: [],
+      narrationRequests: [],
       sentEvents: [],
       audioInputDevices: [
         { deviceId: 'default', kind: 'audioinput', label: '기본 마이크' },
@@ -401,6 +402,7 @@ async function mockMobileApi(page, options = {}) {
   const voiceSessionRequests = options.voiceSessionRequests ?? [];
   const createdIssues = options.createdIssues ?? [];
   const startedIssueRequests = options.startedIssueRequests ?? [];
+  const narrationRequests = options.narrationRequests ?? [];
   const voiceSessionFailure = options.voiceSessionFailure ?? null;
   const authoritativeResponseText = String(options.authoritativeAssistantContent ?? "").trim();
   let voiceIssueSequence = 0;
@@ -627,6 +629,23 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
+    if (pathname === '/api/voice/narrations' && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      narrationRequests.push(payload);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          audio_base64: 'SUQzAwAAAAAA',
+          content_type: 'audio/mpeg',
+          voice: 'alloy',
+          model: 'gpt-4o-mini-tts'
+        })
+      });
+      return;
+    }
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -661,6 +680,7 @@ test.afterAll(async () => {
 
 test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const voiceSessionRequests = [];
+  const narrationRequests = [];
   const createdIssues = [];
   const startedIssueRequests = [];
   const expectedVoiceText = '요약. 현재 상태를 정리했습니다. 검증 결과. 음성 응답은 app-server 기준으로 정리되었습니다. 다음 단계. 이어서 확인해 주세요.';
@@ -669,6 +689,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await installVoiceBrowserMocks(page);
   await mockMobileApi(page, {
     voiceSessionRequests,
+    narrationRequests,
     createdIssues,
     startedIssueRequests,
     authoritativeAssistantContent
@@ -781,17 +802,13 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(expectedVoiceText);
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('apps/mobile/src/App.jsx');
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('console.log');
+  await expect.poll(() => narrationRequests.length).toBe(1);
+  expect(narrationRequests[0].text).toBe(expectedVoiceText);
 
   const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
   const functionCallOutputs = sentEvents.filter((event) => event?.type === 'conversation.item.create');
-  const narrationEvents = sentEvents.filter(
-    (event) => event?.type === 'response.create' && event?.response?.metadata?.source === 'app_server_authoritative_response'
-  );
   expect(functionCallOutputs).toHaveLength(0);
-  expect(narrationEvents.length).toBeGreaterThanOrEqual(1);
-  expect(narrationEvents.at(-1)?.response?.instructions).toContain(expectedVoiceText);
-  expect(narrationEvents.at(-1)?.response?.instructions).not.toContain('apps/mobile/src/App.jsx');
-  expect(narrationEvents.at(-1)?.response?.instructions).not.toContain('console.log');
+  expect(sentEvents.filter((event) => event?.type === 'response.create')).toHaveLength(0);
 
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
