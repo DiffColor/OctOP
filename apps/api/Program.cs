@@ -110,7 +110,11 @@ var defaultCorsOrigins = new[]
   "https://octop-admin.pages.dev",
   "https://octop.turtlelab.app",
   "https://octop-mobile.pages.dev",
-  "https://octop-m.turtlelab.app"
+  "https://octop-m.turtlelab.app",
+  "https://octop-admin.ilycode.app",
+  "https://octop.ilycode.app",
+  "https://octop-mobile.ilycode.app",
+  "https://octop-m.ilycode.app"
 };
 var configuredCorsOrigins = (Environment.GetEnvironmentVariable("OCTOP_DASHBOARD_ORIGIN") ?? string.Empty)
   .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
