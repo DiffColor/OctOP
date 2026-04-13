@@ -32,7 +32,14 @@ export default function useRealtimeVoiceSession({
   project = null,
   thread = null,
   latestUserText = "",
-  latestAssistantText = ""
+  latestAssistantText = "",
+  projectWorkspacePath = "",
+  projectBaseInstructions = "",
+  projectDeveloperInstructions = "",
+  threadDeveloperInstructions = "",
+  threadContinuitySummary = "",
+  latestHandoffSummary = "",
+  recentConversationSummary = ""
 }) {
   const [state, setState] = useState(createInitialState);
   const peerConnectionRef = useRef(null);
@@ -457,7 +464,14 @@ export default function useRealtimeVoiceSession({
               thread_title: String(thread?.title ?? "").trim(),
               thread_status_label: String(thread?.status ?? "").trim(),
               latest_user_text: String(latestUserText ?? "").trim(),
-              latest_assistant_text: String(latestAssistantText ?? "").trim()
+              latest_assistant_text: String(latestAssistantText ?? "").trim(),
+              project_workspace_path: String(projectWorkspacePath ?? "").trim(),
+              project_base_instructions: String(projectBaseInstructions ?? "").trim(),
+              project_developer_instructions: String(projectDeveloperInstructions ?? "").trim(),
+              thread_developer_instructions: String(threadDeveloperInstructions ?? "").trim(),
+              thread_continuity_summary: String(threadContinuitySummary ?? "").trim(),
+              latest_handoff_summary: String(latestHandoffSummary ?? "").trim(),
+              recent_conversation_summary: String(recentConversationSummary ?? "").trim()
             })
           }
         );
@@ -625,10 +639,17 @@ export default function useRealtimeVoiceSession({
     loginId,
     project?.id,
     project?.name,
+    projectBaseInstructions,
+    projectDeveloperInstructions,
+    projectWorkspacePath,
+    recentConversationSummary,
     startAudioLevelMeter,
+    latestHandoffSummary,
     thread?.id,
     thread?.status,
-    thread?.title
+    thread?.title,
+    threadContinuitySummary,
+    threadDeveloperInstructions
   ]);
 
   const cancelResponse = useCallback(() => {

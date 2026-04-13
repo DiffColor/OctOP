@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Newtonsoft.Json.Linq;
 using OctOP.ServerShared;
 
 namespace OctOP.Gateway.Voice;
@@ -23,6 +24,7 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
 
     return toolName switch
     {
+      "get_project_context" => await GetProjectContextAsync(userId, bridgeId, request.ProjectId, request.ThreadId, cancellationToken),
       "get_thread_status" => await GetThreadStatusAsync(userId, bridgeId, request.ThreadId, cancellationToken),
       "start_thread_run" => await StartThreadRunAsync(userId, bridgeId, request.ThreadId, request.Arguments, cancellationToken),
       "stop_thread_run" => await StopThreadRunAsync(userId, bridgeId, request.ThreadId, request.Arguments, cancellationToken),
@@ -32,6 +34,137 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
         ["ok"] = false,
         ["error"] = $"지원하지 않는 voice tool입니다: {toolName}"
       }
+    };
+  }
+
+  private async Task<JsonObject> GetProjectContextAsync(
+    string userId,
+    string bridgeId,
+    string? projectId,
+    string? threadId,
+    CancellationToken cancellationToken)
+  {
+    var normalizedProjectId = projectId?.Trim();
+    var normalizedThreadId = threadId?.Trim();
+
+    if (string.IsNullOrWhiteSpace(normalizedProjectId) && string.IsNullOrWhiteSpace(normalizedThreadId))
+    {
+      return new JsonObject
+      {
+        ["ok"] = false,
+        ["error"] = "project_id 또는 thread_id가 필요합니다."
+      };
+    }
+
+    var projectionThreads = await _octopStore.ListThreadsAsync(userId, bridgeId, null);
+    var thread = !string.IsNullOrWhiteSpace(normalizedThreadId)
+      ? projectionThreads
+        .OfType<JObject>()
+        .FirstOrDefault(item => string.Equals(item.Value<string>("id"), normalizedThreadId, StringComparison.Ordinal))
+      : null;
+
+    if (string.IsNullOrWhiteSpace(normalizedProjectId))
+    {
+      normalizedProjectId = thread?.Value<string>("project_id")?.Trim();
+    }
+
+    var project = !string.IsNullOrWhiteSpace(normalizedProjectId)
+      ? await _octopStore.GetProjectAsync(userId, bridgeId, normalizedProjectId, cancellationToken)
+      : null;
+
+    JsonObject? continuityPayload = null;
+    string continuityError = string.Empty;
+    var rootThreadId = normalizedThreadId ?? string.Empty;
+
+    if (!string.IsNullOrWhiteSpace(normalizedThreadId))
+    {
+      try
+      {
+        var subjects = BridgeSubjects.ForUser(userId, bridgeId);
+        continuityPayload = await _bridgeNatsClient.RequestAsync(
+          subjects.ThreadContinuityGet,
+          new
+          {
+            login_id = userId,
+            user_id = userId,
+            bridge_id = bridgeId,
+            thread_id = normalizedThreadId
+          },
+          cancellationToken) as JsonObject;
+        rootThreadId = continuityPayload?["root_thread"]?["id"]?.ToString()?.Trim() ?? rootThreadId;
+      }
+      catch (OperationCanceledException)
+      {
+        throw;
+      }
+      catch (Exception error)
+      {
+        continuityError = error.Message ?? "continuity 조회 실패";
+      }
+    }
+
+    var recentMessages = new JsonArray();
+    string latestHandoffSummary = string.Empty;
+
+    if (!string.IsNullOrWhiteSpace(rootThreadId))
+    {
+      var timelineEntries = await _octopStore.ListLogicalThreadTimelineAsync(userId, bridgeId, rootThreadId);
+      var orderedEntries = timelineEntries
+        .OfType<JObject>()
+        .OrderBy(entry => ParseTimestamp(entry.Value<string>("timestamp") ?? entry.Value<string>("created_at")))
+        .ToList();
+
+      latestHandoffSummary = orderedEntries
+        .Where(entry => string.Equals(entry.Value<string>("kind"), "handoff_summary", StringComparison.Ordinal))
+        .Select(entry => entry.Value<string>("content")?.Trim())
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .LastOrDefault() ?? string.Empty;
+
+      foreach (var entry in orderedEntries
+        .Where(entry => !string.Equals(entry.Value<string>("kind"), "handoff_summary", StringComparison.Ordinal))
+        .Where(entry => !string.IsNullOrWhiteSpace(entry.Value<string>("content")))
+        .TakeLast(8))
+      {
+        recentMessages.Add(new JsonObject
+        {
+          ["role"] = entry.Value<string>("role") ?? "system",
+          ["content"] = entry.Value<string>("content")?.Trim() ?? string.Empty,
+          ["timestamp"] = entry.Value<string>("timestamp") ?? entry.Value<string>("created_at") ?? string.Empty
+        });
+      }
+    }
+
+    return new JsonObject
+    {
+      ["ok"] = true,
+      ["project"] = project is null
+        ? null
+        : new JsonObject
+        {
+          ["id"] = project.Value<string>("id") ?? normalizedProjectId ?? string.Empty,
+          ["name"] = project.Value<string>("name") ?? "프로젝트 미지정",
+          ["workspace_path"] = project.Value<string>("workspace_path") ?? string.Empty,
+          ["base_instructions"] = project.Value<string>("base_instructions") ?? string.Empty,
+          ["developer_instructions"] = project.Value<string>("developer_instructions") ?? string.Empty
+        },
+      ["thread"] = new JsonObject
+      {
+        ["id"] = normalizedThreadId ?? string.Empty,
+        ["title"] = thread?.Value<string>("title") ?? "현재 쓰레드",
+        ["status"] = thread?.Value<string>("status") ?? "unknown",
+        ["developer_instructions"] = thread?.Value<string>("developer_instructions") ?? string.Empty,
+        ["root_thread_id"] = rootThreadId,
+        ["continuity_status"] = continuityPayload?["root_thread"]?["continuity_status"]?.ToString()
+          ?? thread?.Value<string>("continuity_status")
+          ?? string.Empty,
+        ["active_physical_thread_id"] = continuityPayload?["active_physical_thread"]?["id"]?.ToString() ?? string.Empty,
+        ["active_codex_thread_id"] = continuityPayload?["active_physical_thread"]?["codex_thread_id"]?.ToString() ?? string.Empty,
+        ["context_usage_percent"] = continuityPayload?["active_physical_thread"]?["context_usage_percent"]?.GetValue<int?>()
+          ?? thread?.Value<int?>("context_usage_percent")
+      },
+      ["latest_handoff_summary"] = latestHandoffSummary,
+      ["recent_messages"] = recentMessages,
+      ["continuity_error"] = continuityError
     };
   }
 
@@ -65,7 +198,7 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
       cancellationToken);
     var projectionThreads = await _octopStore.ListThreadsAsync(userId, bridgeId, null);
     var thread = projectionThreads
-      .OfType<Newtonsoft.Json.Linq.JObject>()
+      .OfType<JObject>()
       .FirstOrDefault(item => string.Equals(item.Value<string>("id"), normalizedThreadId, StringComparison.Ordinal));
     var issues = threadPayload?["issues"]?.AsArray() ?? [];
     var activeIssue = issues
@@ -221,5 +354,12 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
       ["issue_id"] = issueId,
       ["bridge"] = payload?.DeepClone()
     };
+  }
+
+  private static DateTimeOffset ParseTimestamp(string? value)
+  {
+    return DateTimeOffset.TryParse(value, out var parsed)
+      ? parsed
+      : DateTimeOffset.MinValue;
   }
 }

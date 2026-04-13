@@ -28,7 +28,10 @@ const session = {
 const project = {
   id: projectId,
   name: 'Voice E2E Project',
-  bridge_id: bridgeId
+  bridge_id: bridgeId,
+  workspace_path: '/Users/jazzlife/Documents/Workspaces/Products/OctOP',
+  base_instructions: '항상 현재 프로젝트 코드를 기준으로 판단한다.',
+  developer_instructions: '추측하지 말고 실제 동작하는 결과를 우선한다.'
 };
 
 const thread = {
@@ -151,6 +154,20 @@ async function seedMobileSession(page) {
       detailCacheValue: createThreadDetailCache()
     }
   );
+}
+
+async function openVoiceModeByLongPressingSend(page) {
+  const sendButton = page.getByTestId('thread-prompt-send-button');
+  await expect(sendButton).toBeVisible();
+  await sendButton.dispatchEvent('pointerdown', {
+    bubbles: true,
+    button: 0,
+    clientX: 24,
+    clientY: 24,
+    pointerId: 1,
+    pointerType: 'touch'
+  });
+  await page.waitForTimeout(450);
 }
 
 async function installVoiceBrowserMocks(page) {
@@ -542,8 +559,9 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await page.goto(baseUrl);
   await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
   await expect(page.getByText('Voice Thread')).toBeVisible();
+  await expect(page.getByRole('button', { name: '음성 모드 열기' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: '음성 모드 열기' }).click();
+  await openVoiceModeByLongPressingSend(page);
 
   await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
   await expect(page.getByText('OctOP Realtime Voice')).toBeVisible();
@@ -551,6 +569,11 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect(page.locator('.voice-mode-panel__badge', { hasText: 'VOICE STANDBY' })).toBeVisible();
   expect(voiceSessionRequests[0].thread_id).toBe(threadId);
   expect(voiceSessionRequests[0].project_id).toBe(projectId);
+  expect(voiceSessionRequests[0].project_workspace_path).toBe(project.workspace_path);
+  expect(voiceSessionRequests[0].project_base_instructions).toContain('현재 프로젝트 코드를 기준');
+  expect(voiceSessionRequests[0].project_developer_instructions).toContain('실제 동작하는 결과');
+  expect(voiceSessionRequests[0].recent_conversation_summary).toContain('user: 현재 상태 알려줘');
+  expect(voiceSessionRequests[0].recent_conversation_summary).toContain('assistant: 현재 스레드는 유휴 상태입니다.');
 
   const browserMetrics = await page.evaluate(() => ({
     getUserMediaCalls: window.__voiceTest.getUserMediaCalls.length,
@@ -585,7 +608,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
 
   await expect(page.locator('.voice-mode-panel__badge', { hasText: 'JARVIS LISTENING' })).toBeVisible();
   await expect(page.getByText('상태 알려줘')).toBeVisible();
-  await expect(page.getByText('현재 스레드는 유휴 상태입니다.')).toBeVisible();
+  await expect(page.locator('.voice-mode-panel__live-transcript')).toHaveText('현재 스레드는 유휴 상태입니다.');
   await expect.poll(() => toolInvocations.length).toBe(1);
   expect(toolInvocations[0].tool_name).toBe('get_thread_status');
   expect(toolInvocations[0].thread_id).toBe(threadId);
@@ -626,7 +649,8 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
 
   await page.goto(baseUrl);
   await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
-  await page.getByRole('button', { name: '음성 모드 열기' }).click();
+  await expect(page.getByRole('button', { name: '음성 모드 열기' })).toHaveCount(0);
+  await openVoiceModeByLongPressingSend(page);
 
   await expect(page.locator('.voice-mode-panel__badge', { hasText: 'VOICE DEGRADED' })).toBeVisible();
   await expect(page.locator('.voice-mode-panel__error')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');

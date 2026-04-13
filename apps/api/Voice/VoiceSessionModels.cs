@@ -11,6 +11,13 @@ public sealed class VoiceSessionStartRequest
   public string? ThreadStatusLabel { get; init; }
   public string? LatestUserText { get; init; }
   public string? LatestAssistantText { get; init; }
+  public string? ProjectWorkspacePath { get; init; }
+  public string? ProjectBaseInstructions { get; init; }
+  public string? ProjectDeveloperInstructions { get; init; }
+  public string? ThreadDeveloperInstructions { get; init; }
+  public string? ThreadContinuitySummary { get; init; }
+  public string? LatestHandoffSummary { get; init; }
+  public string? RecentConversationSummary { get; init; }
 }
 
 public sealed class VoiceToolInvocationRequest
