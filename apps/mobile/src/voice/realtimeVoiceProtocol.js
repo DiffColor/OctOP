@@ -14,7 +14,7 @@ export function createRealtimeNarrationEvent(text) {
     type: "response.create",
     response: {
       conversation: "none",
-      output_modalities: ["audio", "text"],
+      output_modalities: ["audio"],
       tools: [],
       metadata: {
         source: "app_server_authoritative_response"
