@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 const TAU = Math.PI * 2;
 const MIN_CANVAS_SIZE = 260;
 const DEFAULT_HISTORY = Array.from({ length: 24 }, () => 0.08);
+const DEFAULT_RGB = { r: 255, g: 255, b: 255 };
 
 const DEFAULT_PALETTE = [
   {
@@ -48,12 +49,26 @@ const ERROR_PALETTE = [
 const DEFAULT_VISUAL_CONFIG = Object.freeze({
   orbitCount: 5,
   nucleusScale: 1.04,
+  motionScale: 1,
   palette: DEFAULT_PALETTE,
   errorPalette: ERROR_PALETTE
 });
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function smoothstep(edge0, edge1, value) {
+  if (edge0 === edge1) {
+    return value < edge0 ? 0 : 1;
+  }
+
+  const progress = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return progress * progress * (3 - 2 * progress);
+}
+
+function mixNumber(a, b, amount) {
+  return a + (b - a) * amount;
 }
 
 function normalizeNumber(value, fallback, min, max) {
@@ -101,6 +116,41 @@ function withAlpha(color, alpha) {
   return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
 }
 
+function parseColor(color, fallback = DEFAULT_RGB) {
+  const normalized = typeof color === "string" ? color.trim() : "";
+  const rgbMatch = normalized.match(/rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*[0-9.]+)?\s*\)/i);
+
+  if (rgbMatch) {
+    return {
+      r: clamp(Math.round(Number(rgbMatch[1]) || fallback.r), 0, 255),
+      g: clamp(Math.round(Number(rgbMatch[2]) || fallback.g), 0, 255),
+      b: clamp(Math.round(Number(rgbMatch[3]) || fallback.b), 0, 255)
+    };
+  }
+
+  const hexMatch = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+
+  if (!hexMatch) {
+    return fallback;
+  }
+
+  const hex = hexMatch[1];
+
+  if (hex.length === 3) {
+    return {
+      r: Number.parseInt(`${hex[0]}${hex[0]}`, 16),
+      g: Number.parseInt(`${hex[1]}${hex[1]}`, 16),
+      b: Number.parseInt(`${hex[2]}${hex[2]}`, 16)
+    };
+  }
+
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16)
+  };
+}
+
 function normalizePaletteEntry(entry, fallbackEntry) {
   const fallback = fallbackEntry ?? DEFAULT_PALETTE[0];
   const source = entry && typeof entry === "object" ? entry : {};
@@ -122,33 +172,101 @@ function resolvePalette(entries, count, fallbackEntries) {
 
 function resolveVisualConfig(visualConfig) {
   const source = visualConfig && typeof visualConfig === "object" ? visualConfig : {};
-  const ribbonCount = Math.round(normalizeNumber(source.orbitCount, DEFAULT_VISUAL_CONFIG.orbitCount, 3, 7));
+  const fluidBlobCount = Math.round(normalizeNumber(source.fluidBlobCount ?? source.orbitCount, DEFAULT_VISUAL_CONFIG.orbitCount, 4, 8));
 
   return {
-    ribbonCount,
+    fluidBlobCount,
     nucleusScale: normalizeNumber(source.nucleusScale, DEFAULT_VISUAL_CONFIG.nucleusScale, 0.84, 1.32),
-    palette: resolvePalette(source.palette, ribbonCount, DEFAULT_VISUAL_CONFIG.palette),
-    errorPalette: resolvePalette(source.errorPalette, ribbonCount, DEFAULT_VISUAL_CONFIG.errorPalette)
+    motionScale: normalizeNumber(source.motionScale ?? source.electronSpeedScale, DEFAULT_VISUAL_CONFIG.motionScale, 0.82, 1.48),
+    palette: resolvePalette(source.palette, fluidBlobCount, DEFAULT_VISUAL_CONFIG.palette),
+    errorPalette: resolvePalette(source.errorPalette, fluidBlobCount, DEFAULT_VISUAL_CONFIG.errorPalette)
   };
 }
 
-function createRibbonModels(ribbonCount) {
-  return Array.from({ length: ribbonCount }, (_, index) => {
-    const isMagenta = index >= Math.ceil(ribbonCount / 2);
-    const groupOffset = index % Math.ceil(ribbonCount / 2);
+function createFluidModels(blobCount) {
+  return Array.from({ length: blobCount }, (_, index) => {
+    if (index === 0) {
+      return {
+        radius: 0.42,
+        orbitX: 0.05,
+        orbitY: 0.04,
+        verticalBias: -0.03,
+        speed: 0.7,
+        yFrequency: 0.88,
+        phase: 0.18,
+        stretch: 1.22,
+        density: 1.2,
+        drift: 0.04,
+        swirl: 1.1
+      };
+    }
+
+    const satelliteIndex = index - 1;
+    const side = satelliteIndex % 2 === 0 ? 1 : -1;
+    const layer = Math.floor(satelliteIndex / 2);
 
     return {
-      rotation: index * (Math.PI / ribbonCount) + (isMagenta ? 0.6 : 0),
-      direction: index % 2 === 0 ? 1 : -1,
-      loopScale: isMagenta ? 0.58 + groupOffset * 0.03 : 0.56 + groupOffset * 0.035,
-      lobeScale: isMagenta ? 0.34 + groupOffset * 0.02 : 0.28 + groupOffset * 0.025,
-      squash: isMagenta ? 0.76 : 0.68,
-      wave: 3 + (index % 3),
-      secondaryWave: 4 + ((index + 1) % 3),
-      phase: index * 1.17 + (isMagenta ? 0.9 : 0.2),
-      lineWidth: isMagenta ? 0.13 + groupOffset * 0.012 : 0.11 + groupOffset * 0.014,
-      alpha: isMagenta ? 0.78 : 0.84,
-      blurBoost: isMagenta ? 1.06 : 0.96
+      radius: 0.23 - layer * 0.012 + (satelliteIndex % 3) * 0.006,
+      orbitX: 0.18 + layer * 0.05,
+      orbitY: 0.12 + layer * 0.034,
+      verticalBias: side * (0.06 + layer * 0.022),
+      speed: 0.76 + satelliteIndex * 0.08,
+      yFrequency: 0.94 + (satelliteIndex % 3) * 0.07,
+      phase: satelliteIndex * 1.19 + side * 0.42,
+      stretch: 0.96 + layer * 0.05,
+      density: 0.82 - layer * 0.04,
+      drift: 0.09 + layer * 0.018,
+      swirl: 0.84 + satelliteIndex * 0.08
+    };
+  });
+}
+
+function ensureFluidBuffer(bufferRef, resolution) {
+  const nextResolution = Math.max(96, Math.round(resolution));
+  const current = bufferRef.current;
+
+  if (current.canvas && current.resolution === nextResolution) {
+    return current;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = nextResolution;
+  canvas.height = nextResolution;
+
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return null;
+  }
+
+  const buffer = {
+    canvas,
+    context,
+    imageData: context.createImageData(nextResolution, nextResolution),
+    resolution: nextResolution
+  };
+
+  bufferRef.current = buffer;
+  return buffer;
+}
+
+function buildFluidBlobFrame(models, time, energy, motionScale) {
+  return models.map((model, index) => {
+    const drive = time * model.speed * motionScale * (0.82 + energy * 0.88) + model.phase;
+    const driftX = Math.sin(time * 0.54 + model.phase * 1.3) * model.drift;
+    const driftY = Math.cos(time * 0.47 + model.phase * 0.9) * model.drift * 0.72;
+    const orbitX = model.orbitX * (1 + Math.sin(drive * 0.41 + index) * 0.12);
+    const orbitY = model.orbitY * (1 + Math.cos(drive * 0.36 - index * 0.4) * 0.1);
+
+    return {
+      x: Math.cos(drive) * orbitX + Math.sin(drive * 0.56 + model.phase) * 0.05 + driftX,
+      y: Math.sin(drive * model.yFrequency) * orbitY + Math.cos(drive * 0.72 - model.phase) * 0.05 + driftY + model.verticalBias * (0.42 + energy * 0.48),
+      radius: model.radius * (1 + Math.sin(drive * 1.16 + model.phase) * 0.14 + energy * 0.14),
+      stretchX: 1 + Math.sin(drive * 0.88) * 0.22,
+      stretchY: model.stretch + Math.cos(drive * 1.03) * 0.18,
+      density: model.density,
+      swirl: model.swirl,
+      phase: model.phase
     };
   });
 }
@@ -253,111 +371,137 @@ function drawInnerGlass(context, cx, cy, radius, palette, energy) {
   context.fill();
 }
 
-function drawRibbon(context, cx, cy, radius, ribbon, paletteEntry, time, energy) {
-  const motion = time * (0.42 + energy * 0.18) * ribbon.direction + ribbon.phase;
-  const pointCount = 160;
-  const points = [];
+function renderFluidLayer(buffer, palette, energy, time, blobFrame, nucleusScale) {
+  const { canvas, context, imageData, resolution } = buffer;
+  const pixels = imageData.data;
+  const top = parseColor(palette[0]?.electronColor ?? DEFAULT_PALETTE[0].electronColor, DEFAULT_RGB);
+  const mid = parseColor(palette[Math.floor(palette.length / 2)]?.color ?? DEFAULT_PALETTE[1].color, DEFAULT_RGB);
+  const bottom = parseColor(palette[Math.max(0, palette.length - 1)]?.color ?? DEFAULT_PALETTE[2].color, DEFAULT_RGB);
+  const glow = parseColor(palette[0]?.glowColor ?? DEFAULT_PALETTE[0].glowColor, DEFAULT_RGB);
+  const rim = parseColor(palette[Math.max(0, palette.length - 1)]?.electronColor ?? DEFAULT_PALETTE[2].electronColor, DEFAULT_RGB);
+  const threshold = 1.08 - energy * 0.08;
+  const centerNucleus = 0.14 * nucleusScale * (1 + energy * 0.16);
+  const invSize = 1 / Math.max(1, resolution - 1);
+  let pixelIndex = 0;
 
-  for (let index = 0; index <= pointCount; index += 1) {
-    const progress = index / pointCount;
-    const angle = progress * TAU;
-    const ringRadius =
-      radius * ribbon.loopScale *
-      (1 + Math.sin(angle * ribbon.wave + motion) * (0.065 + energy * 0.025) + Math.cos(angle * ribbon.secondaryWave - motion * 1.2) * 0.018);
-    const lobe = radius * ribbon.lobeScale * (0.78 + Math.sin(angle * 2 - motion * 0.72) * 0.18);
-    const localRotation = angle + ribbon.rotation + Math.sin(motion * 0.12) * 0.08;
+  for (let y = 0; y < resolution; y += 1) {
+    const ny = y * invSize * 2 - 1;
 
-    const x = cx + Math.cos(localRotation) * ringRadius + Math.cos(localRotation * 2 + motion * 0.48) * lobe;
-    const y = cy + Math.sin(localRotation) * ringRadius * ribbon.squash + Math.sin(localRotation * 3 - motion) * lobe * 0.58;
-    points.push({ x, y });
+    for (let x = 0; x < resolution; x += 1) {
+      const nx = x * invSize * 2 - 1;
+      const radialSquared = nx * nx + ny * ny;
+
+      if (radialSquared > 1.03) {
+        pixels[pixelIndex] = 0;
+        pixels[pixelIndex + 1] = 0;
+        pixels[pixelIndex + 2] = 0;
+        pixels[pixelIndex + 3] = 0;
+        pixelIndex += 4;
+        continue;
+      }
+
+      let field = 0;
+      let swirl = 0;
+      let pressure = 0;
+
+      for (let index = 0; index < blobFrame.length; index += 1) {
+        const blob = blobFrame[index];
+        const dx = (nx - blob.x) / blob.stretchX;
+        const dy = (ny - blob.y) / blob.stretchY;
+        const distanceSquared = dx * dx + dy * dy + 0.0028;
+        const influence = (blob.radius * blob.radius * blob.density) / distanceSquared;
+        field += influence;
+        swirl += influence * Math.sin(blob.phase + nx * (4.2 + blob.swirl) - ny * (3.8 + blob.swirl * 0.6));
+        pressure += influence * Math.cos(blob.phase * 0.72 + radialSquared * 4.4);
+      }
+
+      field += Math.max(0, 1 - radialSquared) * (0.28 + energy * 0.12);
+      const alpha = smoothstep(threshold - 0.16, threshold + 0.42, field);
+
+      if (alpha < 0.015) {
+        pixels[pixelIndex] = 0;
+        pixels[pixelIndex + 1] = 0;
+        pixels[pixelIndex + 2] = 0;
+        pixels[pixelIndex + 3] = 0;
+        pixelIndex += 4;
+        continue;
+      }
+
+      const edgeBand =
+        smoothstep(threshold - 0.04, threshold + 0.08, field) - smoothstep(threshold + 0.16, threshold + 0.42, field);
+      const verticalMix = smoothstep(-0.9, 0.92, ny + pressure * 0.012);
+      const topToMid = smoothstep(0, 0.62, verticalMix);
+      const midToBottom = smoothstep(0.24, 1, verticalMix);
+      let red = mixNumber(top.r, mid.r, topToMid);
+      let green = mixNumber(top.g, mid.g, topToMid);
+      let blue = mixNumber(top.b, mid.b, topToMid);
+      red = mixNumber(red, bottom.r, midToBottom * 0.84);
+      green = mixNumber(green, bottom.g, midToBottom * 0.84);
+      blue = mixNumber(blue, bottom.b, midToBottom * 0.84);
+
+      const highlight = Math.pow(clamp(1 - Math.hypot(nx + 0.24, ny + 0.36) / 1.18, 0, 1), 2.2) * (0.46 + energy * 0.34);
+      const liquidCaustic =
+        (Math.sin(nx * 8.6 - time * 2.1 + swirl * 0.18) + Math.cos(ny * 12.4 + time * 1.6 - pressure * 0.22)) * 0.5;
+      const causticAlpha = (liquidCaustic * 0.5 + 0.5) * alpha * (0.1 + energy * 0.08);
+      const nucleusDistance = Math.hypot(nx * 0.92, ny * 0.92);
+      const nucleusGlow = Math.pow(clamp(1 - nucleusDistance / (centerNucleus * 4.8), 0, 1), 2.1) * (0.24 + energy * 0.22);
+      const edgeGlow = edgeBand * (0.46 + energy * 0.12);
+      const interiorShadow = Math.pow(clamp(radialSquared, 0, 1), 1.6) * 0.18;
+
+      red = red * (0.88 - interiorShadow) + glow.r * causticAlpha * 0.2 + 255 * highlight * 0.28 + rim.r * edgeGlow * 0.34 + top.r * nucleusGlow * 0.14;
+      green = green * (0.9 - interiorShadow * 0.9) + glow.g * causticAlpha * 0.28 + 255 * highlight * 0.34 + rim.g * edgeGlow * 0.38 + top.g * nucleusGlow * 0.16;
+      blue = blue * (0.94 - interiorShadow * 0.76) + glow.b * causticAlpha * 0.38 + 255 * highlight * 0.38 + rim.b * edgeGlow * 0.34 + top.b * nucleusGlow * 0.2;
+
+      const sphereFade = 1 - smoothstep(0.8, 1, radialSquared);
+      const finalAlpha = clamp(alpha * (0.86 + edgeGlow * 0.26 + nucleusGlow * 0.08) * (0.42 + sphereFade * 0.58), 0, 1);
+
+      pixels[pixelIndex] = clamp(Math.round(red), 0, 255);
+      pixels[pixelIndex + 1] = clamp(Math.round(green), 0, 255);
+      pixels[pixelIndex + 2] = clamp(Math.round(blue), 0, 255);
+      pixels[pixelIndex + 3] = clamp(Math.round(finalAlpha * 255), 0, 255);
+      pixelIndex += 4;
+    }
   }
 
-  const gradient = context.createLinearGradient(cx - radius, cy - radius, cx + radius, cy + radius);
-  gradient.addColorStop(0, withAlpha(paletteEntry.electronColor, 0.18));
-  gradient.addColorStop(0.22, withAlpha(paletteEntry.color, 0.72));
-  gradient.addColorStop(0.58, withAlpha(paletteEntry.glowColor, 0.42));
-  gradient.addColorStop(1, withAlpha(paletteEntry.electronColor, 0.16));
-
-  context.save();
-  context.beginPath();
-  context.moveTo(points[0].x, points[0].y);
-
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const midX = (previous.x + current.x) * 0.5;
-    const midY = (previous.y + current.y) * 0.5;
-    context.quadraticCurveTo(previous.x, previous.y, midX, midY);
-  }
-
-  context.closePath();
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  context.strokeStyle = gradient;
-  context.lineWidth = radius * ribbon.lineWidth * (1 + energy * 0.12);
-  context.shadowColor = withAlpha(paletteEntry.color, 0.44 + energy * 0.08);
-  context.shadowBlur = radius * 0.16 * ribbon.blurBoost;
-  context.globalAlpha = ribbon.alpha;
-  context.stroke();
-  context.restore();
-
-  context.save();
-  context.beginPath();
-  context.moveTo(points[0].x, points[0].y);
-
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const midX = (previous.x + current.x) * 0.5;
-    const midY = (previous.y + current.y) * 0.5;
-    context.quadraticCurveTo(previous.x, previous.y, midX, midY);
-  }
-
-  context.closePath();
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  context.strokeStyle = withAlpha(paletteEntry.electronColor, 0.22 + energy * 0.08);
-  context.lineWidth = radius * ribbon.lineWidth * 0.28;
-  context.globalAlpha = 0.8;
-  context.stroke();
-  context.restore();
+  context.putImageData(imageData, 0, 0);
+  return canvas;
 }
 
-function drawHotCore(context, cx, cy, radius, palette, energy, time, nucleusScale) {
+function drawFluidCore(context, cx, cy, radius, palette, energy, time, nucleusScale) {
   const cyan = palette[0] ?? DEFAULT_PALETTE[0];
   const magenta = palette[Math.max(0, palette.length - 1)] ?? DEFAULT_PALETTE[2];
-  const coreRadius = radius * 0.24 * nucleusScale * (1 + energy * 0.08);
+  const coreRadius = radius * 0.18 * nucleusScale * (1 + energy * 0.08);
 
-  const glow = context.createRadialGradient(cx, cy, coreRadius * 0.1, cx, cy, coreRadius * 3.4);
-  glow.addColorStop(0, "rgba(255, 255, 255, 0.58)");
-  glow.addColorStop(0.2, withAlpha(cyan.electronColor, 0.24 + energy * 0.08));
-  glow.addColorStop(0.58, withAlpha(magenta.color, 0.12 + energy * 0.05));
+  const glow = context.createRadialGradient(cx, cy, coreRadius * 0.1, cx, cy, coreRadius * 3.3);
+  glow.addColorStop(0, "rgba(255, 255, 255, 0.56)");
+  glow.addColorStop(0.18, withAlpha(cyan.electronColor, 0.22 + energy * 0.06));
+  glow.addColorStop(0.54, withAlpha(magenta.color, 0.14 + energy * 0.04));
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
   context.fillStyle = glow;
   context.beginPath();
-  context.arc(cx, cy, coreRadius * 2.6, 0, TAU);
+  context.arc(cx, cy, coreRadius * 2.8, 0, TAU);
   context.fill();
 
-  const core = context.createRadialGradient(cx - coreRadius * 0.24, cy - coreRadius * 0.3, coreRadius * 0.08, cx, cy, coreRadius);
-  core.addColorStop(0, "rgba(255, 255, 255, 0.95)");
-  core.addColorStop(0.46, withAlpha(cyan.color, 0.82));
-  core.addColorStop(1, withAlpha(magenta.color, 0.34));
+  const core = context.createRadialGradient(cx - coreRadius * 0.2, cy - coreRadius * 0.24, coreRadius * 0.06, cx, cy, coreRadius);
+  core.addColorStop(0, "rgba(255, 255, 255, 0.98)");
+  core.addColorStop(0.48, withAlpha(cyan.color, 0.86));
+  core.addColorStop(1, withAlpha(magenta.color, 0.38));
   context.fillStyle = core;
   context.beginPath();
   context.arc(cx, cy, coreRadius, 0, TAU);
   context.fill();
 
-  for (let index = 0; index < 9; index += 1) {
-    const angle = time * (0.46 + index * 0.04) + index * 0.82;
-    const particleRadius = coreRadius * (0.08 + (index % 3) * 0.018) * (1 + energy * 0.1);
-    const particleX = cx + Math.cos(angle) * coreRadius * (0.74 + (index % 2) * 0.12);
-    const particleY = cy + Math.sin(angle * 1.14) * coreRadius * (0.62 + (index % 3) * 0.08);
+  for (let index = 0; index < 7; index += 1) {
+    const angle = time * (0.56 + index * 0.06) + index * 0.92;
+    const particleRadius = coreRadius * (0.06 + (index % 3) * 0.018) * (1 + energy * 0.08);
+    const particleX = cx + Math.cos(angle) * coreRadius * (0.62 + (index % 2) * 0.14);
+    const particleY = cy + Math.sin(angle * 1.22) * coreRadius * (0.56 + (index % 3) * 0.08);
 
     context.save();
-    context.fillStyle = index % 2 === 0 ? withAlpha(cyan.electronColor, 0.48) : withAlpha(magenta.electronColor, 0.4);
+    context.fillStyle = index % 2 === 0 ? withAlpha(cyan.electronColor, 0.48) : withAlpha(magenta.electronColor, 0.42);
     context.shadowColor = index % 2 === 0 ? cyan.color : magenta.color;
-    context.shadowBlur = coreRadius * 0.44;
-    context.globalAlpha = 0.72;
+    context.shadowBlur = coreRadius * 0.4;
+    context.globalAlpha = 0.7;
     context.beginPath();
     context.arc(particleX, particleY, particleRadius, 0, TAU);
     context.fill();
@@ -365,25 +509,84 @@ function drawHotCore(context, cx, cy, radius, palette, energy, time, nucleusScal
   }
 }
 
-function drawParticles(context, cx, cy, radius, palette, energy, time) {
+function drawSuspendedDroplets(context, cx, cy, radius, palette, energy, time) {
   const cyan = palette[0] ?? DEFAULT_PALETTE[0];
   const magenta = palette[Math.max(0, palette.length - 1)] ?? DEFAULT_PALETTE[2];
 
-  for (let index = 0; index < 26; index += 1) {
-    const angle = (index / 26) * TAU + time * 0.06 * (index % 2 === 0 ? 1 : -1);
-    const distance = radius * (0.16 + ((index * 7) % 13) * 0.055);
-    const x = cx + Math.cos(angle * 1.18 + index * 0.37) * distance;
-    const y = cy + Math.sin(angle * 0.94 + index * 0.29) * distance * 0.84;
-    const size = radius * 0.005 + (index % 4) * radius * 0.0014;
+  for (let index = 0; index < 18; index += 1) {
+    const angle = time * 0.22 + index * 1.38;
+    const drift = radius * (0.16 + ((index * 5) % 9) * 0.045);
+    const x = cx + Math.cos(angle * 1.18 + index * 0.34) * drift;
+    const y = cy + Math.sin(angle * 0.92 - index * 0.21) * drift * 0.82;
+    const size = radius * (0.005 + (index % 4) * 0.0014);
 
     context.save();
-    context.fillStyle = index % 2 === 0 ? withAlpha(cyan.electronColor, 0.44) : withAlpha(magenta.electronColor, 0.34);
-    context.globalAlpha = 0.3 + energy * 0.18;
+    context.fillStyle = index % 2 === 0 ? withAlpha(cyan.electronColor, 0.26) : withAlpha(magenta.electronColor, 0.24);
+    context.globalAlpha = 0.2 + energy * 0.14;
     context.beginPath();
     context.arc(x, y, size, 0, TAU);
     context.fill();
     context.restore();
   }
+}
+
+function drawSurfaceCaustics(context, cx, cy, radius, palette, energy, time) {
+  const cyan = palette[0] ?? DEFAULT_PALETTE[0];
+  const magenta = palette[Math.max(0, palette.length - 1)] ?? DEFAULT_PALETTE[2];
+
+  for (let index = 0; index < 3; index += 1) {
+    const progress = index / 2;
+    const y = cy - radius * (0.18 - progress * 0.2) + Math.sin(time * (0.7 + index * 0.14) + index * 1.8) * radius * 0.032;
+    const span = radius * (0.84 - progress * 0.1);
+
+    context.save();
+    context.beginPath();
+    context.moveTo(cx - span * 0.58, y);
+    context.bezierCurveTo(
+      cx - span * 0.28,
+      y - radius * (0.08 + progress * 0.04),
+      cx + span * 0.1,
+      y + radius * (0.12 - progress * 0.03),
+      cx + span * 0.52,
+      y - radius * (0.02 + progress * 0.02)
+    );
+    context.lineCap = "round";
+    context.lineWidth = radius * (0.012 - progress * 0.002);
+    context.strokeStyle = index === 1 ? withAlpha(magenta.electronColor, 0.16 + energy * 0.04) : withAlpha(cyan.electronColor, 0.16 + energy * 0.05);
+    context.shadowColor = index === 1 ? withAlpha(magenta.color, 0.18 + energy * 0.05) : withAlpha(cyan.color, 0.2 + energy * 0.05);
+    context.shadowBlur = radius * 0.08;
+    context.globalAlpha = 0.74;
+    context.stroke();
+    context.restore();
+  }
+}
+
+function drawSpecularHighlights(context, cx, cy, radius, palette, energy) {
+  const cyan = palette[0] ?? DEFAULT_PALETTE[0];
+
+  context.save();
+  const arcGradient = context.createLinearGradient(cx - radius * 0.68, cy - radius * 0.82, cx + radius * 0.12, cy - radius * 0.14);
+  arcGradient.addColorStop(0, "rgba(255, 255, 255, 0)");
+  arcGradient.addColorStop(0.35, withAlpha(cyan.electronColor, 0.3 + energy * 0.06));
+  arcGradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+  context.strokeStyle = arcGradient;
+  context.lineCap = "round";
+  context.lineWidth = radius * 0.024;
+  context.beginPath();
+  context.arc(cx - radius * 0.04, cy - radius * 0.04, radius * 0.74, Math.PI * 1.03, Math.PI * 1.52);
+  context.stroke();
+  context.restore();
+
+  context.save();
+  const spot = context.createRadialGradient(cx - radius * 0.38, cy - radius * 0.46, 0, cx - radius * 0.38, cy - radius * 0.46, radius * 0.22);
+  spot.addColorStop(0, "rgba(255, 255, 255, 0.34)");
+  spot.addColorStop(0.42, withAlpha(cyan.electronColor, 0.16));
+  spot.addColorStop(1, "rgba(255, 255, 255, 0)");
+  context.fillStyle = spot;
+  context.beginPath();
+  context.arc(cx - radius * 0.38, cy - radius * 0.46, radius * 0.22, 0, TAU);
+  context.fill();
+  context.restore();
 }
 
 export default function VoiceOrb({
@@ -395,6 +598,7 @@ export default function VoiceOrb({
   visualConfig = null
 }) {
   const canvasRef = useRef(null);
+  const fluidBufferRef = useRef({ canvas: null, context: null, imageData: null, resolution: 0 });
   const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
   const drawStateRef = useRef({
     audioLevel,
@@ -406,7 +610,7 @@ export default function VoiceOrb({
   const smoothedLevelRef = useRef(0);
 
   const resolvedVisualConfig = useMemo(() => resolveVisualConfig(visualConfig), [visualConfig]);
-  const ribbonModels = useMemo(() => createRibbonModels(resolvedVisualConfig.ribbonCount), [resolvedVisualConfig.ribbonCount]);
+  const fluidModels = useMemo(() => createFluidModels(resolvedVisualConfig.fluidBlobCount), [resolvedVisualConfig.fluidBlobCount]);
 
   useEffect(() => {
     drawStateRef.current = {
@@ -462,11 +666,14 @@ export default function VoiceOrb({
       const listeningBoost = state.isListening ? 0.12 : 0;
       const targetLevel = clamp(Number(state.audioLevel) + responseBoost + listeningBoost, 0, 1.24);
       const smoothed = smoothedLevelRef.current + (targetLevel - smoothedLevelRef.current) * 0.14;
-      const energy = clamp(smoothed * 0.72 + historyAverage * 0.42 + historyPeak * 0.18, 0.08, 1.2);
+      const energy = clamp(smoothed * 0.74 + historyAverage * 0.44 + historyPeak * 0.2, 0.1, 1.18);
       const activePalette = state.connectionState === "error" ? resolvedVisualConfig.errorPalette : resolvedVisualConfig.palette;
+      const motionScale = resolvedVisualConfig.motionScale * (state.isResponding ? 1.14 : state.isListening ? 1.02 : 0.92);
+      const fluidResolution = clamp(Math.round(radius * 0.92), 128, 196);
+      const fluidBuffer = ensureFluidBuffer(fluidBufferRef, fluidResolution);
+      const blobFrame = buildFluidBlobFrame(fluidModels, time, energy, motionScale);
 
       smoothedLevelRef.current = smoothed;
-
       context.clearRect(0, 0, width, height);
       drawAtmosphere(context, width, height, cx, cy, radius, activePalette, energy);
       drawOuterShell(context, cx, cy, radius, activePalette, energy);
@@ -475,16 +682,33 @@ export default function VoiceOrb({
       context.beginPath();
       context.arc(cx, cy, radius * 0.93, 0, TAU);
       context.clip();
-      context.globalCompositeOperation = "screen";
 
       drawInnerGlass(context, cx, cy, radius, activePalette, energy);
 
-      ribbonModels.forEach((ribbon, index) => {
-        drawRibbon(context, cx, cy, radius, ribbon, activePalette[index % activePalette.length], time, energy);
-      });
+      if (fluidBuffer) {
+        const fluidCanvas = renderFluidLayer(fluidBuffer, activePalette, energy, time, blobFrame, resolvedVisualConfig.nucleusScale);
+        const fluidSize = radius * 1.7;
+        const fluidX = cx - fluidSize / 2;
+        const fluidY = cy - fluidSize / 2;
 
-      drawHotCore(context, cx, cy, radius, activePalette, energy, time, resolvedVisualConfig.nucleusScale);
-      drawParticles(context, cx, cy, radius, activePalette, energy, time);
+        context.save();
+        context.globalCompositeOperation = "screen";
+        context.globalAlpha = 0.38 + energy * 0.18;
+        context.filter = `blur(${radius * 0.085}px)`;
+        context.drawImage(fluidCanvas, fluidX, fluidY, fluidSize, fluidSize);
+        context.restore();
+
+        context.save();
+        context.globalCompositeOperation = "screen";
+        context.globalAlpha = 0.94;
+        context.drawImage(fluidCanvas, fluidX, fluidY, fluidSize, fluidSize);
+        context.restore();
+      }
+
+      drawSurfaceCaustics(context, cx, cy, radius, activePalette, energy, time);
+      drawFluidCore(context, cx, cy, radius, activePalette, energy, time, resolvedVisualConfig.nucleusScale);
+      drawSuspendedDroplets(context, cx, cy, radius, activePalette, energy, time);
+      drawSpecularHighlights(context, cx, cy, radius, activePalette, energy);
       context.restore();
 
       raf = window.requestAnimationFrame(draw);
@@ -495,7 +719,7 @@ export default function VoiceOrb({
     return () => {
       window.cancelAnimationFrame(raf);
     };
-  }, [resolvedVisualConfig, ribbonModels]);
+  }, [fluidModels, resolvedVisualConfig]);
 
   return <canvas ref={canvasRef} className="voice-mode-panel__orb-canvas" aria-hidden="true" />;
 }

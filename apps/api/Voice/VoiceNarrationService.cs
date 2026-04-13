@@ -14,12 +14,7 @@ public sealed class VoiceNarrationService(IHttpClientFactory httpClientFactory)
     Environment.GetEnvironmentVariable("OCTOP_OPENAI_TTS_VOICE")
     ?? Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_VOICE")
     ?? "alloy";
-  private readonly string _apiBaseUrl =
-    (
-      Environment.GetEnvironmentVariable("OCTOP_OPENAI_TTS_API_BASE_URL")
-      ?? Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_API_BASE_URL")
-      ?? "https://api.openai.com"
-    ).TrimEnd('/');
+  private readonly string _apiBaseUrl = (Environment.GetEnvironmentVariable("OCTOP_OPENAI_API_BASE_URL") ?? "https://api.openai.com").TrimEnd('/');
 
   public bool IsEnabled =>
     !string.Equals(Environment.GetEnvironmentVariable("OCTOP_VOICE_SESSION_ENABLED"), "false", StringComparison.OrdinalIgnoreCase);

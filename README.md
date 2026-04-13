@@ -265,6 +265,8 @@ macOS는 SwiftPM 리소스 번들이 필요하기 때문에 릴리즈 자산을 
   Gateway, Bridge, Projection worker가 공통으로 사용하는 NATS 주소입니다.
 - `OCTOP_LICENSEHUB_API_BASE_URL`
   로그인 검증에 사용하는 LicenseHub API 주소입니다.
+- `OCTOP_OPENAI_API_BASE_URL`
+  Gateway가 OpenAI Realtime/TTS 요청과 음성 WebRTC call URL 생성에 공통으로 사용하는 API base URL입니다.
 - `OCTOP_GATEWAY_HOST`
 - `OCTOP_GATEWAY_PORT`
 - `OCTOP_DASHBOARD_ORIGIN`
