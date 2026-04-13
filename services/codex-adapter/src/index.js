@@ -74,6 +74,12 @@ const APP_SERVER_STARTUP_TIMEOUT_MS = Number(
 const APP_SERVER_REQUEST_TIMEOUT_MS = Number(
   process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS ?? 60000
 );
+const APP_SERVER_THREAD_START_TIMEOUT_MS = Number(
+  process.env.OCTOP_APP_SERVER_THREAD_START_TIMEOUT_MS ?? 180000
+);
+const APP_SERVER_TURN_START_TIMEOUT_MS = Number(
+  process.env.OCTOP_APP_SERVER_TURN_START_TIMEOUT_MS ?? 600000
+);
 const APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES = Number(
   process.env.OCTOP_APP_SERVER_REQUEST_TIMEOUT_FORCE_RECONNECT_MISSES ?? 2
 );
@@ -5281,7 +5287,14 @@ async function ensureCodexThreadForPhysicalThread(userId, physicalThreadId, opti
     physical_thread_id: physicalThreadId,
     params: threadStartParams
   });
-  const threadResponse = await appServer.request("thread/start", threadStartParams, "thread/start.ensureCodexThreadForPhysicalThread");
+  const threadResponse = await appServer.request(
+    "thread/start",
+    threadStartParams,
+    "thread/start.ensureCodexThreadForPhysicalThread",
+    {
+      timeoutMs: APP_SERVER_THREAD_START_TIMEOUT_MS
+    }
+  );
   const codexThread = threadResponse.result?.thread;
 
   if (!codexThread?.id) {
@@ -5510,7 +5523,14 @@ async function startTurnOnPhysicalThread(
         codex_thread_id: activeCodexThreadId ?? null,
         params: turnStartParams
       });
-      const turnResponse = await appServer.request("turn/start", turnStartParams, "turn/start.startTurnOnPhysicalThread");
+      const turnResponse = await appServer.request(
+        "turn/start",
+        turnStartParams,
+        "turn/start.startTurnOnPhysicalThread",
+        {
+          timeoutMs: APP_SERVER_TURN_START_TIMEOUT_MS
+        }
+      );
 
       const turn = turnResponse.result?.turn ?? null;
       const currentPhysicalThread = physicalThreadStateById.get(physicalThreadId);
@@ -9006,10 +9026,10 @@ class AppServerClient {
     });
   }
 
-  async request(method, params, reason = method) {
+  async request(method, params, reason = method, options = {}) {
     await this.ensureReady(`request:${reason}`);
     this.assertUsable();
-    return this.requestInternal(method, params);
+    return this.requestInternal(method, params, options);
   }
 
   markSocketActivity({ message = false } = {}) {
@@ -10089,26 +10109,217 @@ function joinBackfillTextSegments(segments = []) {
   }, "");
 }
 
+const REMOTE_RESULT_TEXT_KEYS = [
+  "text",
+  "markdown",
+  "content",
+  "output",
+  "result",
+  "results",
+  "value",
+  "values",
+  "data",
+  "payload",
+  "structuredContent",
+  "structured_content",
+  "message",
+  "messages",
+  "error",
+  "errors",
+  "stdout",
+  "stderr",
+  "toolResult",
+  "tool_result",
+  "mcpResult",
+  "mcp_result",
+  "skillResult",
+  "skill_result",
+  "functionResult",
+  "function_result"
+];
+
+const REMOTE_RESULT_STRUCTURED_FALLBACK_KEYS = new Set([
+  "output",
+  "result",
+  "results",
+  "value",
+  "values",
+  "data",
+  "payload",
+  "structuredContent",
+  "structured_content",
+  "toolResult",
+  "tool_result",
+  "mcpResult",
+  "mcp_result",
+  "skillResult",
+  "skill_result",
+  "functionResult",
+  "function_result",
+  "stdout",
+  "stderr"
+]);
+
+const REMOTE_RESULT_ITEM_TYPE_PATTERN = /(tool|mcp|skill|function|result|output)/i;
+
+const REMOTE_RESULT_ITEM_KEYS = [
+  "toolResult",
+  "tool_result",
+  "mcpResult",
+  "mcp_result",
+  "skillResult",
+  "skill_result",
+  "functionResult",
+  "function_result",
+  "output",
+  "result",
+  "results",
+  "structuredContent",
+  "structured_content",
+  "stdout",
+  "stderr"
+];
+
+function dedupeBackfillTextSegments(segments = []) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const segment of segments) {
+    const normalized = String(segment ?? "");
+
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+
+  return deduped;
+}
+
+function stringifyRemoteStructuredValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function collectTextSegmentsFromRemoteValue(value, options = {}) {
+  const depth = Number(options.depth ?? 0);
+  const allowStructuredFallback = options.allowStructuredFallback === true;
+  const visited = options.visited ?? new WeakSet();
+
+  if (depth > 6 || value == null) {
+    return [];
+  }
+
+  if (typeof value === "string") {
+    return value.trim() ? [value] : [];
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return allowStructuredFallback ? [String(value)] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return dedupeBackfillTextSegments(
+      value.flatMap((entry) => collectTextSegmentsFromRemoteValue(entry, {
+        depth: depth + 1,
+        allowStructuredFallback,
+        visited
+      }))
+    );
+  }
+
+  if (typeof value !== "object") {
+    return [];
+  }
+
+  if (visited.has(value)) {
+    return [];
+  }
+
+  visited.add(value);
+
+  const segments = dedupeBackfillTextSegments(
+    REMOTE_RESULT_TEXT_KEYS.flatMap((key) => {
+      if (!(key in value)) {
+        return [];
+      }
+
+      return collectTextSegmentsFromRemoteValue(value[key], {
+        depth: depth + 1,
+        allowStructuredFallback: allowStructuredFallback || REMOTE_RESULT_STRUCTURED_FALLBACK_KEYS.has(key),
+        visited
+      });
+    })
+  );
+
+  if (segments.length > 0) {
+    return segments;
+  }
+
+  if (!allowStructuredFallback) {
+    return [];
+  }
+
+  const structuredFallback = stringifyRemoteStructuredValue(value).trim();
+
+  if (!structuredFallback || structuredFallback === "{}" || structuredFallback === "[]") {
+    return [];
+  }
+
+  return [structuredFallback];
+}
+
 function collectTextFromRemoteMessageContent(content) {
-  if (!Array.isArray(content)) {
+  return joinBackfillTextSegments(
+    collectTextSegmentsFromRemoteValue(content)
+  );
+}
+
+function isRemoteResultBearingItem(item) {
+  if (!item || typeof item !== "object") {
+    return false;
+  }
+
+  const normalizedType = String(item.type ?? item.itemType ?? "").trim();
+
+  if (REMOTE_RESULT_ITEM_TYPE_PATTERN.test(normalizedType)) {
+    return true;
+  }
+
+  return REMOTE_RESULT_ITEM_KEYS.some((key) => key in item);
+}
+
+function collectTextFromRemoteResultItem(item) {
+  if (!item || typeof item !== "object") {
     return "";
   }
 
-  return joinBackfillTextSegments(
-    content
-      .map((entry) => {
-        if (!entry || typeof entry !== "object") {
-          return "";
-        }
+  const segments = dedupeBackfillTextSegments(
+    REMOTE_RESULT_TEXT_KEYS.flatMap((key) => {
+      if (!(key in item)) {
+        return [];
+      }
 
-        if (typeof entry.text === "string" && entry.text.trim()) {
-          return entry.text;
-        }
-
-        return "";
-      })
-      .filter(Boolean)
+      return collectTextSegmentsFromRemoteValue(item[key], {
+        allowStructuredFallback: REMOTE_RESULT_STRUCTURED_FALLBACK_KEYS.has(key)
+      });
+    })
   );
+
+  return joinBackfillTextSegments(segments);
 }
 
 function collectAssistantTextFromRemoteTurn(turn) {
@@ -10133,6 +10344,10 @@ function collectAssistantTextFromRemoteTurn(turn) {
             String(item.agentMessage.text ?? "").trim() ||
             collectTextFromRemoteMessageContent(item.agentMessage.content)
           );
+        }
+
+        if (isRemoteResultBearingItem(item)) {
+          return collectTextFromRemoteResultItem(item);
         }
 
         return "";
@@ -11514,7 +11729,14 @@ async function startThreadTurn(userId, threadId) {
       root_thread_id: threadId,
       params: turnStartParams
     });
-    const turnResponse = await appServer.request("turn/start", turnStartParams, "turn/start.startThreadTurn");
+    const turnResponse = await appServer.request(
+      "turn/start",
+      turnStartParams,
+      "turn/start.startThreadTurn",
+      {
+        timeoutMs: APP_SERVER_TURN_START_TIMEOUT_MS
+      }
+    );
 
     const turn = turnResponse.result?.turn ?? null;
 
@@ -11601,7 +11823,14 @@ async function createQueuedIssue(userId, payload = {}) {
     issue_title: issueTitle,
     params: threadStartParams
   });
-  const threadResponse = await appServer.request("thread/start", threadStartParams, "thread/start.createQueuedIssue");
+  const threadResponse = await appServer.request(
+    "thread/start",
+    threadStartParams,
+    "thread/start.createQueuedIssue",
+    {
+      timeoutMs: APP_SERVER_THREAD_START_TIMEOUT_MS
+    }
+  );
   const thread = threadResponse.result?.thread;
 
   if (!thread?.id) {

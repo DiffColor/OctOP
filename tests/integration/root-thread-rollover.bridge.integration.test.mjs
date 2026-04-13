@@ -492,6 +492,22 @@ class FakeAppServer {
     const errorOnceMethods = this.options.errorOnceMethods && typeof this.options.errorOnceMethods === "object"
       ? this.options.errorOnceMethods
       : null;
+    const responseDelayByMethod = this.options.responseDelayByMethod && typeof this.options.responseDelayByMethod === "object"
+      ? this.options.responseDelayByMethod
+      : null;
+    const respond = (result) => {
+      const responseDelayMs = Number(responseDelayByMethod?.[message.method] ?? 0);
+
+      if (responseDelayMs > 0) {
+        const timer = setTimeout(() => {
+          this.respond(message.id, result);
+        }, responseDelayMs);
+        timer.unref?.();
+        return;
+      }
+
+      this.respond(message.id, result);
+    };
 
     if (noResponseMethods.includes(message.method)) {
       return;
@@ -547,11 +563,10 @@ class FakeAppServer {
 
     switch (message.method) {
       case "initialize":
-        this.respond(message.id, {});
+        respond({});
         return;
       case "account/read":
-        this.respond(
-          message.id,
+        respond(
           this.options.accountReadResult ?? {
             account: {
               type: "chatgpt",
@@ -578,7 +593,7 @@ class FakeAppServer {
           currentTurnId: null
         };
         this.threads.set(threadId, record);
-        this.respond(message.id, {
+        respond({
           thread: {
             id: threadId
           }
@@ -602,7 +617,7 @@ class FakeAppServer {
           });
         }
 
-        this.respond(message.id, {
+        respond({
           turn: {
             id: turnId,
             status: "running"
@@ -635,11 +650,11 @@ class FakeAppServer {
           }
         }
 
-        this.respond(message.id, { accepted: true });
+        respond({ accepted: true });
         return;
       }
       case "thread/realtime/stop":
-        this.respond(message.id, { accepted: true });
+        respond({ accepted: true });
         return;
       case "thread/list":
         this.threadListRequestCount += 1;
@@ -654,8 +669,8 @@ class FakeAppServer {
             shouldOmitForRequestNumber || (threadListOmitCount > 0 && this.threadListRequestCount <= threadListOmitCount)
               ? []
               : allThreads;
-        this.respond(message.id, {
-            data
+        respond({
+          data
         });
         }
         return;
@@ -680,13 +695,13 @@ class FakeAppServer {
                 threadPayload
               })
             : undefined;
-        this.respond(message.id, {
+        respond({
           thread: overriddenPayload === undefined ? threadPayload : overriddenPayload
         });
         return;
       }
       default:
-        this.respond(message.id, {});
+        respond({});
     }
   }
 
@@ -1492,6 +1507,93 @@ test("브리지 app-server reconnect 후 thread/read로 누락된 출력과 완�
   });
 
   assert.equal(issueDetail.issue?.last_event, "turn.completed");
+  assert.equal(fakeAppServer.connectionCount >= 2, true);
+});
+
+test("thread/read backfill은 mcp/skill 결과 item만 남아도 작업 내역과 완료 상태를 복구한다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-tool-result-backfill-int-"));
+  const fakeAppServer = new FakeAppServer();
+
+  fakeAppServer.options.onTurnStart = ({ server, threadId }) => {
+    setTimeout(() => {
+      server.destroyActiveSocket();
+    }, 150);
+
+    setTimeout(() => {
+      const thread = server.threads.get(threadId) ?? null;
+      const currentTurn = server.getCurrentTurn(threadId);
+
+      if (currentTurn) {
+        currentTurn.items.push({
+          type: "mcp_result",
+          toolResult: {
+            content: [
+              {
+                text: "[진행 내역]\n- MCP 검색 완료\n\n[최종 보고]\n- 결과 파일: result.txt"
+              }
+            ]
+          }
+        });
+        currentTurn.status = "completed";
+      }
+
+      if (thread) {
+        thread.status = {
+          type: "idle"
+        };
+        thread.updatedAt = Math.floor(Date.now() / 1000);
+      }
+    }, 1200);
+  };
+
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-tool-result-backfill-token",
+    userId: "tool-result-backfill-user",
+    bridgeId: `tool-result-backfill-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_HEARTBEAT_INTERVAL_MS: "250",
+      OCTOP_APP_SERVER_HEARTBEAT_TIMEOUT_MS: "1000",
+      OCTOP_APP_SERVER_RECONNECT_DELAY_MS: "200",
+      OCTOP_RUNNING_ISSUE_BACKFILL_INTERVAL_MS: "300"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Tool Result Backfill Thread"
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const assistantMessages = payload.messages.filter((message) => message.role === "assistant");
+    assert.equal(payload.issue?.status, "completed");
+    assert.equal(assistantMessages.length >= 1, true);
+    assert.equal(
+      assistantMessages.at(-1)?.content,
+      "[진행 내역]\n- MCP 검색 완료\n\n[최종 보고]\n- 결과 파일: result.txt"
+    );
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "tool result backfill completion"
+  });
+
+  assert.equal(issueDetail.issue?.last_event, "turn.completed");
+  assert.equal(fakeAppServer.getRequests("thread/read").length >= 1, true);
   assert.equal(fakeAppServer.connectionCount >= 2, true);
 });
 
@@ -4203,6 +4305,92 @@ test("app-server reconnect 중 issue start 요청은 queued로 유지되고 복�
 
     assert.equal(fakeAppServer.getRequests("thread/start").length >= 1, true);
     assert.equal(fakeAppServer.getRequests("turn/start").length >= 1, true);
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
+test("장시간 thread/start·turn/start 응답은 일반 요청 타임아웃과 분리되어 mcp/skill 실행 시작을 실패 처리하지 않는다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-long-start-timeout-int-"));
+  const fakeAppServer = new FakeAppServer({
+    responseDelayByMethod: {
+      "thread/start": 400,
+      "turn/start": 700
+    }
+  });
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-long-start-timeout-token",
+    userId: "integration-user",
+    bridgeId: `long-start-timeout-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl,
+    extraEnv: {
+      OCTOP_APP_SERVER_REQUEST_TIMEOUT_MS: "200",
+      OCTOP_APP_SERVER_THREAD_START_TIMEOUT_MS: "1500",
+      OCTOP_APP_SERVER_TURN_START_TIMEOUT_MS: "2000",
+      OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS: "1000",
+      OCTOP_RUNNING_ISSUE_STALE_MS: "10000"
+    }
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const threadPayload = await bridge.request(`/api/projects/${project.id}/threads`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Long Start Timeout Thread"
+      })
+    });
+    const threadId = threadPayload.thread.id;
+
+    const issuePayload = await bridge.request(`/api/threads/${threadId}/issues`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Long Start Timeout Issue",
+        prompt: PROMPT
+      })
+    });
+    const issueId = issuePayload.issue.id;
+
+    const startPayload = await bridge.request(`/api/threads/${threadId}/issues/start`, {
+      method: "POST",
+      body: JSON.stringify({
+        issue_ids: [issueId]
+      })
+    });
+
+    assert.equal(startPayload.accepted, true);
+
+    await waitFor(async () => {
+      const currentIssuePayload = await bridge.request(`/api/issues/${issueId}`);
+      const continuityPayload = await bridge.request(`/api/threads/${threadId}/continuity`);
+      assert.equal(currentIssuePayload.issue?.status, "running");
+      assert.equal(currentIssuePayload.issue?.last_event, "turn.started");
+      assert.ok(continuityPayload.active_physical_thread?.codex_thread_id);
+      assert.ok(continuityPayload.active_physical_thread?.turn_id);
+      return { currentIssuePayload, continuityPayload };
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 250,
+      label: "long start timeout issue running"
+    });
+
+    assert.equal(fakeAppServer.getRequests("thread/start").length >= 1, true);
+    assert.equal(fakeAppServer.getRequests("turn/start").length >= 1, true);
+    assert.equal(bridge.debugOutput().stderr.includes("app-server request timeout: thread/start"), false);
+    assert.equal(bridge.debugOutput().stderr.includes("app-server request timeout: turn/start"), false);
   } catch (error) {
     error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
     throw error;
