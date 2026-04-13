@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 function buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }) {
   if (connectionState === "connecting" || micState === "requesting") {
@@ -44,10 +44,6 @@ function buildVoiceModeStatus({ connectionState, isResponding, isListening, micS
 
 export default function VoiceModePanel({
   open,
-  projectName = "",
-  threadTitle = "",
-  bridgeLabel = "",
-  threadStatusLabel = "",
   latestUserText = "",
   latestAssistantText = "",
   connectionState = "idle",
@@ -56,134 +52,70 @@ export default function VoiceModePanel({
   isResponding = false,
   audioLevel = 0,
   levelHistory = [],
+  inputDevices = [],
+  selectedInputDeviceId = "default",
   errorMessage = "",
-  onConnect = null,
-  onDisconnect = null,
-  onCancelResponse = null,
+  onSelectInputDevice = null,
   onClose = null
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const status = useMemo(
     () => buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }),
     [connectionState, errorMessage, isListening, isResponding, micState]
   );
-  const levelScale = 1 + audioLevel * 0.28;
-  const ringOpacity = 0.28 + audioLevel * 0.4;
-  const waveAmplitude = 10 + audioLevel * 20;
-  const isConnecting = connectionState === "connecting" || micState === "requesting";
-  const isConnected = connectionState === "connected";
-  const sessionActionLabel = isConnected ? "세션 종료" : isConnecting ? "연결 중..." : "실시간 음성 연결";
+
   const liveTranscript = latestAssistantText || latestUserText || status.detail;
-  const liveHint =
-    isConnected
-      ? isResponding
-        ? "응답 중"
-        : isListening
-          ? "청취 중"
-          : "대기"
-      : isConnecting
-        ? "연결 중"
-        : connectionState === "error"
-          ? "오류"
-          : "미연결";
+  const liveLevels = Array.isArray(levelHistory) && levelHistory.length > 0 ? levelHistory : Array.from({ length: 24 }, () => 0.08);
+  const glowScale = 1 + audioLevel * 0.18;
+  const blobScale = 1 + audioLevel * 0.16;
+  const blobGlowOpacity = 0.46 + audioLevel * 0.44;
+  const blobRotation = `${-10 + audioLevel * 24}deg`;
+  const blobLift = `${audioLevel * -8}px`;
 
   return (
     <section className="voice-mode-panel sheet-enter" data-testid="voice-mode-panel" aria-hidden={!open}>
       <div className="voice-mode-panel__backdrop" aria-hidden="true" />
 
       <div className="voice-mode-panel__hud">
-        <div className="voice-mode-panel__status-row">
-          <span className={`voice-mode-panel__badge ${connectionState === "error" ? "is-error" : ""}`}>{status.label}</span>
-          <span className="voice-mode-panel__badge is-muted">{liveHint}</span>
-        </div>
+        <div
+          className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
+          style={{
+            "--voice-blob-scale": blobScale,
+            "--voice-blob-glow-opacity": blobGlowOpacity,
+            "--voice-blob-glow-scale": glowScale,
+            "--voice-blob-rotation": blobRotation,
+            "--voice-blob-lift": blobLift
+          }}
+          aria-hidden="true"
+        >
+          <div className="voice-mode-panel__blob-shadow" />
+          <div className="voice-mode-panel__blob-glow is-back" />
+          <div className="voice-mode-panel__blob-glow is-front" />
+          <div className="voice-mode-panel__blob-glow is-side" />
 
-        <div className="voice-mode-panel__stage">
-          <div className="voice-mode-panel__orbital-shell" style={{ "--voice-orb-scale": levelScale, "--voice-ring-opacity": ringOpacity }}>
-            <div className="voice-mode-panel__orbital-ring" />
-            <div className="voice-mode-panel__orbital-ring is-secondary" />
-            <div className="voice-mode-panel__orbital-ring is-tertiary" />
-
-            <div
-              className={`voice-mode-panel__wave-orb ${isResponding ? "is-speaking" : ""} ${isConnected ? "is-live" : ""} ${
-                connectionState === "error" ? "is-error" : ""
-              }`}
-              aria-hidden="true"
-            >
-              <div className="voice-mode-panel__wave-glow" />
-
-              <svg className="voice-mode-panel__wave-svg" viewBox="0 0 240 240" role="presentation" focusable="false">
-                <defs>
-                  <linearGradient id="voice-wave-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="rgba(236, 250, 255, 0.95)" />
-                    <stop offset="38%" stopColor="rgba(147, 230, 255, 0.98)" />
-                    <stop offset="72%" stopColor="rgba(37, 136, 255, 0.98)" />
-                    <stop offset="100%" stopColor="rgba(10, 57, 168, 0.98)" />
-                  </linearGradient>
-                  <radialGradient id="voice-wave-shine" cx="36%" cy="28%" r="58%">
-                    <stop offset="0%" stopColor="rgba(255,255,255,0.88)" />
-                    <stop offset="52%" stopColor="rgba(180,236,255,0.42)" />
-                    <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-                  </radialGradient>
-                  <clipPath id="voice-wave-clip">
-                    <circle cx="120" cy="120" r="88" />
-                  </clipPath>
-                </defs>
-
-                <g clipPath="url(#voice-wave-clip)">
-                  <rect x="26" y="26" width="188" height="188" rx="94" fill="url(#voice-wave-bg)" />
-                  <ellipse cx="94" cy="74" rx="64" ry="46" fill="url(#voice-wave-shine)" />
-
-                  {[ 
-                    { baseY: 86, amplitude: waveAmplitude * 0.5, width: 12, opacity: 0.28 },
-                    { baseY: 108, amplitude: waveAmplitude * 0.72, width: 14, opacity: 0.42 },
-                    { baseY: 132, amplitude: waveAmplitude, width: 16, opacity: 0.72 },
-                    { baseY: 156, amplitude: waveAmplitude * 0.68, width: 12, opacity: 0.4 }
-                  ].map((wave, index) => {
-                    const top = wave.baseY;
-                    const amp = wave.amplitude;
-                    const d = `M 8 ${top} C 36 ${top - amp} 68 ${top - amp} 96 ${top} S 154 ${top + amp} 186 ${top} S 228 ${top - amp} 250 ${top}`;
-
-                    return (
-                      <path
-                        key={`${index}-${wave.baseY}`}
-                        d={d}
-                        fill="none"
-                        stroke={index === 2 ? "rgba(255,255,255,0.95)" : "rgba(228,246,255,0.74)"}
-                        strokeLinecap="round"
-                        strokeWidth={wave.width}
-                        opacity={wave.opacity}
-                      />
-                    );
-                  })}
-
-                  <ellipse cx="130" cy="162" rx="88" ry="36" fill="rgba(20, 81, 214, 0.2)" />
-                </g>
-              </svg>
-            </div>
-          </div>
-
-          <div className="voice-mode-panel__summary">
-            <p className="voice-mode-panel__eyebrow">OctOP Realtime Voice</p>
-            <h2 className="voice-mode-panel__title">{status.label}</h2>
-            <p className="voice-mode-panel__summary-text">{status.detail}</p>
-            <p className="voice-mode-panel__live-transcript">{liveTranscript}</p>
-
-            <div className="voice-mode-panel__meters" aria-hidden="true">
-              {(Array.isArray(levelHistory) && levelHistory.length > 0 ? levelHistory : Array.from({ length: 24 }, () => 0.08)).map((level, index) => (
-                <span
-                  key={`${index}-${level}`}
-                  className="voice-mode-panel__meter"
-                  style={{
-                    height: `${Math.max(0.55, Math.min(1.8, Number(level) * 1.8 || 0.55))}rem`,
-                    opacity: `${Math.max(0.28, Math.min(1, Number(level) * 1.6 || 0.28))}`
-                  }}
-                />
-              ))}
-            </div>
+          <div className="voice-mode-panel__blob-core">
+            <div className="voice-mode-panel__blob-gradient" />
+            <div className="voice-mode-panel__blob-highlight" />
+            <div className="voice-mode-panel__blob-sheen" />
+            <div className="voice-mode-panel__blob-ribbon is-one" />
+            <div className="voice-mode-panel__blob-ribbon is-two" />
+            <div className="voice-mode-panel__blob-ribbon is-three" />
           </div>
         </div>
 
-        <div className={`voice-mode-panel__details ${detailsOpen || Boolean(errorMessage) ? "is-open" : ""}`}>
+        <div className="voice-mode-panel__transcript-shell">
+          <div className="voice-mode-panel__meters" aria-hidden="true">
+            {liveLevels.map((level, index) => (
+              <span
+                key={`${index}-${level}`}
+                className="voice-mode-panel__meter"
+                style={{
+                  height: `${Math.max(0.48, Math.min(1.7, Number(level) * 1.9 || 0.48))}rem`,
+                  opacity: `${Math.max(0.24, Math.min(1, Number(level) * 1.6 || 0.24))}`
+                }}
+              />
+            ))}
+          </div>
+
           <div className="voice-mode-panel__transcript-grid">
             <article className="voice-mode-panel__transcript-card">
               <p className="voice-mode-panel__transcript-label">최근 사용자</p>
@@ -192,64 +124,38 @@ export default function VoiceModePanel({
 
             <article className="voice-mode-panel__transcript-card is-response">
               <p className="voice-mode-panel__transcript-label">최근 OctOP</p>
-              <p className="voice-mode-panel__transcript-text">{latestAssistantText || "아직 생성된 음성 응답이 없습니다."}</p>
+              <p className="voice-mode-panel__transcript-text">{liveTranscript}</p>
             </article>
-          </div>
-
-          <div className="voice-mode-panel__meta-strip">
-            <span>{projectName || "프로젝트 없음"}</span>
-            {threadTitle ? <span>{threadTitle}</span> : null}
-            {threadStatusLabel ? <span>{threadStatusLabel}</span> : null}
-            {bridgeLabel ? <span>{bridgeLabel}</span> : null}
           </div>
 
           {errorMessage ? <p className="voice-mode-panel__error">{errorMessage}</p> : null}
         </div>
 
         <div className="voice-mode-panel__actions">
-          <button
-            type="button"
-            onClick={() => setDetailsOpen((current) => !current)}
-            className="voice-mode-panel__action-button"
-            aria-label={detailsOpen ? "상세 닫기" : "상세 보기"}
-          >
-            <span className="voice-mode-panel__action-icon" aria-hidden="true">
-              ⌂
+          <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
+            <span className="voice-mode-panel__device-select-label">마이크 입력</span>
+            <select
+              className="voice-mode-panel__device-select-control"
+              aria-label="마이크 입력 선택"
+              value={selectedInputDeviceId}
+              onChange={(event) => onSelectInputDevice?.(event.target.value)}
+            >
+              {(Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }]).map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label}
+                </option>
+              ))}
+            </select>
+            <span className="voice-mode-panel__device-select-caret" aria-hidden="true">
+              ▾
             </span>
-            <span className="voice-mode-panel__sr-only">{detailsOpen ? "상세 닫기" : "상세 보기"}</span>
-          </button>
+          </label>
 
-          <button
-            type="button"
-            onClick={isConnected ? onDisconnect : onConnect}
-            className={`voice-mode-panel__action-button is-primary ${isConnected ? "is-live" : ""}`}
-            aria-label={sessionActionLabel}
-            disabled={isConnecting}
-          >
-            <span className="voice-mode-panel__action-icon is-mic" aria-hidden="true">
-              {isConnected ? "●" : "◎"}
-            </span>
-            <span className="voice-mode-panel__sr-only">{sessionActionLabel}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onCancelResponse}
-            className="voice-mode-panel__action-button"
-            aria-label="응답 중지"
-            disabled={!isResponding}
-          >
-            <span className="voice-mode-panel__action-icon" aria-hidden="true">
-              ⋯
-            </span>
-            <span className="voice-mode-panel__sr-only">응답 중지</span>
-          </button>
-
-          <button type="button" onClick={onClose} className="voice-mode-panel__action-button" aria-label="채팅 모드">
+          <button type="button" onClick={onClose} className="voice-mode-panel__action-button is-primary" aria-label="음성입력 종료">
             <span className="voice-mode-panel__action-icon" aria-hidden="true">
               ✕
             </span>
-            <span className="voice-mode-panel__sr-only">채팅 모드</span>
+            <span className="voice-mode-panel__action-text">음성입력 종료</span>
           </button>
         </div>
       </div>

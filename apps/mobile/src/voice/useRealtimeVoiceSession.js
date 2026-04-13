@@ -17,11 +17,39 @@ function createInitialState() {
     isResponding: false,
     audioLevel: 0,
     levelHistory: [...DEFAULT_VOICE_LEVEL_HISTORY],
+    inputDevices: [{ deviceId: "default", label: "기본 마이크" }],
+    selectedInputDeviceId: "default",
     latestUserTranscript: "",
     latestAssistantTranscript: "",
     error: "",
     sessionId: ""
   };
+}
+
+function normalizeAudioInputDevices(devices) {
+  const normalizedDevices = Array.isArray(devices)
+    ? devices
+        .filter((device) => String(device?.kind ?? "").trim() === "audioinput")
+        .map((device, index) => ({
+          deviceId: String(device?.deviceId ?? "").trim(),
+          label: String(device?.label ?? "").trim() || `마이크 ${index + 1}`
+        }))
+        .filter((device) => Boolean(device.deviceId))
+    : [];
+
+  const uniqueDevices = [];
+  const seenIds = new Set(["default"]);
+
+  for (const device of normalizedDevices) {
+    if (seenIds.has(device.deviceId)) {
+      continue;
+    }
+
+    seenIds.add(device.deviceId);
+    uniqueDevices.push(device);
+  }
+
+  return [{ deviceId: "default", label: "기본 마이크" }, ...uniqueDevices];
 }
 
 export default function useRealtimeVoiceSession({
@@ -56,6 +84,7 @@ export default function useRealtimeVoiceSession({
   const toolCallIdsRef = useRef(new Set());
   const disconnectingRef = useRef(false);
   const sessionVersionRef = useRef(0);
+  const preferredInputDeviceIdRef = useRef("default");
 
   useEffect(() => {
     setState((current) => {
@@ -76,6 +105,63 @@ export default function useRealtimeVoiceSession({
       };
     });
   }, [latestAssistantText, latestUserText]);
+
+  const refreshInputDevices = useCallback(async (preferredDeviceId = "") => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setState((current) => ({
+        ...current,
+        inputDevices: [{ deviceId: "default", label: "기본 마이크" }],
+        selectedInputDeviceId: "default"
+      }));
+      preferredInputDeviceIdRef.current = "default";
+      return [{ deviceId: "default", label: "기본 마이크" }];
+    }
+
+    try {
+      const devices = normalizeAudioInputDevices(await navigator.mediaDevices.enumerateDevices());
+      setState((current) => {
+        const requestedDeviceId = String(
+          preferredDeviceId || preferredInputDeviceIdRef.current || current.selectedInputDeviceId || "default"
+        ).trim();
+        const nextSelectedInputDeviceId = devices.some((device) => device.deviceId === requestedDeviceId)
+          ? requestedDeviceId
+          : devices[0]?.deviceId ?? "default";
+
+        preferredInputDeviceIdRef.current = nextSelectedInputDeviceId;
+
+        return {
+          ...current,
+          inputDevices: devices,
+          selectedInputDeviceId: nextSelectedInputDeviceId
+        };
+      });
+
+      return devices;
+    } catch {
+      setState((current) => ({
+        ...current,
+        inputDevices: [{ deviceId: "default", label: "기본 마이크" }]
+      }));
+      return [{ deviceId: "default", label: "기본 마이크" }];
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshInputDevices();
+
+    if (!navigator.mediaDevices?.addEventListener) {
+      return undefined;
+    }
+
+    const handleDeviceChange = () => {
+      void refreshInputDevices();
+    };
+
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener?.("devicechange", handleDeviceChange);
+    };
+  }, [refreshInputDevices]);
 
   const disconnectSession = useCallback(async ({ preserveTranscript = true } = {}) => {
     disconnectingRef.current = true;
@@ -437,11 +523,22 @@ export default function useRealtimeVoiceSession({
           throw new Error("이 브라우저는 마이크 입력을 지원하지 않습니다.");
         }
 
+        await refreshInputDevices(preferredInputDeviceIdRef.current);
+
+        const selectedInputDeviceId = String(preferredInputDeviceIdRef.current || "default").trim() || "default";
+
         const localStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: true,
+            ...(selectedInputDeviceId !== "default"
+              ? {
+                  deviceId: {
+                    exact: selectedInputDeviceId
+                  }
+                }
+              : {})
           }
         });
 
@@ -451,6 +548,7 @@ export default function useRealtimeVoiceSession({
         }
 
         localStreamRef.current = localStream;
+        await refreshInputDevices(selectedInputDeviceId);
         startAudioLevelMeter(localStream);
 
         const sessionPayload = await apiRequest(
@@ -643,6 +741,7 @@ export default function useRealtimeVoiceSession({
     projectDeveloperInstructions,
     projectWorkspacePath,
     recentConversationSummary,
+    refreshInputDevices,
     startAudioLevelMeter,
     latestHandoffSummary,
     thread?.id,
@@ -672,6 +771,27 @@ export default function useRealtimeVoiceSession({
     return true;
   }, []);
 
+  const selectInputDevice = useCallback(
+    async (deviceId) => {
+      const normalizedDeviceId = String(deviceId ?? "").trim() || "default";
+      preferredInputDeviceIdRef.current = normalizedDeviceId;
+
+      setState((current) => ({
+        ...current,
+        selectedInputDeviceId: normalizedDeviceId
+      }));
+
+      await refreshInputDevices(normalizedDeviceId);
+
+      if (state.connectionState === "connected" || state.connectionState === "connecting") {
+        await startSession();
+      }
+
+      return true;
+    },
+    [refreshInputDevices, startSession, state.connectionState]
+  );
+
   const summary = useMemo(
     () => ({
       ...state,
@@ -696,6 +816,8 @@ export default function useRealtimeVoiceSession({
     ...summary,
     startSession,
     stopSession: disconnectSession,
-    cancelResponse
+    cancelResponse,
+    refreshInputDevices,
+    selectInputDevice
   };
 }

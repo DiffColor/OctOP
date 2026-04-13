@@ -9320,10 +9320,6 @@ function ThreadDetail({
             <div className="h-full w-full">
               <VoiceModePanel
                 open={voiceModeEnabled}
-                projectName={project?.name ?? ""}
-                threadTitle={threadTitle}
-                bridgeLabel={bridgeId}
-                threadStatusLabel={status?.label ?? ""}
                 latestUserText={voiceSession.latestUserTranscript || latestUserSpeechText}
                 latestAssistantText={voiceSession.latestAssistantTranscript || latestAssistantSpeechText}
                 connectionState={voiceSession.connectionState}
@@ -9332,10 +9328,10 @@ function ThreadDetail({
                 isResponding={voiceSession.isResponding}
                 audioLevel={voiceSession.audioLevel}
                 levelHistory={voiceSession.levelHistory}
+                inputDevices={voiceSession.inputDevices}
+                selectedInputDeviceId={voiceSession.selectedInputDeviceId}
                 errorMessage={voiceSession.error}
-                onConnect={() => void voiceSession.startSession()}
-                onDisconnect={() => void voiceSession.stopSession({ preserveTranscript: true })}
-                onCancelResponse={() => voiceSession.cancelResponse()}
+                onSelectInputDevice={(deviceId) => void voiceSession.selectInputDevice(deviceId)}
                 onClose={() => {
                   setVoiceModeEnabled(false);
                   void voiceSession.stopSession({ preserveTranscript: true });

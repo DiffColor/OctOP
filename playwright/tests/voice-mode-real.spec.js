@@ -176,7 +176,12 @@ async function installVoiceBrowserMocks(page) {
       getUserMediaCalls: [],
       realtimeFetchCalls: [],
       toolInvocations: [],
-      sentEvents: []
+      sentEvents: [],
+      audioInputDevices: [
+        { deviceId: 'default', kind: 'audioinput', label: '기본 마이크' },
+        { deviceId: 'usb-mic', kind: 'audioinput', label: 'USB 마이크' },
+        { deviceId: 'bt-mic', kind: 'audioinput', label: 'Bluetooth 마이크' }
+      ]
     };
 
     class FakeTrack {
@@ -211,6 +216,11 @@ async function installVoiceBrowserMocks(page) {
         window.__voiceTest.getUserMediaCalls.push(constraints);
         return new FakeMediaStream();
       }
+    });
+    Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
+      configurable: true,
+      writable: true,
+      value: async () => window.__voiceTest.audioInputDevices
     });
 
     class FakeAnalyserNode {
@@ -565,9 +575,9 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
 
   await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
   await expect(page.getByTestId('thread-detail-header-filters')).toHaveAttribute('aria-hidden', 'true');
-  await expect(page.getByText('OctOP Realtime Voice')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '음성입력 종료' })).toBeVisible();
   await expect.poll(() => voiceSessionRequests.length).toBe(1);
-  await expect(page.locator('.voice-mode-panel__badge', { hasText: 'VOICE STANDBY' })).toBeVisible();
   expect(voiceSessionRequests[0].thread_id).toBe(threadId);
   expect(voiceSessionRequests[0].project_id).toBe(projectId);
   expect(voiceSessionRequests[0].project_workspace_path).toBe(project.workspace_path);
@@ -583,6 +593,18 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
 
   expect(browserMetrics.getUserMediaCalls).toBe(1);
   expect(browserMetrics.realtimeFetchCalls).toBe(1);
+
+  await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
+  await expect.poll(async () => {
+    return page.evaluate(() => window.__voiceTest.getUserMediaCalls.length);
+  }).toBe(2);
+
+  const deviceSwitchMetrics = await page.evaluate(() => {
+    const calls = window.__voiceTest.getUserMediaCalls;
+    return calls[calls.length - 1];
+  });
+
+  expect(deviceSwitchMetrics.audio.deviceId.exact).toBe('usb-mic');
 
   await page.evaluate(() => {
     const channel = window.__voiceTest.dataChannel;
@@ -607,30 +629,19 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
     });
   });
 
-  await expect(page.locator('.voice-mode-panel__badge', { hasText: 'JARVIS LISTENING' })).toBeVisible();
   await expect(page.getByText('상태 알려줘')).toBeVisible();
-  await expect(page.locator('.voice-mode-panel__live-transcript')).toHaveText('현재 스레드는 유휴 상태입니다.');
+  await expect(page.locator('.voice-mode-panel__transcript-card.is-response .voice-mode-panel__transcript-text')).toHaveText(
+    '현재 스레드는 유휴 상태입니다.'
+  );
   await expect.poll(() => toolInvocations.length).toBe(1);
   expect(toolInvocations[0].tool_name).toBe('get_thread_status');
   expect(toolInvocations[0].thread_id).toBe(threadId);
 
-  await page.evaluate(() => {
-    const channel = window.__voiceTest.dataChannel;
-    channel.emit({ type: 'response.created' });
-  });
-
-  await expect(page.getByRole('button', { name: '응답 중지' })).toBeEnabled();
-  await page.getByRole('button', { name: '응답 중지' }).click();
-
   const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
-  expect(sentEvents.some((event) => event?.type === 'response.cancel')).toBe(true);
   expect(sentEvents.some((event) => event?.type === 'conversation.item.create')).toBe(true);
   expect(sentEvents.some((event) => event?.type === 'response.create')).toBe(true);
 
-  await page.getByRole('button', { name: '세션 종료' }).click();
-  await expect(page.getByRole('button', { name: '실시간 음성 연결' })).toBeVisible();
-
-  await page.getByTestId('voice-mode-panel').getByRole('button', { name: '채팅 모드' }).click();
+  await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
 });
 
@@ -653,6 +664,6 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
   await expect(page.getByRole('button', { name: '음성 모드 열기' })).toHaveCount(0);
   await openVoiceModeByLongPressingSend(page);
 
-  await expect(page.locator('.voice-mode-panel__badge', { hasText: 'VOICE DEGRADED' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
   await expect(page.locator('.voice-mode-panel__error')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');
 });
