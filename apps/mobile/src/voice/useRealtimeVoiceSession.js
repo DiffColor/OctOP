@@ -404,7 +404,7 @@ export default function useRealtimeVoiceSession({
   );
 
   const startSession = useCallback(async () => {
-    if (!enabled || !loginId || !bridgeId || !thread?.id || typeof apiRequest !== "function") {
+    if (!loginId || !bridgeId || !thread?.id || typeof apiRequest !== "function") {
       return false;
     }
 
@@ -619,7 +619,6 @@ export default function useRealtimeVoiceSession({
     apiRequest,
     bridgeId,
     disconnectSession,
-    enabled,
     handleRealtimeEvent,
     latestAssistantText,
     latestUserText,

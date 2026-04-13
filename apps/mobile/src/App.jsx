@@ -8950,7 +8950,7 @@ function ThreadDetail({
     }
 
     setVoiceModeEnabled(true);
-    await voiceSession.startSession();
+    void voiceSession.startSession();
   }, [bridgeId, sessionLoginId, showAlert, thread?.id, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
   useEffect(() => {
