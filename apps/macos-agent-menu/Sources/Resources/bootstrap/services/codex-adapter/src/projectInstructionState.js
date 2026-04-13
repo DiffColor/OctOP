@@ -2,10 +2,16 @@ function normalizeInstructionText(value) {
   return String(value ?? "").trim();
 }
 
+export const LEGACY_USAGE_ROLLOVER_INSTRUCTION_SECTION =
+  "응답이 길어져서 사용량을 120%를 넘어서는 경우에는 작업을 중단하고 현재 작업을 요약해서 다음 이슈로 넘길 수 있도록 정리하십시오.";
+
+export const DEFAULT_USAGE_ROLLOVER_INSTRUCTION_SECTION =
+  "사용률 100%를 넘어가면 작업을 중단하고 작업 내용을 요약하여 다음 할 일을 새로운 쓰레드에 바로 주입해 이어갈 수 있게 정리하십시오.";
+
 export const DEFAULT_COMMON_BASE_INSTRUCTION_SECTIONS = [
   "경로는 프로젝트 루트 기준 상대경로만 쓰고 인라인코드를 사용. 코드는 코드펜스를 사용.",
   "사용자 입력이 작업 방식이나 출력 형식을 직접 지정하면 그 지시를 우선하고, 아래 기본 형식은 충돌하지 않는 범위에서만 따르십시오.",
-  "응답이 길어져서 사용량을 120%를 넘어서는 경우에는 작업을 중단하고 현재 작업을 요약해서 다음 이슈로 넘길 수 있도록 정리하십시오.",
+  DEFAULT_USAGE_ROLLOVER_INSTRUCTION_SECTION,
   "각 섹션 제목 앞뒤로 한 줄씩 비우고, 섹션 안의 항목 사이에도 한 줄 공백을 넣어 사용자 친화적으로 구분하십시오.",
   [
     "코딩 작업을 시작할 때는 반드시 아래 사용자 친화적인 보고 형식으로 각 항목을 분리해 제시하십시오.",
@@ -70,8 +76,21 @@ function resolveMissingSections(normalized = "") {
   return missingSections;
 }
 
-export function ensureDefaultCommonBaseInstructions(value = "") {
+function migrateLegacyInstructionText(value = "") {
   const normalized = normalizeInstructionText(value);
+
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized.replaceAll(
+    LEGACY_USAGE_ROLLOVER_INSTRUCTION_SECTION,
+    DEFAULT_USAGE_ROLLOVER_INSTRUCTION_SECTION
+  );
+}
+
+export function ensureDefaultCommonBaseInstructions(value = "") {
+  const normalized = migrateLegacyInstructionText(value);
 
   if (!normalized) {
     return DEFAULT_COMMON_BASE_INSTRUCTIONS;
