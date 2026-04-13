@@ -115,6 +115,65 @@ const INSTANT_NOTIFICATION_ERROR_DURATION_MS = 5200;
 const SIDEBAR_PROJECT_LONG_PRESS_MS = 220;
 const SIDEBAR_PROJECT_DROP_EDGE_RATIO = 0.34;
 const SIDEBAR_PROJECT_DROP_PADDING_PX = 10;
+const SOURCE_FILE_PREVIEW_EXTENSION_SET = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "json",
+  "jsonc",
+  "css",
+  "scss",
+  "sass",
+  "html",
+  "htm",
+  "md",
+  "markdown",
+  "yml",
+  "yaml",
+  "xml",
+  "txt",
+  "cs",
+  "java",
+  "kt",
+  "swift",
+  "py",
+  "rb",
+  "php",
+  "go",
+  "rs",
+  "sh",
+  "zsh",
+  "bash",
+  "ps1",
+  "sql",
+  "toml",
+  "ini",
+  "cfg",
+  "conf",
+  "env",
+  "vue",
+  "svelte"
+]);
+const SOURCE_FILE_PREVIEW_SPECIAL_NAMES = new Set([
+  ".env",
+  ".env.local",
+  ".env.example",
+  ".gitignore",
+  ".dockerignore",
+  "dockerfile",
+  "makefile",
+  "cmakelists.txt",
+  "readme.md",
+  "agents.md"
+]);
+const FINAL_REPORT_HEADING_PATTERN = /^\[(?:최종 보고|최종 정리|final report|summary)\]\s*$/i;
+const GENERIC_SECTION_HEADING_PATTERN = /^\[[^\]]+\]\s*$/;
+const MODIFIED_FILE_SECTION_PATTERN =
+  /^[-*]?\s*(?:수정 파일|modified files?|changed files?)\s*:\s*(.*)$/i;
+const DETAIL_SOURCE_FILE_REQUEST_TIMEOUT_MS = 12_000;
 const bridgeRequestFailureListeners = new Set();
 const bridgeRequestSuccessListeners = new Set();
 
@@ -637,7 +696,12 @@ const COPY = {
       loading: "Loading thread history.",
       empty: "No conversation history to display.",
       request: "Request",
-      response: "Response"
+      response: "Response",
+      sourceTitle: "Recent changes",
+      sourceSubtitle: "Open a modified source file in the code viewer.",
+      sourceEmpty: "No modified source files were detected in this issue yet.",
+      sourceLoading: "Loading source file.",
+      sourceTruncated: "Preview truncated"
     },
     board: {
       sidebarEyebrow: "Projects",
@@ -868,7 +932,12 @@ const COPY = {
       loading: "작업 기록을 불러오는 중입니다.",
       empty: "표시할 대화 기록이 없습니다.",
       request: "요청",
-      response: "응답"
+      response: "응답",
+      sourceTitle: "최근 수정 파일",
+      sourceSubtitle: "수정된 소스파일을 코드 뷰어로 바로 확인합니다.",
+      sourceEmpty: "이 이슈에서 아직 감지된 수정 파일이 없습니다.",
+      sourceLoading: "소스파일을 불러오는 중입니다.",
+      sourceTruncated: "일부만 표시"
     },
     board: {
       sidebarEyebrow: "프로젝트",
@@ -1795,6 +1864,279 @@ function inferCodeBlockLabel(language, content) {
     );
 
   return looksLikeShell ? "shell" : "code";
+}
+
+function createDetailState(overrides = {}) {
+  return {
+    open: false,
+    loading: false,
+    thread: null,
+    messages: [],
+    selectedSourcePath: "",
+    sourcePreviewByPath: {},
+    sourcePreviewLoadingPath: "",
+    sourcePreviewError: "",
+    ...overrides
+  };
+}
+
+function normalizeSourceFilePathCandidate(value = "") {
+  let normalized = String(value ?? "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  normalized = normalized
+    .replace(/^[-*]\s*/, "")
+    .replace(/^[:：-]\s*/, "")
+    .replace(/^["'`]+/, "")
+    .replace(/["'`]+$/, "")
+    .replace(/[),.;:]+$/, "")
+    .replaceAll("\\", "/")
+    .trim();
+
+  if (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+
+  if (!normalized || normalized.startsWith("/") || normalized.startsWith("../")) {
+    return "";
+  }
+
+  return normalized;
+}
+
+function isLikelySourceFilePath(value = "") {
+  const normalized = normalizeSourceFilePathCandidate(value);
+
+  if (!normalized) {
+    return false;
+  }
+
+  const baseName = normalized.split("/").at(-1)?.toLowerCase() ?? "";
+
+  if (!baseName) {
+    return false;
+  }
+
+  if (SOURCE_FILE_PREVIEW_SPECIAL_NAMES.has(baseName)) {
+    return true;
+  }
+
+  const extension = baseName.includes(".") ? baseName.split(".").at(-1)?.toLowerCase() ?? "" : "";
+
+  return Boolean(extension) && SOURCE_FILE_PREVIEW_EXTENSION_SET.has(extension);
+}
+
+function extractSourceFilePathsFromText(value = "") {
+  const normalized = String(value ?? "");
+
+  if (!normalized.trim()) {
+    return [];
+  }
+
+  const matches = [];
+  const candidatePattern =
+    /`([^`]+)`|(["'])(.*?)\2|((?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+(?:\.[A-Za-z0-9._-]+)+|(?:[A-Za-z0-9._-]+\/)*(?:Dockerfile|Makefile|CMakeLists\.txt|README\.md|AGENTS\.md|\.env(?:\.[A-Za-z0-9_-]+)*|\.gitignore|\.dockerignore))/gi;
+
+  for (const match of normalized.matchAll(candidatePattern)) {
+    const candidate = normalizeSourceFilePathCandidate(match[1] ?? match[3] ?? match[4] ?? "");
+
+    if (isLikelySourceFilePath(candidate)) {
+      matches.push(candidate);
+    }
+  }
+
+  return [...new Set(matches)];
+}
+
+function inferModifiedSourceFilesFromMessages(messages = []) {
+  const collected = [];
+  const seen = new Set();
+
+  const pushCandidate = (candidate = "") => {
+    const normalized = normalizeSourceFilePathCandidate(candidate);
+
+    if (!isLikelySourceFilePath(normalized) || seen.has(normalized)) {
+      return;
+    }
+
+    seen.add(normalized);
+    collected.push(normalized);
+  };
+
+  const assistantMessages = (Array.isArray(messages) ? messages : []).filter(
+    (message) => String(message?.role ?? "").trim() === "assistant"
+  );
+
+  for (let messageIndex = assistantMessages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const content = normalizeAssistantMessageContent(assistantMessages[messageIndex]?.content ?? "");
+
+    if (!content) {
+      continue;
+    }
+
+    const lines = content.split("\n");
+    let insideFinalReport = false;
+    let insideModifiedFileSection = false;
+
+    for (const line of lines) {
+      const trimmed = String(line ?? "").trim();
+
+      if (!trimmed) {
+        continue;
+      }
+
+      if (FINAL_REPORT_HEADING_PATTERN.test(trimmed)) {
+        insideFinalReport = true;
+        insideModifiedFileSection = false;
+        continue;
+      }
+
+      if (insideFinalReport && GENERIC_SECTION_HEADING_PATTERN.test(trimmed)) {
+        insideFinalReport = false;
+        insideModifiedFileSection = false;
+        continue;
+      }
+
+      const modifiedSectionMatch = trimmed.match(MODIFIED_FILE_SECTION_PATTERN);
+
+      if (modifiedSectionMatch) {
+        insideModifiedFileSection = true;
+
+        for (const candidate of extractSourceFilePathsFromText(modifiedSectionMatch[1] ?? "")) {
+          pushCandidate(candidate);
+        }
+        continue;
+      }
+
+      if (!insideFinalReport && !insideModifiedFileSection) {
+        continue;
+      }
+
+      if (insideModifiedFileSection) {
+        if (
+          /^[-*]?\s*(?:변경 사항|검증 결과|남은 이슈|remaining issues|verification results?|changes?)\s*:/i.test(trimmed)
+        ) {
+          insideModifiedFileSection = false;
+          continue;
+        }
+
+        const candidates = extractSourceFilePathsFromText(trimmed);
+
+        if (candidates.length === 0) {
+          if (/^[-*]\s+/.test(trimmed)) {
+            insideModifiedFileSection = false;
+          }
+          continue;
+        }
+
+        for (const candidate of candidates) {
+          pushCandidate(candidate);
+        }
+      }
+    }
+  }
+
+  return collected;
+}
+
+function inferSourceLanguageFromPath(path = "") {
+  const normalizedPath = normalizeSourceFilePathCandidate(path);
+  const baseName = normalizedPath.split("/").at(-1)?.toLowerCase() ?? "";
+
+  if (!baseName) {
+    return "";
+  }
+
+  if (baseName === "dockerfile") {
+    return "dockerfile";
+  }
+
+  if (baseName === "makefile") {
+    return "makefile";
+  }
+
+  if (baseName === ".gitignore") {
+    return "gitignore";
+  }
+
+  if (baseName.startsWith(".env")) {
+    return "env";
+  }
+
+  if (!baseName.includes(".")) {
+    return "";
+  }
+
+  return baseName.split(".").at(-1)?.toLowerCase() ?? "";
+}
+
+function IssueSourceCodeViewer({ language, filePath, preview, loading, errorMessage }) {
+  const copy = getCopy(language);
+  const normalizedPath = normalizeSourceFilePathCandidate(filePath);
+  const content = String(preview?.content ?? "");
+  const lines = content.split("\n");
+  const lineNumbers = lines.map((_, index) => index + 1).join("\n");
+  const codeLabel = inferCodeBlockLabel(inferSourceLanguageFromPath(normalizedPath), content);
+
+  if (!normalizedPath) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-[1.6rem] border border-dashed border-slate-800 bg-slate-950/70 px-6 py-8 text-center text-sm text-slate-500">
+        {copy.detail.sourceEmpty}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-[1.6rem] border border-slate-800 bg-slate-950/80 px-6 py-8 text-sm text-slate-400">
+        {copy.detail.sourceLoading}
+      </div>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-[1.6rem] border border-rose-400/20 bg-rose-500/5 px-6 py-8 text-center text-sm text-rose-200">
+        {errorMessage}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.6rem] border border-slate-800 bg-[#050913] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="flex items-center justify-between gap-3 border-b border-white/5 bg-white/[0.03] px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-300/90" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/90" />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate font-mono text-[12px] text-slate-200">{normalizedPath}</p>
+            <p className="mt-1 text-[10px] uppercase tracking-[0.22em] text-slate-500">{codeLabel}</p>
+          </div>
+        </div>
+        {preview?.truncated ? (
+          <span className="shrink-0 rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold text-amber-200">
+            {copy.detail.sourceTruncated}
+          </span>
+        ) : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="flex min-h-full min-w-max">
+          <pre className="m-0 select-none border-r border-white/5 bg-slate-950/70 px-4 py-4 text-right font-mono text-[12px] leading-6 text-slate-600">
+            <code>{lineNumbers}</code>
+          </pre>
+          <pre className="m-0 min-w-0 flex-1 px-4 py-4 font-mono text-[13px] leading-6 text-slate-100">
+            <code>{content}</code>
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function renderInlineCodeTokens(text, inlineCodeClassName, keyPrefix) {
@@ -5317,12 +5659,29 @@ function SidebarThreadItem({
   );
 }
 
-function ThreadDetailModal({ language, open, loading, thread, messages, signalNow, onInterrupt, interruptBusy = false, onClose }) {
+function ThreadDetailModal({
+  language,
+  open,
+  loading,
+  thread,
+  messages,
+  signalNow,
+  selectedSourcePath,
+  sourcePreview,
+  sourcePreviewLoadingPath,
+  sourcePreviewError,
+  onSelectSourceFile,
+  onInterrupt,
+  interruptBusy = false,
+  onClose
+}) {
   const copy = getCopy(language);
   const contextUsageLabel = formatThreadContextUsage(thread, language);
   const contextUsage = getThreadContextUsage(thread);
   const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
   const interruptible = ["running", "awaiting_input"].includes(String(thread?.status ?? "").trim());
+  const modifiedSourceFiles = useMemo(() => inferModifiedSourceFilesFromMessages(messages), [messages]);
+  const selectedPreviewPath = normalizeSourceFilePathCandidate(selectedSourcePath);
   const scrollRef = useRef(null);
   const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
   const recomputeJumpButtonVisibility = useCallback(() => {
@@ -5395,13 +5754,31 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
     };
   }, [loading, messages, open, recomputeJumpButtonVisibility, thread?.id]);
 
+  useEffect(() => {
+    if (!open || typeof onSelectSourceFile !== "function" || modifiedSourceFiles.length === 0) {
+      return;
+    }
+
+    if (selectedPreviewPath && modifiedSourceFiles.includes(selectedPreviewPath)) {
+      return;
+    }
+
+    onSelectSourceFile(modifiedSourceFiles[0]);
+  }, [modifiedSourceFiles, onSelectSourceFile, open, selectedPreviewPath]);
+
   if (!open) {
     return null;
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
-      <div className="flex h-[min(80vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-slate-800 bg-slate-950 shadow-2xl shadow-slate-950/60">
+    <>
+      <button
+        type="button"
+        aria-label={copy.detail.close}
+        className="fixed inset-0 z-40 bg-slate-950/78 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="fixed inset-y-0 right-0 z-50 flex w-[min(96vw,1380px)] max-w-full flex-col border-l border-slate-800 bg-slate-950 shadow-2xl shadow-slate-950/70">
         <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
           <div className="min-w-0">
             <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">{copy.detail.eyebrow}</p>
@@ -5449,77 +5826,134 @@ function ThreadDetailModal({ language, open, loading, thread, messages, signalNo
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1">
-          <div ref={scrollRef} className="custom-scrollbar h-full overflow-y-scroll px-6 py-5">
-            {loading ? (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
-                {copy.detail.loading}
+        <div className="min-h-0 flex-1 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="flex h-full min-h-0 flex-col gap-4 xl:flex-row">
+            <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.8rem] border border-slate-800 bg-slate-900/60 xl:basis-[46%]">
+              <div className="border-b border-slate-800 px-5 py-4">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.detail.eyebrow}</p>
+                <p className="mt-2 text-sm text-slate-400">{copy.detail.response}</p>
               </div>
-            ) : messages.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
-                {copy.detail.empty}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {messages.map((message) => {
-                  const userMessage = message.role === "user";
-                  const attachments = normalizeIssueAttachments(
-                    Array.isArray(message.attachments) && message.attachments.length > 0
-                      ? message.attachments
-                      : userMessage
-                        ? thread?.attachments
-                        : []
-                  );
+              <div ref={scrollRef} className="custom-scrollbar min-h-0 flex-1 overflow-y-scroll px-5 py-5">
+                {loading ? (
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
+                    {copy.detail.loading}
+                  </div>
+                ) : messages.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
+                    {copy.detail.empty}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {messages.map((message) => {
+                      const userMessage = message.role === "user";
+                      const attachments = normalizeIssueAttachments(
+                        Array.isArray(message.attachments) && message.attachments.length > 0
+                          ? message.attachments
+                          : userMessage
+                            ? thread?.attachments
+                            : []
+                      );
 
-                  return (
-                    <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
-                      <div
-                        className={`max-w-[85%] rounded-3xl px-4 py-3 ${
-                          userMessage
-                            ? "bg-sky-500 text-slate-950"
-                            : "border border-slate-800 bg-slate-900 text-slate-100"
-                        }`}
-                      >
-                        <div className="mb-2 flex items-center gap-2 text-[11px]">
-                          <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
-                            {userMessage ? copy.detail.request : copy.detail.response}
-                          </span>
-                          <span className={userMessage ? "text-slate-950/60" : "text-slate-500"}>
-                            {formatDateTime(message.timestamp, language)}
-                          </span>
+                      return (
+                        <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
+                          <div
+                            className={`max-w-full rounded-3xl px-4 py-3 xl:max-w-[92%] ${
+                              userMessage
+                                ? "bg-sky-500 text-slate-950"
+                                : "border border-slate-800 bg-slate-900 text-slate-100"
+                            }`}
+                          >
+                            <div className="mb-2 flex items-center gap-2 text-[11px]">
+                              <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
+                                {userMessage ? copy.detail.request : copy.detail.response}
+                              </span>
+                              <span className={userMessage ? "text-slate-950/60" : "text-slate-500"}>
+                                {formatDateTime(message.timestamp, language)}
+                              </span>
+                            </div>
+                            <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
+                            <IssueMessageAttachmentPreview
+                              attachments={attachments}
+                              bubbleTone={userMessage ? "brand" : "dark"}
+                              language={language}
+                            />
+                          </div>
                         </div>
-                        <RichMessageContent content={message.content} tone={userMessage ? "brand" : "dark"} />
-                        <IssueMessageAttachmentPreview
-                          attachments={attachments}
-                          bubbleTone={userMessage ? "brand" : "dark"}
-                          language={language}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {showJumpToLatestButton ? (
-            <div className="pointer-events-none absolute bottom-6 right-6 z-10">
-              <button
-                type="button"
-                onClick={handleJumpToLatest}
-                aria-label="대화 맨 아래로 이동"
-                title="대화 맨 아래로 이동"
-                className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 text-sky-200 shadow-[0_18px_44px_rgba(15,23,42,0.5)] backdrop-blur transition hover:border-sky-300/60 hover:bg-slate-900"
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M7 10l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
-                </svg>
-              </button>
-            </div>
-          ) : null}
+              {showJumpToLatestButton ? (
+                <div className="pointer-events-none absolute bottom-6 right-6 z-10">
+                  <button
+                    type="button"
+                    onClick={handleJumpToLatest}
+                    aria-label="대화 맨 아래로 이동"
+                    title="대화 맨 아래로 이동"
+                    className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 text-sky-200 shadow-[0_18px_44px_rgba(15,23,42,0.5)] backdrop-blur transition hover:border-sky-300/60 hover:bg-slate-900"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M7 10l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+                    </svg>
+                  </button>
+                </div>
+              ) : null}
+            </section>
+
+            <aside className="flex min-h-0 flex-1 flex-col rounded-[1.8rem] border border-slate-800 bg-slate-900/35 xl:basis-[54%]">
+              <div className="border-b border-slate-800 px-5 py-4">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.detail.sourceTitle}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <p className="text-sm text-slate-300">{copy.detail.sourceSubtitle}</p>
+                  {modifiedSourceFiles.length > 0 ? (
+                    <span className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-[11px] font-semibold text-sky-200">
+                      {modifiedSourceFiles.length}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {modifiedSourceFiles.length > 0 ? (
+                <div className="border-b border-slate-800 px-5 py-3">
+                  <div className="custom-scrollbar flex gap-2 overflow-x-auto pb-1">
+                    {modifiedSourceFiles.map((filePath) => {
+                      const active = selectedPreviewPath === filePath;
+
+                      return (
+                        <button
+                          key={filePath}
+                          type="button"
+                          onClick={() => onSelectSourceFile?.(filePath)}
+                          className={`shrink-0 rounded-2xl border px-3 py-2 text-left transition ${
+                            active
+                              ? "border-sky-400/35 bg-sky-500/10 text-sky-100"
+                              : "border-slate-800 bg-slate-950/70 text-slate-300 hover:border-slate-700 hover:text-white"
+                          }`}
+                        >
+                          <p className="max-w-[16rem] truncate font-mono text-[12px]">{filePath}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="min-h-0 flex-1 p-5">
+                <IssueSourceCodeViewer
+                  language={language}
+                  filePath={selectedPreviewPath}
+                  preview={sourcePreview}
+                  loading={Boolean(selectedPreviewPath) && sourcePreviewLoadingPath === selectedPreviewPath}
+                  errorMessage={selectedPreviewPath ? sourcePreviewError : ""}
+                />
+              </div>
+            </aside>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -6197,6 +6631,7 @@ function MainPage({
   issueQueueOrderIds,
   prepIssueOrderIds,
   detailState,
+  onSelectDetailSourceFile,
   search,
   loadingState,
   projectBusy,
@@ -8175,13 +8610,20 @@ function MainPage({
 	        onClose={() => setSettingsOpen(false)}
 	        onLogout={onLogout}
 	      />
-	      <ThreadDetailModal
+      <ThreadDetailModal
 	        language={language}
         open={detailState.open}
         loading={detailState.loading}
         thread={detailState.thread}
         messages={detailState.messages}
         signalNow={signalNow}
+        selectedSourcePath={detailState.selectedSourcePath}
+        sourcePreview={
+          detailState.selectedSourcePath ? detailState.sourcePreviewByPath[detailState.selectedSourcePath] ?? null : null
+        }
+        sourcePreviewLoadingPath={detailState.sourcePreviewLoadingPath}
+        sourcePreviewError={detailState.sourcePreviewError}
+        onSelectSourceFile={onSelectDetailSourceFile}
         onInterrupt={onInterruptIssue}
         interruptBusy={interruptingIssueId === detailState.thread?.id}
         onClose={onCloseDetail}
@@ -8279,12 +8721,7 @@ export default function App() {
     y: 0,
     thread: null
   });
-  const [detailState, setDetailState] = useState({
-    open: false,
-    loading: false,
-    thread: null,
-    messages: []
-  });
+  const [detailState, setDetailState] = useState(() => createDetailState());
   const [search, setSearch] = useState("");
   const [recentEvents, setRecentEvents] = useState([]);
   const [loadingState, setLoadingState] = useState("idle");
@@ -8351,13 +8788,9 @@ export default function App() {
   const scheduledResumeReasonsRef = useRef(new Set());
   const locallyInterruptedIssueIdsRef = useRef(new Set());
   const confirmationResolverRef = useRef(null);
-  const detailStateRef = useRef({
-    open: false,
-    loading: false,
-    thread: null,
-    messages: []
-  });
+  const detailStateRef = useRef(createDetailState());
   const copy = getCopy(language);
+  detailStateRef.current = detailState;
   const dismissNotification = useCallback((notificationId) => {
     const normalizedNotificationId = String(notificationId ?? "").trim();
 
@@ -8928,10 +9361,6 @@ export default function App() {
     applyIssueStateForScope(selectedBridgeId, selectedProjectThreadId, combinedIssues);
   }, [applyIssueStateForScope, archivedIssuesState, replaceArchivedIssuesForCurrentScope, replaceVisibleIssuesForCurrentScope, selectedBridgeId, selectedProjectThreadId]);
 
-  useEffect(() => {
-    detailStateRef.current = detailState;
-  }, [detailState]);
-
   async function loadBridges(sessionArg) {
     if (!sessionArg?.loginId) {
       return [];
@@ -9293,6 +9722,83 @@ export default function App() {
     );
   }, []);
 
+  const loadIssueSourcePreview = useCallback(async (sessionArg, bridgeId, issueId, filePath, options = {}) => {
+    if (!sessionArg?.loginId || !bridgeId || !issueId || !String(filePath ?? "").trim()) {
+      return null;
+    }
+
+    const query = new URLSearchParams({
+      login_id: sessionArg.loginId,
+      bridge_id: bridgeId,
+      path: String(filePath ?? "").trim()
+    });
+
+    return apiRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/source-file?${query.toString()}`,
+      options
+    );
+  }, []);
+
+  const handleSelectDetailSourceFile = useCallback(async (filePath, options = {}) => {
+    const normalizedPath = normalizeSourceFilePathCandidate(filePath);
+    const currentDetailState = detailStateRef.current;
+    const currentIssueId = String(currentDetailState.thread?.id ?? "").trim();
+    const bridgeId = selectedBridgeIdRef.current;
+    const sessionArg = sessionRef.current;
+
+    if (!normalizedPath || !currentIssueId || !bridgeId || !sessionArg?.loginId) {
+      return;
+    }
+
+    const { force = false } = options;
+    const cachedPreview = currentDetailState.sourcePreviewByPath?.[normalizedPath] ?? null;
+
+    setDetailState((current) => ({
+      ...current,
+      selectedSourcePath: normalizedPath,
+      sourcePreviewError: "",
+      sourcePreviewLoadingPath: force || !cachedPreview ? normalizedPath : ""
+    }));
+
+    if (!force && cachedPreview) {
+      return;
+    }
+
+    try {
+      const payload = await loadIssueSourcePreview(sessionArg, bridgeId, currentIssueId, normalizedPath, {
+        timeoutMs: DETAIL_SOURCE_FILE_REQUEST_TIMEOUT_MS
+      });
+
+      setDetailState((current) => {
+        if (String(current.thread?.id ?? "").trim() !== currentIssueId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          sourcePreviewByPath: {
+            ...current.sourcePreviewByPath,
+            [normalizedPath]: payload ?? null
+          },
+          sourcePreviewLoadingPath: current.sourcePreviewLoadingPath === normalizedPath ? "" : current.sourcePreviewLoadingPath,
+          sourcePreviewError: current.selectedSourcePath === normalizedPath ? "" : current.sourcePreviewError
+        };
+      });
+    } catch (error) {
+      setDetailState((current) => {
+        if (String(current.thread?.id ?? "").trim() !== currentIssueId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          sourcePreviewLoadingPath: current.sourcePreviewLoadingPath === normalizedPath ? "" : current.sourcePreviewLoadingPath,
+          sourcePreviewError: current.selectedSourcePath === normalizedPath ? error.message : current.sourcePreviewError
+        };
+      });
+    }
+  }, [loadIssueSourcePreview]);
+
   const syncActiveIssueDetail = useCallback(async (sessionArg, bridgeId, threadId, issueId, options = {}) => {
     if (!sessionArg?.loginId || !bridgeId || !threadId || !issueId) {
       return null;
@@ -9344,6 +9850,10 @@ export default function App() {
           thread: payload?.issue ?? current.thread,
           messages: payload?.messages ?? current.messages
         }));
+
+        if (detailStateRef.current.selectedSourcePath) {
+          void handleSelectDetailSourceFile(detailStateRef.current.selectedSourcePath, { force: true });
+        }
       }
 
       return payload;
@@ -9357,7 +9867,7 @@ export default function App() {
         };
       }
     }
-  }, [applyIssueStateForScope, loadIssueDetail]);
+  }, [applyIssueStateForScope, handleSelectDetailSourceFile, loadIssueDetail]);
 
   const handleDashboardForegroundResume = useCallback(async (reason = "foreground_resume") => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -9964,12 +10474,7 @@ export default function App() {
     loadedProjectThreadsRef.current = {};
     pendingProjectThreadLoadsRef.current.clear();
     setIssues([]);
-    setDetailState({
-      open: false,
-      loading: false,
-      thread: null,
-      messages: []
-    });
+    setDetailState(createDetailState());
     setThreadMenuState({
       open: false,
       x: 0,
@@ -10265,12 +10770,7 @@ export default function App() {
     setIssueQueueOrderIds([]);
     setPrepIssueOrderIds([]);
     setDraggingIssueId("");
-    setDetailState({
-      open: false,
-      loading: false,
-      thread: null,
-      messages: []
-    });
+    setDetailState(createDetailState());
     setThreadMenuState({
       open: false,
       x: 0,
@@ -10611,25 +11111,25 @@ export default function App() {
     const issue = issues.find((item) => item.id === issueId) ?? null;
     const fallbackThreadId = issue?.thread_id ?? selectedProjectThreadId;
     setSelectedIssueId(issueId);
-    setDetailState({
+    setDetailState(createDetailState({
       open: true,
       loading: true,
       thread: issue,
       messages: []
-    });
+    }));
 
     try {
       const payload = await apiRequest(
         `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
       );
-      setDetailState({
+      setDetailState(createDetailState({
         open: true,
         loading: false,
         thread: normalizeIssue(payload?.issue, fallbackThreadId) ?? issue,
         messages: payload?.messages ?? []
-      });
+      }));
     } catch (error) {
-      setDetailState({
+      setDetailState(createDetailState({
         open: true,
         loading: false,
         thread: issue,
@@ -10641,7 +11141,7 @@ export default function App() {
             content: error.message
           }
         ]
-      });
+      }));
     }
   };
 
@@ -12042,6 +12542,10 @@ export default function App() {
             thread: payload.issue ?? current.thread,
             messages: payload.messages ?? []
           }));
+
+          if (detailStateRef.current.selectedSourcePath) {
+            void handleSelectDetailSourceFile(detailStateRef.current.selectedSourcePath, { force: true });
+          }
         } catch (error) {
           setRecentEvents((current) => [
             {
@@ -12151,6 +12655,9 @@ export default function App() {
         selectedIssueIds={selectedIssueIds}
         archivedIssues={archivedIssues}
         detailState={detailState}
+        onSelectDetailSourceFile={(filePath) => {
+          void handleSelectDetailSourceFile(filePath);
+        }}
         onToggleIssueSelection={handleToggleIssueSelection}
         onArchiveIssues={handleArchiveIssues}
         onRestoreArchivedIssues={handleRestoreArchivedIssues}
@@ -12222,12 +12729,7 @@ export default function App() {
         onRefresh={() => void handleRefresh()}
         onLogout={handleLogout}
         onCloseDetail={() =>
-          setDetailState({
-            open: false,
-            loading: false,
-            thread: null,
-            messages: []
-          })
+          setDetailState(createDetailState())
         }
       />
       <ConfirmationDialog

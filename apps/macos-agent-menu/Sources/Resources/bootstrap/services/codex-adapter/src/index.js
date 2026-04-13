@@ -137,6 +137,7 @@ const THREAD_STATE_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-threads.json
 const DIAGNOSTIC_LOG_PATH = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-diagnostics.jsonl`);
 const DIAGNOSTIC_LOG_MAX_BYTES = 1024 * 1024;
 const ISSUE_ATTACHMENT_STAGE_ROOT = resolve(BRIDGE_STORAGE_DIR, `${BRIDGE_ID}-issue-attachments`);
+const SOURCE_FILE_PREVIEW_MAX_BYTES = 512 * 1024;
 const DIAGNOSTIC_LOG_ENABLED = (process.env.OCTOP_DIAGNOSTIC_LOG_ENABLED ?? "true") !== "false";
 const WORKSPACE_ROOTS = resolveWorkspaceRoots();
 const CURRENT_FILE_PATH = fileURLToPath(import.meta.url);
@@ -4057,6 +4058,97 @@ function resolveWorkspaceFromPayload(loginId, payload = {}) {
   throw new Error(
     "로컬 workspace를 찾을 수 없습니다. bridge를 workspace 루트에서 실행하거나 OCTOP_WORKSPACE_ROOTS를 설정해 주세요."
   );
+}
+
+function getProjectWorkspacePathForIssue(userId, issue = null) {
+  const projectId = String(issue?.project_id ?? "").trim();
+
+  if (!projectId) {
+    return "";
+  }
+
+  const project = listProjectState(userId).find((candidate) => candidate.id === projectId) ?? null;
+  return String(project?.workspace_path ?? "").trim();
+}
+
+function resolveIssueSourceFilePath(userId, issue, requestedPath = "") {
+  const normalizedRequestedPath = String(requestedPath ?? "").trim();
+
+  if (!normalizedRequestedPath) {
+    throw new Error("파일 경로가 필요합니다.");
+  }
+
+  const workspacePath = getProjectWorkspacePathForIssue(userId, issue);
+
+  if (!workspacePath) {
+    throw new Error("이슈와 연결된 workspace 경로를 찾을 수 없습니다.");
+  }
+
+  const resolvedWorkspacePath = resolve(workspacePath);
+  const resolvedFilePath = normalizedRequestedPath.startsWith("/")
+    ? resolve(normalizedRequestedPath)
+    : resolve(resolvedWorkspacePath, normalizedRequestedPath);
+  const relativeToWorkspace = relative(resolvedWorkspacePath, resolvedFilePath);
+
+  if (
+    resolvedFilePath !== resolvedWorkspacePath &&
+    (!relativeToWorkspace || relativeToWorkspace.startsWith("..") || isAbsolute(relativeToWorkspace))
+  ) {
+    throw new Error("workspace 밖의 파일은 열 수 없습니다.");
+  }
+
+  if (!isAllowedWorkspacePath(resolvedFilePath)) {
+    throw new Error("허용되지 않은 경로입니다.");
+  }
+
+  if (!existsSync(resolvedFilePath)) {
+    throw new Error("파일을 찾을 수 없습니다.");
+  }
+
+  const stat = statSync(resolvedFilePath);
+
+  if (!stat.isFile()) {
+    throw new Error("파일만 열 수 있습니다.");
+  }
+
+  return {
+    workspacePath: resolvedWorkspacePath,
+    absolutePath: resolvedFilePath,
+    relativePath: relativeToWorkspace || basename(resolvedFilePath),
+    sizeBytes: stat.size
+  };
+}
+
+function readIssueSourceFile(userId, issueId, requestedPath = "") {
+  const issue = issueCardsById.get(issueId);
+
+  if (!issue || issue.deleted_at) {
+    throw new Error("이슈를 찾을 수 없습니다.");
+  }
+
+  const thread = threadStateById.get(issue.thread_id);
+
+  if (!thread || thread.deleted_at || threadOwners.get(thread.id) !== sanitizeUserId(userId)) {
+    throw new Error("이슈에 접근할 수 없습니다.");
+  }
+
+  const {
+    absolutePath,
+    relativePath,
+    sizeBytes
+  } = resolveIssueSourceFilePath(userId, issue, requestedPath);
+  const fileBuffer = readFileSync(absolutePath);
+  const truncated = fileBuffer.length > SOURCE_FILE_PREVIEW_MAX_BYTES;
+  const content = truncated
+    ? fileBuffer.subarray(0, SOURCE_FILE_PREVIEW_MAX_BYTES).toString("utf8")
+    : fileBuffer.toString("utf8");
+
+  return {
+    path: relativePath.replaceAll("\\", "/"),
+    content,
+    truncated,
+    size_bytes: sizeBytes
+  };
 }
 
 function listProjectState(userId) {
@@ -13114,6 +13206,16 @@ createServer(async (request, response) => {
   if (request.method === "GET" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
     const issueId = url.pathname.split("/").at(-1);
     return sendJson(response, 200, getIssueDetail(userId, issueId));
+  }
+
+  if (request.method === "GET" && /^\/api\/issues\/[^/]+\/source-file$/.test(url.pathname)) {
+    try {
+      const issueId = url.pathname.split("/")[3];
+      const requestedPath = url.searchParams.get("path") ?? "";
+      return sendJson(response, 200, readIssueSourceFile(userId, issueId, requestedPath));
+    } catch (error) {
+      return sendJson(response, 400, { error: error.message });
+    }
   }
 
   if (request.method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
