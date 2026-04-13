@@ -32,35 +32,53 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
       throw new InvalidOperationException("voice_session_api_key_missing");
     }
 
-    var payload = new JsonObject
+    try
     {
-      ["expires_after"] = new JsonObject
+      var payload = new JsonObject
       {
-        ["anchor"] = "created_at",
-        ["seconds"] = _ttlSeconds
-      },
-      ["session"] = BuildSessionConfig(request)
-    };
+        ["expires_after"] = new JsonObject
+        {
+          ["anchor"] = "created_at",
+          ["seconds"] = _ttlSeconds
+        },
+        ["session"] = BuildSessionConfig(request)
+      };
 
-    using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_apiBaseUrl}/v1/realtime/client_secrets")
-    {
-      Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-    };
-    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_apiBaseUrl}/v1/realtime/client_secrets")
+      {
+        Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+      };
+      httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-    using var response = await _httpClientFactory.CreateClient().SendAsync(httpRequest, cancellationToken);
-    var content = await response.Content.ReadAsStringAsync(cancellationToken);
+      using var response = await _httpClientFactory.CreateClient().SendAsync(httpRequest, cancellationToken);
+      var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
-    if (!response.IsSuccessStatusCode)
-    {
-      throw new InvalidOperationException($"voice_session_openai_error:{content}");
+      if (!response.IsSuccessStatusCode)
+      {
+        throw new InvalidOperationException($"voice_session_openai_error:{content}");
+      }
+
+      var parsed = JsonNode.Parse(content) as JsonObject
+        ?? throw new InvalidOperationException("voice_session_openai_invalid_response");
+
+      parsed["call_url"] = $"{_apiBaseUrl}/v1/realtime/calls";
+      return parsed;
     }
-
-    var parsed = JsonNode.Parse(content) as JsonObject
-      ?? throw new InvalidOperationException("voice_session_openai_invalid_response");
-
-    parsed["call_url"] = $"{_apiBaseUrl}/v1/realtime/calls";
-    return parsed;
+    catch (OperationCanceledException)
+    {
+      throw;
+    }
+    catch (InvalidOperationException exception) when (
+      exception.Message.StartsWith("voice_session_", StringComparison.Ordinal))
+    {
+      throw;
+    }
+    catch (Exception exception)
+    {
+      throw new InvalidOperationException(
+        $"voice_session_openai_request_failed:{exception.GetType().Name}:{exception.Message}",
+        exception);
+    }
   }
 
   private JsonObject BuildSessionConfig(VoiceSessionStartRequest request)

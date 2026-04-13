@@ -38,37 +38,56 @@ public sealed class VoiceNarrationService(IHttpClientFactory httpClientFactory)
       throw new InvalidOperationException("voice_narration_text_required");
     }
 
-    var payload = new JsonObject
+    try
     {
-      ["model"] = _model,
-      ["voice"] = _voice,
-      ["input"] = narration
-    };
+      var payload = new JsonObject
+      {
+        ["model"] = _model,
+        ["voice"] = _voice,
+        ["input"] = narration
+      };
 
-    using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_apiBaseUrl}/v1/audio/speech")
-    {
-      Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-    };
-    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_apiBaseUrl}/v1/audio/speech")
+      {
+        Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+      };
+      httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-    using var response = await _httpClientFactory.CreateClient().SendAsync(httpRequest, cancellationToken);
+      using var response = await _httpClientFactory.CreateClient().SendAsync(httpRequest, cancellationToken);
 
-    if (!response.IsSuccessStatusCode)
-    {
-      var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
-      throw new InvalidOperationException($"voice_narration_openai_error:{errorContent}");
+      if (!response.IsSuccessStatusCode)
+      {
+        var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+        throw new InvalidOperationException($"voice_narration_openai_error:{errorContent}");
+      }
+
+      var audioBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+      var contentType = response.Content.Headers.ContentType?.MediaType?.Trim();
+
+      return new JsonObject
+      {
+        ["ok"] = true,
+        ["audio_base64"] = Convert.ToBase64String(audioBytes),
+        ["content_type"] = string.IsNullOrWhiteSpace(contentType) ? "audio/mpeg" : contentType,
+        ["model"] = _model,
+        ["voice"] = _voice
+      };
     }
-
-    var audioBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-    var contentType = response.Content.Headers.ContentType?.MediaType?.Trim();
-
-    return new JsonObject
+    catch (OperationCanceledException)
     {
-      ["ok"] = true,
-      ["audio_base64"] = Convert.ToBase64String(audioBytes),
-      ["content_type"] = string.IsNullOrWhiteSpace(contentType) ? "audio/mpeg" : contentType,
-      ["model"] = _model,
-      ["voice"] = _voice
-    };
+      throw;
+    }
+    catch (InvalidOperationException exception) when (
+      exception.Message.StartsWith("voice_narration_", StringComparison.Ordinal) ||
+      string.Equals(exception.Message, "voice_session_api_key_missing", StringComparison.Ordinal))
+    {
+      throw;
+    }
+    catch (Exception exception)
+    {
+      throw new InvalidOperationException(
+        $"voice_narration_openai_request_failed:{exception.GetType().Name}:{exception.Message}",
+        exception);
+    }
   }
 }

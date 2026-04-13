@@ -347,6 +347,32 @@ app.MapPost("/api/voice/sessions", async (
       "application/json; charset=utf-8",
       statusCode: StatusCodes.Status502BadGateway);
   }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_openai_invalid_response", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "invalid OpenAI realtime client secret response",
+        ["code"] = "voice_session_openai_invalid_response"
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status502BadGateway);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_session_openai_request_failed:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_session_openai_request_failed:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to reach OpenAI realtime endpoint",
+        ["code"] = "voice_session_openai_request_failed",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status502BadGateway);
+  }
 });
 
 app.MapPost("/api/voice/narrations", async (
@@ -407,6 +433,20 @@ app.MapPost("/api/voice/narrations", async (
         ["ok"] = false,
         ["error"] = "failed to create OpenAI voice narration",
         ["code"] = "voice_narration_openai_error",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status502BadGateway);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_narration_openai_request_failed:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_narration_openai_request_failed:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to reach OpenAI voice narration endpoint",
+        ["code"] = "voice_narration_openai_request_failed",
         ["detail"] = detail
       }),
       "application/json; charset=utf-8",
