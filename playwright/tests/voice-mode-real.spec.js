@@ -629,8 +629,8 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
     });
   });
 
-  await expect(page.getByText('상태 알려줘')).toBeVisible();
-  await expect(page.locator('.voice-mode-panel__transcript-card.is-response .voice-mode-panel__transcript-text')).toHaveText(
+  await expect(page.getByTestId('voice-user-bubble')).toHaveText('상태 알려줘');
+  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(
     '현재 스레드는 유휴 상태입니다.'
   );
   await expect.poll(() => toolInvocations.length).toBe(1);
@@ -665,5 +665,5 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
   await openVoiceModeByLongPressingSend(page);
 
   await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
-  await expect(page.locator('.voice-mode-panel__error')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');
+  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');
 });

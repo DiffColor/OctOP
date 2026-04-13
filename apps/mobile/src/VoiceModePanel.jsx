@@ -2,44 +2,26 @@ import { useMemo } from "react";
 
 function buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }) {
   if (connectionState === "connecting" || micState === "requesting") {
-    return {
-      label: "VOICE LINKING",
-      detail: "OpenAI Realtime 세션과 마이크를 연결하는 중입니다."
-    };
+    return "OpenAI Realtime 세션과 마이크를 연결하는 중입니다.";
   }
 
   if (connectionState === "error" || micState === "error") {
-    return {
-      label: "VOICE DEGRADED",
-      detail: errorMessage || "실시간 음성 세션 연결에 실패했습니다."
-    };
+    return errorMessage || "실시간 음성 세션 연결에 실패했습니다.";
   }
 
   if (isResponding) {
-    return {
-      label: "OCTOP RESPONDING",
-      detail: "실시간 음성 응답을 생성하고 있습니다."
-    };
+    return "실시간 음성 응답을 생성하고 있습니다.";
   }
 
   if (isListening) {
-    return {
-      label: "JARVIS LISTENING",
-      detail: "현재 사용자의 발화를 감지하고 있습니다."
-    };
+    return "현재 사용자의 발화를 감지하고 있습니다.";
   }
 
   if (connectionState === "connected") {
-    return {
-      label: "VOICE STANDBY",
-      detail: "실시간 음성 세션이 연결되었습니다. 바로 말을 시작하시면 됩니다."
-    };
+    return "실시간 음성 세션이 연결되었습니다. 바로 말을 시작하시면 됩니다.";
   }
 
-  return {
-    label: "VOICE IDLE",
-    detail: "음성 세션이 아직 연결되지 않았습니다."
-  };
+  return "음성 세션이 아직 연결되지 않았습니다.";
 }
 
 export default function VoiceModePanel({
@@ -51,25 +33,29 @@ export default function VoiceModePanel({
   isListening = false,
   isResponding = false,
   audioLevel = 0,
-  levelHistory = [],
   inputDevices = [],
   selectedInputDeviceId = "default",
   errorMessage = "",
   onSelectInputDevice = null,
   onClose = null
 }) {
-  const status = useMemo(
+  const statusMessage = useMemo(
     () => buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }),
     [connectionState, errorMessage, isListening, isResponding, micState]
   );
 
-  const liveTranscript = latestAssistantText || latestUserText || status.detail;
-  const liveLevels = Array.isArray(levelHistory) && levelHistory.length > 0 ? levelHistory : Array.from({ length: 24 }, () => 0.08);
-  const glowScale = 1 + audioLevel * 0.18;
-  const blobScale = 1 + audioLevel * 0.16;
-  const blobGlowOpacity = 0.46 + audioLevel * 0.44;
-  const blobRotation = `${-10 + audioLevel * 24}deg`;
-  const blobLift = `${audioLevel * -8}px`;
+  const liveTranscript = errorMessage || latestAssistantText || statusMessage;
+  const userTranscript = latestUserText || "말씀하시면 여기에 사용자 입력이 표시됩니다.";
+  const glowEnergy = Math.min(1.25, Math.max(0, audioLevel + (isResponding ? 0.34 : 0) + (isListening ? 0.12 : 0)));
+  const glowScale = 1 + glowEnergy * 0.26;
+  const blobScale = 1 + glowEnergy * 0.15;
+  const blobGlowOpacity = 0.42 + glowEnergy * 0.46;
+  const blobRotation = `${-12 + glowEnergy * 28}deg`;
+  const blobLift = `${glowEnergy * -10}px`;
+  const glowDriftX = `${(glowEnergy - 0.28) * 26}px`;
+  const glowDriftY = `${glowEnergy * -20}px`;
+  const glowSpread = `${1 + glowEnergy * 0.34}`;
+  const glowSpinDuration = `${Math.max(2.6, 5.6 - glowEnergy * 2.4)}s`;
 
   return (
     <section className="voice-mode-panel sheet-enter" data-testid="voice-mode-panel" aria-hidden={!open}>
@@ -83,7 +69,11 @@ export default function VoiceModePanel({
             "--voice-blob-glow-opacity": blobGlowOpacity,
             "--voice-blob-glow-scale": glowScale,
             "--voice-blob-rotation": blobRotation,
-            "--voice-blob-lift": blobLift
+            "--voice-blob-lift": blobLift,
+            "--voice-blob-drift-x": glowDriftX,
+            "--voice-blob-drift-y": glowDriftY,
+            "--voice-blob-spread": glowSpread,
+            "--voice-blob-spin-duration": glowSpinDuration
           }}
           aria-hidden="true"
         >
@@ -91,6 +81,8 @@ export default function VoiceModePanel({
           <div className="voice-mode-panel__blob-glow is-back" />
           <div className="voice-mode-panel__blob-glow is-front" />
           <div className="voice-mode-panel__blob-glow is-side" />
+          <div className="voice-mode-panel__blob-wave is-one" />
+          <div className="voice-mode-panel__blob-wave is-two" />
 
           <div className="voice-mode-panel__blob-core">
             <div className="voice-mode-panel__blob-gradient" />
@@ -103,32 +95,15 @@ export default function VoiceModePanel({
         </div>
 
         <div className="voice-mode-panel__transcript-shell">
-          <div className="voice-mode-panel__meters" aria-hidden="true">
-            {liveLevels.map((level, index) => (
-              <span
-                key={`${index}-${level}`}
-                className="voice-mode-panel__meter"
-                style={{
-                  height: `${Math.max(0.48, Math.min(1.7, Number(level) * 1.9 || 0.48))}rem`,
-                  opacity: `${Math.max(0.24, Math.min(1, Number(level) * 1.6 || 0.24))}`
-                }}
-              />
-            ))}
-          </div>
-
-          <div className="voice-mode-panel__transcript-grid">
-            <article className="voice-mode-panel__transcript-card">
-              <p className="voice-mode-panel__transcript-label">최근 사용자</p>
-              <p className="voice-mode-panel__transcript-text">{latestUserText || "아직 인식된 사용자 발화가 없습니다."}</p>
+          <div className="voice-mode-panel__chat-stack">
+            <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
+              <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
             </article>
 
-            <article className="voice-mode-panel__transcript-card is-response">
-              <p className="voice-mode-panel__transcript-label">최근 OctOP</p>
-              <p className="voice-mode-panel__transcript-text">{liveTranscript}</p>
+            <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
+              <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
             </article>
           </div>
-
-          {errorMessage ? <p className="voice-mode-panel__error">{errorMessage}</p> : null}
         </div>
 
         <div className="voice-mode-panel__actions">

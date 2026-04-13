@@ -691,6 +691,10 @@ svg {
   --voice-blob-glow-scale: 1;
   --voice-blob-rotation: -8deg;
   --voice-blob-lift: 0px;
+  --voice-blob-drift-x: 0px;
+  --voice-blob-drift-y: 0px;
+  --voice-blob-spread: 1;
+  --voice-blob-spin-duration: 5.6s;
   position: relative;
   display: grid;
   flex: 1;
@@ -716,14 +720,20 @@ svg {
   inset: 50% auto auto 50%;
   border-radius: 999px;
   opacity: var(--voice-blob-glow-opacity);
-  transform: translate(-50%, -50%) scale(var(--voice-blob-glow-scale));
+  transform: translate(calc(-50% + var(--voice-blob-drift-x)), calc(-50% + var(--voice-blob-drift-y)))
+    scale(calc(var(--voice-blob-glow-scale) * var(--voice-blob-spread)));
   filter: blur(28px);
+  transition:
+    transform 180ms ease-out,
+    opacity 180ms ease-out,
+    filter 180ms ease-out;
 }
 
 .voice-mode-panel__blob-glow.is-back {
   height: min(58vw, 17rem);
   width: min(58vw, 17rem);
   background: radial-gradient(circle, rgba(53, 88, 255, 0.72) 0%, rgba(53, 88, 255, 0.22) 40%, rgba(53, 88, 255, 0) 72%);
+  animation: voice-blob-glow-orbit var(--voice-blob-spin-duration) ease-in-out infinite;
 }
 
 .voice-mode-panel__blob-glow.is-front {
@@ -731,13 +741,16 @@ svg {
   width: min(42vw, 12rem);
   background: radial-gradient(circle, rgba(243, 195, 255, 0.54) 0%, rgba(184, 78, 255, 0.28) 45%, rgba(184, 78, 255, 0) 76%);
   filter: blur(22px);
+  animation: voice-blob-glow-pulse calc(var(--voice-blob-spin-duration) * 0.86) ease-in-out infinite;
 }
 
 .voice-mode-panel__blob-glow.is-side {
   height: min(66vw, 20rem);
   width: min(26vw, 8rem);
   background: radial-gradient(circle, rgba(53, 88, 255, 0.34) 0%, rgba(53, 88, 255, 0) 72%);
-  transform: translate(-122%, -38%) scale(var(--voice-blob-glow-scale));
+  transform: translate(calc(-122% + var(--voice-blob-drift-x)), calc(-38% + (var(--voice-blob-drift-y) * 0.72)))
+    scale(calc(var(--voice-blob-glow-scale) * 0.92 * var(--voice-blob-spread)));
+  animation: voice-blob-glow-sweep calc(var(--voice-blob-spin-duration) * 0.92) ease-in-out infinite;
 }
 
 .voice-mode-panel__blob-core {
@@ -759,6 +772,31 @@ svg {
 
 .voice-mode-panel__blob-stage.is-error .voice-mode-panel__blob-core {
   filter: drop-shadow(0 0 26px rgba(251, 113, 133, 0.28));
+}
+
+.voice-mode-panel__blob-wave {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  border-radius: 50%;
+  border: 1px solid rgba(183, 202, 255, 0.24);
+  mix-blend-mode: screen;
+  opacity: calc(0.22 + (var(--voice-blob-glow-opacity) * 0.42));
+  pointer-events: none;
+}
+
+.voice-mode-panel__blob-wave.is-one {
+  width: min(66vw, 20rem);
+  height: min(44vw, 13rem);
+  transform: translate(-50%, -50%) rotate(-12deg) scale(calc(0.92 + (var(--voice-blob-spread) * 0.16)));
+  animation: voice-blob-wave-one calc(var(--voice-blob-spin-duration) * 1.12) ease-in-out infinite;
+}
+
+.voice-mode-panel__blob-wave.is-two {
+  width: min(54vw, 16rem);
+  height: min(56vw, 17rem);
+  border-color: rgba(238, 205, 255, 0.2);
+  transform: translate(-50%, -50%) rotate(18deg) scale(calc(0.88 + (var(--voice-blob-spread) * 0.18)));
+  animation: voice-blob-wave-two calc(var(--voice-blob-spin-duration) * 0.96) ease-in-out infinite;
 }
 
 .voice-mode-panel__blob-gradient,
@@ -835,69 +873,42 @@ svg {
   gap: 0.8rem;
 }
 
-.voice-mode-panel__meters {
-  display: flex;
-  min-height: 2rem;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 0.22rem;
-}
-
-.voice-mode-panel__meter {
-  width: 0.22rem;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(233, 247, 255, 0.96), rgba(72, 157, 255, 0.28));
-  box-shadow: 0 0 12px rgba(56, 145, 255, 0.18);
-  transition:
-    height 120ms ease-out,
-    opacity 120ms ease-out;
-}
-
-.voice-mode-panel__transcript-grid {
+.voice-mode-panel__chat-stack {
   display: grid;
   gap: 0.7rem;
 }
 
-.voice-mode-panel__transcript-card {
-  border-radius: 1.15rem;
+.voice-mode-panel__bubble {
+  display: flex;
+  max-width: min(84%, 24rem);
+  border-radius: 1.4rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  padding: 0.95rem 1rem;
+  padding: 0.95rem 1rem 1rem;
   backdrop-filter: blur(16px);
 }
 
-.voice-mode-panel__transcript-card.is-response {
-  border-color: rgba(72, 157, 255, 0.22);
-  background: rgba(34, 101, 202, 0.12);
+.voice-mode-panel__bubble.is-assistant {
+  justify-self: start;
+  border-top-left-radius: 0.65rem;
+  border-color: rgba(97, 141, 255, 0.24);
+  background: linear-gradient(180deg, rgba(47, 86, 186, 0.18), rgba(26, 37, 70, 0.34));
+  box-shadow: 0 0 26px rgba(56, 92, 214, 0.12);
 }
 
-.voice-mode-panel__transcript-label {
-  margin: 0 0 0.35rem;
-  color: rgba(255, 255, 255, 0.5);
-  font-family: "Space Grotesk", "IBM Plex Sans KR", sans-serif;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+.voice-mode-panel__bubble.is-user {
+  justify-self: end;
+  border-top-right-radius: 0.65rem;
+  border-color: rgba(225, 160, 255, 0.24);
+  background: linear-gradient(180deg, rgba(143, 52, 233, 0.22), rgba(78, 27, 121, 0.34));
+  box-shadow: 0 0 24px rgba(168, 80, 255, 0.12);
 }
 
-.voice-mode-panel__transcript-text {
+.voice-mode-panel__bubble-text {
   margin: 0;
   color: rgba(255, 255, 255, 0.92);
   font-size: 0.92rem;
   line-height: 1.55;
   word-break: break-word;
-}
-
-.voice-mode-panel__error {
-  margin: 0;
-  border-radius: 1rem;
-  border: 1px solid rgba(251, 113, 133, 0.24);
-  background: rgba(127, 29, 29, 0.2);
-  padding: 0.82rem 0.95rem;
-  color: #ffe4e6;
-  font-size: 0.84rem;
-  line-height: 1.55;
 }
 
 .voice-mode-panel__actions {
@@ -1091,6 +1102,77 @@ svg {
   }
 }
 
+@keyframes voice-blob-glow-orbit {
+  0%,
+  100% {
+    transform: translate(calc(-50% + var(--voice-blob-drift-x)), calc(-50% + var(--voice-blob-drift-y)))
+      scale(calc(var(--voice-blob-glow-scale) * var(--voice-blob-spread)));
+  }
+
+  50% {
+    transform: translate(calc(-46% + (var(--voice-blob-drift-x) * 1.15)), calc(-56% + (var(--voice-blob-drift-y) * 1.2)))
+      scale(calc((var(--voice-blob-glow-scale) + 0.06) * var(--voice-blob-spread)));
+  }
+}
+
+@keyframes voice-blob-glow-pulse {
+  0%,
+  100% {
+    opacity: calc(var(--voice-blob-glow-opacity) * 0.92);
+    transform: translate(calc(-50% + (var(--voice-blob-drift-x) * 0.84)), calc(-50% + (var(--voice-blob-drift-y) * 0.82)))
+      scale(calc(var(--voice-blob-glow-scale) * 0.88 * var(--voice-blob-spread)));
+  }
+
+  50% {
+    opacity: calc(var(--voice-blob-glow-opacity) * 1.08);
+    transform: translate(calc(-54% + (var(--voice-blob-drift-x) * 1.14)), calc(-45% + (var(--voice-blob-drift-y) * 1.06)))
+      scale(calc(var(--voice-blob-glow-scale) * 1.08 * var(--voice-blob-spread)));
+  }
+}
+
+@keyframes voice-blob-glow-sweep {
+  0%,
+  100% {
+    transform: translate(calc(-122% + var(--voice-blob-drift-x)), calc(-38% + (var(--voice-blob-drift-y) * 0.72)))
+      scale(calc(var(--voice-blob-glow-scale) * 0.92 * var(--voice-blob-spread)));
+  }
+
+  50% {
+    transform: translate(calc(-112% + (var(--voice-blob-drift-x) * 1.2)), calc(-50% + (var(--voice-blob-drift-y) * 1.06)))
+      scale(calc(var(--voice-blob-glow-scale) * 1.04 * var(--voice-blob-spread)));
+  }
+}
+
+@keyframes voice-blob-wave-one {
+  0%,
+  100% {
+    opacity: 0.24;
+    transform: translate(calc(-50% + (var(--voice-blob-drift-x) * 0.1)), calc(-50% + (var(--voice-blob-drift-y) * 0.1)))
+      rotate(-12deg) scale(calc(0.92 + (var(--voice-blob-spread) * 0.16)));
+  }
+
+  50% {
+    opacity: 0.46;
+    transform: translate(calc(-48% + (var(--voice-blob-drift-x) * 0.22)), calc(-53% + (var(--voice-blob-drift-y) * 0.18)))
+      rotate(-4deg) scale(calc(1 + (var(--voice-blob-spread) * 0.22)));
+  }
+}
+
+@keyframes voice-blob-wave-two {
+  0%,
+  100% {
+    opacity: 0.18;
+    transform: translate(calc(-50% + (var(--voice-blob-drift-x) * 0.06)), calc(-50% + (var(--voice-blob-drift-y) * 0.06)))
+      rotate(18deg) scale(calc(0.88 + (var(--voice-blob-spread) * 0.18)));
+  }
+
+  50% {
+    opacity: 0.38;
+    transform: translate(calc(-54% + (var(--voice-blob-drift-x) * 0.18)), calc(-46% + (var(--voice-blob-drift-y) * 0.14)))
+      rotate(28deg) scale(calc(0.98 + (var(--voice-blob-spread) * 0.24)));
+  }
+}
+
 @media (max-width: 420px) {
   .voice-mode-panel__hud {
     padding: 0.95rem 0.9rem calc(1rem + env(safe-area-inset-bottom));
@@ -1103,8 +1185,8 @@ svg {
     min-width: 9.25rem;
   }
 
-  .voice-mode-panel__actions {
-    grid-template-columns: minmax(0, 1fr);
+  .voice-mode-panel__bubble {
+    max-width: 90%;
   }
 
   .voice-mode-panel__device-select,
@@ -1113,7 +1195,7 @@ svg {
   }
 
   .voice-mode-panel__action-button {
-    width: 100%;
+    min-width: 6.2rem;
   }
 }
 
