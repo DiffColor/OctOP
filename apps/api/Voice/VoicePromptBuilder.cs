@@ -6,6 +6,7 @@ public sealed class VoicePromptBuilder
 {
   public string BuildInstructions(VoiceSessionStartRequest request)
   {
+    var hasThreadContext = !string.IsNullOrWhiteSpace(request.ThreadId);
     var projectName = Normalize(request.ProjectName, "프로젝트 미지정");
     var threadTitle = Normalize(request.ThreadTitle, "현재 채팅");
     var threadStatus = Normalize(request.ThreadStatusLabel, "상태 미확인");
@@ -15,10 +16,18 @@ public sealed class VoicePromptBuilder
     {
       "당신은 OctOP의 실시간 음성 비서입니다.",
       "항상 한국어로 짧고 자연스럽고 분명하게 말합니다.",
-      "작업의 판단과 실행 주도권은 app-server가 가집니다.",
-      "사용자가 작업을 요청하면 먼저 delegate_to_app_server 함수를 호출해 같은 쓰레드의 app-server 작업으로 전달합니다.",
-      "사용자가 현재 진행 상황이나 상태를 물으면 get_thread_status 함수를 호출해 확인한 뒤 짧게 보고합니다.",
-      "사용자가 중단이나 취소를 요청하면 interrupt_active_issue 함수를 호출합니다.",
+      "초기 대화의 주도권은 현재 Realtime 세션이 가집니다.",
+      "사용자와 대화하며 작업 의도와 필요한 맥락을 짧게 확인하고, app-server에 전달할 때는 대화 내용을 요약한 핵심 작업 프롬프트로 정리합니다.",
+      hasThreadContext
+        ? "현재 세션은 app-server 작업 이후 이어진 쓰레드 문맥입니다. app-server가 주도적으로 작업하고, 당신은 그 진행 요약과 결과를 받아 짧게 리포트하며 대화를 이어갑니다."
+        : "현재 세션은 프로젝트 단위의 시작 대화입니다. 아직 작업 쓰레드가 없으면 먼저 사용자와 짧게 대화한 뒤 delegate_to_app_server 함수로 새 작업 쓰레드와 app-server 실행을 시작합니다.",
+      "사용자가 작업을 요청하면 먼저 delegate_to_app_server 함수를 호출합니다.",
+      hasThreadContext
+        ? "사용자가 현재 진행 상황이나 상태를 물으면 get_thread_status 함수를 호출해 확인한 뒤 짧게 보고합니다."
+        : "작업 쓰레드가 생기기 전에는 진행 상황을 추측하지 말고, 먼저 app-server 위임 여부를 결정합니다.",
+      hasThreadContext
+        ? "사용자가 중단이나 취소를 요청하면 interrupt_active_issue 함수를 호출합니다."
+        : "활성 작업 쓰레드가 생긴 뒤에만 중단 함수를 사용합니다.",
       "함수 결과와 app-server가 준 진행 리포트, 확정 응답만 근거로 말하고 추측하지 않습니다.",
       "파일 경로, 코드, 명령어, 장문의 보고를 그대로 읽지 말고 핵심만 자연스럽게 요약합니다.",
       "한 번의 음성 보고는 보통 한두 문장으로 유지합니다.",

@@ -217,6 +217,7 @@ function extractLatestAssistantMessageContent(messages) {
 
 export default function useRealtimeVoiceSession({
   enabled = false,
+  sessionContextKey = "",
   apiRequest,
   loginId = "",
   bridgeId = "",
@@ -259,6 +260,7 @@ export default function useRealtimeVoiceSession({
   const lastProgressReportSourceRef = useRef("");
   const lastFinalReportSourceRef = useRef("");
   const issuePollSequenceRef = useRef(0);
+  const activeSessionContextKeyRef = useRef("");
 
   useEffect(() => {
     setState((current) => {
@@ -337,13 +339,16 @@ export default function useRealtimeVoiceSession({
     };
   }, [refreshInputDevices]);
 
-  const disconnectSession = useCallback(async ({ preserveTranscript = true } = {}) => {
+  const disconnectSession = useCallback(async ({ preserveTranscript = true, preservePendingIssuePoll = false } = {}) => {
     disconnectingRef.current = true;
     sessionVersionRef.current += 1;
     processedFunctionCallIdsRef.current = new Set();
     queuedAppServerReportRef.current = null;
     appServerReportInFlightRef.current = false;
-    issuePollSequenceRef.current += 1;
+    if (!preservePendingIssuePoll) {
+      issuePollSequenceRef.current += 1;
+    }
+    activeSessionContextKeyRef.current = "";
 
     const activePeerConnection = peerConnectionRef.current;
     const activeDataChannel = dataChannelRef.current;
@@ -560,7 +565,7 @@ export default function useRealtimeVoiceSession({
     ({ kind = "progress", text = "", latestPrompt = "" }) => {
       const normalizedText = String(text ?? "").trim();
 
-      if (!normalizedText || state.connectionState !== "connected") {
+      if (!normalizedText) {
         return false;
       }
 
@@ -575,6 +580,10 @@ export default function useRealtimeVoiceSession({
           return false;
         }
 
+        if (lastFinalReportSourceRef.current || queuedAppServerReportRef.current?.kind === "final") {
+          return true;
+        }
+
         lastProgressReportSourceRef.current = normalizedText;
       }
 
@@ -583,10 +592,23 @@ export default function useRealtimeVoiceSession({
         text: normalizedText,
         latestPrompt: String(latestPrompt ?? "").trim()
       };
+
+      if (state.connectionState !== "connected") {
+        return true;
+      }
+
       return flushQueuedAppServerReport();
     },
     [flushQueuedAppServerReport, state.connectionState]
   );
+
+  useEffect(() => {
+    if (!enabled || state.connectionState !== "connected") {
+      return;
+    }
+
+    flushQueuedAppServerReport();
+  }, [enabled, flushQueuedAppServerReport, state.connectionState]);
 
   const invokeRemoteVoiceTool = useCallback(
     async (toolName, argumentsPayload = {}) => {
@@ -630,15 +652,10 @@ export default function useRealtimeVoiceSession({
 
       const pollSequence = issuePollSequenceRef.current + 1;
       issuePollSequenceRef.current = pollSequence;
-      const startedSessionVersion = sessionVersionRef.current;
 
       void (async () => {
         for (let attempt = 0; attempt < 12; attempt += 1) {
-          if (
-            disconnectingRef.current ||
-            issuePollSequenceRef.current !== pollSequence ||
-            sessionVersionRef.current !== startedSessionVersion
-          ) {
+          if (issuePollSequenceRef.current !== pollSequence) {
             return;
           }
 
@@ -730,6 +747,8 @@ export default function useRealtimeVoiceSession({
       const functionCalls = extractFunctionCallsFromResponse(response);
 
       if (functionCalls.length > 0) {
+        let handoffToNewThread = false;
+
         for (const functionCall of functionCalls) {
           if (processedFunctionCallIdsRef.current.has(functionCall.callId)) {
             continue;
@@ -737,7 +756,23 @@ export default function useRealtimeVoiceSession({
 
           processedFunctionCallIdsRef.current.add(functionCall.callId);
           const result = await executeVoiceTool(functionCall.name, functionCall.arguments);
+
+          if (String(result?.switch_to_thread_id ?? "").trim()) {
+            handoffToNewThread = true;
+          }
+
           sendRealtimeClientEvent(buildFunctionCallOutputEvent(functionCall.callId, result));
+        }
+
+        if (handoffToNewThread) {
+          assistantTranscriptBufferRef.current = "";
+          setState((current) => ({
+            ...current,
+            latestAssistantTranscript: "작업을 새 쓰레드로 전달했습니다. 새 Realtime 세션으로 전환합니다.",
+            isResponding: false,
+            error: ""
+          }));
+          return;
         }
 
         requestVoiceTurnResponse({
@@ -938,7 +973,7 @@ export default function useRealtimeVoiceSession({
   }, [appServerFinalText, appServerProgressText, enabled, queueAppServerReport, state.connectionState]);
 
   const startSession = useCallback(async () => {
-    if (!loginId || !bridgeId || !thread?.id || typeof apiRequest !== "function") {
+    if (!loginId || !bridgeId || !project?.id || typeof apiRequest !== "function") {
       return false;
     }
 
@@ -948,9 +983,13 @@ export default function useRealtimeVoiceSession({
 
     const connectPromise = (async () => {
       const sessionVersion = sessionVersionRef.current + 1;
+      const normalizedSessionContextKey =
+        String(sessionContextKey ?? "").trim() || `${String(project?.id ?? "").trim()}:${String(thread?.id ?? "").trim() || "project-intake"}`;
 
       try {
-        await disconnectSession({ preserveTranscript: true });
+        activeSessionContextKeyRef.current = normalizedSessionContextKey;
+        await disconnectSession({ preserveTranscript: true, preservePendingIssuePoll: true });
+        activeSessionContextKeyRef.current = normalizedSessionContextKey;
         sessionVersionRef.current = sessionVersion;
         processedFunctionCallIdsRef.current = new Set();
         queuedAppServerReportRef.current = null;
@@ -1145,6 +1184,7 @@ export default function useRealtimeVoiceSession({
 
         peerConnectionRef.current = peerConnection;
         dataChannelRef.current = dataChannel;
+        activeSessionContextKeyRef.current = normalizedSessionContextKey;
 
         setState((current) => ({
           ...current,
@@ -1160,7 +1200,8 @@ export default function useRealtimeVoiceSession({
           return false;
         }
 
-        await disconnectSession({ preserveTranscript: true });
+        await disconnectSession({ preserveTranscript: true, preservePendingIssuePoll: true });
+        activeSessionContextKeyRef.current = normalizedSessionContextKey;
         setState((current) => ({
           ...current,
           connectionState: "error",
@@ -1185,6 +1226,7 @@ export default function useRealtimeVoiceSession({
     loginId,
     project?.id,
     project?.name,
+    sessionContextKey,
     projectBaseInstructions,
     projectDeveloperInstructions,
     projectProgramSummary,
@@ -1200,6 +1242,21 @@ export default function useRealtimeVoiceSession({
     threadContinuitySummary,
     threadDeveloperInstructions
   ]);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    const normalizedContextKey =
+      String(sessionContextKey ?? "").trim() || `${String(project?.id ?? "").trim()}:${String(thread?.id ?? "").trim() || "project-intake"}`;
+
+    if (!normalizedContextKey || activeSessionContextKeyRef.current === normalizedContextKey || connectInFlightRef.current) {
+      return;
+    }
+
+    void startSession();
+  }, [enabled, project?.id, sessionContextKey, startSession, thread?.id]);
 
   const cancelResponse = useCallback(() => {
     const accepted = sendRealtimeClientEvent({

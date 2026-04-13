@@ -8185,6 +8185,7 @@ function ThreadDetail({
   onRetryIssue,
   onDeleteIssue,
   onSubmitPrompt,
+  onVoiceDelegatePrompt,
   submitBusy,
   onBack,
   threadInstructionSupported = false,
@@ -8224,10 +8225,13 @@ function ThreadDetail({
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
   const [voicePromptSubmittedAt, setVoicePromptSubmittedAt] = useState("");
   const [voiceLastSubmittedPrompt, setVoiceLastSubmittedPrompt] = useState("");
+  const [voiceDelegatedThreadId, setVoiceDelegatedThreadId] = useState("");
   const handleVoicePromptSubmit = useCallback((prompt) => {
     const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
+    const delegatePromptHandler =
+      !voiceDelegatedThreadId && typeof onVoiceDelegatePrompt === "function" ? onVoiceDelegatePrompt : onSubmitPrompt;
 
-    if (!normalizedPrompt || typeof onSubmitPrompt !== "function") {
+    if (!normalizedPrompt || typeof delegatePromptHandler !== "function") {
       return {
         ok: false,
         accepted: false,
@@ -8238,18 +8242,40 @@ function ThreadDetail({
     const submittedAt = new Date().toISOString();
     setVoicePromptSubmittedAt(submittedAt);
     setVoiceLastSubmittedPrompt(normalizedPrompt);
-    return Promise.resolve(onSubmitPrompt({ prompt: normalizedPrompt })).then((result) => ({
-      ...(result && typeof result === "object" ? result : null),
-      ok: result !== false && (typeof result === "object" ? result?.ok ?? true : true),
-      accepted: result !== false && (typeof result === "object" ? result?.accepted ?? true : true),
-      prompt: normalizedPrompt,
-      submitted_at: submittedAt,
-      thread_id:
-        typeof result === "object" && result?.thread_id ? String(result.thread_id).trim() : String(thread?.id ?? "").trim(),
-      project_id:
-        typeof result === "object" && result?.project_id ? String(result.project_id).trim() : String(project?.id ?? "").trim()
-    }));
-  }, [onSubmitPrompt, project?.id, thread?.id]);
+    return Promise.resolve(
+      delegatePromptHandler({
+        prompt: normalizedPrompt,
+        project_id: String(project?.id ?? "").trim(),
+        source: "realtime_voice_delegate"
+      })
+    ).then((result) => {
+      const resolvedThreadId =
+        typeof result === "object" && result?.thread_id
+          ? String(result.thread_id).trim()
+          : voiceDelegatedThreadId || String(thread?.id ?? "").trim();
+      const resolvedProjectId =
+        typeof result === "object" && result?.project_id
+          ? String(result.project_id).trim()
+          : String(project?.id ?? "").trim();
+      const handoffToNewThread = !voiceDelegatedThreadId && Boolean(resolvedThreadId);
+
+      if (handoffToNewThread) {
+        setVoiceDelegatedThreadId(resolvedThreadId);
+      }
+
+      return {
+        ...(result && typeof result === "object" ? result : null),
+        ok: result !== false && (typeof result === "object" ? result?.ok ?? true : true),
+        accepted: result !== false && (typeof result === "object" ? result?.accepted ?? true : true),
+        prompt: normalizedPrompt,
+        submitted_at: submittedAt,
+        thread_id: resolvedThreadId,
+        project_id: resolvedProjectId,
+        switch_to_thread_id: handoffToNewThread ? resolvedThreadId : "",
+        voice_handoff: handoffToNewThread
+      };
+    });
+  }, [onSubmitPrompt, onVoiceDelegatePrompt, project?.id, thread?.id, voiceDelegatedThreadId]);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -8617,8 +8643,48 @@ function ThreadDetail({
       voiceThreadContinuitySummary
     ]
   );
+  const voiceProjectIntakeSummary = useMemo(
+    () =>
+      formatProjectProgramSummaryForVoice({
+        projectName: String(project?.name ?? "").trim(),
+        workspacePath: String(project?.workspace_path ?? "").trim(),
+        projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
+        projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
+        threadTitle: "",
+        threadStatusLabel: "",
+        threadContinuitySummary: "",
+        latestHandoffSummary: "",
+        recentConversationSummary: ""
+      }),
+    [project?.base_instructions, project?.developer_instructions, project?.name, project?.workspace_path]
+  );
+  const voiceFollowupThreadReady = Boolean(String(voiceDelegatedThreadId ?? "").trim());
+  const voiceSessionThread = useMemo(() => {
+    const normalizedVoiceThreadId = String(voiceDelegatedThreadId ?? "").trim();
+
+    if (!normalizedVoiceThreadId) {
+      return null;
+    }
+
+    if (String(thread?.id ?? "").trim() === normalizedVoiceThreadId) {
+      return thread;
+    }
+
+    return {
+      id: normalizedVoiceThreadId,
+      title: "",
+      status: ""
+    };
+  }, [thread, voiceDelegatedThreadId]);
+  const voiceSessionContextKey = useMemo(() => {
+    const normalizedProjectId = String(project?.id ?? "").trim() || "project-unknown";
+    const normalizedVoiceThreadId = String(voiceDelegatedThreadId ?? "").trim();
+    return normalizedVoiceThreadId
+      ? `${normalizedProjectId}:thread:${normalizedVoiceThreadId}`
+      : `${normalizedProjectId}:project-intake`;
+  }, [project?.id, voiceDelegatedThreadId]);
   const voiceProgressReportText = useMemo(() => {
-    if (!voiceModeEnabled || !voicePromptSubmittedAt || voiceLinkedAssistantText) {
+    if (!voiceModeEnabled || !voiceFollowupThreadReady || !voicePromptSubmittedAt || voiceLinkedAssistantText) {
       return "";
     }
 
@@ -8663,31 +8729,34 @@ function ThreadDetail({
     voiceLastSubmittedPrompt,
     voiceLinkedAssistantText,
     voiceModeEnabled,
+    voiceFollowupThreadReady,
     voicePromptSubmittedAt
   ]);
   const voiceSession = useRealtimeVoiceSession({
     enabled: voiceModeEnabled && voiceSessionEnabled,
+    sessionContextKey: voiceSessionContextKey,
     apiRequest: voiceApiRequest,
     loginId: sessionLoginId,
     bridgeId,
     project,
-    thread,
+    thread: voiceSessionThread,
     latestUserText: "",
     latestAssistantText: "",
-    appServerFinalText: voiceLinkedAssistantText,
-    appServerProgressText: voiceProgressReportText,
+    appServerFinalText: voiceFollowupThreadReady ? voiceLinkedAssistantText : "",
+    appServerProgressText: voiceFollowupThreadReady ? voiceProgressReportText : "",
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
     projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
     projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
-    threadDeveloperInstructions: String(thread?.developer_instructions ?? "").trim(),
-    threadContinuitySummary: voiceThreadContinuitySummary,
-    latestHandoffSummary: latestHandoffSummaryText,
-    recentConversationSummary: recentVoiceContextSummary,
-    projectProgramSummary: voiceProgramSummary,
-    threadFileContextSummary: voiceFileContextSummary,
+    threadDeveloperInstructions: voiceFollowupThreadReady ? String(thread?.developer_instructions ?? "").trim() : "",
+    threadContinuitySummary: voiceFollowupThreadReady ? voiceThreadContinuitySummary : "",
+    latestHandoffSummary: voiceFollowupThreadReady ? latestHandoffSummaryText : "",
+    recentConversationSummary: voiceFollowupThreadReady ? recentVoiceContextSummary : "",
+    projectProgramSummary: voiceFollowupThreadReady ? voiceProgramSummary : voiceProjectIntakeSummary,
+    threadFileContextSummary: voiceFollowupThreadReady ? voiceFileContextSummary : "",
     onSubmitPrompt: handleVoicePromptSubmit
   });
-  const voicePanelAssistantText = voiceSession.latestAssistantTranscript || voiceProgressReportText || voiceLinkedAssistantText;
+  const voicePanelAssistantText =
+    voiceSession.latestAssistantTranscript || (voiceFollowupThreadReady ? voiceProgressReportText || voiceLinkedAssistantText : "");
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9295,6 +9364,8 @@ function ThreadDetail({
     if (voiceModeEnabled) {
       setVoiceModeEnabled(false);
       setVoicePromptSubmittedAt("");
+      setVoiceLastSubmittedPrompt("");
+      setVoiceDelegatedThreadId("");
       await voiceSession.stopSession({ preserveTranscript: true });
       return;
     }
@@ -9307,8 +9378,8 @@ function ThreadDetail({
       return;
     }
 
-    if (!thread?.id || !sessionLoginId || !bridgeId) {
-      showAlert("음성 모드는 현재 선택된 채팅창에서만 시작할 수 있습니다.", {
+    if (!project?.id || !sessionLoginId || !bridgeId) {
+      showAlert("음성 모드는 현재 프로젝트 문맥이 있을 때만 시작할 수 있습니다.", {
         tone: "error",
         title: "음성 모드"
       });
@@ -9316,9 +9387,10 @@ function ThreadDetail({
     }
 
     setVoicePromptSubmittedAt("");
+    setVoiceLastSubmittedPrompt("");
+    setVoiceDelegatedThreadId("");
     setVoiceModeEnabled(true);
-    void voiceSession.startSession();
-  }, [bridgeId, sessionLoginId, showAlert, thread?.id, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
+  }, [bridgeId, project?.id, sessionLoginId, showAlert, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
   useEffect(() => {
     setActiveMessageAction(null);
@@ -9328,10 +9400,14 @@ function ThreadDetail({
   }, [thread?.id]);
 
   useEffect(() => {
-    setVoiceModeEnabled(false);
+    if (voiceModeEnabled || !voicePromptSubmittedAt) {
+      return;
+    }
+
     setVoicePromptSubmittedAt("");
-    void voiceSession.stopSession({ preserveTranscript: false });
-  }, [thread?.id]);
+    setVoiceLastSubmittedPrompt("");
+    setVoiceDelegatedThreadId("");
+  }, [voiceModeEnabled, voicePromptSubmittedAt]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
   const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
@@ -11787,6 +11863,15 @@ function MainPage({
 
                     return onCreateThread(payload, { stayOnThread: true });
                   }}
+                  onVoiceDelegatePrompt={(payload) =>
+                    onCreateThread(
+                      {
+                        ...payload,
+                        project_id: resolvedThread?.project_id ?? threadProject?.id ?? payload?.project_id
+                      },
+                      { stayOnThread: true }
+                    )
+                  }
                   submitBusy={threadBusy}
                   onBack={onBackToInbox}
                   messageFilter={threadMessageFilter}
@@ -11841,6 +11926,15 @@ function MainPage({
 
             return onCreateThread(payload, { stayOnThread: true });
           }}
+          onVoiceDelegatePrompt={(payload) =>
+            onCreateThread(
+              {
+                ...payload,
+                project_id: resolvedThread?.project_id ?? threadProject?.id ?? payload?.project_id
+              },
+              { stayOnThread: true }
+            )
+          }
           submitBusy={threadBusy}
           onBack={onBackToInbox}
           messageFilter={threadMessageFilter}

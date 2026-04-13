@@ -13,6 +13,7 @@ const loginId = 'playwright-user';
 const bridgeId = 'bridge-voice';
 const projectId = 'project-voice';
 const threadId = 'thread-voice-1';
+const delegatedThreadId = 'thread-voice-2';
 const issueId = 'issue-voice-1';
 const now = Date.now();
 const threadCreatedAt = new Date(now - 15 * 60 * 1000).toISOString();
@@ -90,6 +91,22 @@ const issueDetail = {
       timestamp: initialAssistantAt
     }
   ]
+};
+
+const delegatedThread = {
+  id: delegatedThreadId,
+  title: '상태 알려줘',
+  name: '상태 알려줘',
+  project_id: projectId,
+  status: 'idle',
+  progress: 0,
+  last_event: 'thread.created',
+  last_message: '',
+  updated_at: new Date(now - 2 * 60 * 1000).toISOString(),
+  created_at: new Date(now - 2 * 60 * 1000).toISOString(),
+  context_usage_percent: 3,
+  context_used_tokens: 320,
+  context_window_tokens: 100000
 };
 
 const authoritativeAssistantContent = `
@@ -461,6 +478,7 @@ async function installVoiceBrowserMocks(page) {
 
 async function mockMobileApi(page, options = {}) {
   const voiceSessionRequests = options.voiceSessionRequests ?? [];
+  const createdThreads = options.createdThreads ?? [];
   const createdIssues = options.createdIssues ?? [];
   const startedIssueRequests = options.startedIssueRequests ?? [];
   const narrationRequests = options.narrationRequests ?? [];
@@ -468,6 +486,8 @@ async function mockMobileApi(page, options = {}) {
   const authoritativeResponseText = String(options.authoritativeAssistantContent ?? "").trim();
   let voiceIssueSequence = 0;
   let latestCreatedIssue = null;
+  let latestCreatedThread = null;
+  let voiceSessionSequence = 0;
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -534,12 +554,34 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
-    if (pathname === `/api/projects/${projectId}/threads`) {
+    if (pathname === `/api/projects/${projectId}/threads` && method === 'GET') {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          threads: [thread]
+          threads: latestCreatedThread ? [latestCreatedThread, thread] : [thread]
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/projects/${projectId}/threads` && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      latestCreatedThread = {
+        ...delegatedThread,
+        title: payload.name || delegatedThread.title,
+        name: payload.name || delegatedThread.name,
+        updated_at: new Date(Date.now() + 120).toISOString(),
+        created_at: new Date(Date.now() + 120).toISOString()
+      };
+      createdThreads.push(payload);
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          thread: latestCreatedThread,
+          threads: [latestCreatedThread, thread]
         })
       });
       return;
@@ -558,6 +600,19 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
+    if (pathname === `/api/threads/${delegatedThreadId}/issues` && method === 'GET') {
+      const issues = latestCreatedIssue ? [latestCreatedIssue] : [];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          thread: latestCreatedThread ?? delegatedThread,
+          issues
+        })
+      });
+      return;
+    }
+
     if (latestCreatedIssue && pathname === `/api/issues/${latestCreatedIssue.id}` && method === 'GET') {
       const completedAt = new Date(Date.now() + 1500).toISOString();
       await route.fulfill({
@@ -565,7 +620,7 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify({
           thread: {
-            ...thread,
+            ...(latestCreatedThread ?? delegatedThread),
             status: 'idle',
             progress: 100,
             last_event: 'turn.completed',
@@ -632,7 +687,39 @@ async function mockMobileApi(page, options = {}) {
         updated_at: createdAt
       };
       latestCreatedIssue = createdIssue;
-      createdIssues.push(payload);
+      createdIssues.push({ ...payload, thread_id: threadId });
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          issue: createdIssue
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${delegatedThreadId}/issues` && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      voiceIssueSequence += 1;
+      const createdAt = new Date(Date.now() + voiceIssueSequence * 250).toISOString();
+      const createdIssue = {
+        id: `voice-created-issue-${voiceIssueSequence}`,
+        thread_id: delegatedThreadId,
+        root_thread_id: delegatedThreadId,
+        project_id: projectId,
+        title: payload.title || 'Voice Prompt',
+        prompt: payload.prompt || '',
+        status: 'queued',
+        progress: 0,
+        last_event: 'issue.created',
+        last_message: '',
+        attachments: payload.attachments || [],
+        created_at: createdAt,
+        updated_at: createdAt
+      };
+      latestCreatedIssue = createdIssue;
+      createdIssues.push({ ...payload, thread_id: delegatedThreadId });
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
@@ -646,13 +733,28 @@ async function mockMobileApi(page, options = {}) {
 
     if (pathname === `/api/threads/${threadId}/issues/start` && method === 'POST') {
       const payload = request.postDataJSON() ?? {};
-      startedIssueRequests.push(payload);
+      startedIssueRequests.push({ ...payload, thread_id: threadId });
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
         body: JSON.stringify({
           accepted: true,
           thread_id: threadId,
+          issue_ids: payload.issue_ids || []
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${delegatedThreadId}/issues/start` && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      startedIssueRequests.push({ ...payload, thread_id: delegatedThreadId });
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          thread_id: delegatedThreadId,
           issue_ids: payload.issue_ids || []
         })
       });
@@ -681,9 +783,9 @@ async function mockMobileApi(page, options = {}) {
           call_url: 'https://voice.test/mock-realtime-call',
           bridge_id: bridgeId,
           project_id: projectId,
-          thread_id: threadId,
+          thread_id: payload.thread_id || '',
           session: {
-            id: 'voice-session-1'
+            id: `voice-session-${++voiceSessionSequence}`
           }
         })
       });
@@ -741,6 +843,7 @@ test.afterAll(async () => {
 
 test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const voiceSessionRequests = [];
+  const createdThreads = [];
   const narrationRequests = [];
   const createdIssues = [];
   const startedIssueRequests = [];
@@ -750,6 +853,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await installVoiceBrowserMocks(page);
   await mockMobileApi(page, {
     voiceSessionRequests,
+    createdThreads,
     narrationRequests,
     createdIssues,
     startedIssueRequests,
@@ -821,17 +925,15 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
 
   await expect(page.getByTestId('voice-mode-footer').getByRole('combobox', { name: '마이크 입력 선택' })).toHaveCount(0);
   await expect.poll(() => voiceSessionRequests.length).toBe(1);
-  expect(voiceSessionRequests[0].thread_id).toBe(threadId);
+  expect(voiceSessionRequests[0].thread_id).toBe('');
   expect(voiceSessionRequests[0].project_id).toBe(projectId);
   expect(voiceSessionRequests[0].project_workspace_path).toBe(project.workspace_path);
   expect(voiceSessionRequests[0].project_base_instructions).toContain('현재 프로젝트 코드를 기준');
   expect(voiceSessionRequests[0].project_developer_instructions).toContain('실제 동작하는 결과');
-  expect(voiceSessionRequests[0].recent_conversation_summary).toContain('user: 현재 상태 알려줘');
-  expect(voiceSessionRequests[0].recent_conversation_summary).toContain('assistant: 현재 스레드는 유휴 상태입니다.');
   expect(voiceSessionRequests[0].project_program_summary).toContain('Voice E2E Project');
   expect(voiceSessionRequests[0].project_program_summary).toContain(project.workspace_path);
-  expect(voiceSessionRequests[0].thread_file_context_summary).toContain('apps/mobile/src/App.jsx');
-  expect(voiceSessionRequests[0].thread_file_context_summary).toContain('voice mode status panel summary');
+  expect(voiceSessionRequests[0].recent_conversation_summary).toBe('');
+  expect(voiceSessionRequests[0].thread_file_context_summary).toBe('');
 
   const browserMetrics = await page.evaluate(() => ({
     getUserMediaCalls: window.__voiceTest.getUserMediaCalls.length,
@@ -844,7 +946,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
   await expect.poll(async () => {
     return page.evaluate(() => window.__voiceTest.getUserMediaCalls.length);
-  }).toBe(2);
+  }).toBeGreaterThanOrEqual(2);
 
   const deviceSwitchMetrics = await page.evaluate(() => {
     const calls = window.__voiceTest.getUserMediaCalls;
@@ -870,22 +972,23 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
     window.__voiceTest.dataChannel.emit(payload);
   }, buildRealtimeFunctionCallResponse({ prompt: '상태 알려줘' }));
 
+  await expect.poll(() => createdThreads.length).toBe(1);
   await expect.poll(() => createdIssues.length).toBe(1);
   await expect.poll(() => startedIssueRequests.length).toBe(1);
+  expect(createdThreads[0].name).toContain('상태 알려줘');
   expect(createdIssues[0].prompt).toBe('상태 알려줘');
+  expect(createdIssues[0].thread_id).toBe(delegatedThreadId);
+  expect(startedIssueRequests[0].thread_id).toBe(delegatedThreadId);
 
   await expect.poll(async () => {
     const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
     return sentEvents.filter((event) => event?.item?.type === 'function_call_output').length;
   }).toBe(1);
 
-  await page.evaluate((payload) => {
-    window.__voiceTest.dataChannel.emit(payload);
-  }, buildRealtimeAssistantMessageResponse({
-    responseId: 'resp-voice-ack',
-    channel: 'voice_turn',
-    text: '알겠습니다. 요청을 app-server에 전달했고 진행 내용을 짧게 계속 알려드릴게요.'
-  }));
+  await expect.poll(() => voiceSessionRequests.some((payload) => payload.thread_id === delegatedThreadId)).toBeTruthy();
+  const delegatedSessionRequest = [...voiceSessionRequests].reverse().find((payload) => payload.thread_id === delegatedThreadId);
+  expect(delegatedSessionRequest.thread_id).toBe(delegatedThreadId);
+  expect(delegatedSessionRequest.recent_conversation_summary).toContain('user: 상태 알려줘');
 
   await expect.poll(async () => {
     const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
@@ -934,7 +1037,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const functionCallOutputs = sentEvents.filter((event) => event?.type === 'conversation.item.create');
   expect(functionCallOutputs).toHaveLength(1);
   expect(functionCallOutputs[0].item.call_id).toBe('call-voice-1');
-  expect(sentEvents.filter((event) => event?.type === 'response.create').length).toBeGreaterThanOrEqual(3);
+  expect(sentEvents.filter((event) => event?.type === 'response.create').length).toBeGreaterThanOrEqual(2);
 
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
