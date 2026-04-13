@@ -71,6 +71,16 @@ function buildVoiceTurnResponseEvent(metadata = {}) {
   };
 }
 
+function buildSessionUpdateEvent() {
+  return {
+    type: "session.update",
+    session: {
+      type: "realtime",
+      output_modalities: REALTIME_OUTPUT_MODALITIES
+    }
+  };
+}
+
 function buildAppServerReportPrompt({ kind = "progress", text = "", latestPrompt = "" }) {
   const normalizedKind = kind === "final" ? "확정 응답" : "진행 리포트";
   const normalizedText = String(text ?? "").trim();
@@ -261,6 +271,7 @@ export default function useRealtimeVoiceSession({
   const lastFinalReportSourceRef = useRef("");
   const issuePollSequenceRef = useRef(0);
   const activeSessionContextKeyRef = useRef("");
+  const sessionConfigurationAppliedRef = useRef(false);
 
   useEffect(() => {
     setState((current) => {
@@ -349,6 +360,7 @@ export default function useRealtimeVoiceSession({
       issuePollSequenceRef.current += 1;
     }
     activeSessionContextKeyRef.current = "";
+    sessionConfigurationAppliedRef.current = false;
 
     const activePeerConnection = peerConnectionRef.current;
     const activeDataChannel = dataChannelRef.current;
@@ -517,6 +529,22 @@ export default function useRealtimeVoiceSession({
     }
 
     dataChannel.send(JSON.stringify(event));
+    return true;
+  }, []);
+
+  const sendSessionUpdateEvent = useCallback((channel = dataChannelRef.current) => {
+    if (sessionConfigurationAppliedRef.current) {
+      return true;
+    }
+
+    const targetChannel = channel ?? dataChannelRef.current;
+
+    if (!isOpenDataChannel(targetChannel)) {
+      return false;
+    }
+
+    targetChannel.send(JSON.stringify(buildSessionUpdateEvent()));
+    sessionConfigurationAppliedRef.current = true;
     return true;
   }, []);
 
@@ -814,7 +842,15 @@ export default function useRealtimeVoiceSession({
       }
 
       switch (type) {
-        case "session.created":
+        case "session.created": {
+          setState((current) => ({
+            ...current,
+            sessionId: String(event?.session?.id ?? current.sessionId ?? "").trim()
+          }));
+          sendSessionUpdateEvent();
+          return;
+        }
+
         case "session.updated": {
           setState((current) => ({
             ...current,
@@ -940,7 +976,7 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [handleRealtimeResponseDone, requestVoiceTurnResponse]
+    [handleRealtimeResponseDone, requestVoiceTurnResponse, sendSessionUpdateEvent]
   );
 
   useEffect(() => {
@@ -996,6 +1032,7 @@ export default function useRealtimeVoiceSession({
         appServerReportInFlightRef.current = false;
         lastProgressReportSourceRef.current = "";
         lastFinalReportSourceRef.current = "";
+        sessionConfigurationAppliedRef.current = false;
 
         setState((current) => ({
           ...current,
@@ -1122,6 +1159,7 @@ export default function useRealtimeVoiceSession({
             connectionState: "connected",
             micState: "listening"
           }));
+          sendSessionUpdateEvent(dataChannel);
         };
         dataChannel.onmessage = (rawEvent) => {
           if (disconnectingRef.current || sessionVersionRef.current !== sessionVersion) {
@@ -1234,6 +1272,7 @@ export default function useRealtimeVoiceSession({
     recentConversationSummary,
     refreshInputDevices,
     startAudioLevelMeter,
+    sendSessionUpdateEvent,
     latestHandoffSummary,
     threadFileContextSummary,
     thread?.id,

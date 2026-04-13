@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Aura Synth | AI Interface</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Manrope:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-container-lowest": "#000000",
+                        "surface-dim": "#0e0e0f",
+                        "tertiary-fixed": "#bda1ff",
+                        "on-surface-variant": "#adaaab",
+                        "outline": "#767576",
+                        "surface-bright": "#2c2c2d",
+                        "on-error-container": "#ffa8a3",
+                        "primary-container": "#00eefc",
+                        "on-secondary-fixed-variant": "#920091",
+                        "on-secondary-fixed": "#620061",
+                        "on-primary-fixed": "#003f43",
+                        "secondary-container": "#a900a9",
+                        "primary-dim": "#00deec",
+                        "background": "#0e0e0f",
+                        "inverse-primary": "#006a71",
+                        "on-primary-container": "#005359",
+                        "surface-container": "#1a191b",
+                        "surface-tint": "#8ff5ff",
+                        "surface-container-low": "#131314",
+                        "primary": "#8ff5ff",
+                        "on-tertiary-fixed-variant": "#4700a7",
+                        "on-primary-fixed-variant": "#005e64",
+                        "on-tertiary-fixed": "#1f0052",
+                        "tertiary-container": "#7000ff",
+                        "error-container": "#9f0519",
+                        "primary-fixed-dim": "#00deec",
+                        "surface-container-highest": "#262627",
+                        "surface-variant": "#262627",
+                        "inverse-on-surface": "#565556",
+                        "on-tertiary": "#290067",
+                        "secondary": "#ff51fa",
+                        "outline-variant": "#484849",
+                        "tertiary-fixed-dim": "#b190ff",
+                        "tertiary-dim": "#874cff",
+                        "secondary-fixed-dim": "#ffa6f3",
+                        "secondary-dim": "#ff51fa",
+                        "on-surface": "#ffffff",
+                        "on-error": "#490006",
+                        "inverse-surface": "#fcf8f9",
+                        "surface": "#0e0e0f",
+                        "error-dim": "#d7383b",
+                        "tertiary": "#ac89ff",
+                        "on-primary": "#005d63",
+                        "on-secondary-container": "#fff5f9",
+                        "on-tertiary-container": "#f8f1ff",
+                        "error": "#ff716c",
+                        "surface-container-high": "#201f21",
+                        "primary-fixed": "#00eefc",
+                        "on-secondary": "#400040",
+                        "on-background": "#ffffff",
+                        "secondary-fixed": "#ffbdf3"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "1rem",
+                        "lg": "2rem",
+                        "xl": "3rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Manrope"],
+                        "label": ["Space Grotesk"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(38, 38, 39, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        .sphere-glow {
+            box-shadow: 0 0 80px 20px rgba(143, 245, 255, 0.15), inset 0 0 40px rgba(255, 81, 250, 0.1);
+        }
+        .neon-text-glow {
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body overflow-hidden">
+<!-- Top Navigation Shell (Responsive Pivot) -->
+<header class="hidden md:flex fixed top-0 w-full z-50 bg-[#0e0e0f]/60 backdrop-blur-xl border-b border-white/10 flex justify-between items-center px-8 py-4 w-full shadow-[0_4px_30px_rgba(0,240,255,0.1)]">
+<div class="flex items-center gap-8">
+<span class="text-2xl font-bold bg-gradient-to-r from-[#00F0FF] to-[#00a3af] bg-clip-text text-transparent font-['Space_Grotesk'] tracking-tight">Aura Synth</span>
+<nav class="flex items-center gap-6">
+<a class="text-[#00F0FF] border-b-2 border-[#00F0FF] pb-1 font-['Space_Grotesk'] tracking-tight transition-all duration-300 hover:glow-[#00F0FF]/20 cursor-pointer active:scale-95" href="#">Nexus</a>
+<a class="text-gray-400 hover:text-gray-200 font-['Space_Grotesk'] tracking-tight transition-all duration-300 hover:glow-[#00F0FF]/20 cursor-pointer active:scale-95" href="#">Pulse</a>
+<a class="text-gray-400 hover:text-gray-200 font-['Space_Grotesk'] tracking-tight transition-all duration-300 hover:glow-[#00F0FF]/20 cursor-pointer active:scale-95" href="#">History</a>
+<a class="text-gray-400 hover:text-gray-200 font-['Space_Grotesk'] tracking-tight transition-all duration-300 hover:glow-[#00F0FF]/20 cursor-pointer active:scale-95" href="#">Vault</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-gray-400 cursor-pointer hover:text-[#00F0FF] transition-colors">settings</span>
+<span class="material-symbols-outlined text-gray-400 cursor-pointer hover:text-[#00F0FF] transition-colors">notifications</span>
+<div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center border border-white/10 overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="close up profile portrait of a stylish young professional with a minimalist futuristic tech aesthetic" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDeWsrlTpnmgG__n5pas_YSls5FVD5DUNX1Bkoo1kw4f1fmxX0bdf9cZA4vwH7GA0NKLnOIb1ouLuSSYvlMqL-F2kL6GQVddVpHfDKjA5bMml-TR5rjClpz0366aHbYHTTLlwAQs2iS8BYJlwoAAGqtd-R4GlOSbcQ2cXepzALyznbSxlKiF4PZjbj52qeKG_mN0tmsdHpQas0NMwK8IWBx54swUh_MWVXvDcyq3P6bH5xRQaBsXQzJ73JEJqsyGDVeHNIqOMU7O2g"/>
+</div>
+</div>
+</header>
+<!-- Side Navigation (Predicted Component) -->
+<aside class="h-screen w-64 fixed left-0 top-0 bg-[#0e0e0f] flex flex-col py-8 px-4 gap-6 bg-gradient-to-b from-[#0e0e0f] via-[#1a1a1b] to-[#0e0e0f] shadow-2xl shadow-black z-40 hidden md:flex">
+<div class="mt-20 px-4">
+<div class="flex items-center gap-3 mb-8">
+<div class="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">psychology</span>
+</div>
+<div>
+<p class="text-on-surface font-headline font-bold text-sm">System Online</p>
+<p class="text-on-surface-variant text-xs">V3.2 Active</p>
+</div>
+</div>
+<nav class="flex flex-col gap-2">
+<a class="flex items-center gap-3 px-4 py-3 text-[#00F0FF] bg-[#00F0FF]/10 rounded-full border-r-4 border-[#00F0FF] transition-transform duration-200 hover:translate-x-1 font-['Manrope'] font-medium" href="#">
+<span class="material-symbols-outlined">psychology</span>
+<span>Core AI</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-500 hover:bg-white/5 rounded-full transition-transform duration-200 hover:translate-x-1 font-['Manrope'] font-medium" href="#">
+<span class="material-symbols-outlined">graphic_eq</span>
+<span>Voice Synthesis</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-500 hover:bg-white/5 rounded-full transition-transform duration-200 hover:translate-x-1 font-['Manrope'] font-medium" href="#">
+<span class="material-symbols-outlined">hub</span>
+<span>Neural Maps</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-500 hover:bg-white/5 rounded-full transition-transform duration-200 hover:translate-x-1 font-['Manrope'] font-medium" href="#">
+<span class="material-symbols-outlined">waves</span>
+<span>Data Streams</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-gray-500 hover:bg-white/5 rounded-full transition-transform duration-200 hover:translate-x-1 font-['Manrope'] font-medium" href="#">
+<span class="material-symbols-outlined">shield</span>
+<span>Security</span>
+</a>
+</nav>
+</div>
+<div class="mt-auto px-4 flex flex-col gap-4">
+<button class="w-full bg-gradient-to-r from-primary to-primary-container text-on-primary-container font-headline font-bold py-3 rounded-full shadow-[0_0_20px_rgba(143,245,255,0.3)] active:scale-95 transition-all">
+                Initiate Link
+            </button>
+<div class="flex flex-col gap-1 border-t border-white/5 pt-4">
+<a class="flex items-center gap-3 px-4 py-2 text-gray-500 hover:text-on-surface text-sm transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">help</span>
+<span>Help</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-gray-500 hover:text-on-surface text-sm transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">terminal</span>
+<span>Terminal</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="md:ml-64 pt-24 h-screen relative flex">
+<!-- Left Panel: Contextual Data -->
+<section class="hidden lg:flex flex-col w-80 p-8 gap-8 overflow-y-auto">
+<div class="space-y-4">
+<h3 class="font-headline text-lg font-bold text-primary neon-text-glow">Contextual Data</h3>
+<div class="space-y-4">
+<!-- Data Card 1 -->
+<div class="glass-panel p-6 rounded-lg border border-white/5">
+<p class="text-xs text-on-surface-variant uppercase tracking-widest mb-2 font-headline">Recent Transcript</p>
+<p class="text-sm text-on-surface leading-relaxed italic">"Analyze the quantum fluctuations in the neural stream for Sector 7..."</p>
+</div>
+<!-- Data Card 2 -->
+<div class="glass-panel p-6 rounded-lg border border-white/5">
+<p class="text-xs text-on-surface-variant uppercase tracking-widest mb-2 font-headline">Schedule Summary</p>
+<div class="space-y-3">
+<div class="flex justify-between items-center">
+<span class="text-sm">Neural Sync</span>
+<span class="text-xs text-secondary">In 14m</span>
+</div>
+<div class="w-full bg-white/5 h-1 rounded-full overflow-hidden">
+<div class="bg-secondary h-full w-[80%]"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Center: The Core Interface -->
+<section class="flex-1 flex flex-col items-center justify-center px-4 relative">
+<!-- Status Card -->
+<div class="glass-panel px-12 py-4 rounded-full border border-primary/20 mb-12 flex items-center gap-4 shadow-[0_0_30px_rgba(0,240,255,0.05)]">
+<div class="w-2 h-2 rounded-full bg-primary animate-pulse shadow-[0_0_8px_rgba(143,245,255,1)]"></div>
+<span class="font-headline text-2xl tracking-widest text-primary">Listening...</span>
+</div>
+<!-- Central Aura Sphere -->
+<div class="relative group">
+<!-- Outer Glow and Particles (simulated) -->
+<div class="absolute inset-0 -m-12 bg-primary/5 blur-[80px] rounded-full pointer-events-none"></div>
+<div class="w-80 h-80 md:w-[480px] md:h-[480px] rounded-full relative overflow-hidden sphere-glow border border-white/10 flex items-center justify-center">
+<!-- Glass Texture Overlay -->
+<div class="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-white/10 pointer-events-none"></div>
+<!-- Inner Neural Energy (Image placeholder with descriptive prompt) -->
+<div class="w-full h-full absolute inset-0 opacity-80">
+<img class="w-full h-full object-cover" data-alt="abstract organic flowing neon energy waves in bright cyan and vivid magenta inside a glass orb with floating micro-particles and cinematic lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA2IuM698x0-M5a_wSHslFi7ra5VQh53Dfv_Htw6_geWO2ebnmDfAKhXpeOmbK918pq4fZdK9g3T3tWkZZGj0UQ9NbCyWUnraJKP8l1E5uOJV_hIe5F0pJEoyLvksVzObef7Dv14FW398cp3ZCPTRbdPhcJuLd1JtlGi502Oc1FDFQTfqpHy_RAy21YENG4hd57TbcTQRe5TGPqbQPh3cSSo8Ag3PAow3Rwx3Y9YumzeLLMvYMpVgChISz8zcwGuGYr-ILBzQg1nxM"/>
+</div>
+<!-- Energy Pulsing Effect -->
+<div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+<div class="w-64 h-64 md:w-96 md:h-96 rounded-full border-2 border-primary/10 scale-110"></div>
+<div class="absolute w-48 h-48 md:w-72 md:h-72 rounded-full border border-secondary/10 scale-125"></div>
+</div>
+</div>
+</div>
+<!-- Interaction Button -->
+<div class="mt-16 relative">
+<button class="group relative w-20 h-20 md:w-24 md:h-24 rounded-full bg-surface-container-highest border border-primary/30 flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-[0_0_40px_rgba(143,245,255,0.2)]">
+<div class="absolute inset-0 rounded-full bg-primary/10 blur-md group-hover:bg-primary/20 transition-all"></div>
+<span class="material-symbols-outlined text-primary text-4xl md:text-5xl" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+</div>
+</section>
+<!-- Right Panel: AI Metrics -->
+<section class="hidden lg:flex flex-col w-80 p-8 gap-8 overflow-y-auto">
+<div class="space-y-4">
+<h3 class="font-headline text-lg font-bold text-secondary neon-text-glow">AI Performance</h3>
+<div class="grid grid-cols-1 gap-4">
+<!-- Metric Card 1 -->
+<div class="glass-panel p-6 rounded-lg border border-white/5">
+<div class="flex justify-between items-start mb-4">
+<span class="text-xs text-on-surface-variant uppercase tracking-widest font-headline">Latency</span>
+<span class="text-primary text-sm font-bold">24ms</span>
+</div>
+<div class="h-12 flex items-end gap-1">
+<div class="w-full bg-primary/40 h-[40%] rounded-t-sm"></div>
+<div class="w-full bg-primary/40 h-[60%] rounded-t-sm"></div>
+<div class="w-full bg-primary/40 h-[55%] rounded-t-sm"></div>
+<div class="w-full bg-primary/40 h-[80%] rounded-t-sm"></div>
+<div class="w-full bg-primary h-[95%] rounded-t-sm shadow-[0_0_8px_rgba(143,245,255,0.5)]"></div>
+<div class="w-full bg-primary/40 h-[70%] rounded-t-sm"></div>
+<div class="w-full bg-primary/40 h-[45%] rounded-t-sm"></div>
+</div>
+</div>
+<!-- Metric Card 2 -->
+<div class="glass-panel p-6 rounded-lg border border-white/5">
+<p class="text-xs text-on-surface-variant uppercase tracking-widest mb-4 font-headline">Neural Load</p>
+<div class="relative pt-1">
+<div class="flex mb-2 items-center justify-between">
+<div>
+<span class="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-secondary bg-secondary/10">
+                                        Optimization High
+                                    </span>
+</div>
+<div class="text-right">
+<span class="text-xs font-semibold inline-block text-secondary">
+                                        92%
+                                    </span>
+</div>
+</div>
+<div class="overflow-hidden h-1.5 mb-4 text-xs flex rounded-full bg-white/5">
+<div class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-gradient-to-r from-secondary to-primary" style="width:92%"></div>
+</div>
+</div>
+</div>
+<!-- Status Feed -->
+<div class="space-y-3 mt-4">
+<div class="flex gap-3 items-start">
+<span class="w-1.5 h-1.5 rounded-full bg-primary mt-1.5"></span>
+<p class="text-xs text-on-surface-variant leading-relaxed">System syncing with Neural Map B-12...</p>
+</div>
+<div class="flex gap-3 items-start">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary mt-1.5"></span>
+<p class="text-xs text-on-surface-variant leading-relaxed">Contextual awareness updated for active session.</p>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- Background Elements (Deep Space) -->
+<div class="fixed inset-0 -z-10 pointer-events-none overflow-hidden">
+<!-- Radial Gradients for depth -->
+<div class="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] bg-primary/5 blur-[120px] rounded-full"></div>
+<div class="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-secondary/5 blur-[120px] rounded-full"></div>
+<!-- Grain/Texture Overlay -->
+<div class="absolute inset-0 opacity-[0.02] bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
+</div>
+</body></html>

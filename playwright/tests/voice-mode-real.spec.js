@@ -943,6 +943,17 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   expect(browserMetrics.getUserMediaCalls).toBe(1);
   expect(browserMetrics.realtimeFetchCalls).toBe(1);
 
+  await expect.poll(async () => {
+    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+    return sentEvents.find((event) => event?.type === 'session.update') ?? null;
+  }).toEqual({
+    type: 'session.update',
+    session: {
+      type: 'realtime',
+      output_modalities: ['text', 'audio']
+    }
+  });
+
   await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
   await expect.poll(async () => {
     return page.evaluate(() => window.__voiceTest.getUserMediaCalls.length);
