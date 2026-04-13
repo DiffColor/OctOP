@@ -47,7 +47,7 @@ OCTOP_PUSH_TEMPLATE_COMPLETED_TAG=issue-{issueId}-completed
 OCTOP_PUSH_TEMPLATE_FAILED_TAG=issue-{issueId}-failed
 OCTOP_PUSH_TEMPLATE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}
 OCTOP_PUSH_TEMPLATE_DASHBOARD_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}
-OCTOP_PUSH_TEMPLATE_MOBILE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}
+OCTOP_PUSH_TEMPLATE_MOBILE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}&client_mode=standalone
 ```
 
 ## 치환 가능한 토큰
@@ -103,7 +103,7 @@ OCTOP_PUSH_TEMPLATE_FAILED_TAG=octop-{projectId}-{issueId}-failed
 
 ```env
 OCTOP_PUSH_TEMPLATE_DASHBOARD_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}
-OCTOP_PUSH_TEMPLATE_MOBILE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}
+OCTOP_PUSH_TEMPLATE_MOBILE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thread_id={threadId}&issue_id={issueId}&client_mode=standalone
 ```
 
 ## 실제 치환 예시
@@ -137,7 +137,7 @@ OCTOP_PUSH_TEMPLATE_MOBILE_URL=/?bridge_id={bridgeId}&project_id={projectId}&thr
 ```text
 title=Push · 이슈 완료
 body=응답해봐 / issue-789
-url=/?bridge_id=bridge-abc&project_id=project-123&thread_id=thread-456&issue_id=issue-789
+url=/?bridge_id=bridge-abc&project_id=project-123&thread_id=thread-456&issue_id=issue-789&client_mode=standalone
 ```
 
 ## 운영 메모

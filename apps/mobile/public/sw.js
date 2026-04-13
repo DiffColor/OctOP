@@ -124,6 +124,7 @@ const isSameOriginClient = (client) => {
 };
 
 const readClientMode = (client) => normalizeClientMode(clientContextById.get(client?.id)?.mode);
+const hasClientContext = (client) => clientContextById.has(client?.id);
 
 const readClientModeFromLaunchUrl = (launchUrl) => {
   try {
@@ -134,7 +135,19 @@ const readClientModeFromLaunchUrl = (launchUrl) => {
   }
 };
 
-const resolveClientModeForClient = (client) => readClientMode(client);
+const resolveClientModeForClient = (client) => {
+  const reportedMode = readClientMode(client);
+
+  if (reportedMode === CLIENT_MODE_STANDALONE) {
+    return CLIENT_MODE_STANDALONE;
+  }
+
+  if (hasClientContext(client)) {
+    return reportedMode;
+  }
+
+  return readClientModeFromLaunchUrl(client?.url);
+};
 
 const isStandaloneClient = (client) => resolveClientModeForClient(client) === CLIENT_MODE_STANDALONE;
 
