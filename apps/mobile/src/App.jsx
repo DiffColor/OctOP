@@ -8433,24 +8433,6 @@ function ThreadDetail({
         .join("|"),
     [visibleChatTimeline]
   );
-  const latestAssistantMessage = useMemo(
-    () =>
-      [...chatTimeline]
-        .reverse()
-        .find((entry) => entry.role === "assistant" && buildSpeechFriendlyMessageText(entry.content)),
-    [chatTimeline]
-  );
-  const latestAssistantSpeechText = useMemo(
-    () => buildSpeechFriendlyMessageText(latestAssistantMessage?.content),
-    [latestAssistantMessage?.content]
-  );
-  const latestUserSpeechText = useMemo(() => {
-    const latestUserMessage = [...chatTimeline]
-      .reverse()
-      .find((entry) => entry.role === "user" && buildSpeechFriendlyMessageText(entry.content));
-
-    return buildSpeechFriendlyMessageText(latestUserMessage?.content);
-  }, [chatTimeline]);
   const latestHandoffSummaryText = useMemo(() => {
     const safeMessages = Array.isArray(messages) ? messages : [];
 
@@ -8547,8 +8529,8 @@ function ThreadDetail({
     bridgeId,
     project,
     thread,
-    latestUserText: latestUserSpeechText,
-    latestAssistantText: latestAssistantSpeechText,
+    latestUserText: "",
+    latestAssistantText: "",
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
     projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
     projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
@@ -9320,8 +9302,8 @@ function ThreadDetail({
             <div className="h-full w-full">
               <VoiceModePanel
                 open={voiceModeEnabled}
-                latestUserText={voiceSession.latestUserTranscript || latestUserSpeechText}
-                latestAssistantText={voiceSession.latestAssistantTranscript || latestAssistantSpeechText}
+                latestUserText={voiceSession.latestUserTranscript}
+                latestAssistantText={voiceSession.latestAssistantTranscript}
                 connectionState={voiceSession.connectionState}
                 micState={voiceSession.micState}
                 isListening={voiceSession.isListening}

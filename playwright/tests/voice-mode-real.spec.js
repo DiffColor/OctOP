@@ -578,6 +578,8 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect(page.getByTestId('thread-detail-header-filters')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
   await expect(page.getByRole('button', { name: '음성입력 종료' })).toBeVisible();
+  await expect(page.getByTestId('voice-user-bubble')).not.toHaveText('현재 상태 알려줘');
+  await expect(page.getByTestId('voice-assistant-bubble')).not.toHaveText('현재 스레드는 유휴 상태입니다.');
   const panelBox = await page.getByTestId('voice-mode-panel').boundingBox();
   const footerBox = await page.getByTestId('voice-mode-footer').boundingBox();
   const comboboxBox = await page.getByRole('combobox', { name: '마이크 입력 선택' }).boundingBox();
