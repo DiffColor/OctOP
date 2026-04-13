@@ -270,7 +270,7 @@ app.MapGet("/health", () =>
   });
 });
 
-app.MapPost("/api/voice/sessions", async (
+var createVoiceSessionHandler = async (
   HttpContext httpContext,
   OctopStore octopStore,
   VoiceSessionService voiceSessionService,
@@ -373,7 +373,10 @@ app.MapPost("/api/voice/sessions", async (
       "application/json; charset=utf-8",
       statusCode: StatusCodes.Status502BadGateway);
   }
-});
+};
+
+app.MapPost("/api/voice/sessions", createVoiceSessionHandler);
+app.MapPost("/api/voice/realtime-token", createVoiceSessionHandler);
 
 app.MapPost("/api/voice/narrations", async (
   HttpContext httpContext,

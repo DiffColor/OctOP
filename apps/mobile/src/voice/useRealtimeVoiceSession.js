@@ -1074,7 +1074,7 @@ export default function useRealtimeVoiceSession({
         startAudioLevelMeter(localStream);
 
         const sessionPayload = await apiRequest(
-          `/api/voice/sessions?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+          `/api/voice/realtime-token?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
           {
             method: "POST",
             body: JSON.stringify({

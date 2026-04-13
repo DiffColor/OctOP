@@ -761,7 +761,7 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
-    if (pathname === '/api/voice/sessions' && method === 'POST') {
+    if ((pathname === '/api/voice/sessions' || pathname === '/api/voice/realtime-token') && method === 'POST') {
       const payload = request.postDataJSON() ?? {};
       voiceSessionRequests.push(payload);
 
