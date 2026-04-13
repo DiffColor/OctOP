@@ -29,35 +29,11 @@ export function createRealtimeNarrationEvent(text) {
   };
 }
 
-export function createFunctionCallOutputEvent(callId, output) {
-  return {
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(output ?? {})
-    }
-  };
-}
-
 export function parseRealtimeJson(value) {
   try {
     return JSON.parse(String(value ?? ""));
   } catch {
     return null;
-  }
-}
-
-export function parseFunctionArguments(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-
-  try {
-    const parsed = JSON.parse(String(value ?? "{}"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
   }
 }
 

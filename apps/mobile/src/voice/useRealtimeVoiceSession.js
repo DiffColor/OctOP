@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  createFunctionCallOutputEvent,
   createRealtimeNarrationEvent,
   DEFAULT_VOICE_LEVEL_HISTORY,
   describeVoiceError,
-  parseFunctionArguments,
   parseRealtimeJson,
   REALTIME_EVENT_CHANNEL
 } from "./realtimeVoiceProtocol.js";
@@ -83,7 +81,6 @@ export default function useRealtimeVoiceSession({
   const assistantTranscriptBufferRef = useRef("");
   const userTranscriptBufferRef = useRef("");
   const connectInFlightRef = useRef(null);
-  const toolCallIdsRef = useRef(new Set());
   const disconnectingRef = useRef(false);
   const sessionVersionRef = useRef(0);
   const preferredInputDeviceIdRef = useRef("default");
@@ -241,7 +238,6 @@ export default function useRealtimeVoiceSession({
     analyserRef.current = null;
     analyserDataRef.current = null;
     connectInFlightRef.current = null;
-    toolCallIdsRef.current = new Set();
     assistantTranscriptBufferRef.current = preserveTranscript ? assistantTranscriptBufferRef.current : "";
     userTranscriptBufferRef.current = preserveTranscript ? userTranscriptBufferRef.current : "";
 
@@ -331,36 +327,6 @@ export default function useRealtimeVoiceSession({
 
     animationFrameRef.current = window.requestAnimationFrame(tick);
   }, []);
-
-  const invokeTool = useCallback(
-    async (toolCall) => {
-      const normalizedThreadId = String(thread?.id ?? "").trim();
-      const payload = await apiRequest(
-        `/api/voice/tool-invocations?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            tool_name: toolCall.name,
-            arguments: parseFunctionArguments(toolCall.arguments),
-            project_id: String(project?.id ?? "").trim(),
-            thread_id: normalizedThreadId
-          })
-        }
-      ).catch((error) => ({
-        ok: false,
-        error: String(error?.message ?? error ?? "tool invocation failed")
-      }));
-
-      const dataChannel = dataChannelRef.current;
-
-      if (!dataChannel || dataChannel.readyState !== "open") {
-        return;
-      }
-
-      dataChannel.send(JSON.stringify(createFunctionCallOutputEvent(toolCall.call_id, payload)));
-    },
-    [apiRequest, bridgeId, loginId, project?.id, thread?.id]
-  );
 
   const narrateAssistantText = useCallback(async (text) => {
     const narration = String(text ?? "").trim();
@@ -515,18 +481,6 @@ export default function useRealtimeVoiceSession({
             ...current,
             isResponding: false
           }));
-
-          const outputs = Array.isArray(event?.response?.output) ? event.response.output : [];
-          const functionCalls = outputs.filter((item) => item?.type === "function_call" && item?.call_id && item?.name);
-
-          for (const functionCall of functionCalls) {
-            if (toolCallIdsRef.current.has(functionCall.call_id)) {
-              continue;
-            }
-
-            toolCallIdsRef.current.add(functionCall.call_id);
-            await invokeTool(functionCall);
-          }
           return;
         }
 
@@ -544,7 +498,7 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [invokeTool, onSubmitPrompt]
+    [onSubmitPrompt]
   );
 
   useEffect(() => {

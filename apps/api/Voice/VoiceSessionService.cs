@@ -70,8 +70,6 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
       ["type"] = "realtime",
       ["model"] = _model,
       ["instructions"] = _promptBuilder.BuildInstructions(request),
-      ["tool_choice"] = "auto",
-      ["tools"] = _promptBuilder.BuildTools(),
       ["audio"] = new JsonObject
       {
         ["input"] = new JsonObject

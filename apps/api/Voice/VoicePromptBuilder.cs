@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
 
 namespace OctOP.Gateway.Voice;
 
@@ -17,13 +16,13 @@ public sealed class VoicePromptBuilder
       "당신은 OctOP의 실시간 음성 비서입니다.",
       "항상 한국어로 간결하고 분명하게 말합니다.",
       "사용자 음성은 전사 후 app-server의 같은 쓰레드 작업으로 전달됩니다.",
-      "최종 작업 응답은 app-server가 주도합니다. 사용자의 발화에 대해 임의로 새 답변을 만들지 않습니다.",
+      "판단, 실행, 도구 호출, 최종 응답 생성은 모두 app-server가 주도합니다.",
+      "사용자의 발화에 대해 임의로 새 답변을 만들거나 직접 도구를 호출하지 않습니다.",
       "별도 응답 생성 요청이 오면 app-server에서 확정된 응답만 그대로 읽습니다.",
       "현재 선택된 프로젝트, 워크스페이스 경로, 쓰레드, handoff summary, 최근 대화 문맥을 최우선으로 사용합니다.",
-      "프로젝트나 소스 맥락이 불충분하거나 최신 상태가 의심되면 get_project_context tool로 현재 문맥을 다시 조회합니다.",
-      "사용자가 작업 실행, 중단, 상태 확인을 요청하면 정의된 function tool을 호출합니다.",
-      "tool 없이 추측으로 실행 상태를 말하지 않습니다.",
-      "tool 결과를 받으면 핵심만 짧게 요약하고 다음 행동을 제안합니다.",
+      "프로젝트와 쓰레드 맥락은 세션 시작 시 app-server가 다시 조회해 전달합니다.",
+      "실행 상태나 결과를 추측으로 만들지 않습니다.",
+      "음성 세션의 역할은 전사와 확정 응답 낭독입니다.",
       $"현재 프로젝트: {projectName}",
       $"현재 쓰레드: {threadTitle}",
       $"현재 쓰레드 상태 라벨: {threadStatus}",
@@ -40,88 +39,6 @@ public sealed class VoicePromptBuilder
     AppendSection(sections, "최근 대화 요약", request.RecentConversationSummary);
 
     return string.Join("\n\n", sections.Where(section => !string.IsNullOrWhiteSpace(section)));
-  }
-
-  public JsonArray BuildTools()
-  {
-    return new JsonArray(
-      BuildTool(
-        "get_project_context",
-        "현재 프로젝트, 워크스페이스 경로, 쓰레드 continuity, 최신 handoff summary, 최근 대화 문맥을 다시 조회합니다.",
-        new JsonObject()),
-      BuildTool(
-        "get_thread_status",
-        "현재 선택된 쓰레드의 실행 상태와 활성 이슈를 조회합니다.",
-        new JsonObject()),
-      BuildTool(
-        "start_thread_run",
-        "현재 선택된 쓰레드에서 대기 중인 이슈를 실행합니다. 특정 이슈만 실행하려면 issue_ids를 전달합니다.",
-        new JsonObject
-        {
-          ["type"] = "object",
-          ["properties"] = new JsonObject
-          {
-            ["issue_ids"] = new JsonObject
-            {
-              ["type"] = "array",
-              ["items"] = new JsonObject
-              {
-                ["type"] = "string"
-              },
-              ["description"] = "실행할 이슈 ID 목록입니다. 생략하면 현재 쓰레드의 대기 이슈를 실행합니다."
-            }
-          }
-        }),
-      BuildTool(
-        "stop_thread_run",
-        "현재 선택된 쓰레드의 실행을 안전하게 정지합니다.",
-        new JsonObject
-        {
-          ["type"] = "object",
-          ["properties"] = new JsonObject
-          {
-            ["reason"] = new JsonObject
-            {
-              ["type"] = "string",
-              ["description"] = "정지 사유입니다."
-            }
-          }
-        }),
-      BuildTool(
-        "interrupt_active_issue",
-        "현재 실행 중인 이슈를 중단합니다. issue_id를 주면 해당 이슈를 우선 중단합니다.",
-        new JsonObject
-        {
-          ["type"] = "object",
-          ["properties"] = new JsonObject
-          {
-            ["issue_id"] = new JsonObject
-            {
-              ["type"] = "string",
-              ["description"] = "중단할 이슈 ID입니다."
-            },
-            ["reason"] = new JsonObject
-            {
-              ["type"] = "string",
-              ["description"] = "중단 사유입니다."
-            }
-          }
-        }));
-  }
-
-  private static JsonObject BuildTool(string name, string description, JsonObject? parameters)
-  {
-    return new JsonObject
-    {
-      ["type"] = "function",
-      ["name"] = name,
-      ["description"] = description,
-      ["parameters"] = parameters ?? new JsonObject
-      {
-        ["type"] = "object",
-        ["properties"] = new JsonObject()
-      }
-    };
   }
 
   private static string Normalize(string? value, string fallback)
