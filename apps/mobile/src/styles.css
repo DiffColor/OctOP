@@ -1391,7 +1391,7 @@ svg {
   min-height: 100%;
   flex-direction: column;
   gap: 1rem;
-  padding: 1.1rem 1.1rem 0.08rem;
+  padding: 1.1rem 1.1rem 0;
 }
 
 .voice-mode-panel__layout {
@@ -1890,7 +1890,7 @@ svg {
 
 @media (max-width: 720px) {
   .voice-mode-panel__hud.voice-mode-panel__hud--aura {
-    padding: 0.95rem 0.95rem 0.08rem;
+    padding: 0.95rem 0.88rem 0;
   }
 
   .voice-mode-panel__status-pill {
@@ -1946,7 +1946,7 @@ svg {
   }
 
   .voice-mode-panel__hud.voice-mode-panel__hud--aura {
-    padding: 0.85rem 0.85rem 0.08rem;
+    padding: 0.85rem 0.78rem 0;
   }
 
   .voice-mode-panel__device-select {
