@@ -2857,6 +2857,8 @@ static VoiceSessionStartRequest MergeVoiceSessionStartRequest(VoiceSessionStartR
 
   var project = contextPayload["project"] as JsonObject;
   var thread = contextPayload["thread"] as JsonObject;
+  var programSummary = GetStringValue(contextPayload["program_summary"]);
+  var fileContextSummary = GetStringValue(contextPayload["file_context_summary"]);
   var latestHandoffSummary = GetStringValue(contextPayload["latest_handoff_summary"]);
   var recentMessages = contextPayload["recent_messages"] as JsonArray;
 
@@ -2875,7 +2877,9 @@ static VoiceSessionStartRequest MergeVoiceSessionStartRequest(VoiceSessionStartR
     ThreadDeveloperInstructions = FirstNonEmpty(request.ThreadDeveloperInstructions, GetStringValue(thread?["developer_instructions"])),
     ThreadContinuitySummary = FirstNonEmpty(request.ThreadContinuitySummary, BuildVoiceThreadContinuitySummary(thread)),
     LatestHandoffSummary = FirstNonEmpty(request.LatestHandoffSummary, latestHandoffSummary),
-    RecentConversationSummary = FirstNonEmpty(request.RecentConversationSummary, BuildRecentConversationSummary(recentMessages))
+    RecentConversationSummary = FirstNonEmpty(request.RecentConversationSummary, BuildRecentConversationSummary(recentMessages)),
+    ProjectProgramSummary = FirstNonEmpty(request.ProjectProgramSummary, programSummary),
+    ThreadFileContextSummary = FirstNonEmpty(request.ThreadFileContextSummary, fileContextSummary)
   };
 }
 

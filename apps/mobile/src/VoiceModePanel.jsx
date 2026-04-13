@@ -87,15 +87,15 @@ function buildVoiceModeStatus({ connectionState, isResponding, isListening, micS
   }
 
   if (isResponding) {
-    return "실시간 음성 응답을 생성하고 있습니다.";
+    return "app-server가 확정한 음성 응답을 재생하고 있습니다.";
   }
 
   if (isListening) {
-    return "현재 사용자의 발화를 감지하고 있습니다.";
+    return "현재 사용자의 발화를 전사하고 있습니다.";
   }
 
   if (connectionState === "connected") {
-    return "실시간 음성 세션이 연결되었습니다. 바로 말을 시작하시면 됩니다.";
+    return "Realtime 전사 세션이 연결되었습니다. 말씀하시면 app-server 작업으로 전달합니다.";
   }
 
   return "음성 세션이 아직 연결되지 않았습니다.";

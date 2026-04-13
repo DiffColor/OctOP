@@ -19,7 +19,7 @@ public sealed class VoicePromptBuilder
       "판단, 실행, 도구 호출, 최종 응답 생성은 모두 app-server가 주도합니다.",
       "사용자의 발화에 대해 임의로 새 답변을 만들거나 직접 도구를 호출하지 않습니다.",
       "최종 음성 응답은 별도 TTS 경로에서 재생되므로, 이 세션은 임의 응답을 만들거나 읽지 않습니다.",
-      "현재 선택된 프로젝트, 워크스페이스 경로, 쓰레드, handoff summary, 최근 대화 문맥을 최우선으로 사용합니다.",
+      "현재 선택된 프로젝트, 워크스페이스 경로, 프로그램 요약, 파일 정보, 쓰레드, handoff summary, 최근 대화 문맥을 최우선으로 사용합니다.",
       "프로젝트와 쓰레드 맥락은 세션 시작 시 app-server가 다시 조회해 전달합니다.",
       "실행 상태나 결과를 추측으로 만들지 않습니다.",
       "음성 세션의 역할은 사용자 발화 전사입니다.",
@@ -31,6 +31,8 @@ public sealed class VoicePromptBuilder
     };
 
     AppendLine(sections, "현재 프로젝트 작업 경로", request.ProjectWorkspacePath);
+    AppendSection(sections, "프로그램 요약", request.ProjectProgramSummary);
+    AppendSection(sections, "파일 정보 요약", request.ThreadFileContextSummary);
     AppendLine(sections, "현재 쓰레드 continuity", request.ThreadContinuitySummary);
     AppendSection(sections, "프로젝트 공통 지침", request.ProjectBaseInstructions);
     AppendSection(sections, "프로젝트 개발 지침", request.ProjectDeveloperInstructions);
@@ -39,6 +41,26 @@ public sealed class VoicePromptBuilder
     AppendSection(sections, "최근 대화 요약", request.RecentConversationSummary);
 
     return string.Join("\n\n", sections.Where(section => !string.IsNullOrWhiteSpace(section)));
+  }
+
+  public string BuildTranscriptionPrompt(VoiceSessionStartRequest request)
+  {
+    var fragments = new List<string>
+    {
+      $"프로젝트: {Normalize(request.ProjectName, "프로젝트 미지정")}",
+      $"쓰레드: {Normalize(request.ThreadTitle, "현재 채팅")}",
+      $"상태: {Normalize(request.ThreadStatusLabel, "상태 미확인")}"
+    };
+
+    AppendInlineFragment(fragments, "작업 경로", request.ProjectWorkspacePath);
+    AppendInlineFragment(fragments, "프로그램 요약", request.ProjectProgramSummary);
+    AppendInlineFragment(fragments, "파일 정보", request.ThreadFileContextSummary);
+    AppendInlineFragment(fragments, "연속성", request.ThreadContinuitySummary);
+    AppendInlineFragment(fragments, "핸드오프", request.LatestHandoffSummary);
+    AppendInlineFragment(fragments, "최근 대화", request.RecentConversationSummary);
+
+    var prompt = string.Join(" | ", fragments.Where(fragment => !string.IsNullOrWhiteSpace(fragment))).Trim();
+    return prompt.Length <= 900 ? prompt : $"{prompt[..900].TrimEnd()}…";
   }
 
   private static string Normalize(string? value, string fallback)
@@ -69,5 +91,24 @@ public sealed class VoicePromptBuilder
     }
 
     sections.Add($"[{heading}]\n{normalized}");
+  }
+
+  private static void AppendInlineFragment(List<string> fragments, string label, string? value)
+  {
+    var normalized = value?.Trim();
+
+    if (string.IsNullOrWhiteSpace(normalized))
+    {
+      return;
+    }
+
+    var compact = string.Join(" ", normalized.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
+
+    if (compact.Length > 180)
+    {
+      compact = $"{compact[..180].TrimEnd()}…";
+    }
+
+    fragments.Add($"{label}: {compact}");
   }
 }

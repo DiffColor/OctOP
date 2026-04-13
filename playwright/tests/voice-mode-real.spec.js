@@ -63,6 +63,14 @@ const issueDetail = {
     title: 'Voice Issue',
     prompt: '현재 상태 알려줘',
     status: 'completed',
+    attachments: [
+      {
+        id: 'attachment-voice-1',
+        name: 'apps/mobile/src/App.jsx',
+        mime_type: 'text/javascript',
+        text_content: 'voice mode status panel summary'
+      }
+    ],
     created_at: initialIssueCreatedAt,
     updated_at: initialAssistantAt
   },
@@ -767,6 +775,10 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   expect(voiceSessionRequests[0].project_developer_instructions).toContain('실제 동작하는 결과');
   expect(voiceSessionRequests[0].recent_conversation_summary).toContain('user: 현재 상태 알려줘');
   expect(voiceSessionRequests[0].recent_conversation_summary).toContain('assistant: 현재 스레드는 유휴 상태입니다.');
+  expect(voiceSessionRequests[0].project_program_summary).toContain('Voice E2E Project');
+  expect(voiceSessionRequests[0].project_program_summary).toContain(project.workspace_path);
+  expect(voiceSessionRequests[0].thread_file_context_summary).toContain('apps/mobile/src/App.jsx');
+  expect(voiceSessionRequests[0].thread_file_context_summary).toContain('voice mode status panel summary');
 
   const browserMetrics = await page.evaluate(() => ({
     getUserMediaCalls: window.__voiceTest.getUserMediaCalls.length,

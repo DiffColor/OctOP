@@ -21,7 +21,12 @@ import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js
 import PushNotificationCard from "./PushNotificationCard.jsx";
 import VoiceModePanel from "./VoiceModePanel.jsx";
 import useRealtimeVoiceSession from "./voice/useRealtimeVoiceSession.js";
-import { formatAssistantResponseForVoice } from "./voice/voiceResponseFormatter.js";
+import {
+  formatAssistantResponseForVoice,
+  formatFileContextSummaryForVoice,
+  formatProjectProgramSummaryForVoice,
+  formatVoiceExecutionReportForVoice
+} from "./voice/voiceResponseFormatter.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -8218,6 +8223,7 @@ function ThreadDetail({
   const { alert: showAlert } = useMobileFeedback();
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
   const [voicePromptSubmittedAt, setVoicePromptSubmittedAt] = useState("");
+  const [voiceLastSubmittedPrompt, setVoiceLastSubmittedPrompt] = useState("");
   const handleVoicePromptSubmit = useCallback((prompt) => {
     const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
 
@@ -8226,6 +8232,7 @@ function ThreadDetail({
     }
 
     setVoicePromptSubmittedAt(new Date().toISOString());
+    setVoiceLastSubmittedPrompt(normalizedPrompt);
     return onSubmitPrompt({ prompt: normalizedPrompt });
   }, [onSubmitPrompt]);
   useTouchScrollBoundaryLock(scrollRef);
@@ -8234,29 +8241,29 @@ function ThreadDetail({
   const threadTimestamp = thread?.created_at ?? new Date().toISOString();
   const contextUsage = getThreadContextUsage(thread);
   const safeIssues = Array.isArray(issues) ? issues : [];
+  const normalizedIssues = useMemo(
+    () => safeIssues.map((issue) => normalizeIssue(issue, thread?.id)).filter(Boolean),
+    [safeIssues, thread?.id]
+  );
   const issueById = useMemo(() => {
     const next = new Map();
 
-    safeIssues.forEach((issue) => {
-      const normalized = normalizeIssue(issue, thread?.id);
-
-      if (normalized) {
-        next.set(normalized.id, normalized);
-      }
+    normalizedIssues.forEach((issue) => {
+      next.set(issue.id, issue);
     });
 
     return next;
-  }, [safeIssues, thread?.id]);
+  }, [normalizedIssues]);
   const activePhysicalThreadId = thread?.active_physical_thread_id ?? null;
   const interruptibleIssue = useMemo(() => {
-    const activeIssue = findActiveIssueForThread(safeIssues, activePhysicalThreadId);
+    const activeIssue = findActiveIssueForThread(normalizedIssues, activePhysicalThreadId);
 
     if (!activeIssue || !["running", "awaiting_input"].includes(activeIssue.status ?? "")) {
       return null;
     }
 
     return activeIssue;
-  }, [activePhysicalThreadId, safeIssues]);
+  }, [activePhysicalThreadId, normalizedIssues]);
   const isInputDisabled = !isDraft && thread?.status === "running";
   const chatTimeline = useMemo(() => {
     const normalized = [];
@@ -8524,6 +8531,15 @@ function ThreadDetail({
 
     return normalizedEntries.slice(-8).join("\n");
   }, [messages]);
+  const voiceFileContextSummary = useMemo(() => {
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const attachments = [
+      ...normalizedIssues.flatMap((issue) => normalizeMessageAttachments(issue?.attachments)),
+      ...safeMessages.flatMap((message) => normalizeMessageAttachments(message?.attachments))
+    ];
+
+    return formatFileContextSummaryForVoice(attachments);
+  }, [messages, normalizedIssues]);
   const voiceThreadContinuitySummary = useMemo(() => {
     const summaryParts = [];
     const continuityStatus = String(thread?.continuity_status ?? "").trim();
@@ -8561,6 +8577,79 @@ function ThreadDetail({
     thread?.last_event,
     thread?.root_thread_id
   ]);
+  const voiceProgramSummary = useMemo(
+    () =>
+      formatProjectProgramSummaryForVoice({
+        projectName: String(project?.name ?? "").trim(),
+        workspacePath: String(project?.workspace_path ?? "").trim(),
+        projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
+        projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
+        threadTitle: String(thread?.title ?? "").trim(),
+        threadStatusLabel: String(thread?.status ?? "").trim(),
+        threadContinuitySummary: voiceThreadContinuitySummary,
+        latestHandoffSummary: latestHandoffSummaryText,
+        recentConversationSummary: recentVoiceContextSummary
+      }),
+    [
+      latestHandoffSummaryText,
+      project?.base_instructions,
+      project?.developer_instructions,
+      project?.name,
+      project?.workspace_path,
+      recentVoiceContextSummary,
+      thread?.status,
+      thread?.title,
+      voiceThreadContinuitySummary
+    ]
+  );
+  const voiceProgressReportText = useMemo(() => {
+    if (!voiceModeEnabled || !voicePromptSubmittedAt || voiceLinkedAssistantText) {
+      return "";
+    }
+
+    const anchorTimestamp = Date.parse(voicePromptSubmittedAt);
+
+    if (!Number.isFinite(anchorTimestamp)) {
+      return "";
+    }
+
+    const recentIssue = [...normalizedIssues]
+      .filter((issue) => {
+        const updatedAt = Date.parse(issue.updated_at ?? issue.created_at ?? "");
+        return Number.isFinite(updatedAt) && updatedAt >= anchorTimestamp;
+      })
+      .sort((left, right) => Date.parse(right.updated_at ?? right.created_at ?? "") - Date.parse(left.updated_at ?? left.created_at ?? ""))[0] ?? null;
+
+    const threadUpdatedAt = Date.parse(thread?.updated_at ?? thread?.created_at ?? "");
+    const progressTarget =
+      recentIssue ??
+      (Number.isFinite(threadUpdatedAt) && threadUpdatedAt >= anchorTimestamp
+        ? thread
+        : isThreadExecutionInProgress(thread)
+          ? thread
+          : null);
+
+    if (!progressTarget && !voiceLastSubmittedPrompt) {
+      return "";
+    }
+
+    const progressText = getRealtimeProgressText(progressTarget ?? thread);
+    const statusMessage = formatAssistantResponseForVoice(progressTarget?.last_message ?? "", { maxLength: 120 });
+
+    return formatVoiceExecutionReportForVoice({
+      prompt: voiceLastSubmittedPrompt,
+      issueTitle: recentIssue?.title ?? "",
+      progressText,
+      lastMessage: statusMessage
+    });
+  }, [
+    normalizedIssues,
+    thread,
+    voiceLastSubmittedPrompt,
+    voiceLinkedAssistantText,
+    voiceModeEnabled,
+    voicePromptSubmittedAt
+  ]);
   const voiceSession = useRealtimeVoiceSession({
     enabled: voiceModeEnabled && voiceSessionEnabled,
     apiRequest: voiceApiRequest,
@@ -8578,8 +8667,11 @@ function ThreadDetail({
     threadContinuitySummary: voiceThreadContinuitySummary,
     latestHandoffSummary: latestHandoffSummaryText,
     recentConversationSummary: recentVoiceContextSummary,
+    projectProgramSummary: voiceProgramSummary,
+    threadFileContextSummary: voiceFileContextSummary,
     onSubmitPrompt: handleVoicePromptSubmit
   });
+  const voicePanelAssistantText = voiceLinkedAssistantText || voiceProgressReportText || voiceSession.latestAssistantTranscript;
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9347,7 +9439,7 @@ function ThreadDetail({
               <VoiceModePanel
                 open={voiceModeEnabled}
                 latestUserText={voiceSession.latestUserTranscript}
-                latestAssistantText={voiceLinkedAssistantText || voiceSession.latestAssistantTranscript}
+                latestAssistantText={voicePanelAssistantText}
                 connectionState={voiceSession.connectionState}
                 micState={voiceSession.micState}
                 isListening={voiceSession.isListening}
@@ -9361,6 +9453,7 @@ function ThreadDetail({
                 onClose={() => {
                   setVoiceModeEnabled(false);
                   setVoicePromptSubmittedAt("");
+                  setVoiceLastSubmittedPrompt("");
                   void voiceSession.stopSession({ preserveTranscript: true });
                 }}
               />

@@ -66,6 +66,8 @@ export default function useRealtimeVoiceSession({
   threadContinuitySummary = "",
   latestHandoffSummary = "",
   recentConversationSummary = "",
+  projectProgramSummary = "",
+  threadFileContextSummary = "",
   onSubmitPrompt = null
 }) {
   const [state, setState] = useState(createInitialState);
@@ -649,7 +651,9 @@ export default function useRealtimeVoiceSession({
               thread_developer_instructions: String(threadDeveloperInstructions ?? "").trim(),
               thread_continuity_summary: String(threadContinuitySummary ?? "").trim(),
               latest_handoff_summary: String(latestHandoffSummary ?? "").trim(),
-              recent_conversation_summary: String(recentConversationSummary ?? "").trim()
+              recent_conversation_summary: String(recentConversationSummary ?? "").trim(),
+              project_program_summary: String(projectProgramSummary ?? "").trim(),
+              thread_file_context_summary: String(threadFileContextSummary ?? "").trim()
             })
           }
         );
@@ -819,11 +823,13 @@ export default function useRealtimeVoiceSession({
     project?.name,
     projectBaseInstructions,
     projectDeveloperInstructions,
+    projectProgramSummary,
     projectWorkspacePath,
     recentConversationSummary,
     refreshInputDevices,
     startAudioLevelMeter,
     latestHandoffSummary,
+    threadFileContextSummary,
     thread?.id,
     thread?.status,
     thread?.title,

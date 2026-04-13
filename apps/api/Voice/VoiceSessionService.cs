@@ -81,7 +81,8 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
           ["transcription"] = new JsonObject
           {
             ["model"] = "gpt-4o-mini-transcribe",
-            ["language"] = "ko"
+            ["language"] = "ko",
+            ["prompt"] = _promptBuilder.BuildTranscriptionPrompt(request)
           },
           ["turn_detection"] = new JsonObject
           {

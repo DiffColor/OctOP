@@ -182,3 +182,138 @@ export function formatAssistantResponseForVoice(content, { maxLength = 420 } = {
   const joined = segments.join(" ").replace(/\s+/g, " ").trim();
   return truncateVoiceText(joined, maxLength);
 }
+
+export function formatProjectProgramSummaryForVoice(
+  {
+    projectName = "",
+    workspacePath = "",
+    projectBaseInstructions = "",
+    projectDeveloperInstructions = "",
+    threadTitle = "",
+    threadStatusLabel = "",
+    threadContinuitySummary = "",
+    latestHandoffSummary = "",
+    recentConversationSummary = ""
+  },
+  { maxLength = 720 } = {}
+) {
+  const segments = [];
+  const normalizedProjectName = normalizeInlineText(projectName);
+  const normalizedThreadTitle = normalizeInlineText(threadTitle);
+  const normalizedThreadStatus = normalizeInlineText(threadStatusLabel);
+  const normalizedWorkspacePath = normalizeInlineText(workspacePath);
+  const normalizedBaseInstructions = normalizeInlineText(projectBaseInstructions);
+  const normalizedDeveloperInstructions = normalizeInlineText(projectDeveloperInstructions);
+  const normalizedContinuity = normalizeInlineText(threadContinuitySummary);
+  const normalizedHandoff = normalizeInlineText(latestHandoffSummary);
+  const normalizedConversation = normalizeInlineText(recentConversationSummary);
+
+  if (normalizedProjectName) {
+    segments.push(`프로젝트는 ${normalizedProjectName}입니다.`);
+  }
+
+  if (normalizedThreadTitle) {
+    segments.push(`현재 작업 쓰레드는 ${normalizedThreadTitle}입니다.`);
+  }
+
+  if (normalizedThreadStatus) {
+    segments.push(`현재 쓰레드 상태는 ${normalizedThreadStatus}입니다.`);
+  }
+
+  if (normalizedWorkspacePath) {
+    segments.push(`작업 경로는 ${normalizedWorkspacePath}입니다.`);
+  }
+
+  if (normalizedBaseInstructions) {
+    segments.push(`프로젝트 공통 지침은 ${truncateVoiceText(normalizedBaseInstructions, 180)}입니다.`);
+  }
+
+  if (normalizedDeveloperInstructions) {
+    segments.push(`프로젝트 개발 지침은 ${truncateVoiceText(normalizedDeveloperInstructions, 180)}입니다.`);
+  }
+
+  if (normalizedContinuity) {
+    segments.push(`쓰레드 연속성 정보는 ${truncateVoiceText(normalizedContinuity, 180)}입니다.`);
+  }
+
+  if (normalizedHandoff) {
+    segments.push(`최신 handoff 요약은 ${truncateVoiceText(normalizedHandoff, 180)}입니다.`);
+  }
+
+  if (normalizedConversation) {
+    segments.push(`최근 대화 핵심은 ${truncateVoiceText(normalizedConversation, 220)}입니다.`);
+  }
+
+  return truncateVoiceText(segments.join(" ").replace(/\s+/g, " ").trim(), maxLength);
+}
+
+export function formatFileContextSummaryForVoice(attachments = [], { maxLength = 420, maxItems = 6 } = {}) {
+  const normalizedAttachments = Array.isArray(attachments) ? attachments : [];
+  const seen = new Set();
+  const parts = [];
+
+  for (const attachment of normalizedAttachments) {
+    const name = normalizeInlineText(attachment?.name);
+    const mimeType = normalizeInlineText(attachment?.mime_type);
+    const textContent = normalizeInlineText(attachment?.text_content);
+
+    if (!name && !textContent) {
+      continue;
+    }
+
+    const summary = name
+      ? `${name}${mimeType ? ` (${mimeType})` : ""}${textContent ? `: ${truncateVoiceText(textContent, 90)}` : ""}`
+      : truncateVoiceText(textContent, 90);
+
+    if (!summary || seen.has(summary)) {
+      continue;
+    }
+
+    seen.add(summary);
+    parts.push(summary);
+
+    if (parts.length >= maxItems) {
+      break;
+    }
+  }
+
+  if (parts.length === 0) {
+    return "";
+  }
+
+  return truncateVoiceText(`최근 파일 정보는 ${parts.join(" | ")}입니다.`, maxLength);
+}
+
+export function formatVoiceExecutionReportForVoice(
+  {
+    prompt = "",
+    issueTitle = "",
+    progressText = "",
+    lastMessage = ""
+  },
+  { maxLength = 320 } = {}
+) {
+  const normalizedPrompt = normalizeInlineText(prompt);
+  const normalizedIssueTitle = normalizeInlineText(issueTitle);
+  const normalizedProgressText = normalizeInlineText(progressText);
+  const normalizedLastMessage = normalizeInlineText(lastMessage);
+  const segments = ["요청을 app-server에 전달했습니다."];
+
+  if (normalizedPrompt) {
+    segments.push(`요청 내용은 ${truncateVoiceText(normalizedPrompt, 120)}입니다.`);
+  }
+
+  if (normalizedIssueTitle && normalizedIssueTitle !== normalizedPrompt) {
+    segments.push(`현재 이슈는 ${truncateVoiceText(normalizedIssueTitle, 100)}입니다.`);
+  }
+
+  if (normalizedProgressText) {
+    segments.push(`진행 상태는 ${truncateVoiceText(normalizedProgressText, 72)}입니다.`);
+  }
+
+  if (normalizedLastMessage) {
+    segments.push(`최근 상태 메시지는 ${truncateVoiceText(normalizedLastMessage, 120)}입니다.`);
+  }
+
+  return truncateVoiceText(segments.join(" ").replace(/\s+/g, " ").trim(), maxLength);
+}

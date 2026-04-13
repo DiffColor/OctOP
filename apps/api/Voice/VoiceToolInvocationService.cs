@@ -105,10 +105,12 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
 
     var recentMessages = new JsonArray();
     string latestHandoffSummary = string.Empty;
+    var issueBoard = new JArray();
 
     if (!string.IsNullOrWhiteSpace(rootThreadId))
     {
       var timelineEntries = await _octopStore.ListLogicalThreadTimelineAsync(userId, bridgeId, rootThreadId);
+      issueBoard = await _octopStore.ListLogicalThreadIssueBoardAsync(userId, bridgeId, rootThreadId);
       var orderedEntries = timelineEntries
         .OfType<JObject>()
         .OrderBy(entry => ParseTimestamp(entry.Value<string>("timestamp") ?? entry.Value<string>("created_at")))
@@ -125,11 +127,16 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
         .Where(entry => !string.IsNullOrWhiteSpace(entry.Value<string>("content")))
         .TakeLast(8))
       {
+        var attachmentsJson = entry["attachments"] is JArray attachments
+          ? JsonNode.Parse(attachments.ToString()) as JsonArray
+          : null;
+
         recentMessages.Add(new JsonObject
         {
           ["role"] = entry.Value<string>("role") ?? "system",
           ["content"] = entry.Value<string>("content")?.Trim() ?? string.Empty,
-          ["timestamp"] = entry.Value<string>("timestamp") ?? entry.Value<string>("created_at") ?? string.Empty
+          ["timestamp"] = entry.Value<string>("timestamp") ?? entry.Value<string>("created_at") ?? string.Empty,
+          ["attachments"] = attachmentsJson
         });
       }
     }
@@ -162,6 +169,8 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
         ["context_usage_percent"] = continuityPayload?["active_physical_thread"]?["context_usage_percent"]?.GetValue<int?>()
           ?? thread?.Value<int?>("context_usage_percent")
       },
+      ["program_summary"] = BuildProgramSummary(project, thread, continuityPayload, latestHandoffSummary, recentMessages),
+      ["file_context_summary"] = BuildFileContextSummary(issueBoard, recentMessages),
       ["latest_handoff_summary"] = latestHandoffSummary,
       ["recent_messages"] = recentMessages,
       ["continuity_error"] = continuityError
@@ -361,5 +370,185 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
     return DateTimeOffset.TryParse(value, out var parsed)
       ? parsed
       : DateTimeOffset.MinValue;
+  }
+
+  private static string BuildProgramSummary(
+    JObject? project,
+    JObject? thread,
+    JsonObject? continuityPayload,
+    string latestHandoffSummary,
+    JsonArray recentMessages)
+  {
+    var segments = new List<string>();
+    var projectName = project?.Value<string>("name")?.Trim();
+    var workspacePath = project?.Value<string>("workspace_path")?.Trim();
+    var projectInstructions = project?.Value<string>("developer_instructions")?.Trim();
+    var projectBaseInstructions = project?.Value<string>("base_instructions")?.Trim();
+    var threadTitle = thread?.Value<string>("title")?.Trim();
+    var threadStatus = thread?.Value<string>("status")?.Trim();
+    var continuityStatus = continuityPayload?["root_thread"]?["continuity_status"]?.ToString()?.Trim()
+      ?? thread?.Value<string>("continuity_status")?.Trim();
+    var activePhysicalThreadId = continuityPayload?["active_physical_thread"]?["id"]?.ToString()?.Trim();
+
+    if (!string.IsNullOrWhiteSpace(projectName))
+    {
+      segments.Add($"프로젝트 {projectName}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(threadTitle))
+    {
+      segments.Add($"현재 쓰레드 {threadTitle}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(threadStatus))
+    {
+      segments.Add($"쓰레드 상태 {threadStatus}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(continuityStatus))
+    {
+      segments.Add($"연속성 상태 {continuityStatus}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(activePhysicalThreadId))
+    {
+      segments.Add($"활성 physical thread {activePhysicalThreadId}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(workspacePath))
+    {
+      segments.Add($"작업 경로 {workspacePath}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(projectBaseInstructions))
+    {
+      segments.Add($"공통 지침 {CompactInline(projectBaseInstructions, 180)}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(projectInstructions))
+    {
+      segments.Add($"개발 지침 {CompactInline(projectInstructions, 180)}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(latestHandoffSummary))
+    {
+      segments.Add($"최신 handoff {CompactInline(latestHandoffSummary, 180)}");
+    }
+
+    var recentConversation = recentMessages
+      .OfType<JsonObject>()
+      .Select(message =>
+      {
+        var role = message["role"]?.ToString()?.Trim();
+        var content = CompactInline(message["content"]?.ToString(), 90);
+
+        if (string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(content))
+        {
+          return null;
+        }
+
+        return $"{role}: {content}";
+      })
+      .Where(value => !string.IsNullOrWhiteSpace(value))
+      .TakeLast(4)
+      .ToArray();
+
+    if (recentConversation.Length > 0)
+    {
+      segments.Add($"최근 대화 {string.Join(" / ", recentConversation)}");
+    }
+
+    return string.Join(". ", segments.Where(value => !string.IsNullOrWhiteSpace(value)));
+  }
+
+  private static string BuildFileContextSummary(JArray issueBoard, JsonArray recentMessages)
+  {
+    var items = new List<string>();
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+
+    foreach (var issue in issueBoard.OfType<JObject>())
+    {
+      AppendNewtonsoftAttachmentSummaries(items, seen, issue["attachments"] as JArray);
+    }
+
+    foreach (var message in recentMessages.OfType<JsonObject>())
+    {
+      AppendJsonAttachmentSummaries(items, seen, message["attachments"] as JsonArray);
+    }
+
+    return items.Count == 0 ? string.Empty : string.Join(" | ", items.Take(8));
+  }
+
+  private static void AppendNewtonsoftAttachmentSummaries(List<string> items, HashSet<string> seen, JArray? attachments)
+  {
+    if (attachments is null)
+    {
+      return;
+    }
+
+    foreach (var attachment in attachments.OfType<JObject>())
+    {
+      AppendAttachmentSummary(
+        items,
+        seen,
+        attachment.Value<string>("name")?.Trim(),
+        attachment.Value<string>("mime_type")?.Trim(),
+        CompactInline(attachment.Value<string>("text_content"), 80));
+    }
+  }
+
+  private static void AppendJsonAttachmentSummaries(List<string> items, HashSet<string> seen, JsonArray? attachments)
+  {
+    if (attachments is null)
+    {
+      return;
+    }
+
+    foreach (var attachment in attachments.OfType<JsonObject>())
+    {
+      AppendAttachmentSummary(
+        items,
+        seen,
+        attachment["name"]?.ToString()?.Trim(),
+        attachment["mime_type"]?.ToString()?.Trim(),
+        CompactInline(attachment["text_content"]?.ToString(), 80));
+    }
+  }
+
+  private static void AppendAttachmentSummary(List<string> items, HashSet<string> seen, string? name, string? mimeType, string? textContent)
+  {
+    if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(textContent))
+    {
+      return;
+    }
+
+    var summary = !string.IsNullOrWhiteSpace(name)
+      ? !string.IsNullOrWhiteSpace(textContent)
+        ? $"{name}{(!string.IsNullOrWhiteSpace(mimeType) ? $" ({mimeType})" : string.Empty)}: {textContent}"
+        : $"{name}{(!string.IsNullOrWhiteSpace(mimeType) ? $" ({mimeType})" : string.Empty)}"
+      : textContent;
+
+    if (string.IsNullOrWhiteSpace(summary) || !seen.Add(summary))
+    {
+      return;
+    }
+
+    items.Add(summary);
+  }
+
+  private static string CompactInline(string? value, int maxLength)
+  {
+    var normalized = string.Join(
+      " ",
+      (value ?? string.Empty)
+        .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+      .Trim();
+
+    if (normalized.Length <= maxLength)
+    {
+      return normalized;
+    }
+
+    return $"{normalized[..maxLength].TrimEnd()}…";
   }
 }
