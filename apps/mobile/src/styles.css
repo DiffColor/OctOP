@@ -889,19 +889,18 @@ svg {
 
 .voice-mode-panel__transcript-shell {
   display: flex;
+  justify-content: flex-end;
   padding-inline: 0.1rem;
 }
 
-.voice-mode-panel__transcript-shell.is-top-zone {
-  justify-content: flex-start;
-  align-items: flex-start;
-  padding-top: 0.1rem;
+.voice-mode-panel__transcript-shell.is-bottom-zone {
+  padding-bottom: 0.1rem;
 }
 
-.voice-mode-panel__transcript-shell.is-bottom-zone {
-  justify-content: flex-end;
-  align-items: flex-end;
-  padding-bottom: 0.1rem;
+.voice-mode-panel__chat-stack {
+  display: grid;
+  justify-items: stretch;
+  gap: 0.7rem;
 }
 
 .voice-mode-panel__bubble {
@@ -916,6 +915,7 @@ svg {
 
 .voice-mode-panel__bubble.is-assistant {
   justify-self: start;
+  align-self: flex-start;
   border-top-left-radius: 0.65rem;
   border-color: rgba(97, 141, 255, 0.24);
   background: linear-gradient(180deg, rgba(47, 86, 186, 0.18), rgba(26, 37, 70, 0.34));
@@ -924,6 +924,7 @@ svg {
 
 .voice-mode-panel__bubble.is-user {
   justify-self: end;
+  align-self: flex-end;
   border-top-right-radius: 0.65rem;
   border-color: rgba(225, 160, 255, 0.24);
   background: linear-gradient(180deg, rgba(143, 52, 233, 0.22), rgba(78, 27, 121, 0.34));
