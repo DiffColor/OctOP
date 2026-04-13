@@ -9205,6 +9205,7 @@ function ThreadDetail({
     ? "flex min-h-0 flex-col overflow-hidden"
     : "flex h-full min-h-0 flex-col overflow-hidden";
   const contentWidthClassName = standalone ? "max-w-3xl" : "max-w-none";
+  const showHeaderFilterArea = showHeaderMenus && !voiceModeEnabled;
   const showEmptyState = (() => {
     if (messagesLoading || messagesError) {
       return false;
@@ -9288,9 +9289,11 @@ function ThreadDetail({
         </div>
 
         <div
+          data-testid="thread-detail-header-filters"
           className={`overflow-hidden transition-all duration-200 ease-out ${
-            showHeaderMenus ? "mt-3 max-h-32 opacity-100" : "max-h-0 opacity-0"
+            showHeaderFilterArea ? "mt-3 max-h-32 opacity-100" : "max-h-0 opacity-0"
           }`}
+          aria-hidden={!showHeaderFilterArea}
         >
           <div className="flex gap-2 overflow-x-auto pb-1">
             {THREAD_CONTENT_FILTERS.map((filter) => (
@@ -9308,47 +9311,6 @@ function ThreadDetail({
               </button>
             ))}
           </div>
-
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-full border border-white/10 bg-white/[0.03] p-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setVoiceModeEnabled(false);
-                  void voiceSession.stopSession({ preserveTranscript: true });
-                }}
-                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
-                  !voiceModeEnabled
-                    ? "bg-white text-slate-950"
-                    : "bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
-                }`}
-              >
-                채팅 모드
-              </button>
-              <button
-                type="button"
-                onClick={handleToggleVoiceMode}
-                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
-                  voiceModeEnabled
-                    ? "bg-sky-400/18 text-sky-100"
-                    : "bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
-                }`}
-              >
-                음성 모드
-              </button>
-            </div>
-
-            {!voiceSessionEnabled ? (
-              <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1 text-[11px] text-amber-100">
-                현재 환경에서는 실시간 음성 모드가 비활성화되어 있습니다.
-              </span>
-            ) : voiceSession.error ? (
-              <span className="rounded-full border border-rose-300/20 bg-rose-400/10 px-3 py-1 text-[11px] text-rose-100">
-                {voiceSession.error}
-              </span>
-            ) : null}
-          </div>
-
         </div>
       </header>
 
