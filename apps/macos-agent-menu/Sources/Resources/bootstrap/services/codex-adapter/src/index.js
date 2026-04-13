@@ -192,6 +192,7 @@ let threadStorageCache = null;
 let threadStorageDirty = false;
 let threadStorageFlushTimer = null;
 let threadStorageFlushPromise = null;
+let processShutdownRequested = false;
 
 const RUNNING_ISSUE_WATCHDOG_INTERVAL_MS = Number(process.env.OCTOP_RUNNING_ISSUE_WATCHDOG_INTERVAL_MS ?? 15000);
 const RUNNING_ISSUE_STALE_MS = Number(process.env.OCTOP_RUNNING_ISSUE_STALE_MS ?? 120000);
@@ -9967,6 +9968,28 @@ process.on("uncaughtException", (error) => {
 
 process.on("exit", () => {
   flushThreadStorageSyncOnExit();
+});
+
+function handleProcessShutdownSignal(signal) {
+  if (processShutdownRequested) {
+    return;
+  }
+
+  processShutdownRequested = true;
+
+  try {
+    flushThreadStorageSyncOnExit();
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on("SIGINT", () => {
+  handleProcessShutdownSignal("SIGINT");
+});
+
+process.on("SIGTERM", () => {
+  handleProcessShutdownSignal("SIGTERM");
 });
 
 async function syncThreadListFromAppServer() {
