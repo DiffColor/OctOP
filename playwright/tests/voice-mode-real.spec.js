@@ -591,7 +591,9 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   expect(Math.abs(panelBox.y + panelBox.height - (footerBox.y + footerBox.height))).toBeLessThanOrEqual(2);
   expect(comboboxBox.y - panelBox.y).toBeLessThanOrEqual(32);
   expect(panelBox.x + panelBox.width - (comboboxBox.x + comboboxBox.width)).toBeLessThanOrEqual(28);
-  expect(userBubbleBox.y + userBubbleBox.height).toBeLessThan(assistantBubbleBox.y);
+  expect(assistantBubbleBox.y + assistantBubbleBox.height).toBeLessThan(userBubbleBox.y);
+  expect(comboboxBox.height).toBeLessThanOrEqual(40);
+  expect(comboboxBox.width).toBeLessThanOrEqual(176);
   await expect(page.getByTestId('voice-mode-footer').getByRole('combobox', { name: '마이크 입력 선택' })).toHaveCount(0);
   await expect.poll(() => voiceSessionRequests.length).toBe(1);
   expect(voiceSessionRequests[0].thread_id).toBe(threadId);

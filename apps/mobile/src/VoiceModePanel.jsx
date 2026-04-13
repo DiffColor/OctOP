@@ -84,9 +84,9 @@ export default function VoiceModePanel({
             </label>
           </div>
 
-          <div className="voice-mode-panel__transcript-shell is-user-zone">
-            <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
-              <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
+          <div className="voice-mode-panel__transcript-shell is-top-zone">
+            <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
+              <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
             </article>
           </div>
 
@@ -122,9 +122,9 @@ export default function VoiceModePanel({
             </div>
           </div>
 
-          <div className="voice-mode-panel__transcript-shell is-assistant-zone">
-            <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
-              <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
+          <div className="voice-mode-panel__transcript-shell is-bottom-zone">
+            <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
+              <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
             </article>
           </div>
         </div>
