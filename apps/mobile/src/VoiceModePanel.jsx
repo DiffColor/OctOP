@@ -58,7 +58,7 @@ export default function VoiceModePanel({
   const glowSpinDuration = `${Math.max(2.6, 5.6 - glowEnergy * 2.4)}s`;
 
   return (
-    <section className="voice-mode-panel sheet-enter" data-testid="voice-mode-panel" aria-hidden={!open}>
+    <section className="voice-mode-panel" data-testid="voice-mode-panel" aria-hidden={!open}>
       <div className="voice-mode-panel__backdrop" aria-hidden="true" />
 
       <div className="voice-mode-panel__hud">

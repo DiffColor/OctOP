@@ -578,6 +578,11 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect(page.getByTestId('thread-detail-header-filters')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
   await expect(page.getByRole('button', { name: '음성입력 종료' })).toBeVisible();
+  const panelBox = await page.getByTestId('voice-mode-panel').boundingBox();
+  const footerBox = await page.getByTestId('voice-mode-footer').boundingBox();
+  expect(panelBox).not.toBeNull();
+  expect(footerBox).not.toBeNull();
+  expect(Math.abs(panelBox.y + panelBox.height - (footerBox.y + footerBox.height))).toBeLessThanOrEqual(2);
   await expect.poll(() => voiceSessionRequests.length).toBe(1);
   expect(voiceSessionRequests[0].thread_id).toBe(threadId);
   expect(voiceSessionRequests[0].project_id).toBe(projectId);
