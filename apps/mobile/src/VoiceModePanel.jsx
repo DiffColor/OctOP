@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import VoiceOrb from "./VoiceOrb.jsx";
 
 function buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }) {
   if (connectionState === "connecting" || micState === "requesting") {
@@ -33,6 +34,7 @@ export default function VoiceModePanel({
   isListening = false,
   isResponding = false,
   audioLevel = 0,
+  levelHistory = [],
   inputDevices = [],
   selectedInputDeviceId = "default",
   errorMessage = "",
@@ -47,16 +49,6 @@ export default function VoiceModePanel({
   const liveTranscript = errorMessage || latestAssistantText || statusMessage;
   const userTranscript = latestUserText || "말씀하시면 여기에 사용자 입력이 표시됩니다.";
   const resolvedInputDevices = Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }];
-  const glowEnergy = Math.min(1.25, Math.max(0, audioLevel + (isResponding ? 0.34 : 0) + (isListening ? 0.12 : 0)));
-  const glowScale = 1 + glowEnergy * 0.26;
-  const blobScale = 1 + glowEnergy * 0.15;
-  const blobGlowOpacity = 0.42 + glowEnergy * 0.46;
-  const blobRotation = `${-12 + glowEnergy * 28}deg`;
-  const blobLift = `${glowEnergy * -10}px`;
-  const glowDriftX = `${(glowEnergy - 0.28) * 26}px`;
-  const glowDriftY = `${glowEnergy * -20}px`;
-  const glowSpread = `${1 + glowEnergy * 0.34}`;
-  const glowSpinDuration = `${Math.max(2.6, 5.6 - glowEnergy * 2.4)}s`;
 
   return (
     <section className="voice-mode-panel" data-testid="voice-mode-panel" aria-hidden={!open}>
@@ -86,33 +78,16 @@ export default function VoiceModePanel({
 
           <div
             className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
-            style={{
-              "--voice-blob-scale": blobScale,
-              "--voice-blob-glow-opacity": blobGlowOpacity,
-              "--voice-blob-glow-scale": glowScale,
-              "--voice-blob-rotation": blobRotation,
-              "--voice-blob-lift": blobLift,
-              "--voice-blob-drift-x": glowDriftX,
-              "--voice-blob-drift-y": glowDriftY,
-              "--voice-blob-spread": glowSpread,
-              "--voice-blob-spin-duration": glowSpinDuration
-            }}
             aria-hidden="true"
           >
-            <div className="voice-mode-panel__blob-shadow" />
-            <div className="voice-mode-panel__blob-glow is-back" />
-            <div className="voice-mode-panel__blob-glow is-front" />
-            <div className="voice-mode-panel__blob-glow is-side" />
-            <div className="voice-mode-panel__blob-wave is-one" />
-            <div className="voice-mode-panel__blob-wave is-two" />
-
-            <div className="voice-mode-panel__blob-core">
-              <div className="voice-mode-panel__blob-gradient" />
-              <div className="voice-mode-panel__blob-highlight" />
-              <div className="voice-mode-panel__blob-sheen" />
-              <div className="voice-mode-panel__blob-ribbon is-one" />
-              <div className="voice-mode-panel__blob-ribbon is-two" />
-              <div className="voice-mode-panel__blob-ribbon is-three" />
+            <div className="voice-mode-panel__orb-shell">
+              <VoiceOrb
+                audioLevel={audioLevel}
+                levelHistory={levelHistory}
+                isListening={isListening}
+                isResponding={isResponding}
+                connectionState={connectionState}
+              />
             </div>
           </div>
 
