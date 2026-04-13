@@ -956,7 +956,7 @@ async function flushThreadStorage() {
 }
 
 function flushThreadStorageSyncOnExit() {
-  if (!threadStorageDirty) {
+  if (!threadStorageDirty && !threadStorageFlushPromise) {
     return;
   }
 
@@ -966,6 +966,7 @@ function flushThreadStorageSyncOnExit() {
   }
 
   threadStorageDirty = false;
+  threadStorageFlushPromise = null;
 
   try {
     writeJsonFileAtomic(THREAD_STATE_PATH, threadStorageCache ?? {});
