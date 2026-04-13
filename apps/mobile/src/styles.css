@@ -717,10 +717,10 @@ svg {
 
 .voice-mode-panel__orb-shell {
   position: relative;
-  width: min(100%, 30rem);
-  height: min(100%, 23.5rem);
-  min-height: 15.5rem;
-  max-height: 23.5rem;
+  width: min(100%, 32rem);
+  height: min(100%, 24.5rem);
+  min-height: 16rem;
+  max-height: 24.5rem;
   flex: 1 1 auto;
 }
 
@@ -1278,8 +1278,8 @@ svg {
 
   .voice-mode-panel__orb-shell {
     width: min(100%, 24rem);
-    min-height: 13.5rem;
-    max-height: 19rem;
+    min-height: 14rem;
+    max-height: 19.5rem;
   }
 
   .voice-mode-panel__bubble {
