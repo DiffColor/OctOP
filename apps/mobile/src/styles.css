@@ -978,16 +978,30 @@ svg {
   padding: 0 0.78rem;
   color: #ffffff;
   backdrop-filter: blur(20px);
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 8px 18px rgba(0, 0, 0, 0.2);
 }
 
+.voice-mode-panel__device-select,
+.voice-mode-panel__device-select *,
+.voice-mode-panel__action-button,
+.voice-mode-panel__action-button * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
 
 .voice-mode-panel__device-select-control {
   width: 100%;
   min-width: 0;
   appearance: none;
+  -webkit-appearance: none;
   border: 0;
   background: transparent;
   padding: 0.54rem 1.1rem 0.54rem 0;
@@ -996,10 +1010,27 @@ svg {
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.01em;
-  outline: none;
+  outline: 0 solid transparent !important;
+  outline-width: 0 !important;
+  outline-offset: 0;
+  outline-color: transparent;
+  box-shadow: none !important;
   text-overflow: ellipsis;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.voice-mode-panel__device-select-control:focus,
+.voice-mode-panel__device-select-control:focus-visible,
+.voice-mode-panel__device-select-control:-moz-focusring,
+.voice-mode-panel__action-button:focus,
+.voice-mode-panel__action-button:focus-visible {
+  outline: 0 solid transparent !important;
+  outline-width: 0 !important;
+  outline-offset: 0;
+  outline-color: transparent;
+  border-color: inherit;
+  box-shadow: none !important;
 }
 
 .voice-mode-panel__device-select-control option {
@@ -1025,9 +1056,16 @@ svg {
   min-width: min(72vw, 17rem);
   padding: 0 1.4rem;
   border-radius: 999px;
+  appearance: none;
+  -webkit-appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
+  outline: 0 solid transparent;
+  outline-width: 0;
+  outline-offset: 0;
+  outline-color: transparent;
+  box-shadow: none;
   backdrop-filter: blur(18px);
   transition:
     transform 180ms ease,

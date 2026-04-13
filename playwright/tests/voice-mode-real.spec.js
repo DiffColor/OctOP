@@ -596,6 +596,37 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   expect(assistantBubbleBox.y).toBeGreaterThan(panelBox.y + panelBox.height * 0.5);
   expect(comboboxBox.height).toBeLessThanOrEqual(40);
   expect(comboboxBox.width).toBeLessThanOrEqual(176);
+
+  const actionButton = page.getByRole('button', { name: '음성입력 종료' });
+  const deviceSelect = page.getByRole('combobox', { name: '마이크 입력 선택' });
+  await actionButton.focus();
+  const actionButtonStyles = await actionButton.evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      userSelect: style.userSelect,
+      outlineWidth: style.outlineWidth
+    };
+  });
+  const actionTextStyles = await page.locator('.voice-mode-panel__action-text').evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      userSelect: style.userSelect
+    };
+  });
+  await deviceSelect.focus();
+  const deviceSelectStyles = await deviceSelect.evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return {
+      userSelect: style.userSelect,
+      outlineWidth: style.outlineWidth
+    };
+  });
+  expect(actionButtonStyles.userSelect).toBe('none');
+  expect(actionTextStyles.userSelect).toBe('none');
+  expect(actionButtonStyles.outlineWidth).toBe('0px');
+  expect(deviceSelectStyles.userSelect).toBe('none');
+  expect(deviceSelectStyles.outlineWidth).toBe('0px');
+
   await expect(page.getByTestId('voice-mode-footer').getByRole('combobox', { name: '마이크 입력 선택' })).toHaveCount(0);
   await expect.poll(() => voiceSessionRequests.length).toBe(1);
   expect(voiceSessionRequests[0].thread_id).toBe(threadId);
