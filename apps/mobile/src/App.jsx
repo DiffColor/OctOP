@@ -3967,13 +3967,38 @@ function normalizeAssistantMessageContent(content) {
     return "";
   }
 
+  const sectionHeadingPattern = /^\[[^\]]+\]$/;
+  const repeatedProgressPrefixPattern = /^(\s*[-*]\s*)?\[진행 내역\](?:\s*[:：-]\s*)?(.*)$/;
+  const normalizeProgressHistoryLine = (line, insideProgressHistorySection) => {
+    if (!insideProgressHistorySection) {
+      return String(line ?? "");
+    }
+
+    const normalizedLine = String(line ?? "");
+    const match = normalizedLine.match(repeatedProgressPrefixPattern);
+
+    if (!match) {
+      return normalizedLine;
+    }
+
+    const [, bullet = "", rest = ""] = match;
+    const normalizedRest = String(rest ?? "").replace(/^\s+/, "");
+
+    if (!normalizedRest.trim()) {
+      return "";
+    }
+
+    return `${bullet}${normalizedRest}`;
+  };
   const lines = normalized.split("\n");
   const result = [];
   let seenProgressHistoryHeading = false;
   let skippedDuplicateHeading = false;
+  let insideProgressHistorySection = false;
 
   for (const line of lines) {
     const trimmed = String(line ?? "").trim();
+    const isSectionHeading = sectionHeadingPattern.test(trimmed);
 
     if (trimmed === "[진행 내역]") {
       if (seenProgressHistoryHeading) {
@@ -3983,16 +4008,24 @@ function normalizeAssistantMessageContent(content) {
 
       seenProgressHistoryHeading = true;
       skippedDuplicateHeading = false;
+      insideProgressHistorySection = true;
       result.push("[진행 내역]");
       continue;
     }
 
-    if (skippedDuplicateHeading && trimmed === "" && String(result.at(-1) ?? "").trim() === "") {
+    if (isSectionHeading) {
+      insideProgressHistorySection = false;
+    }
+
+    const normalizedLine = normalizeProgressHistoryLine(line, insideProgressHistorySection);
+    const normalizedTrimmed = normalizedLine.trim();
+
+    if (skippedDuplicateHeading && normalizedTrimmed === "" && String(result.at(-1) ?? "").trim() === "") {
       continue;
     }
 
     skippedDuplicateHeading = false;
-    result.push(line);
+    result.push(normalizedLine);
   }
 
   return result.join("\n");
@@ -5229,6 +5262,8 @@ function InlineIssueComposer({
 }) {
   const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_PX = 160;
   const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_RATIO = 0.14;
+  const SEND_BUTTON_LONG_PRESS_MS = 380;
+  const SEND_BUTTON_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
   const normalizedDraftKey = String(draftKey ?? "").trim();
   const normalizedDraftValue = normalizeComposerDraftValue(draftValue);
   const [internalPrompt, setInternalPrompt] = useState(() => normalizedDraftValue);
@@ -5239,6 +5274,9 @@ function InlineIssueComposer({
   const submitInFlightRef = useRef(false);
   const isPromptComposingRef = useRef(false);
   const promptFocusPointerTypeRef = useRef("");
+  const sendButtonLongPressTimerRef = useRef(null);
+  const sendButtonLongPressTriggeredRef = useRef(false);
+  const sendButtonLongPressPointerRef = useRef(null);
   const viewportBaselineHeightsRef = useRef({
     portrait: 0,
     landscape: 0
@@ -5287,6 +5325,11 @@ function InlineIssueComposer({
 
   useEffect(
     () => () => {
+      if (sendButtonLongPressTimerRef.current) {
+        window.clearTimeout(sendButtonLongPressTimerRef.current);
+        sendButtonLongPressTimerRef.current = null;
+      }
+
       if (typeof onDraftPersist === "function" && normalizedDraftKey) {
         onDraftPersist(normalizedDraftKey, promptRef.current);
       }
@@ -5651,6 +5694,114 @@ function InlineIssueComposer({
   const actionBusy = busy || attachmentBusy;
   const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
   const canOpenVoiceMode = voiceSessionEnabled && Boolean(selectedProject) && typeof onOpenVoiceMode === "function";
+  const canPressSendButton = Boolean(selectedProject) && !disabled && !actionBusy && (canSubmit || canOpenVoiceMode);
+  const clearSendButtonLongPress = useCallback(() => {
+    if (sendButtonLongPressTimerRef.current) {
+      window.clearTimeout(sendButtonLongPressTimerRef.current);
+      sendButtonLongPressTimerRef.current = null;
+    }
+  }, []);
+  const resetSendButtonLongPress = useCallback(() => {
+    clearSendButtonLongPress();
+    sendButtonLongPressPointerRef.current = null;
+  }, [clearSendButtonLongPress]);
+  const handleSendButtonPointerDown = useCallback(
+    (event) => {
+      if (!canOpenVoiceMode) {
+        return;
+      }
+
+      if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+      }
+
+      sendButtonLongPressTriggeredRef.current = false;
+      resetSendButtonLongPress();
+      sendButtonLongPressPointerRef.current = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY
+      };
+      if (event?.currentTarget && typeof event.currentTarget.setPointerCapture === "function") {
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture failures for synthetic events
+        }
+      }
+      sendButtonLongPressTimerRef.current = window.setTimeout(() => {
+        sendButtonLongPressTimerRef.current = null;
+        sendButtonLongPressTriggeredRef.current = true;
+        onOpenVoiceMode?.();
+      }, SEND_BUTTON_LONG_PRESS_MS);
+    },
+    [SEND_BUTTON_LONG_PRESS_MS, canOpenVoiceMode, onOpenVoiceMode, resetSendButtonLongPress]
+  );
+  const handleSendButtonPointerMove = useCallback(
+    (event) => {
+      if (!sendButtonLongPressPointerRef.current) {
+        return;
+      }
+
+      if (sendButtonLongPressPointerRef.current.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - sendButtonLongPressPointerRef.current.clientX;
+      const deltaY = event.clientY - sendButtonLongPressPointerRef.current.clientY;
+
+      if (Math.hypot(deltaX, deltaY) > SEND_BUTTON_LONG_PRESS_MOVE_TOLERANCE_PX) {
+        resetSendButtonLongPress();
+      }
+    },
+    [SEND_BUTTON_LONG_PRESS_MOVE_TOLERANCE_PX, resetSendButtonLongPress]
+  );
+  const handleSendButtonPointerUp = useCallback(
+    (event) => {
+      const longPressTriggered = sendButtonLongPressTriggeredRef.current;
+      resetSendButtonLongPress();
+
+      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+
+      if (!longPressTriggered) {
+        return;
+      }
+
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+    },
+    [resetSendButtonLongPress]
+  );
+  const handleSendButtonPointerCancel = useCallback(
+    (event) => {
+      resetSendButtonLongPress();
+
+      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore pointer capture release failures
+        }
+      }
+    },
+    [resetSendButtonLongPress]
+  );
+  const handleSendButtonClickCapture = useCallback((event) => {
+    if (!sendButtonLongPressTriggeredRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    sendButtonLongPressTriggeredRef.current = false;
+  }, []);
 
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
@@ -5783,34 +5934,21 @@ function InlineIssueComposer({
               </button>
             ) : (
               <div className="flex shrink-0 items-end gap-2">
-                {canOpenVoiceMode ? (
-                  <button
-                    type="button"
-                    onClick={() => onOpenVoiceMode?.()}
-                    className="flex h-14 min-w-[3.6rem] items-center justify-center rounded-full border border-sky-400/30 bg-sky-500/10 text-sky-100 transition hover:border-sky-300/50 hover:bg-sky-400/15"
-                    aria-label="음성 모드 열기"
-                    title="음성 모드 열기"
-                  >
-                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="2"
-                      />
-                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                      <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                    </svg>
-                  </button>
-                ) : null}
                 <button
                   type="button"
                   onClick={handleSendClick}
-                  disabled={!canSubmit}
+                  onPointerDown={canOpenVoiceMode ? handleSendButtonPointerDown : undefined}
+                  onPointerMove={canOpenVoiceMode ? handleSendButtonPointerMove : undefined}
+                  onPointerUp={canOpenVoiceMode ? handleSendButtonPointerUp : undefined}
+                  onPointerLeave={canOpenVoiceMode ? handleSendButtonPointerCancel : undefined}
+                  onPointerCancel={canOpenVoiceMode ? handleSendButtonPointerCancel : undefined}
+                  onClickCapture={canOpenVoiceMode ? handleSendButtonClickCapture : undefined}
+                  disabled={!canPressSendButton}
                   aria-label="메시지 전송"
-                  title="메시지 전송"
+                  title={canOpenVoiceMode ? "메시지 전송 · 길게 눌러 음성 모드" : "메시지 전송"}
+                  data-testid="thread-prompt-send-button"
                   className={`relative flex h-14 w-14 items-center justify-center rounded-full border-2 text-lg transition ${
-                    canSubmit
+                    canPressSendButton
                       ? "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
                       : "border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/[0.09]"
                   } disabled:cursor-not-allowed disabled:opacity-45`}
@@ -8313,6 +8451,95 @@ function ThreadDetail({
 
     return buildSpeechFriendlyMessageText(latestUserMessage?.content);
   }, [chatTimeline]);
+  const latestHandoffSummaryText = useMemo(() => {
+    const safeMessages = Array.isArray(messages) ? messages : [];
+
+    for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
+      const message = safeMessages[index];
+
+      if (!message || message.kind !== "handoff_summary") {
+        continue;
+      }
+
+      const content = String(message.content ?? "").trim();
+
+      if (content) {
+        return content;
+      }
+    }
+
+    return "";
+  }, [messages]);
+  const recentVoiceContextSummary = useMemo(() => {
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const normalizedEntries = safeMessages
+      .map((message) => {
+        if (!message) {
+          return null;
+        }
+
+        const content = String(message.content ?? "").trim();
+
+        if (!content) {
+          return null;
+        }
+
+        const role =
+          message.kind === "handoff_summary"
+            ? "handoff"
+            : message.role === "assistant"
+              ? "assistant"
+              : message.role === "system"
+                ? "system"
+                : "user";
+
+        return `${role}: ${content.replace(/\s+/g, " ").slice(0, 280)}`;
+      })
+      .filter(Boolean);
+
+    if (normalizedEntries.length === 0) {
+      return "";
+    }
+
+    return normalizedEntries.slice(-8).join("\n");
+  }, [messages]);
+  const voiceThreadContinuitySummary = useMemo(() => {
+    const summaryParts = [];
+    const continuityStatus = String(thread?.continuity_status ?? "").trim();
+    const rootThreadId = String(thread?.root_thread_id ?? thread?.id ?? "").trim();
+    const activePhysicalThreadId = String(thread?.active_physical_thread_id ?? "").trim();
+    const lastEvent = String(thread?.last_event ?? "").trim();
+    const contextUsage = Number(thread?.context_usage_percent);
+
+    if (rootThreadId) {
+      summaryParts.push(`root_thread_id=${rootThreadId}`);
+    }
+
+    if (continuityStatus) {
+      summaryParts.push(`continuity_status=${continuityStatus}`);
+    }
+
+    if (activePhysicalThreadId) {
+      summaryParts.push(`active_physical_thread_id=${activePhysicalThreadId}`);
+    }
+
+    if (lastEvent) {
+      summaryParts.push(`last_event=${lastEvent}`);
+    }
+
+    if (Number.isFinite(contextUsage)) {
+      summaryParts.push(`context_usage_percent=${contextUsage}`);
+    }
+
+    return summaryParts.join(", ");
+  }, [
+    thread?.active_physical_thread_id,
+    thread?.context_usage_percent,
+    thread?.continuity_status,
+    thread?.id,
+    thread?.last_event,
+    thread?.root_thread_id
+  ]);
   const voiceSession = useRealtimeVoiceSession({
     enabled: voiceModeEnabled && voiceSessionEnabled,
     apiRequest: voiceApiRequest,
@@ -8321,7 +8548,14 @@ function ThreadDetail({
     project,
     thread,
     latestUserText: latestUserSpeechText,
-    latestAssistantText: latestAssistantSpeechText
+    latestAssistantText: latestAssistantSpeechText,
+    projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
+    projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
+    projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
+    threadDeveloperInstructions: String(thread?.developer_instructions ?? "").trim(),
+    threadContinuitySummary: voiceThreadContinuitySummary,
+    latestHandoffSummary: latestHandoffSummaryText,
+    recentConversationSummary: recentVoiceContextSummary
   });
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
@@ -9120,8 +9354,8 @@ function ThreadDetail({
 
       <div className="relative min-h-0 flex-1">
         {voiceModeEnabled ? (
-          <div className="h-full px-4 pb-5 pt-5">
-            <div className={`mx-auto h-full w-full ${contentWidthClassName}`}>
+          <div className="h-full">
+            <div className="h-full w-full">
               <VoiceModePanel
                 open={voiceModeEnabled}
                 projectName={project?.name ?? ""}
