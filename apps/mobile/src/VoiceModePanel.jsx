@@ -302,13 +302,21 @@ export default function VoiceModePanel({
 
             <div className="voice-mode-panel__transcript-shell is-bottom-zone">
               <div className="voice-mode-panel__chat-stack">
-                <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
-                  <p className="voice-mode-panel__bubble-label">You</p>
+                <article
+                  className="voice-mode-panel__bubble is-user"
+                  data-testid="voice-user-bubble"
+                  data-speaker="You"
+                  aria-label="사용자 입력"
+                >
                   <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
                 </article>
 
-                <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
-                  <p className="voice-mode-panel__bubble-label">OctOP</p>
+                <article
+                  className="voice-mode-panel__bubble is-assistant"
+                  data-testid="voice-assistant-bubble"
+                  data-speaker="OctOP"
+                  aria-label="OctOP 응답"
+                >
                   <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
                 </article>
               </div>

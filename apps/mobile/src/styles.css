@@ -1709,13 +1709,28 @@ svg {
 }
 
 .voice-mode-panel__bubble {
+  position: relative;
   width: auto;
   max-width: none;
   min-height: 6.8rem;
   border-radius: 1.6rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 1rem 1.05rem 1.05rem;
+  padding: 2.05rem 1.05rem 1.05rem;
   backdrop-filter: blur(18px);
+}
+
+.voice-mode-panel__bubble::before {
+  content: attr(data-speaker);
+  position: absolute;
+  top: 1rem;
+  left: 1.05rem;
+  color: rgba(255, 255, 255, 0.74);
+  font-family: "Space Grotesk", "IBM Plex Sans KR", sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  pointer-events: none;
 }
 
 .voice-mode-panel__bubble.is-user {
@@ -1732,15 +1747,6 @@ svg {
   border-top-left-radius: 1rem;
   background: linear-gradient(180deg, rgba(0, 238, 252, 0.1), rgba(15, 46, 62, 0.36));
   box-shadow: 0 0 26px rgba(0, 240, 255, 0.08);
-}
-
-.voice-mode-panel__bubble-label {
-  margin: 0 0 0.45rem;
-  color: rgba(255, 255, 255, 0.74);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
 }
 
 .voice-mode-panel__bubble-text {
@@ -1959,6 +1965,10 @@ svg {
   }
 
   .voice-mode-panel__bubble {
-    padding: 0.95rem 0.95rem 1rem;
+    padding: 1.95rem 0.95rem 1rem;
+  }
+
+  .voice-mode-panel__bubble::before {
+    left: 0.95rem;
   }
 }
