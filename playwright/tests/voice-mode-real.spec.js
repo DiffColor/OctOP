@@ -199,7 +199,6 @@ async function installVoiceBrowserMocks(page) {
     window.__voiceTest = {
       getUserMediaCalls: [],
       realtimeFetchCalls: [],
-      toolInvocations: [],
       sentEvents: [],
       audioInputDevices: [
         { deviceId: 'default', kind: 'audioinput', label: '기본 마이크' },
@@ -400,7 +399,6 @@ async function installVoiceBrowserMocks(page) {
 
 async function mockMobileApi(page, options = {}) {
   const voiceSessionRequests = options.voiceSessionRequests ?? [];
-  const toolInvocations = options.toolInvocations ?? [];
   const createdIssues = options.createdIssues ?? [];
   const startedIssueRequests = options.startedIssueRequests ?? [];
   const voiceSessionFailure = options.voiceSessionFailure ?? null;
@@ -629,21 +627,6 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
-    if (pathname === '/api/voice/tool-invocations' && method === 'POST') {
-      const payload = request.postDataJSON() ?? {};
-      toolInvocations.push(payload);
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          ok: true,
-          tool_name: payload.tool_name,
-          status: 'ok'
-        })
-      });
-      return;
-    }
-
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -678,7 +661,6 @@ test.afterAll(async () => {
 
 test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const voiceSessionRequests = [];
-  const toolInvocations = [];
   const createdIssues = [];
   const startedIssueRequests = [];
   const expectedVoiceText = '요약. 현재 상태를 정리했습니다. 검증 결과. 음성 응답은 app-server 기준으로 정리되었습니다. 다음 단계. 이어서 확인해 주세요.';
@@ -687,7 +669,6 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await installVoiceBrowserMocks(page);
   await mockMobileApi(page, {
     voiceSessionRequests,
-    toolInvocations,
     createdIssues,
     startedIssueRequests,
     authoritativeAssistantContent
@@ -800,7 +781,6 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(expectedVoiceText);
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('apps/mobile/src/App.jsx');
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('console.log');
-  await expect.poll(() => toolInvocations.length).toBe(0);
 
   const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
   const functionCallOutputs = sentEvents.filter((event) => event?.type === 'conversation.item.create');
