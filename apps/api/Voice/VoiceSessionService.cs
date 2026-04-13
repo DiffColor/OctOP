@@ -70,6 +70,8 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
       ["type"] = "realtime",
       ["model"] = _model,
       ["instructions"] = _promptBuilder.BuildInstructions(request),
+      ["tools"] = BuildRealtimeTools(),
+      ["tool_choice"] = "auto",
       ["audio"] = new JsonObject
       {
         ["input"] = new JsonObject
@@ -96,6 +98,61 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
         ["output"] = new JsonObject
         {
           ["voice"] = _voice
+        }
+      }
+    };
+  }
+
+  private static JsonArray BuildRealtimeTools()
+  {
+    return new JsonArray
+    {
+      new JsonObject
+      {
+        ["type"] = "function",
+        ["name"] = "delegate_to_app_server",
+        ["description"] = "사용자 요청을 현재 쓰레드의 app-server 작업으로 전달합니다. 구현, 수정, 조사, 실행, 질문 해결이 필요하면 먼저 이 함수를 호출합니다.",
+        ["parameters"] = new JsonObject
+        {
+          ["type"] = "object",
+          ["properties"] = new JsonObject
+          {
+            ["prompt"] = new JsonObject
+            {
+              ["type"] = "string",
+              ["description"] = "현재 쓰레드에 app-server로 전달할 사용자 요청의 핵심 프롬프트입니다."
+            }
+          },
+          ["required"] = new JsonArray("prompt")
+        }
+      },
+      new JsonObject
+      {
+        ["type"] = "function",
+        ["name"] = "get_thread_status",
+        ["description"] = "현재 쓰레드의 실행 상태와 활성 이슈 진행 상황을 조회합니다. 사용자가 진행 상황이나 현재 상태를 물을 때 사용합니다.",
+        ["parameters"] = new JsonObject
+        {
+          ["type"] = "object",
+          ["properties"] = new JsonObject()
+        }
+      },
+      new JsonObject
+      {
+        ["type"] = "function",
+        ["name"] = "interrupt_active_issue",
+        ["description"] = "현재 쓰레드에서 실행 중인 작업을 중단합니다. 사용자가 멈춰 달라고 하거나 취소를 요청할 때 사용합니다.",
+        ["parameters"] = new JsonObject
+        {
+          ["type"] = "object",
+          ["properties"] = new JsonObject
+          {
+            ["reason"] = new JsonObject
+            {
+              ["type"] = "string",
+              ["description"] = "중단 이유를 짧게 적습니다."
+            }
+          }
         }
       }
     };

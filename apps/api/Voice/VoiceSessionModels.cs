@@ -56,9 +56,16 @@ public sealed class VoiceSessionStartRequest
 
 public sealed class VoiceToolInvocationRequest
 {
+  [JsonPropertyName("tool_name")]
   public string? ToolName { get; init; }
+
+  [JsonPropertyName("arguments")]
   public JsonObject? Arguments { get; init; }
+
+  [JsonPropertyName("project_id")]
   public string? ProjectId { get; init; }
+
+  [JsonPropertyName("thread_id")]
   public string? ThreadId { get; init; }
 }
 

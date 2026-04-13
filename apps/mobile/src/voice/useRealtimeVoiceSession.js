@@ -5,6 +5,11 @@ import {
   parseRealtimeJson,
   REALTIME_EVENT_CHANNEL
 } from "./realtimeVoiceProtocol.js";
+import { formatAssistantResponseForVoice } from "./voiceResponseFormatter.js";
+
+const REALTIME_OUTPUT_MODALITIES = ["audio", "text"];
+const REALTIME_RESPONSE_CHANNEL_VOICE_TURN = "voice_turn";
+const REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT = "app_server_report";
 
 function createInitialState() {
   return {
@@ -49,6 +54,167 @@ function normalizeAudioInputDevices(devices) {
   return [{ deviceId: "default", label: "기본 마이크" }, ...uniqueDevices];
 }
 
+function isOpenDataChannel(channel) {
+  return Boolean(channel) && channel.readyState === "open";
+}
+
+function buildVoiceTurnResponseEvent(metadata = {}) {
+  return {
+    type: "response.create",
+    response: {
+      metadata: {
+        channel: REALTIME_RESPONSE_CHANNEL_VOICE_TURN,
+        ...metadata
+      },
+      output_modalities: REALTIME_OUTPUT_MODALITIES
+    }
+  };
+}
+
+function buildAppServerReportPrompt({ kind = "progress", text = "", latestPrompt = "" }) {
+  const normalizedKind = kind === "final" ? "확정 응답" : "진행 리포트";
+  const normalizedText = String(text ?? "").trim();
+  const normalizedPrompt = String(latestPrompt ?? "").trim();
+  const promptParts = [
+    `다음 app-server ${normalizedKind}를 바탕으로 사용자에게 한국어로 한두 문장만 자연스럽게 보고하세요.`,
+    "추측하지 말고 제공된 내용만 사용하세요.",
+    "파일 경로, 코드, 명령어는 그대로 읽지 말고 핵심만 말하세요."
+  ];
+
+  if (normalizedPrompt) {
+    promptParts.push(`최근 사용자 요청: ${normalizedPrompt}`);
+  }
+
+  promptParts.push(`app-server ${normalizedKind}: ${normalizedText}`);
+  return promptParts.join(" ");
+}
+
+function buildAppServerReportEvent({ kind = "progress", text = "", latestPrompt = "" }) {
+  return {
+    type: "response.create",
+    response: {
+      conversation: "none",
+      metadata: {
+        channel: REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT,
+        kind
+      },
+      output_modalities: REALTIME_OUTPUT_MODALITIES,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: buildAppServerReportPrompt({ kind, text, latestPrompt })
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
+function buildFunctionCallOutputEvent(callId, result) {
+  return {
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(result ?? {})
+    }
+  };
+}
+
+function parseFunctionCallArguments(value) {
+  if (typeof value === "string") {
+    return parseRealtimeJson(value) ?? {};
+  }
+
+  if (value && typeof value === "object") {
+    return value;
+  }
+
+  return {};
+}
+
+function extractFunctionCallsFromResponse(response) {
+  const outputItems = Array.isArray(response?.output) ? response.output : [];
+
+  return outputItems
+    .filter((item) => String(item?.type ?? "").trim() === "function_call")
+    .map((item) => ({
+      callId: String(item?.call_id ?? "").trim(),
+      name: String(item?.name ?? "").trim(),
+      arguments: parseFunctionCallArguments(item?.arguments)
+    }))
+    .filter((item) => item.callId && item.name);
+}
+
+function extractAssistantTextFromResponse(response) {
+  const outputItems = Array.isArray(response?.output) ? response.output : [];
+  const textParts = [];
+
+  for (const item of outputItems) {
+    if (String(item?.type ?? "").trim() !== "message") {
+      continue;
+    }
+
+    const contentParts = Array.isArray(item?.content) ? item.content : [];
+
+    for (const contentPart of contentParts) {
+      const partType = String(contentPart?.type ?? "").trim();
+      const value =
+        partType === "output_text" || partType === "text"
+          ? String(contentPart?.text ?? "").trim()
+          : partType === "audio"
+            ? String(contentPart?.transcript ?? "").trim()
+            : "";
+
+      if (value) {
+        textParts.push(value);
+      }
+    }
+  }
+
+  return textParts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeToolResponse(result, fallback = {}) {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return {
+      ...fallback,
+      ...result,
+      ok: result.ok ?? result.accepted ?? fallback.ok ?? false
+    };
+  }
+
+  return {
+    ...fallback,
+    ok: Boolean(result ?? fallback.ok)
+  };
+}
+
+function extractLatestAssistantMessageContent(messages) {
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
+  for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
+    const message = safeMessages[index];
+
+    if (String(message?.role ?? "").trim() !== "assistant") {
+      continue;
+    }
+
+    const content = String(message?.content ?? "").trim();
+
+    if (content) {
+      return content;
+    }
+  }
+
+  return "";
+}
+
 export default function useRealtimeVoiceSession({
   enabled = false,
   apiRequest,
@@ -58,7 +224,8 @@ export default function useRealtimeVoiceSession({
   thread = null,
   latestUserText = "",
   latestAssistantText = "",
-  authoritativeAssistantText = "",
+  appServerFinalText = "",
+  appServerProgressText = "",
   projectWorkspacePath = "",
   projectBaseInstructions = "",
   projectDeveloperInstructions = "",
@@ -75,9 +242,6 @@ export default function useRealtimeVoiceSession({
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
-  const narrationAudioRef = useRef(null);
-  const narrationObjectUrlRef = useRef("");
-  const narrationAbortControllerRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const analyserDataRef = useRef(null);
@@ -89,8 +253,12 @@ export default function useRealtimeVoiceSession({
   const sessionVersionRef = useRef(0);
   const preferredInputDeviceIdRef = useRef("default");
   const hasSubmittedCurrentSpeechRef = useRef(false);
-  const lastNarratedAssistantTextRef = useRef("");
-  const pendingNarrationTextRef = useRef("");
+  const processedFunctionCallIdsRef = useRef(new Set());
+  const queuedAppServerReportRef = useRef(null);
+  const appServerReportInFlightRef = useRef(false);
+  const lastProgressReportSourceRef = useRef("");
+  const lastFinalReportSourceRef = useRef("");
+  const issuePollSequenceRef = useRef(0);
 
   useEffect(() => {
     setState((current) => {
@@ -111,26 +279,6 @@ export default function useRealtimeVoiceSession({
       };
     });
   }, [latestAssistantText, latestUserText]);
-
-  const stopNarrationPlayback = useCallback(() => {
-    narrationAbortControllerRef.current?.abort?.();
-    narrationAbortControllerRef.current = null;
-
-    const narrationAudio = narrationAudioRef.current;
-
-    if (narrationAudio) {
-      narrationAudio.onended = null;
-      narrationAudio.onerror = null;
-      narrationAudio.pause?.();
-      narrationAudio.src = "";
-    }
-
-    if (narrationObjectUrlRef.current && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
-      URL.revokeObjectURL(narrationObjectUrlRef.current);
-    }
-
-    narrationObjectUrlRef.current = "";
-  }, []);
 
   const refreshInputDevices = useCallback(async (preferredDeviceId = "") => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -192,6 +340,10 @@ export default function useRealtimeVoiceSession({
   const disconnectSession = useCallback(async ({ preserveTranscript = true } = {}) => {
     disconnectingRef.current = true;
     sessionVersionRef.current += 1;
+    processedFunctionCallIdsRef.current = new Set();
+    queuedAppServerReportRef.current = null;
+    appServerReportInFlightRef.current = false;
+    issuePollSequenceRef.current += 1;
 
     const activePeerConnection = peerConnectionRef.current;
     const activeDataChannel = dataChannelRef.current;
@@ -255,8 +407,6 @@ export default function useRealtimeVoiceSession({
       remoteAudioRef.current.srcObject = null;
     }
 
-    stopNarrationPlayback();
-
     peerConnectionRef.current = null;
     dataChannelRef.current = null;
     localStreamRef.current = null;
@@ -282,7 +432,7 @@ export default function useRealtimeVoiceSession({
     }));
 
     disconnectingRef.current = false;
-  }, [stopNarrationPlayback]);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -354,90 +504,271 @@ export default function useRealtimeVoiceSession({
     animationFrameRef.current = window.requestAnimationFrame(tick);
   }, []);
 
-  const narrateAssistantText = useCallback(async (text) => {
-    const narration = String(text ?? "").trim();
+  const sendRealtimeClientEvent = useCallback((event) => {
+    const dataChannel = dataChannelRef.current;
 
-    if (!narration || !loginId || !bridgeId) {
+    if (!isOpenDataChannel(dataChannel)) {
       return false;
     }
 
-    stopNarrationPlayback();
+    dataChannel.send(JSON.stringify(event));
+    return true;
+  }, []);
 
-    assistantTranscriptBufferRef.current = narration;
+  const requestVoiceTurnResponse = useCallback(
+    (metadata = {}) => {
+      const accepted = sendRealtimeClientEvent(buildVoiceTurnResponseEvent(metadata));
+
+      if (accepted) {
+        assistantTranscriptBufferRef.current = "";
+        setState((current) => ({
+          ...current,
+          isResponding: true,
+          error: ""
+        }));
+      }
+
+      return accepted;
+    },
+    [sendRealtimeClientEvent]
+  );
+
+  const flushQueuedAppServerReport = useCallback(() => {
+    if (appServerReportInFlightRef.current || !queuedAppServerReportRef.current) {
+      return false;
+    }
+
+    const nextReport = queuedAppServerReportRef.current;
+    const accepted = sendRealtimeClientEvent(buildAppServerReportEvent(nextReport));
+
+    if (!accepted) {
+      return false;
+    }
+
+    queuedAppServerReportRef.current = null;
+    appServerReportInFlightRef.current = true;
+    assistantTranscriptBufferRef.current = "";
     setState((current) => ({
       ...current,
-      latestAssistantTranscript: narration,
       isResponding: true,
       error: ""
     }));
+    return true;
+  }, [sendRealtimeClientEvent]);
 
-    const abortController = new AbortController();
-    narrationAbortControllerRef.current = abortController;
-    let payload = null;
+  const queueAppServerReport = useCallback(
+    ({ kind = "progress", text = "", latestPrompt = "" }) => {
+      const normalizedText = String(text ?? "").trim();
 
-    try {
-      payload = await apiRequest(
-        `/api/voice/narrations?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
-        {
-          method: "POST",
-          signal: abortController.signal,
-          body: JSON.stringify({
-            text: narration
-          })
-        }
-      );
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        const abortError = new Error("voice narration aborted");
-        abortError.name = "AbortError";
-        throw abortError;
+      if (!normalizedText || state.connectionState !== "connected") {
+        return false;
       }
 
-      throw error;
-    }
+      if (kind === "final") {
+        if (lastFinalReportSourceRef.current === normalizedText) {
+          return false;
+        }
 
-    const audioBase64 = String(payload?.audio_base64 ?? "").trim();
+        lastFinalReportSourceRef.current = normalizedText;
+      } else {
+        if (lastProgressReportSourceRef.current === normalizedText) {
+          return false;
+        }
 
-    if (!audioBase64) {
-      throw new Error("음성 응답 오디오 데이터가 비어 있습니다.");
-    }
+        lastProgressReportSourceRef.current = normalizedText;
+      }
 
-    const contentType = String(payload?.content_type ?? "audio/mpeg").trim() || "audio/mpeg";
-    const binary = typeof window !== "undefined" && typeof window.atob === "function" ? window.atob(audioBase64) : atob(audioBase64);
-    const bytes = new Uint8Array(binary.length);
+      queuedAppServerReportRef.current = {
+        kind,
+        text: normalizedText,
+        latestPrompt: String(latestPrompt ?? "").trim()
+      };
+      return flushQueuedAppServerReport();
+    },
+    [flushQueuedAppServerReport, state.connectionState]
+  );
 
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
+  const invokeRemoteVoiceTool = useCallback(
+    async (toolName, argumentsPayload = {}) => {
+      if (!loginId || !bridgeId || typeof apiRequest !== "function") {
+        return {
+          ok: false,
+          error: "voice tool 호출 준비가 완료되지 않았습니다."
+        };
+      }
 
-    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
-    narrationObjectUrlRef.current = objectUrl;
+      try {
+        return await apiRequest(
+          `/api/voice/tools?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              tool_name: toolName,
+              project_id: String(project?.id ?? "").trim(),
+              thread_id: String(thread?.id ?? "").trim(),
+              arguments: argumentsPayload
+            })
+          }
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          error: describeVoiceError(error)
+        };
+      }
+    },
+    [apiRequest, bridgeId, loginId, project?.id, thread?.id]
+  );
 
-    const narrationAudio = narrationAudioRef.current ?? new Audio();
-    narrationAudio.autoplay = true;
-    narrationAudio.playsInline = true;
-    narrationAudioRef.current = narrationAudio;
-    narrationAudio.onended = () => {
+  const pollIssueForFinalReport = useCallback(
+    (issueId, latestPrompt = "") => {
+      const normalizedIssueId = String(issueId ?? "").trim();
+
+      if (!normalizedIssueId || !loginId || !bridgeId || typeof apiRequest !== "function") {
+        return false;
+      }
+
+      const pollSequence = issuePollSequenceRef.current + 1;
+      issuePollSequenceRef.current = pollSequence;
+      const startedSessionVersion = sessionVersionRef.current;
+
+      void (async () => {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          if (
+            disconnectingRef.current ||
+            issuePollSequenceRef.current !== pollSequence ||
+            sessionVersionRef.current !== startedSessionVersion
+          ) {
+            return;
+          }
+
+          if (attempt > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1200));
+          }
+
+          try {
+            const detail = await apiRequest(
+              `/api/issues/${encodeURIComponent(normalizedIssueId)}?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`
+            );
+            const assistantContent = extractLatestAssistantMessageContent(detail?.messages);
+            const summarizedAssistantContent = formatAssistantResponseForVoice(assistantContent) || assistantContent;
+
+            if (summarizedAssistantContent) {
+              queueAppServerReport({
+                kind: "final",
+                text: summarizedAssistantContent,
+                latestPrompt
+              });
+              return;
+            }
+          } catch {
+            // ignore and retry
+          }
+        }
+      })();
+
+      return true;
+    },
+    [apiRequest, bridgeId, loginId, queueAppServerReport]
+  );
+
+  const executeVoiceTool = useCallback(
+    async (toolName, argumentsPayload = {}) => {
+      if (toolName === "delegate_to_app_server") {
+        const prompt = String(argumentsPayload?.prompt ?? userTranscriptBufferRef.current ?? "").trim();
+
+        if (!prompt) {
+          return {
+            ok: false,
+            error: "전달할 요청 프롬프트가 비어 있습니다."
+          };
+        }
+
+        if (typeof onSubmitPrompt !== "function") {
+          return {
+            ok: false,
+            error: "app-server 작업 전달 함수를 찾지 못했습니다.",
+            prompt
+          };
+        }
+
+        try {
+          const result = await onSubmitPrompt(prompt);
+          const normalizedResult = normalizeToolResponse(result, {
+            accepted: false,
+            prompt,
+            thread_id: String(thread?.id ?? "").trim(),
+            project_id: String(project?.id ?? "").trim()
+          });
+          const issueId = String(normalizedResult?.issue_id ?? "").trim();
+
+          if (normalizedResult.ok && issueId) {
+            pollIssueForFinalReport(issueId, prompt);
+          }
+
+          return normalizedResult;
+        } catch (error) {
+          return {
+            ok: false,
+            accepted: false,
+            prompt,
+            error: describeVoiceError(error),
+            thread_id: String(thread?.id ?? "").trim(),
+            project_id: String(project?.id ?? "").trim()
+          };
+        }
+      }
+
+      return invokeRemoteVoiceTool(toolName, argumentsPayload);
+    },
+    [invokeRemoteVoiceTool, onSubmitPrompt, pollIssueForFinalReport, project?.id, thread?.id]
+  );
+
+  const handleRealtimeResponseDone = useCallback(
+    async (response) => {
+      const responseChannel = String(response?.metadata?.channel ?? "").trim();
+      const functionCalls = extractFunctionCallsFromResponse(response);
+
+      if (functionCalls.length > 0) {
+        for (const functionCall of functionCalls) {
+          if (processedFunctionCallIdsRef.current.has(functionCall.callId)) {
+            continue;
+          }
+
+          processedFunctionCallIdsRef.current.add(functionCall.callId);
+          const result = await executeVoiceTool(functionCall.name, functionCall.arguments);
+          sendRealtimeClientEvent(buildFunctionCallOutputEvent(functionCall.callId, result));
+        }
+
+        requestVoiceTurnResponse({
+          source: "function_call_output"
+        });
+        return;
+      }
+
+      const assistantText = extractAssistantTextFromResponse(response);
+
+      if (assistantText) {
+        assistantTranscriptBufferRef.current = assistantText;
+        setState((current) => ({
+          ...current,
+          latestAssistantTranscript: assistantText,
+          error: ""
+        }));
+      }
+
+      if (responseChannel === REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT) {
+        appServerReportInFlightRef.current = false;
+        flushQueuedAppServerReport();
+      }
+
       setState((current) => ({
         ...current,
         isResponding: false
       }));
-    };
-    narrationAudio.onerror = () => {
-      setState((current) => ({
-        ...current,
-        isResponding: false,
-        error: "음성 응답 오디오를 재생하지 못했습니다."
-      }));
-    };
-    narrationAudio.src = objectUrl;
-    await narrationAudio.play();
-    setState((current) => ({
-      ...current,
-      isResponding: false
-    }));
-    return true;
-  }, [apiRequest, bridgeId, loginId, stopNarrationPlayback]);
+    },
+    [executeVoiceTool, flushQueuedAppServerReport, requestVoiceTurnResponse, sendRealtimeClientEvent]
+  );
 
   const handleRealtimeEvent = useCallback(
     async (event) => {
@@ -454,6 +785,51 @@ export default function useRealtimeVoiceSession({
             ...current,
             sessionId: String(event?.session?.id ?? current.sessionId ?? "").trim()
           }));
+          return;
+        }
+
+        case "response.created": {
+          assistantTranscriptBufferRef.current = "";
+          setState((current) => ({
+            ...current,
+            isResponding: true,
+            error: ""
+          }));
+          return;
+        }
+
+        case "response.output_text.delta": {
+          const delta = String(event?.delta ?? "");
+
+          if (!delta) {
+            return;
+          }
+
+          assistantTranscriptBufferRef.current += delta;
+          setState((current) => ({
+            ...current,
+            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim()
+          }));
+          return;
+        }
+
+        case "response.output_text.done": {
+          const transcript = String(event?.text ?? assistantTranscriptBufferRef.current ?? "").trim();
+
+          if (!transcript) {
+            return;
+          }
+
+          assistantTranscriptBufferRef.current = transcript;
+          setState((current) => ({
+            ...current,
+            latestAssistantTranscript: transcript
+          }));
+          return;
+        }
+
+        case "response.done": {
+          await handleRealtimeResponseDone(event?.response ?? null);
           return;
         }
 
@@ -499,31 +875,23 @@ export default function useRealtimeVoiceSession({
             latestUserTranscript: committedTranscript || current.latestUserTranscript
           }));
 
-          if (!committedTranscript || hasSubmittedCurrentSpeechRef.current || typeof onSubmitPrompt !== "function") {
+          if (!committedTranscript || hasSubmittedCurrentSpeechRef.current) {
             return;
           }
 
           hasSubmittedCurrentSpeechRef.current = true;
 
-          try {
-            const accepted = await onSubmitPrompt(committedTranscript);
-
-            if (accepted === false) {
-              setState((current) => ({
-                ...current,
-                error: "음성 요청을 현재 채팅 작업에 반영하지 못했습니다."
-              }));
-            }
-          } catch (error) {
+          if (!requestVoiceTurnResponse({ source: "input_audio_transcription_completed" })) {
             setState((current) => ({
               ...current,
-              error: describeVoiceError(error)
+              error: "Realtime 응답 생성을 시작하지 못했습니다."
             }));
           }
           return;
         }
 
         case "error": {
+          appServerReportInFlightRef.current = false;
           setState((current) => ({
             ...current,
             error: String(event?.error?.message ?? "실시간 음성 이벤트 처리 중 오류가 발생했습니다."),
@@ -537,44 +905,37 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [onSubmitPrompt]
+    [handleRealtimeResponseDone, requestVoiceTurnResponse]
   );
 
   useEffect(() => {
-    const narration = String(authoritativeAssistantText ?? "").trim();
-
-    if (!enabled || state.connectionState !== "connected" || !narration) {
+    if (!enabled || state.connectionState !== "connected") {
       return;
     }
 
-    if (narration === lastNarratedAssistantTextRef.current || narration === pendingNarrationTextRef.current) {
-      return;
-    }
+    const normalizedFinalText = String(appServerFinalText ?? "").trim();
 
-    pendingNarrationTextRef.current = narration;
-
-    void narrateAssistantText(narration)
-      .then((accepted) => {
-        if (accepted) {
-          lastNarratedAssistantTextRef.current = narration;
-        }
-      })
-      .catch((error) => {
-        if (String(error?.name ?? "").trim() === "AbortError") {
-          return;
-        }
-
-        setState((current) => ({
-          ...current,
-          error: describeVoiceError(error)
-        }));
-      })
-      .finally(() => {
-        if (pendingNarrationTextRef.current === narration) {
-          pendingNarrationTextRef.current = "";
-        }
+    if (normalizedFinalText) {
+      queueAppServerReport({
+        kind: "final",
+        text: normalizedFinalText,
+        latestPrompt: userTranscriptBufferRef.current
       });
-  }, [authoritativeAssistantText, enabled, narrateAssistantText, state.connectionState]);
+      return;
+    }
+
+    const normalizedProgressText = String(appServerProgressText ?? "").trim();
+
+    if (!normalizedProgressText) {
+      return;
+    }
+
+    queueAppServerReport({
+      kind: "progress",
+      text: normalizedProgressText,
+      latestPrompt: userTranscriptBufferRef.current
+    });
+  }, [appServerFinalText, appServerProgressText, enabled, queueAppServerReport, state.connectionState]);
 
   const startSession = useCallback(async () => {
     if (!loginId || !bridgeId || !thread?.id || typeof apiRequest !== "function") {
@@ -591,8 +952,11 @@ export default function useRealtimeVoiceSession({
       try {
         await disconnectSession({ preserveTranscript: true });
         sessionVersionRef.current = sessionVersion;
-        lastNarratedAssistantTextRef.current = "";
-        pendingNarrationTextRef.current = "";
+        processedFunctionCallIdsRef.current = new Set();
+        queuedAppServerReportRef.current = null;
+        appServerReportInFlightRef.current = false;
+        lastProgressReportSourceRef.current = "";
+        lastFinalReportSourceRef.current = "";
 
         setState((current) => ({
           ...current,
@@ -834,29 +1198,23 @@ export default function useRealtimeVoiceSession({
     thread?.status,
     thread?.title,
     threadContinuitySummary,
-    threadDeveloperInstructions,
-    onSubmitPrompt
+    threadDeveloperInstructions
   ]);
 
   const cancelResponse = useCallback(() => {
-    const dataChannel = dataChannelRef.current;
+    const accepted = sendRealtimeClientEvent({
+      type: "response.cancel"
+    });
 
-    if (!dataChannel || dataChannel.readyState !== "open") {
-      return false;
+    if (accepted) {
+      setState((current) => ({
+        ...current,
+        isResponding: false
+      }));
     }
 
-    dataChannel.send(
-      JSON.stringify({
-        type: "response.cancel"
-      })
-    );
-
-    setState((current) => ({
-      ...current,
-      isResponding: false
-    }));
-    return true;
-  }, []);
+    return accepted;
+  }, [sendRealtimeClientEvent]);
 
   const selectInputDevice = useCallback(
     async (deviceId) => {

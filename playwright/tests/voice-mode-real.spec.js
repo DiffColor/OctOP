@@ -111,6 +111,59 @@ console.log("debug");
 - 이어서 확인해 주세요.
 `.trim();
 
+function buildRealtimeFunctionCallResponse({ responseId = 'resp-function-1', callId = 'call-voice-1', prompt = '상태 알려줘' } = {}) {
+  return {
+    type: 'response.done',
+    response: {
+      id: responseId,
+      status: 'completed',
+      metadata: {
+        channel: 'voice_turn'
+      },
+      output: [
+        {
+          type: 'function_call',
+          status: 'completed',
+          name: 'delegate_to_app_server',
+          call_id: callId,
+          arguments: JSON.stringify({ prompt })
+        }
+      ]
+    }
+  };
+}
+
+function buildRealtimeAssistantMessageResponse({
+  responseId = 'resp-message-1',
+  channel = 'voice_turn',
+  kind = '',
+  text = ''
+} = {}) {
+  return {
+    type: 'response.done',
+    response: {
+      id: responseId,
+      status: 'completed',
+      metadata: {
+        channel,
+        ...(kind ? { kind } : {})
+      },
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
 function createWorkspaceLayout() {
   return {
     loginId,
@@ -691,7 +744,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const narrationRequests = [];
   const createdIssues = [];
   const startedIssueRequests = [];
-  const expectedVoiceText = '요약. 현재 상태를 정리했습니다. 검증 결과. 음성 응답은 app-server 기준으로 정리되었습니다. 다음 단계. 이어서 확인해 주세요.';
+  const expectedVoiceText = '현재 상태 정리를 마쳤고 음성 응답도 app-server 기준으로 확인되었습니다. 이어서 필요한 확인을 진행하시면 됩니다.';
 
   await seedMobileSession(page);
   await installVoiceBrowserMocks(page);
@@ -808,19 +861,80 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   });
 
   await expect(page.getByTestId('voice-user-bubble')).toHaveText('상태 알려줘');
+  await expect.poll(async () => {
+    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+    return sentEvents.filter((event) => event?.type === 'response.create').length;
+  }).toBeGreaterThan(0);
+
+  await page.evaluate((payload) => {
+    window.__voiceTest.dataChannel.emit(payload);
+  }, buildRealtimeFunctionCallResponse({ prompt: '상태 알려줘' }));
+
   await expect.poll(() => createdIssues.length).toBe(1);
   await expect.poll(() => startedIssueRequests.length).toBe(1);
   expect(createdIssues[0].prompt).toBe('상태 알려줘');
+
+  await expect.poll(async () => {
+    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+    return sentEvents.filter((event) => event?.item?.type === 'function_call_output').length;
+  }).toBe(1);
+
+  await page.evaluate((payload) => {
+    window.__voiceTest.dataChannel.emit(payload);
+  }, buildRealtimeAssistantMessageResponse({
+    responseId: 'resp-voice-ack',
+    channel: 'voice_turn',
+    text: '알겠습니다. 요청을 app-server에 전달했고 진행 내용을 짧게 계속 알려드릴게요.'
+  }));
+
+  await expect.poll(async () => {
+    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+    return sentEvents.some(
+      (event) =>
+        event?.type === 'response.create' &&
+        event?.response?.metadata?.channel === 'app_server_report' &&
+        event?.response?.metadata?.kind === 'progress'
+    );
+  }).toBeTruthy();
+
+  await page.evaluate((payload) => {
+    window.__voiceTest.dataChannel.emit(payload);
+  }, buildRealtimeAssistantMessageResponse({
+    responseId: 'resp-progress-1',
+    channel: 'app_server_report',
+    kind: 'progress',
+    text: '요청을 전달했고 현재 app-server가 진행 중입니다.'
+  }));
+
+  await expect.poll(async () => {
+    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+    return sentEvents.some(
+      (event) =>
+        event?.type === 'response.create' &&
+        event?.response?.metadata?.channel === 'app_server_report' &&
+        event?.response?.metadata?.kind === 'final'
+    );
+  }, { timeout: 12000 }).toBeTruthy();
+
+  await page.evaluate((payload) => {
+    window.__voiceTest.dataChannel.emit(payload);
+  }, buildRealtimeAssistantMessageResponse({
+    responseId: 'resp-final-1',
+    channel: 'app_server_report',
+    kind: 'final',
+    text: expectedVoiceText
+  }));
+
   await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(expectedVoiceText);
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('apps/mobile/src/App.jsx');
   await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('console.log');
-  await expect.poll(() => narrationRequests.length).toBe(1);
-  expect(narrationRequests[0].text).toBe(expectedVoiceText);
+  await expect.poll(() => narrationRequests.length).toBe(0);
 
   const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
   const functionCallOutputs = sentEvents.filter((event) => event?.type === 'conversation.item.create');
-  expect(functionCallOutputs).toHaveLength(0);
-  expect(sentEvents.filter((event) => event?.type === 'response.create')).toHaveLength(0);
+  expect(functionCallOutputs).toHaveLength(1);
+  expect(functionCallOutputs[0].item.call_id).toBe('call-voice-1');
+  expect(sentEvents.filter((event) => event?.type === 'response.create').length).toBeGreaterThanOrEqual(3);
 
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);

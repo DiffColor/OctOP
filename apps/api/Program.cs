@@ -314,6 +314,34 @@ app.MapPost("/api/voice/narrations", async (
   }
 });
 
+app.MapPost("/api/voice/tools", async (
+  HttpContext httpContext,
+  OctopStore octopStore,
+  VoiceToolInvocationService voiceToolInvocationService,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var request = await httpContext.Request.ReadFromJsonAsync<VoiceToolInvocationRequest>(cancellationToken: cancellationToken)
+    ?? new VoiceToolInvocationRequest();
+  var payload = await voiceToolInvocationService.InvokeAsync(userId, bridgeId, request, cancellationToken);
+  payload["ok"] ??= true;
+  payload["bridge_id"] = bridgeId;
+  return Results.Text(
+    payload.ToJsonString(),
+    "application/json; charset=utf-8",
+    statusCode: StatusCodes.Status200OK);
+});
+
 app.MapPost("/api/attachments", async (
   HttpContext httpContext,
   [FromForm] GatewayAttachmentUploadRequest request,

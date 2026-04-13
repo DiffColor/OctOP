@@ -8228,13 +8228,28 @@ function ThreadDetail({
     const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
 
     if (!normalizedPrompt || typeof onSubmitPrompt !== "function") {
-      return false;
+      return {
+        ok: false,
+        accepted: false,
+        prompt: normalizedPrompt
+      };
     }
 
-    setVoicePromptSubmittedAt(new Date().toISOString());
+    const submittedAt = new Date().toISOString();
+    setVoicePromptSubmittedAt(submittedAt);
     setVoiceLastSubmittedPrompt(normalizedPrompt);
-    return onSubmitPrompt({ prompt: normalizedPrompt });
-  }, [onSubmitPrompt]);
+    return Promise.resolve(onSubmitPrompt({ prompt: normalizedPrompt })).then((result) => ({
+      ...(result && typeof result === "object" ? result : null),
+      ok: result !== false && (typeof result === "object" ? result?.ok ?? true : true),
+      accepted: result !== false && (typeof result === "object" ? result?.accepted ?? true : true),
+      prompt: normalizedPrompt,
+      submitted_at: submittedAt,
+      thread_id:
+        typeof result === "object" && result?.thread_id ? String(result.thread_id).trim() : String(thread?.id ?? "").trim(),
+      project_id:
+        typeof result === "object" && result?.project_id ? String(result.project_id).trim() : String(project?.id ?? "").trim()
+    }));
+  }, [onSubmitPrompt, project?.id, thread?.id]);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -8659,7 +8674,8 @@ function ThreadDetail({
     thread,
     latestUserText: "",
     latestAssistantText: "",
-    authoritativeAssistantText: voiceLinkedAssistantText,
+    appServerFinalText: voiceLinkedAssistantText,
+    appServerProgressText: voiceProgressReportText,
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
     projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
     projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
@@ -8671,7 +8687,7 @@ function ThreadDetail({
     threadFileContextSummary: voiceFileContextSummary,
     onSubmitPrompt: handleVoicePromptSubmit
   });
-  const voicePanelAssistantText = voiceLinkedAssistantText || voiceProgressReportText || voiceSession.latestAssistantTranscript;
+  const voicePanelAssistantText = voiceSession.latestAssistantTranscript || voiceProgressReportText || voiceLinkedAssistantText;
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -16475,7 +16491,13 @@ export default function App() {
       } else {
         setActiveView("inbox");
       }
-      return true;
+      return {
+        ok: true,
+        accepted: true,
+        thread_id: threadId,
+        issue_id: issueId ?? "",
+        prompt: String(payload.prompt ?? "").trim()
+      };
     } catch (error) {
       notifyError(error);
       return false;
@@ -16616,7 +16638,13 @@ export default function App() {
         suppressLoadingIndicator: true,
         reason: "thread_append_start_confirm"
       });
-      return true;
+      return {
+        ok: true,
+        accepted: true,
+        thread_id: threadId,
+        issue_id: issueId ?? "",
+        prompt
+      };
     } catch (error) {
       notifyError(error);
       return false;
