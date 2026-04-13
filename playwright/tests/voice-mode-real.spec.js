@@ -574,6 +574,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await openVoiceModeByLongPressingSend(page);
 
   await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
+  await expect(page.getByTestId('voice-mode-footer')).toBeVisible();
   await expect(page.getByTestId('thread-detail-header-filters')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
   await expect(page.getByRole('button', { name: '음성입력 종료' })).toBeVisible();

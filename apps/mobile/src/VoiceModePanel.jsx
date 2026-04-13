@@ -62,77 +62,81 @@ export default function VoiceModePanel({
       <div className="voice-mode-panel__backdrop" aria-hidden="true" />
 
       <div className="voice-mode-panel__hud">
-        <div
-          className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
-          style={{
-            "--voice-blob-scale": blobScale,
-            "--voice-blob-glow-opacity": blobGlowOpacity,
-            "--voice-blob-glow-scale": glowScale,
-            "--voice-blob-rotation": blobRotation,
-            "--voice-blob-lift": blobLift,
-            "--voice-blob-drift-x": glowDriftX,
-            "--voice-blob-drift-y": glowDriftY,
-            "--voice-blob-spread": glowSpread,
-            "--voice-blob-spin-duration": glowSpinDuration
-          }}
-          aria-hidden="true"
-        >
-          <div className="voice-mode-panel__blob-shadow" />
-          <div className="voice-mode-panel__blob-glow is-back" />
-          <div className="voice-mode-panel__blob-glow is-front" />
-          <div className="voice-mode-panel__blob-glow is-side" />
-          <div className="voice-mode-panel__blob-wave is-one" />
-          <div className="voice-mode-panel__blob-wave is-two" />
+        <div className="voice-mode-panel__content">
+          <div
+            className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
+            style={{
+              "--voice-blob-scale": blobScale,
+              "--voice-blob-glow-opacity": blobGlowOpacity,
+              "--voice-blob-glow-scale": glowScale,
+              "--voice-blob-rotation": blobRotation,
+              "--voice-blob-lift": blobLift,
+              "--voice-blob-drift-x": glowDriftX,
+              "--voice-blob-drift-y": glowDriftY,
+              "--voice-blob-spread": glowSpread,
+              "--voice-blob-spin-duration": glowSpinDuration
+            }}
+            aria-hidden="true"
+          >
+            <div className="voice-mode-panel__blob-shadow" />
+            <div className="voice-mode-panel__blob-glow is-back" />
+            <div className="voice-mode-panel__blob-glow is-front" />
+            <div className="voice-mode-panel__blob-glow is-side" />
+            <div className="voice-mode-panel__blob-wave is-one" />
+            <div className="voice-mode-panel__blob-wave is-two" />
 
-          <div className="voice-mode-panel__blob-core">
-            <div className="voice-mode-panel__blob-gradient" />
-            <div className="voice-mode-panel__blob-highlight" />
-            <div className="voice-mode-panel__blob-sheen" />
-            <div className="voice-mode-panel__blob-ribbon is-one" />
-            <div className="voice-mode-panel__blob-ribbon is-two" />
-            <div className="voice-mode-panel__blob-ribbon is-three" />
+            <div className="voice-mode-panel__blob-core">
+              <div className="voice-mode-panel__blob-gradient" />
+              <div className="voice-mode-panel__blob-highlight" />
+              <div className="voice-mode-panel__blob-sheen" />
+              <div className="voice-mode-panel__blob-ribbon is-one" />
+              <div className="voice-mode-panel__blob-ribbon is-two" />
+              <div className="voice-mode-panel__blob-ribbon is-three" />
+            </div>
+          </div>
+
+          <div className="voice-mode-panel__transcript-shell">
+            <div className="voice-mode-panel__chat-stack">
+              <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
+                <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
+              </article>
+
+              <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
+                <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
+              </article>
+            </div>
           </div>
         </div>
 
-        <div className="voice-mode-panel__transcript-shell">
-          <div className="voice-mode-panel__chat-stack">
-            <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
-              <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
-            </article>
+        <footer className="voice-mode-panel__footer" data-testid="voice-mode-footer">
+          <div className="voice-mode-panel__actions">
+            <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
+              <span className="voice-mode-panel__device-select-label">마이크 입력</span>
+              <select
+                className="voice-mode-panel__device-select-control"
+                aria-label="마이크 입력 선택"
+                value={selectedInputDeviceId}
+                onChange={(event) => onSelectInputDevice?.(event.target.value)}
+              >
+                {(Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }]).map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+              <span className="voice-mode-panel__device-select-caret" aria-hidden="true">
+                ▾
+              </span>
+            </label>
 
-            <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
-              <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
-            </article>
+            <button type="button" onClick={onClose} className="voice-mode-panel__action-button is-primary" aria-label="음성입력 종료">
+              <span className="voice-mode-panel__action-icon" aria-hidden="true">
+                ✕
+              </span>
+              <span className="voice-mode-panel__action-text">음성입력 종료</span>
+            </button>
           </div>
-        </div>
-
-        <div className="voice-mode-panel__actions">
-          <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
-            <span className="voice-mode-panel__device-select-label">마이크 입력</span>
-            <select
-              className="voice-mode-panel__device-select-control"
-              aria-label="마이크 입력 선택"
-              value={selectedInputDeviceId}
-              onChange={(event) => onSelectInputDevice?.(event.target.value)}
-            >
-              {(Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }]).map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-            <span className="voice-mode-panel__device-select-caret" aria-hidden="true">
-              ▾
-            </span>
-          </label>
-
-          <button type="button" onClick={onClose} className="voice-mode-panel__action-button is-primary" aria-label="음성입력 종료">
-            <span className="voice-mode-panel__action-icon" aria-hidden="true">
-              ✕
-            </span>
-            <span className="voice-mode-panel__action-text">음성입력 종료</span>
-          </button>
-        </div>
+        </footer>
       </div>
     </section>
   );
