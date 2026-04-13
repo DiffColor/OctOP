@@ -19,6 +19,8 @@ import {
 import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
+import VoiceModePanel from "./VoiceModePanel.jsx";
+import useRealtimeVoiceSession from "./voice/useRealtimeVoiceSession.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -96,6 +98,7 @@ const DEFAULT_API_BASE_URL =
     ? "http://127.0.0.1:4000"
     : "https://octop.ilycode.app";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+const VOICE_SESSION_ENABLED = String(import.meta.env.VITE_VOICE_SESSION_ENABLED ?? "true").trim().toLowerCase() !== "false";
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
@@ -588,7 +591,6 @@ const MOBILE_NOTICE_ERROR_DISMISS_MS = 6_000;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 const BOTTOM_BOUNDARY_HEADER_GUARD_PX = 24;
 const BOTTOM_BOUNDARY_MOMENTUM_LOCK_MS = 180;
-const DEFAULT_VOICE_PLAYBACK_LANGUAGE = "ko-KR";
 const PROJECT_DELETE_CONFIRM_MESSAGE = "프로젝트를 삭제하시겠습니까? 해당 프로젝트의 이슈도 함께 제거됩니다.";
 const PROJECT_CHIP_LONG_PRESS_MS = 650;
 const TODO_SCOPE_ID = "todo";
@@ -2792,32 +2794,6 @@ function getVoiceTranscriptDelta(nextTranscript, previousTranscript) {
   return next;
 }
 
-function supportsSpeechSynthesisPlayback() {
-  return (
-    typeof window !== "undefined" &&
-    "speechSynthesis" in window &&
-    typeof window.SpeechSynthesisUtterance === "function"
-  );
-}
-
-function pickPreferredSpeechSynthesisVoice(voices = [], preferredLanguage = DEFAULT_VOICE_PLAYBACK_LANGUAGE) {
-  if (!Array.isArray(voices) || voices.length === 0) {
-    return null;
-  }
-
-  const normalizedLanguage = String(preferredLanguage ?? DEFAULT_VOICE_PLAYBACK_LANGUAGE).trim().toLowerCase();
-  const normalizedBaseLanguage = normalizedLanguage.split("-")[0];
-  const normalizedVoices = voices.filter(Boolean);
-
-  return (
-    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase() === normalizedLanguage) ??
-    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase().startsWith(`${normalizedBaseLanguage}-`)) ??
-    normalizedVoices.find((voice) => String(voice?.lang ?? "").trim().toLowerCase().startsWith(normalizedBaseLanguage)) ??
-    normalizedVoices[0] ??
-    null
-  );
-}
-
 function buildSpeechFriendlyMessageText(content) {
   return String(content ?? "")
     .replace(/```[\s\S]*?```/g, " 코드 블록 ")
@@ -2827,22 +2803,6 @@ function buildSpeechFriendlyMessageText(content) {
     .replace(/[*#>~-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function buildVoicePlaybackMessageKey(message = null) {
-  if (!message) {
-    return "";
-  }
-
-  const id = String(message.id ?? "").trim();
-  const timestamp = String(message.timestamp ?? "").trim();
-  const content = buildSpeechFriendlyMessageText(message.content);
-
-  if (!id && !timestamp && !content) {
-    return "";
-  }
-
-  return `${id}:${timestamp}:${content}`;
 }
 
 function parseResponseBody(response, text) {
@@ -4626,6 +4586,8 @@ function BottomSheet({
   headerActionsLayout = "inline",
   panelTestId = ""
 }) {
+  const closeOnBackdropClickRef = useRef(false);
+
   if (!open) {
     return null;
   }
@@ -4639,14 +4601,21 @@ function BottomSheet({
     ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/15 bg-[#0b1622] shadow-[0_30px_90px_rgba(0,0,0,0.65)] ring-1 ring-white/8"
     : "sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft";
 
+  const handleContainerPointerDown = (event) => {
+    closeOnBackdropClickRef.current = event.target === event.currentTarget;
+  };
+
   const handleContainerClick = (event) => {
-    if (event.target === event.currentTarget) {
+    const shouldClose = closeOnBackdropClickRef.current && event.target === event.currentTarget;
+    closeOnBackdropClickRef.current = false;
+
+    if (shouldClose) {
       onClose();
     }
   };
 
   return (
-    <div className={containerClassName} onClick={handleContainerClick}>
+    <div className={containerClassName} onPointerDown={handleContainerPointerDown} onClick={handleContainerClick}>
       <section
         className={panelClassName}
         onClick={(event) => event.stopPropagation()}
@@ -5245,6 +5214,8 @@ function InlineIssueComposer({
   bridgeId = "",
   selectedProject,
   onSubmit,
+  onOpenVoiceMode = null,
+  voiceSessionEnabled = true,
   label,
   disabled = false,
   draftKey = "",
@@ -5256,7 +5227,6 @@ function InlineIssueComposer({
   onInputFocus = null,
   onInputBlur = null
 }) {
-  const LONG_PRESS_THRESHOLD_MS = 650;
   const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_PX = 160;
   const SOFTWARE_KEYBOARD_HEIGHT_THRESHOLD_RATIO = 0.14;
   const normalizedDraftKey = String(draftKey ?? "").trim();
@@ -5266,26 +5236,14 @@ function InlineIssueComposer({
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-  const speechRecognitionRef = useRef(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const longPressTimerRef = useRef(null);
-  const voiceRestartTimerRef = useRef(null);
-  const suppressClickRef = useRef(false);
   const submitInFlightRef = useRef(false);
-  const isRecordingRef = useRef(false);
   const isPromptComposingRef = useRef(false);
-  const shouldKeepRecordingRef = useRef(false);
-  const processedFinalResultKeysRef = useRef(new Set());
-  const lastVoiceAppendRef = useRef({ text: "", at: 0 });
-  const lastFinalTranscriptRef = useRef("");
   const promptFocusPointerTypeRef = useRef("");
   const viewportBaselineHeightsRef = useRef({
     portrait: 0,
     landscape: 0
   });
   const { alert: showAlert } = useMobileFeedback();
-  const supportsSpeechRecognition =
-    typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
   const prompt = internalPrompt;
   const promptRef = useRef(prompt);
   const attachmentsRef = useRef([]);
@@ -5527,222 +5485,6 @@ function InlineIssueComposer({
     [onInputBlur]
   );
 
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
-  const clearVoiceRestartTimer = useCallback(() => {
-    if (voiceRestartTimerRef.current) {
-      window.clearTimeout(voiceRestartTimerRef.current);
-      voiceRestartTimerRef.current = null;
-    }
-  }, []);
-
-  const stopVoiceCapture = useCallback(() => {
-    shouldKeepRecordingRef.current = false;
-    processedFinalResultKeysRef.current = new Set();
-    lastVoiceAppendRef.current = { text: "", at: 0 };
-    lastFinalTranscriptRef.current = "";
-    clearLongPressTimer();
-    clearVoiceRestartTimer();
-
-    const recognition = speechRecognitionRef.current;
-    speechRecognitionRef.current = null;
-
-    if (recognition) {
-      recognition.onresult = null;
-      recognition.onerror = null;
-      recognition.onend = null;
-
-      try {
-        recognition.stop();
-      } catch {
-        // ignore stop race errors from browser implementations
-      }
-    }
-
-    setIsRecording(false);
-  }, [clearLongPressTimer, clearVoiceRestartTimer]);
-
-  useEffect(() => () => stopVoiceCapture(), [stopVoiceCapture]);
-
-  useEffect(() => {
-    isRecordingRef.current = isRecording;
-  }, [isRecording]);
-
-  const appendVoiceTranscript = useCallback(
-    (text) => {
-      const transcript = String(text ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (!transcript) {
-        return;
-      }
-
-      if (
-        lastVoiceAppendRef.current.text === transcript &&
-        Date.now() - lastVoiceAppendRef.current.at < 1200
-      ) {
-        return;
-      }
-
-      lastVoiceAppendRef.current = {
-        text: transcript,
-        at: Date.now()
-      };
-
-      setInternalPrompt((current) => (current ? `${current.trim()} ${transcript}` : transcript));
-
-      if (typeof window !== "undefined") {
-        window.setTimeout(() => syncPromptHeight(), 0);
-      }
-    },
-    [syncPromptHeight]
-  );
-
-  const startVoiceCapture = useCallback(() => {
-    if (
-      !supportsSpeechRecognition ||
-      typeof window === "undefined" ||
-      speechRecognitionRef.current ||
-      busy ||
-      disabled ||
-      !selectedProject
-    ) {
-      return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = "ko-KR";
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    processedFinalResultKeysRef.current = new Set();
-    shouldKeepRecordingRef.current = true;
-    recognition.onstart = () => setIsRecording(true);
-    recognition.onresult = (event) => {
-      let collected = "";
-
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-
-        if (!result) {
-          continue;
-        }
-
-        if (result.isFinal) {
-          const transcript = String(result[0]?.transcript ?? "")
-            .replace(/\s+/g, " ")
-            .trim();
-
-          if (!transcript) {
-            continue;
-          }
-
-          const resultKey = `${index}:${transcript}`;
-
-          if (processedFinalResultKeysRef.current.has(resultKey)) {
-            continue;
-          }
-
-          processedFinalResultKeysRef.current.add(resultKey);
-          const delta = getVoiceTranscriptDelta(transcript, lastFinalTranscriptRef.current);
-
-          if (!delta) {
-            lastFinalTranscriptRef.current = transcript;
-            continue;
-          }
-
-          lastFinalTranscriptRef.current = transcript;
-          collected += collected ? ` ${delta}` : delta;
-        }
-      }
-
-      appendVoiceTranscript(collected);
-    };
-    recognition.onerror = (event) => {
-      speechRecognitionRef.current = null;
-
-      if (!shouldKeepRecordingRef.current) {
-        setIsRecording(false);
-        return;
-      }
-
-      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event?.error ?? "")) {
-        shouldKeepRecordingRef.current = false;
-        setIsRecording(false);
-        return;
-      }
-
-      clearVoiceRestartTimer();
-      voiceRestartTimerRef.current = window.setTimeout(() => {
-        voiceRestartTimerRef.current = null;
-
-        if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
-          startVoiceCapture();
-        }
-      }, 40);
-    };
-    recognition.onend = () => {
-      speechRecognitionRef.current = null;
-
-      if (!shouldKeepRecordingRef.current) {
-        setIsRecording(false);
-        return;
-      }
-
-      clearVoiceRestartTimer();
-      voiceRestartTimerRef.current = window.setTimeout(() => {
-        voiceRestartTimerRef.current = null;
-
-        if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
-          startVoiceCapture();
-        }
-      }, 20);
-    };
-    speechRecognitionRef.current = recognition;
-
-    try {
-      recognition.start();
-    } catch {
-      speechRecognitionRef.current = null;
-      clearVoiceRestartTimer();
-
-      if (shouldKeepRecordingRef.current) {
-        voiceRestartTimerRef.current = window.setTimeout(() => {
-          voiceRestartTimerRef.current = null;
-
-          if (shouldKeepRecordingRef.current && !speechRecognitionRef.current) {
-            startVoiceCapture();
-          }
-        }, 40);
-      }
-    }
-  }, [appendVoiceTranscript, busy, clearVoiceRestartTimer, disabled, selectedProject, supportsSpeechRecognition]);
-
-  useEffect(() => {
-    if (!isRecording) {
-      return;
-    }
-
-    if (busy || disabled || !selectedProject) {
-      stopVoiceCapture();
-    }
-  }, [busy, disabled, isRecording, selectedProject, stopVoiceCapture]);
-
-  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
-  useEffect(() => () => clearVoiceRestartTimer(), [clearVoiceRestartTimer]);
-
   const handleRemoveAttachment = useCallback((attachmentId) => {
     setAttachments((current) => {
       const target = current.find((attachment) => attachment.id === attachmentId) ?? null;
@@ -5894,91 +5636,21 @@ function InlineIssueComposer({
     [attachmentBusy, busy, disabled, handlePromptSubmit, selectedProject, shouldPreserveEnterForSoftKeyboard]
   );
 
-  const toggleVoiceCapture = useCallback(() => {
-    if (isRecordingRef.current) {
-      stopVoiceCapture();
-      return;
-    }
-
-    if (!supportsSpeechRecognition) {
-      showAlert("이 브라우저에서는 음성 입력을 지원하지 않습니다.", {
-        tone: "error",
-        title: "음성 입력"
-      });
-      return;
-    }
-
-    startVoiceCapture();
-  }, [showAlert, startVoiceCapture, stopVoiceCapture, supportsSpeechRecognition]);
-
-  const handleSendPointerDown = useCallback(
-    (event) => {
-      if (!selectedProject || busy || disabled || attachmentBusy) {
-        return;
-      }
-
-      if (event.pointerType === "mouse" && event.button !== 0) {
-        return;
-      }
-
-      suppressClickRef.current = false;
-      clearLongPressTimer();
-
-      longPressTimerRef.current = window.setTimeout(() => {
-        suppressClickRef.current = true;
-        toggleVoiceCapture();
-      }, LONG_PRESS_THRESHOLD_MS);
-    },
-    [attachmentBusy, busy, clearLongPressTimer, disabled, selectedProject, toggleVoiceCapture]
-  );
-
-  const handleSendPointerUp = useCallback(() => {
-    clearLongPressTimer();
-  }, [clearLongPressTimer]);
-
-  const handleSendPointerLeave = useCallback(() => {
-    clearLongPressTimer();
-  }, [clearLongPressTimer]);
-
   const handleSendClick = useCallback(
     (event) => {
-      if (isRecordingRef.current) {
-        toggleVoiceCapture();
-        event.preventDefault();
-        event.stopPropagation();
-        suppressClickRef.current = false;
-        return;
-      }
-
-      if (suppressClickRef.current) {
-        suppressClickRef.current = false;
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
       if (busy || disabled || !selectedProject || attachmentBusy) {
         return;
       }
 
       void handlePromptSubmit();
     },
-    [attachmentBusy, busy, disabled, handlePromptSubmit, selectedProject, toggleVoiceCapture]
+    [attachmentBusy, busy, disabled, handlePromptSubmit, selectedProject]
   );
 
   const attachmentCount = attachments.length;
   const actionBusy = busy || attachmentBusy;
-  const canStartVoiceCapture =
-    Boolean(selectedProject) && !disabled && !busy && !attachmentBusy && supportsSpeechRecognition;
   const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
-  const canPressSendButton = isRecording || canSubmit || canStartVoiceCapture;
-  const sendButtonLabel = isRecording
-    ? "음성 입력 중지"
-    : canSubmit
-      ? "메시지 전송"
-      : supportsSpeechRecognition
-        ? "길게 눌러 음성 입력"
-        : "메시지 전송";
+  const canOpenVoiceMode = voiceSessionEnabled && Boolean(selectedProject) && typeof onOpenVoiceMode === "function";
 
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
@@ -6045,12 +5717,6 @@ function InlineIssueComposer({
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  {isRecording ? (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-1 text-[10px] font-semibold text-rose-200">
-                      <span className="h-1.5 w-1.5 rounded-full bg-rose-300 animate-pulse" />
-                      듣는 중
-                    </span>
-                  ) : null}
                   <button
                     type="button"
                     data-testid="thread-prompt-attach-button"
@@ -6117,41 +5783,39 @@ function InlineIssueComposer({
               </button>
             ) : (
               <div className="flex shrink-0 items-end gap-2">
+                {canOpenVoiceMode ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenVoiceMode?.()}
+                    className="flex h-14 min-w-[3.6rem] items-center justify-center rounded-full border border-sky-400/30 bg-sky-500/10 text-sky-100 transition hover:border-sky-300/50 hover:bg-sky-400/15"
+                    aria-label="음성 모드 열기"
+                    title="음성 모드 열기"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                      />
+                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                      <path d="M12 19v3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                    </svg>
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  onPointerDown={handleSendPointerDown}
-                  onPointerUp={handleSendPointerUp}
-                  onPointerLeave={handleSendPointerLeave}
-                  onPointerCancel={handleSendPointerLeave}
                   onClick={handleSendClick}
-                  onContextMenu={(event) => event.preventDefault()}
-                  disabled={!canPressSendButton}
-                  aria-pressed={isRecording}
-                  aria-label={sendButtonLabel}
-                  title={sendButtonLabel}
+                  disabled={!canSubmit}
+                  aria-label="메시지 전송"
+                  title="메시지 전송"
                   className={`relative flex h-14 w-14 items-center justify-center rounded-full border-2 text-lg transition ${
-                    isRecording
-                      ? "border-rose-500 bg-rose-500/20 text-rose-50"
-                      : canSubmit
-                        ? "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
-                        : "border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/[0.09]"
+                    canSubmit
+                      ? "border-telegram-400/80 bg-telegram-500 text-white hover:bg-telegram-400"
+                      : "border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/[0.09]"
                   } disabled:cursor-not-allowed disabled:opacity-45`}
                 >
-                  {isRecording ? (
-                    <>
-                      <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-rose-300 shadow-[0_0_0_8px_rgba(244,63,94,0.35)]" />
-                      <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          d="M12 3a2 2 0 00-2 2v6a2 2 0 104 0V5a2 2 0 00-2-2z"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="2"
-                        />
-                        <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                        <path d="M12 19v4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                      </svg>
-                    </>
-                  ) : actionBusy ? (
+                  {actionBusy ? (
                     <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                   ) : (
                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -8359,6 +8023,8 @@ function ThreadDetail({
   thread,
   project,
   bridgeId = "",
+  sessionLoginId = "",
+  apiRequest: voiceApiRequest = null,
   messages,
   issues = [],
   historyLoading = false,
@@ -8386,7 +8052,8 @@ function ThreadDetail({
   isDraft = false,
   showBackButton = true,
   standalone = true,
-  emptyStateMessage = ""
+  emptyStateMessage = "",
+  voiceSessionEnabled = true
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
@@ -8410,12 +8077,7 @@ function ThreadDetail({
   const [activeMessageAction, setActiveMessageAction] = useState(null);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const { alert: showAlert } = useMobileFeedback();
-  const supportsSpeechSynthesis = supportsSpeechSynthesisPlayback();
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
-  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState(false);
-  const [availableSpeechVoices, setAvailableSpeechVoices] = useState([]);
-  const speechUtteranceRef = useRef(null);
-  const lastSpokenMessageKeyRef = useRef("");
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -8644,15 +8306,23 @@ function ThreadDetail({
     () => buildSpeechFriendlyMessageText(latestAssistantMessage?.content),
     [latestAssistantMessage?.content]
   );
-  const latestAssistantMessageKey = useMemo(
-    () => buildVoicePlaybackMessageKey(latestAssistantMessage),
-    [latestAssistantMessage]
-  );
-  const preferredSpeechVoice = useMemo(
-    () => pickPreferredSpeechSynthesisVoice(availableSpeechVoices, DEFAULT_VOICE_PLAYBACK_LANGUAGE),
-    [availableSpeechVoices]
-  );
-  const threadReadyForVoicePlayback = !["running"].includes(String(thread?.status ?? "").trim());
+  const latestUserSpeechText = useMemo(() => {
+    const latestUserMessage = [...chatTimeline]
+      .reverse()
+      .find((entry) => entry.role === "user" && buildSpeechFriendlyMessageText(entry.content));
+
+    return buildSpeechFriendlyMessageText(latestUserMessage?.content);
+  }, [chatTimeline]);
+  const voiceSession = useRealtimeVoiceSession({
+    enabled: voiceModeEnabled && voiceSessionEnabled,
+    apiRequest: voiceApiRequest,
+    loginId: sessionLoginId,
+    bridgeId,
+    project,
+    thread,
+    latestUserText: latestUserSpeechText,
+    latestAssistantText: latestAssistantSpeechText
+  });
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9256,187 +8926,43 @@ function ThreadDetail({
     }
   }, [showAlert]);
 
-  const stopVoicePlayback = useCallback(() => {
-    if (!supportsSpeechSynthesis || typeof window === "undefined") {
-      setIsVoiceSpeaking(false);
-      speechUtteranceRef.current = null;
+  const handleToggleVoiceMode = useCallback(async () => {
+    if (voiceModeEnabled) {
+      setVoiceModeEnabled(false);
+      await voiceSession.stopSession({ preserveTranscript: true });
       return;
     }
 
-    speechUtteranceRef.current = null;
-    setIsVoiceSpeaking(false);
-    window.speechSynthesis.cancel();
-  }, [supportsSpeechSynthesis]);
-
-  const playAssistantVoiceResponse = useCallback(
-    ({ force = false, manual = false } = {}) => {
-      if (!supportsSpeechSynthesis || typeof window === "undefined") {
-        if (manual) {
-          showAlert("이 브라우저에서는 음성 응답 재생을 지원하지 않습니다.", {
-            tone: "error",
-            title: "음성 응답"
-          });
-        }
-        return false;
-      }
-
-      if (!latestAssistantSpeechText) {
-        if (manual) {
-          showAlert("아직 읽어 줄 최신 응답이 없습니다.", {
-            tone: "error",
-            title: "음성 응답"
-          });
-        }
-        return false;
-      }
-
-      if (!force && latestAssistantMessageKey && lastSpokenMessageKeyRef.current === latestAssistantMessageKey) {
-        return true;
-      }
-
-      stopVoicePlayback();
-
-      const utterance = new window.SpeechSynthesisUtterance(latestAssistantSpeechText);
-      utterance.lang = preferredSpeechVoice?.lang ?? DEFAULT_VOICE_PLAYBACK_LANGUAGE;
-      utterance.rate = 1;
-      utterance.pitch = 1;
-
-      if (preferredSpeechVoice) {
-        utterance.voice = preferredSpeechVoice;
-      }
-
-      utterance.onstart = () => {
-        speechUtteranceRef.current = utterance;
-        setIsVoiceSpeaking(true);
-      };
-      utterance.onend = () => {
-        if (speechUtteranceRef.current === utterance) {
-          speechUtteranceRef.current = null;
-        }
-        setIsVoiceSpeaking(false);
-      };
-      utterance.onerror = () => {
-        if (speechUtteranceRef.current === utterance) {
-          speechUtteranceRef.current = null;
-        }
-        setIsVoiceSpeaking(false);
-
-        if (manual) {
-          showAlert("응답을 음성으로 재생하지 못했습니다.", {
-            tone: "error",
-            title: "음성 응답"
-          });
-        }
-      };
-
-      speechUtteranceRef.current = utterance;
-      lastSpokenMessageKeyRef.current = latestAssistantMessageKey;
-
-      try {
-        window.speechSynthesis.speak(utterance);
-        return true;
-      } catch (error) {
-        speechUtteranceRef.current = null;
-        setIsVoiceSpeaking(false);
-
-        if (manual) {
-          showAlert(error?.message ?? "응답을 음성으로 재생하지 못했습니다.", {
-            tone: "error",
-            title: "음성 응답"
-          });
-        }
-
-        return false;
-      }
-    },
-    [
-      latestAssistantMessageKey,
-      latestAssistantSpeechText,
-      preferredSpeechVoice,
-      showAlert,
-      stopVoicePlayback,
-      supportsSpeechSynthesis
-    ]
-  );
-
-  const handleToggleVoiceMode = useCallback(() => {
-    if (!supportsSpeechSynthesis) {
-      showAlert("이 브라우저에서는 음성 응답 재생을 지원하지 않습니다.", {
+    if (!voiceSessionEnabled) {
+      showAlert("이 환경에서는 실시간 음성 모드가 비활성화되어 있습니다.", {
         tone: "error",
         title: "음성 모드"
       });
       return;
     }
 
-    if (voiceModeEnabled) {
-      setVoiceModeEnabled(false);
-      stopVoicePlayback();
+    if (!thread?.id || !sessionLoginId || !bridgeId) {
+      showAlert("음성 모드는 현재 선택된 채팅창에서만 시작할 수 있습니다.", {
+        tone: "error",
+        title: "음성 모드"
+      });
       return;
     }
 
     setVoiceModeEnabled(true);
-
-    if (threadReadyForVoicePlayback && latestAssistantSpeechText) {
-      playAssistantVoiceResponse({ force: true, manual: true });
-    }
-  }, [
-    latestAssistantSpeechText,
-    playAssistantVoiceResponse,
-    showAlert,
-    stopVoicePlayback,
-    supportsSpeechSynthesis,
-    voiceModeEnabled,
-    threadReadyForVoicePlayback
-  ]);
-
-  useEffect(() => {
-    if (!supportsSpeechSynthesis || typeof window === "undefined") {
-      setAvailableSpeechVoices([]);
-      return undefined;
-    }
-
-    const synthesis = window.speechSynthesis;
-    const syncVoices = () => {
-      setAvailableSpeechVoices(synthesis.getVoices());
-    };
-
-    syncVoices();
-    synthesis.addEventListener?.("voiceschanged", syncVoices);
-
-    return () => {
-      synthesis.removeEventListener?.("voiceschanged", syncVoices);
-    };
-  }, [supportsSpeechSynthesis]);
-
-  useEffect(() => () => stopVoicePlayback(), [stopVoicePlayback]);
-
-  useEffect(() => {
-    stopVoicePlayback();
-    lastSpokenMessageKeyRef.current = "";
-  }, [stopVoicePlayback, thread?.id]);
-
-  useEffect(() => {
-    if (!voiceModeEnabled || !threadReadyForVoicePlayback || !latestAssistantMessageKey) {
-      return;
-    }
-
-    if (lastSpokenMessageKeyRef.current === latestAssistantMessageKey) {
-      return;
-    }
-
-    playAssistantVoiceResponse();
-  }, [
-    latestAssistantMessageKey,
-    playAssistantVoiceResponse,
-    threadReadyForVoicePlayback,
-    voiceModeEnabled
-  ]);
+    await voiceSession.startSession();
+  }, [bridgeId, sessionLoginId, showAlert, thread?.id, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
   useEffect(() => {
     setActiveMessageAction(null);
     setInterruptingIssueId("");
     setRetryingIssueId("");
     setDeletingIssueId("");
+  }, [thread?.id]);
+
+  useEffect(() => {
+    setVoiceModeEnabled(false);
+    void voiceSession.stopSession({ preserveTranscript: false });
   }, [thread?.id]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
@@ -9550,53 +9076,84 @@ function ThreadDetail({
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            {supportsSpeechSynthesis ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleToggleVoiceMode}
-                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition ${
-                    voiceModeEnabled
-                      ? "border-sky-300/40 bg-sky-400/12 text-sky-100"
-                      : "border-white/10 bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
-                  }`}
-                >
-                  {voiceModeEnabled ? "음성 모드 켜짐" : "음성 모드"}
-                </button>
+            <div className="inline-flex rounded-full border border-white/10 bg-white/[0.03] p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setVoiceModeEnabled(false);
+                  void voiceSession.stopSession({ preserveTranscript: true });
+                }}
+                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
+                  !voiceModeEnabled
+                    ? "bg-white text-slate-950"
+                    : "bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
+                }`}
+              >
+                채팅 모드
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleVoiceMode}
+                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
+                  voiceModeEnabled
+                    ? "bg-sky-400/18 text-sky-100"
+                    : "bg-transparent text-slate-300 hover:bg-white/[0.06] hover:text-white"
+                }`}
+              >
+                음성 모드
+              </button>
+            </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isVoiceSpeaking) {
-                      stopVoicePlayback();
-                      return;
-                    }
-
-                    playAssistantVoiceResponse({ force: true, manual: true });
-                  }}
-                  disabled={!latestAssistantSpeechText && !isVoiceSpeaking}
-                  className="rounded-full border border-white/10 bg-transparent px-3 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {isVoiceSpeaking ? "읽기 중지" : "최신 응답 듣기"}
-                </button>
-              </>
-            ) : (
+            {!voiceSessionEnabled ? (
               <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-3 py-1 text-[11px] text-amber-100">
-                음성 응답 미지원 브라우저
+                현재 환경에서는 실시간 음성 모드가 비활성화되어 있습니다.
               </span>
-            )}
+            ) : voiceSession.error ? (
+              <span className="rounded-full border border-rose-300/20 bg-rose-400/10 px-3 py-1 text-[11px] text-rose-100">
+                {voiceSession.error}
+              </span>
+            ) : null}
           </div>
 
         </div>
       </header>
 
       <div className="relative min-h-0 flex-1">
-        <div
-          ref={scrollRef}
-          data-testid="thread-detail-scroll"
-          className="telegram-grid touch-scroll-boundary-lock min-h-0 h-full overflow-y-auto px-4 pb-5 pt-5"
-        >
-          <div ref={scrollContentRef} className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
+        {voiceModeEnabled ? (
+          <div className="h-full px-4 pb-5 pt-5">
+            <div className={`mx-auto h-full w-full ${contentWidthClassName}`}>
+              <VoiceModePanel
+                open={voiceModeEnabled}
+                projectName={project?.name ?? ""}
+                threadTitle={threadTitle}
+                bridgeLabel={bridgeId}
+                threadStatusLabel={status?.label ?? ""}
+                latestUserText={voiceSession.latestUserTranscript || latestUserSpeechText}
+                latestAssistantText={voiceSession.latestAssistantTranscript || latestAssistantSpeechText}
+                connectionState={voiceSession.connectionState}
+                micState={voiceSession.micState}
+                isListening={voiceSession.isListening}
+                isResponding={voiceSession.isResponding}
+                audioLevel={voiceSession.audioLevel}
+                levelHistory={voiceSession.levelHistory}
+                errorMessage={voiceSession.error}
+                onConnect={() => void voiceSession.startSession()}
+                onDisconnect={() => void voiceSession.stopSession({ preserveTranscript: true })}
+                onCancelResponse={() => voiceSession.cancelResponse()}
+                onClose={() => {
+                  setVoiceModeEnabled(false);
+                  void voiceSession.stopSession({ preserveTranscript: true });
+                }}
+              />
+            </div>
+          </div>
+        ) : (
+          <div
+            ref={scrollRef}
+            data-testid="thread-detail-scroll"
+            className="telegram-grid touch-scroll-boundary-lock min-h-0 h-full overflow-y-auto px-4 pb-5 pt-5"
+          >
+            <div ref={scrollContentRef} className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           {historyLoading || historyError || hasOlderMessages ? (
             <div className="flex justify-center">
               <div className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300">
@@ -9776,9 +9333,10 @@ function ThreadDetail({
           ) : null}
             <div ref={scrollAnchorRef} />
           </div>
-        </div>
+          </div>
+        )}
 
-        {showJumpToLatestButton ? (
+        {!voiceModeEnabled && showJumpToLatestButton ? (
           <div className="pointer-events-none absolute bottom-4 right-4 z-10">
             <button
               type="button"
@@ -9848,30 +9406,34 @@ function ThreadDetail({
         }
       />
 
-      <div
-        ref={footerRef}
-        data-testid="thread-detail-footer"
-        className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur"
-      >
-        <div className={`mx-auto w-full ${contentWidthClassName}`}>
-          <InlineIssueComposer
-            busy={submitBusy}
-            bridgeId={bridgeId}
-            selectedProject={project}
-            onSubmit={onSubmitPrompt}
-            label={isDraft ? "첫 프롬프트" : "프롬프트"}
-            draftKey={composerDraftKey}
-            draftValue={composerDraft}
-            onDraftPersist={onPersistComposerDraft}
-            disabled={isInputDisabled}
-            onStop={interruptibleIssue ? handleStopCurrentExecution : null}
-            stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
-            stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
-            onInputFocus={handleComposerFocus}
-            onInputBlur={handleComposerBlur}
-          />
+      {!voiceModeEnabled ? (
+        <div
+          ref={footerRef}
+          data-testid="thread-detail-footer"
+          className="telegram-safe-bottom-panel shrink-0 border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur"
+        >
+          <div className={`mx-auto w-full ${contentWidthClassName}`}>
+            <InlineIssueComposer
+              busy={submitBusy}
+              bridgeId={bridgeId}
+              selectedProject={project}
+              onSubmit={onSubmitPrompt}
+              onOpenVoiceMode={thread?.id ? () => void handleToggleVoiceMode() : null}
+              voiceSessionEnabled={voiceSessionEnabled}
+              label={isDraft ? "첫 프롬프트" : "프롬프트"}
+              draftKey={composerDraftKey}
+              draftValue={composerDraft}
+              onDraftPersist={onPersistComposerDraft}
+              disabled={isInputDisabled}
+              onStop={interruptibleIssue ? handleStopCurrentExecution : null}
+              stopBusy={Boolean(interruptibleIssue?.id && interruptingIssueId === interruptibleIssue.id)}
+              stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
+              onInputFocus={handleComposerFocus}
+              onInputBlur={handleComposerBlur}
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <AttachmentPreviewDialog attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
     </div>
@@ -11872,6 +11434,8 @@ function MainPage({
                   thread={resolvedThread}
                   project={threadProject}
                   bridgeId={selectedBridgeId}
+                  sessionLoginId={session?.loginId ?? ""}
+                  apiRequest={apiRequest}
                   messages={resolvedThread ? threadDetailMessages : []}
                   issues={resolvedThread ? threadDetail?.issues ?? [] : []}
                   historyLoading={threadDetail?.history_loading ?? false}
@@ -11906,6 +11470,7 @@ function MainPage({
                   showBackButton={false}
                   standalone={false}
                   emptyStateMessage={splitThreadEmptyStateMessage}
+                  voiceSessionEnabled={VOICE_SESSION_ENABLED}
                 />
               )}
             </section>
@@ -11923,6 +11488,8 @@ function MainPage({
           thread={resolvedThread}
           project={threadProject}
           bridgeId={selectedBridgeId}
+          sessionLoginId={session?.loginId ?? ""}
+          apiRequest={apiRequest}
           messages={resolvedThread ? threadDetailMessages : []}
           issues={resolvedThread ? threadDetail?.issues ?? [] : []}
           historyLoading={threadDetail?.history_loading ?? false}
@@ -11954,6 +11521,7 @@ function MainPage({
           composerDraft={threadComposerDraft}
           onPersistComposerDraft={onChangeThreadComposerDraft}
           isDraft={!selectedThread && !threadDetail?.thread}
+          voiceSessionEnabled={VOICE_SESSION_ENABLED}
         />
       </div>
     );

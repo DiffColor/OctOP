@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
 using OctOP.Gateway;
+using OctOP.Gateway.Voice;
 using OctOP.ServerShared;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -33,6 +34,9 @@ builder.Services.AddSingleton<VapidKeyService>();
 builder.Services.AddSingleton<PushSubscriptionService>();
 builder.Services.AddSingleton<WebPushNotificationService>();
 builder.Services.AddSingleton<PushNotificationTemplateService>();
+builder.Services.AddSingleton<VoicePromptBuilder>();
+builder.Services.AddSingleton<VoiceSessionService>();
+builder.Services.AddSingleton<VoiceToolInvocationService>();
 builder.Services.AddHostedService<PushNotificationEventMonitorService>();
 
 var app = builder.Build();
@@ -163,6 +167,95 @@ app.MapGet("/health", () =>
     ["ok"] = true,
     ["service"] = "octop-gateway"
   });
+});
+
+app.MapPost("/api/voice/sessions", async (
+  HttpContext httpContext,
+  OctopStore octopStore,
+  VoiceSessionService voiceSessionService,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  try
+  {
+    var request = await httpContext.Request.ReadFromJsonAsync<VoiceSessionStartRequest>(cancellationToken: cancellationToken)
+      ?? new VoiceSessionStartRequest();
+    var sessionPayload = await voiceSessionService.CreateClientSecretAsync(request, cancellationToken);
+    sessionPayload["ok"] = true;
+    sessionPayload["bridge_id"] = bridgeId;
+    sessionPayload["thread_id"] = request.ThreadId?.Trim();
+    sessionPayload["project_id"] = request.ProjectId?.Trim();
+
+    return Results.Text(
+      sessionPayload.ToJsonString(),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status200OK);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_disabled", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"voice session disabled\",\"code\":\"voice_session_disabled\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_api_key_missing", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"OPENAI_API_KEY is required\",\"code\":\"voice_session_api_key_missing\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_session_openai_error:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_session_openai_error:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to create OpenAI realtime client secret",
+        ["code"] = "voice_session_openai_error",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status502BadGateway);
+  }
+});
+
+app.MapPost("/api/voice/tool-invocations", async (
+  HttpContext httpContext,
+  OctopStore octopStore,
+  VoiceToolInvocationService voiceToolInvocationService,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var request = await httpContext.Request.ReadFromJsonAsync<VoiceToolInvocationRequest>(cancellationToken: cancellationToken)
+    ?? new VoiceToolInvocationRequest();
+  var result = await voiceToolInvocationService.InvokeAsync(userId, bridgeId, request, cancellationToken);
+
+  return Results.Text(
+    result.ToJsonString(),
+    "application/json; charset=utf-8",
+    statusCode: (result["ok"]?.GetValue<bool?>() ?? false) ? StatusCodes.Status200OK : StatusCodes.Status400BadRequest);
 });
 
 app.MapPost("/api/attachments", async (

@@ -600,6 +600,57 @@ test.describe('mobile reorder interactions', () => {
     await expect(page.getByText('프로젝트 편집')).toHaveCount(0);
   });
 
+  test('프로젝트 편집창 내부에서 시작한 드래그가 바깥 배경에서 끝나도 편집창이 닫히지 않는다', async ({ page }) => {
+    await mockMobileApi(page);
+    await seedMobileSession(page);
+    await page.goto(baseUrl);
+
+    const betaChip = page.getByTestId(`project-chip-item-${projectBetaId}`).locator('button');
+    await expect(betaChip).toBeVisible();
+
+    const betaBox = await betaChip.boundingBox();
+    expect(betaBox).not.toBeNull();
+
+    const pointerId = 37;
+    const pressX = betaBox.x + betaBox.width / 2;
+    const pressY = betaBox.y + betaBox.height / 2;
+
+    await betaChip.dispatchEvent('pointerdown', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+    await page.waitForTimeout(720);
+    await betaChip.dispatchEvent('pointerup', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: pressX,
+      clientY: pressY
+    });
+
+    await expect(page.getByText('프로젝트 편집')).toBeVisible();
+
+    const nameInput = page.locator('#project-edit-name');
+    const backdrop = nameInput.locator('xpath=ancestor::section[1]/parent::*');
+    await expect(nameInput).toBeVisible();
+
+    await nameInput.dispatchEvent('pointerdown', {
+      pointerId: 41,
+      pointerType: 'mouse',
+      isPrimary: true,
+      button: 0
+    });
+    await backdrop.dispatchEvent('click');
+
+    await expect(page.getByText('프로젝트 편집')).toBeVisible();
+    await expect(nameInput).toHaveValue(projectBetaName);
+  });
+
   test('프로젝트 칩은 마우스 드래그에서 다른 칩 중심을 넘기면 밀려나기 시작한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
