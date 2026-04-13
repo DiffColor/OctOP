@@ -7,7 +7,7 @@ import {
 } from "./realtimeVoiceProtocol.js";
 import { formatAssistantResponseForVoice } from "./voiceResponseFormatter.js";
 
-const REALTIME_OUTPUT_MODALITIES = ["audio", "text"];
+const REALTIME_OUTPUT_MODALITIES = ["text", "audio"];
 const REALTIME_RESPONSE_CHANNEL_VOICE_TURN = "voice_turn";
 const REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT = "app_server_report";
 

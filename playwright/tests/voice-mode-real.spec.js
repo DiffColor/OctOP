@@ -968,6 +968,11 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
     return sentEvents.filter((event) => event?.type === 'response.create').length;
   }).toBeGreaterThan(0);
 
+  const firstVoiceResponseCreateEvent = await page.evaluate(() => {
+    return window.__voiceTest.sentEvents.find((event) => event?.type === 'response.create');
+  });
+  expect(firstVoiceResponseCreateEvent?.response?.output_modalities).toEqual(['text', 'audio']);
+
   await page.evaluate((payload) => {
     window.__voiceTest.dataChannel.emit(payload);
   }, buildRealtimeFunctionCallResponse({ prompt: '상태 알려줘' }));
