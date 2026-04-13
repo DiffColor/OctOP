@@ -371,31 +371,27 @@ export default function useRealtimeVoiceSession({
 
     const abortController = new AbortController();
     narrationAbortControllerRef.current = abortController;
-    const response = await fetch(
-      `/api/voice/narrations?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
-      {
-        method: "POST",
-        signal: abortController.signal,
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          text: narration
-        })
-      }
-    );
-    const responseText = await response.text();
-    const payload = parseRealtimeJson(responseText);
+    let payload = null;
 
-    if (!response.ok) {
-      const message =
-        payload?.error ??
-        payload?.message ??
-        payload?.detail ??
-        `음성 응답 오디오를 생성하지 못했습니다. (${response.status})`;
-      throw new Error(message);
+    try {
+      payload = await apiRequest(
+        `/api/voice/narrations?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+        {
+          method: "POST",
+          signal: abortController.signal,
+          body: JSON.stringify({
+            text: narration
+          })
+        }
+      );
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        const abortError = new Error("voice narration aborted");
+        abortError.name = "AbortError";
+        throw abortError;
+      }
+
+      throw error;
     }
 
     const audioBase64 = String(payload?.audio_base64 ?? "").trim();
@@ -439,7 +435,7 @@ export default function useRealtimeVoiceSession({
       isResponding: false
     }));
     return true;
-  }, [bridgeId, loginId, stopNarrationPlayback]);
+  }, [apiRequest, bridgeId, loginId, stopNarrationPlayback]);
 
   const handleRealtimeEvent = useCallback(
     async (event) => {

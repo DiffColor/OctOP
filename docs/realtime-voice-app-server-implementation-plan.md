@@ -289,6 +289,9 @@
 - [ ] `OCTOP_OPENAI_REALTIME_MODEL`
 - [ ] `OCTOP_OPENAI_REALTIME_VOICE`
 - [ ] `OCTOP_OPENAI_REALTIME_API_BASE_URL`
+- [ ] `OCTOP_OPENAI_TTS_MODEL`
+- [ ] `OCTOP_OPENAI_TTS_VOICE`
+- [ ] `OCTOP_OPENAI_TTS_API_BASE_URL`
 - [ ] `OCTOP_VOICE_SESSION_ENABLED`
 - [ ] `OCTOP_VOICE_SESSION_TTL_SECONDS`
 - [ ] `OCTOP_VOICE_MAX_TOOL_CALL_SECONDS`
@@ -698,4 +701,3 @@ UI 체크리스트:
 - `packages/domain/src/index.js`
 - `packages/server-shared/BridgeSubjects.cs`
 - `services/codex-adapter/src/index.js`
-

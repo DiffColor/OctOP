@@ -10,8 +10,16 @@ public sealed class VoiceNarrationService(IHttpClientFactory httpClientFactory)
   private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
   private readonly string _apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
   private readonly string _model = Environment.GetEnvironmentVariable("OCTOP_OPENAI_TTS_MODEL") ?? "gpt-4o-mini-tts";
-  private readonly string _voice = Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_VOICE") ?? "alloy";
-  private readonly string _apiBaseUrl = (Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_API_BASE_URL") ?? "https://api.openai.com").TrimEnd('/');
+  private readonly string _voice =
+    Environment.GetEnvironmentVariable("OCTOP_OPENAI_TTS_VOICE")
+    ?? Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_VOICE")
+    ?? "alloy";
+  private readonly string _apiBaseUrl =
+    (
+      Environment.GetEnvironmentVariable("OCTOP_OPENAI_TTS_API_BASE_URL")
+      ?? Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_API_BASE_URL")
+      ?? "https://api.openai.com"
+    ).TrimEnd('/');
 
   public bool IsEnabled =>
     !string.Equals(Environment.GetEnvironmentVariable("OCTOP_VOICE_SESSION_ENABLED"), "false", StringComparison.OrdinalIgnoreCase);
