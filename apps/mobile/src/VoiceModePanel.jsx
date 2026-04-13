@@ -46,6 +46,7 @@ export default function VoiceModePanel({
 
   const liveTranscript = errorMessage || latestAssistantText || statusMessage;
   const userTranscript = latestUserText || "말씀하시면 여기에 사용자 입력이 표시됩니다.";
+  const resolvedInputDevices = Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }];
   const glowEnergy = Math.min(1.25, Math.max(0, audioLevel + (isResponding ? 0.34 : 0) + (isListening ? 0.12 : 0)));
   const glowScale = 1 + glowEnergy * 0.26;
   const blobScale = 1 + glowEnergy * 0.15;
@@ -63,6 +64,32 @@ export default function VoiceModePanel({
 
       <div className="voice-mode-panel__hud">
         <div className="voice-mode-panel__content">
+          <div className="voice-mode-panel__topbar">
+            <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
+              <select
+                className="voice-mode-panel__device-select-control"
+                aria-label="마이크 입력 선택"
+                value={selectedInputDeviceId}
+                onChange={(event) => onSelectInputDevice?.(event.target.value)}
+              >
+                {resolvedInputDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+              <span className="voice-mode-panel__device-select-caret" aria-hidden="true">
+                ▾
+              </span>
+            </label>
+          </div>
+
+          <div className="voice-mode-panel__transcript-shell is-user-zone">
+            <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
+              <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
+            </article>
+          </div>
+
           <div
             className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
             style={{
@@ -95,40 +122,15 @@ export default function VoiceModePanel({
             </div>
           </div>
 
-          <div className="voice-mode-panel__transcript-shell">
-            <div className="voice-mode-panel__chat-stack">
-              <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
-                <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
-              </article>
-
-              <article className="voice-mode-panel__bubble is-user" data-testid="voice-user-bubble" aria-label="사용자 입력">
-                <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
-              </article>
-            </div>
+          <div className="voice-mode-panel__transcript-shell is-assistant-zone">
+            <article className="voice-mode-panel__bubble is-assistant" data-testid="voice-assistant-bubble" aria-label="OctOP 응답">
+              <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
+            </article>
           </div>
         </div>
 
         <footer className="voice-mode-panel__footer" data-testid="voice-mode-footer">
           <div className="voice-mode-panel__actions">
-            <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
-              <span className="voice-mode-panel__device-select-label">마이크 입력</span>
-              <select
-                className="voice-mode-panel__device-select-control"
-                aria-label="마이크 입력 선택"
-                value={selectedInputDeviceId}
-                onChange={(event) => onSelectInputDevice?.(event.target.value)}
-              >
-                {(Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }]).map((device) => (
-                  <option key={device.deviceId} value={device.deviceId}>
-                    {device.label}
-                  </option>
-                ))}
-              </select>
-              <span className="voice-mode-panel__device-select-caret" aria-hidden="true">
-                ▾
-              </span>
-            </label>
-
             <button type="button" onClick={onClose} className="voice-mode-panel__action-button is-primary" aria-label="음성입력 종료">
               <span className="voice-mode-panel__action-icon" aria-hidden="true">
                 ✕
