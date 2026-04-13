@@ -14,6 +14,11 @@ const bridgeId = 'bridge-voice';
 const projectId = 'project-voice';
 const threadId = 'thread-voice-1';
 const issueId = 'issue-voice-1';
+const now = Date.now();
+const threadCreatedAt = new Date(now - 15 * 60 * 1000).toISOString();
+const threadUpdatedAt = new Date(now - 10 * 60 * 1000).toISOString();
+const initialIssueCreatedAt = new Date(now - 9 * 60 * 1000).toISOString();
+const initialAssistantAt = new Date(now - 9 * 60 * 1000 + 3000).toISOString();
 
 const session = {
   accessToken: 'playwright-token',
@@ -43,8 +48,8 @@ const thread = {
   progress: 0,
   last_event: 'thread.created',
   last_message: '음성 모드 테스트 스레드',
-  updated_at: '2026-04-13T11:00:00.000Z',
-  created_at: '2026-04-13T10:50:00.000Z',
+  updated_at: threadUpdatedAt,
+  created_at: threadCreatedAt,
   context_usage_percent: 12,
   context_used_tokens: 1200,
   context_window_tokens: 100000
@@ -58,8 +63,8 @@ const issueDetail = {
     title: 'Voice Issue',
     prompt: '현재 상태 알려줘',
     status: 'completed',
-    created_at: '2026-04-13T10:55:00.000Z',
-    updated_at: '2026-04-13T10:56:00.000Z'
+    created_at: initialIssueCreatedAt,
+    updated_at: initialAssistantAt
   },
   messages: [
     {
@@ -67,17 +72,36 @@ const issueDetail = {
       role: 'user',
       kind: 'prompt',
       content: '현재 상태 알려줘',
-      timestamp: '2026-04-13T10:55:00.000Z'
+      timestamp: initialIssueCreatedAt
     },
     {
       id: 'message-assistant-1',
       role: 'assistant',
       kind: 'message',
       content: '현재 스레드는 유휴 상태입니다.',
-      timestamp: '2026-04-13T10:55:03.000Z'
+      timestamp: initialAssistantAt
     }
   ]
 };
+
+const authoritativeAssistantContent = `
+[요약]
+- 현재 상태를 정리했습니다.
+
+[수정 파일]
+- apps/mobile/src/App.jsx
+
+[코드]
+\`\`\`js
+console.log("debug");
+\`\`\`
+
+[검증 결과]
+- 음성 응답은 app-server 기준으로 정리되었습니다.
+
+[다음 단계]
+- 이어서 확인해 주세요.
+`.trim();
 
 function createWorkspaceLayout() {
   return {
@@ -380,7 +404,9 @@ async function mockMobileApi(page, options = {}) {
   const createdIssues = options.createdIssues ?? [];
   const startedIssueRequests = options.startedIssueRequests ?? [];
   const voiceSessionFailure = options.voiceSessionFailure ?? null;
+  const authoritativeResponseText = String(options.authoritativeAssistantContent ?? "").trim();
   let voiceIssueSequence = 0;
+  let latestCreatedIssue = null;
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -459,12 +485,54 @@ async function mockMobileApi(page, options = {}) {
     }
 
     if (pathname === `/api/threads/${threadId}/issues` && method === 'GET') {
+      const issues = latestCreatedIssue ? [issueDetail.issue, latestCreatedIssue] : [issueDetail.issue];
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           thread,
-          issues: [issueDetail.issue]
+          issues
+        })
+      });
+      return;
+    }
+
+    if (latestCreatedIssue && pathname === `/api/issues/${latestCreatedIssue.id}` && method === 'GET') {
+      const completedAt = new Date(Date.now() + 1500).toISOString();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          thread: {
+            ...thread,
+            status: 'idle',
+            progress: 100,
+            last_event: 'turn.completed',
+            updated_at: completedAt
+          },
+          issue: {
+            ...latestCreatedIssue,
+            status: 'completed',
+            progress: 100,
+            last_event: 'turn.completed',
+            updated_at: completedAt
+          },
+          messages: [
+            {
+              id: `${latestCreatedIssue.id}-user`,
+              role: 'user',
+              kind: 'prompt',
+              content: latestCreatedIssue.prompt,
+              timestamp: latestCreatedIssue.created_at
+            },
+            {
+              id: `${latestCreatedIssue.id}-assistant`,
+              role: 'assistant',
+              kind: 'message',
+              content: authoritativeResponseText,
+              timestamp: completedAt
+            }
+          ]
         })
       });
       return;
@@ -486,6 +554,7 @@ async function mockMobileApi(page, options = {}) {
     if (pathname === `/api/threads/${threadId}/issues` && method === 'POST') {
       const payload = request.postDataJSON() ?? {};
       voiceIssueSequence += 1;
+      const createdAt = new Date(Date.now() + voiceIssueSequence * 250).toISOString();
       const createdIssue = {
         id: `voice-created-issue-${voiceIssueSequence}`,
         thread_id: threadId,
@@ -498,9 +567,10 @@ async function mockMobileApi(page, options = {}) {
         last_event: 'issue.created',
         last_message: '',
         attachments: payload.attachments || [],
-        created_at: '2026-04-13T10:57:00.000Z',
-        updated_at: '2026-04-13T10:57:00.000Z'
+        created_at: createdAt,
+        updated_at: createdAt
       };
+      latestCreatedIssue = createdIssue;
       createdIssues.push(payload);
       await route.fulfill({
         status: 201,
@@ -611,10 +681,17 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const toolInvocations = [];
   const createdIssues = [];
   const startedIssueRequests = [];
+  const expectedVoiceText = '요약. 현재 상태를 정리했습니다. 검증 결과. 음성 응답은 app-server 기준으로 정리되었습니다. 다음 단계. 이어서 확인해 주세요.';
 
   await seedMobileSession(page);
   await installVoiceBrowserMocks(page);
-  await mockMobileApi(page, { voiceSessionRequests, toolInvocations, createdIssues, startedIssueRequests });
+  await mockMobileApi(page, {
+    voiceSessionRequests,
+    toolInvocations,
+    createdIssues,
+    startedIssueRequests,
+    authoritativeAssistantContent
+  });
 
   await page.goto(baseUrl);
   await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
@@ -714,38 +791,27 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
     channel.emit({ type: 'input_audio_buffer.speech_started' });
     channel.emit({ type: 'conversation.item.input_audio_transcription.delta', delta: '상태 ' });
     channel.emit({ type: 'conversation.item.input_audio_transcription.completed', transcript: '상태 알려줘' });
-    channel.emit({ type: 'response.created' });
-    channel.emit({ type: 'response.output_text.delta', delta: '현재 ' });
-    channel.emit({ type: 'response.output_text.done', text: '현재 스레드는 유휴 상태입니다.' });
-    channel.emit({
-      type: 'response.done',
-      response: {
-        output: [
-          {
-            type: 'function_call',
-            call_id: 'tool-call-1',
-            name: 'get_thread_status',
-            arguments: '{}'
-          }
-        ]
-      }
-    });
   });
 
   await expect(page.getByTestId('voice-user-bubble')).toHaveText('상태 알려줘');
   await expect.poll(() => createdIssues.length).toBe(1);
   await expect.poll(() => startedIssueRequests.length).toBe(1);
   expect(createdIssues[0].prompt).toBe('상태 알려줘');
-  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(
-    '현재 스레드는 유휴 상태입니다.'
-  );
-  await expect.poll(() => toolInvocations.length).toBe(1);
-  expect(toolInvocations[0].tool_name).toBe('get_thread_status');
-  expect(toolInvocations[0].thread_id).toBe(threadId);
+  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(expectedVoiceText);
+  await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('apps/mobile/src/App.jsx');
+  await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('console.log');
+  await expect.poll(() => toolInvocations.length).toBe(0);
 
   const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
-  expect(sentEvents.some((event) => event?.type === 'conversation.item.create')).toBe(true);
-  expect(sentEvents.some((event) => event?.type === 'response.create')).toBe(true);
+  const functionCallOutputs = sentEvents.filter((event) => event?.type === 'conversation.item.create');
+  const narrationEvents = sentEvents.filter(
+    (event) => event?.type === 'response.create' && event?.response?.metadata?.source === 'app_server_authoritative_response'
+  );
+  expect(functionCallOutputs).toHaveLength(0);
+  expect(narrationEvents.length).toBeGreaterThanOrEqual(1);
+  expect(narrationEvents.at(-1)?.response?.instructions).toContain(expectedVoiceText);
+  expect(narrationEvents.at(-1)?.response?.instructions).not.toContain('apps/mobile/src/App.jsx');
+  expect(narrationEvents.at(-1)?.response?.instructions).not.toContain('console.log');
 
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);

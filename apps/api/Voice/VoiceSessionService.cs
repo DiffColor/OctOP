@@ -89,7 +89,7 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
           {
             ["type"] = "server_vad",
             ["interrupt_response"] = true,
-            ["create_response"] = true,
+            ["create_response"] = false,
             ["silence_duration_ms"] = 550,
             ["prefix_padding_ms"] = 250
           }

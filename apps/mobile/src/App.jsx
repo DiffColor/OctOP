@@ -21,6 +21,7 @@ import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js
 import PushNotificationCard from "./PushNotificationCard.jsx";
 import VoiceModePanel from "./VoiceModePanel.jsx";
 import useRealtimeVoiceSession from "./voice/useRealtimeVoiceSession.js";
+import { formatAssistantResponseForVoice } from "./voice/voiceResponseFormatter.js";
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -8482,12 +8483,12 @@ function ThreadDetail({
           return false;
         }
 
-        const spokenText = buildSpeechFriendlyMessageText(entry.content);
+        const spokenText = formatAssistantResponseForVoice(entry.content);
         const entryTime = Date.parse(entry.timestamp ?? "");
         return Boolean(spokenText) && Number.isFinite(entryTime) && entryTime >= anchorTime;
       });
 
-    return buildSpeechFriendlyMessageText(latestAssistantEntry?.content);
+    return formatAssistantResponseForVoice(latestAssistantEntry?.content);
   }, [chatTimeline, voiceModeEnabled, voiceSyncAnchorTimestamp]);
 
   const recentVoiceContextSummary = useMemo(() => {
@@ -8569,6 +8570,7 @@ function ThreadDetail({
     thread,
     latestUserText: "",
     latestAssistantText: "",
+    authoritativeAssistantText: voiceLinkedAssistantText,
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
     projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
     projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),

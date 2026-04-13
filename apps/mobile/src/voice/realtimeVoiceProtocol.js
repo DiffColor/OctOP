@@ -7,6 +7,28 @@ export function createRealtimeResponseEvent() {
   };
 }
 
+export function createRealtimeNarrationEvent(text) {
+  const narration = String(text ?? "").trim();
+
+  return {
+    type: "response.create",
+    response: {
+      conversation: "none",
+      output_modalities: ["audio", "text"],
+      tools: [],
+      metadata: {
+        source: "app_server_authoritative_response"
+      },
+      instructions: [
+        "당신은 OctOP의 음성 낭독기입니다.",
+        "아래 응답만 한국어로 그대로 읽으세요.",
+        "내용을 추가하거나 바꾸거나 요약하거나 코드와 경로 설명을 덧붙이지 마세요.",
+        narration
+      ].join("\n\n")
+    }
+  };
+}
+
 export function createFunctionCallOutputEvent(callId, output) {
   return {
     type: "conversation.item.create",

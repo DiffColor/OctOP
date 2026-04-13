@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createFunctionCallOutputEvent,
-  createRealtimeResponseEvent,
+  createRealtimeNarrationEvent,
   DEFAULT_VOICE_LEVEL_HISTORY,
   describeVoiceError,
   parseFunctionArguments,
@@ -61,6 +61,7 @@ export default function useRealtimeVoiceSession({
   thread = null,
   latestUserText = "",
   latestAssistantText = "",
+  authoritativeAssistantText = "",
   projectWorkspacePath = "",
   projectBaseInstructions = "",
   projectDeveloperInstructions = "",
@@ -87,6 +88,8 @@ export default function useRealtimeVoiceSession({
   const sessionVersionRef = useRef(0);
   const preferredInputDeviceIdRef = useRef("default");
   const hasSubmittedCurrentSpeechRef = useRef(false);
+  const lastNarratedAssistantTextRef = useRef("");
+  const pendingNarrationTextRef = useRef("");
 
   useEffect(() => {
     setState((current) => {
@@ -355,10 +358,32 @@ export default function useRealtimeVoiceSession({
       }
 
       dataChannel.send(JSON.stringify(createFunctionCallOutputEvent(toolCall.call_id, payload)));
-      dataChannel.send(JSON.stringify(createRealtimeResponseEvent()));
     },
     [apiRequest, bridgeId, loginId, project?.id, thread?.id]
   );
+
+  const narrateAssistantText = useCallback(async (text) => {
+    const narration = String(text ?? "").trim();
+
+    if (!narration) {
+      return false;
+    }
+
+    const dataChannel = dataChannelRef.current;
+
+    if (!dataChannel || dataChannel.readyState !== "open") {
+      return false;
+    }
+
+    assistantTranscriptBufferRef.current = narration;
+    setState((current) => ({
+      ...current,
+      latestAssistantTranscript: narration,
+      error: ""
+    }));
+    dataChannel.send(JSON.stringify(createRealtimeNarrationEvent(narration)));
+    return true;
+  }, []);
 
   const handleRealtimeEvent = useCallback(
     async (event) => {
@@ -522,6 +547,38 @@ export default function useRealtimeVoiceSession({
     [invokeTool, onSubmitPrompt]
   );
 
+  useEffect(() => {
+    const narration = String(authoritativeAssistantText ?? "").trim();
+
+    if (!enabled || state.connectionState !== "connected" || !narration) {
+      return;
+    }
+
+    if (narration === lastNarratedAssistantTextRef.current || narration === pendingNarrationTextRef.current) {
+      return;
+    }
+
+    pendingNarrationTextRef.current = narration;
+
+    void narrateAssistantText(narration)
+      .then((accepted) => {
+        if (accepted) {
+          lastNarratedAssistantTextRef.current = narration;
+        }
+      })
+      .catch((error) => {
+        setState((current) => ({
+          ...current,
+          error: describeVoiceError(error)
+        }));
+      })
+      .finally(() => {
+        if (pendingNarrationTextRef.current === narration) {
+          pendingNarrationTextRef.current = "";
+        }
+      });
+  }, [authoritativeAssistantText, enabled, narrateAssistantText, state.connectionState]);
+
   const startSession = useCallback(async () => {
     if (!loginId || !bridgeId || !thread?.id || typeof apiRequest !== "function") {
       return false;
@@ -537,6 +594,8 @@ export default function useRealtimeVoiceSession({
       try {
         await disconnectSession({ preserveTranscript: true });
         sessionVersionRef.current = sessionVersion;
+        lastNarratedAssistantTextRef.current = "";
+        pendingNarrationTextRef.current = "";
 
         setState((current) => ({
           ...current,
