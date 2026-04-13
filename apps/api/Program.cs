@@ -173,6 +173,7 @@ app.MapPost("/api/voice/sessions", async (
   HttpContext httpContext,
   OctopStore octopStore,
   VoiceSessionService voiceSessionService,
+  VoiceToolInvocationService voiceToolInvocationService,
   CancellationToken cancellationToken) =>
 {
   var userId = ResolveIdentityKey(httpContext);
@@ -190,6 +191,22 @@ app.MapPost("/api/voice/sessions", async (
   {
     var request = await httpContext.Request.ReadFromJsonAsync<VoiceSessionStartRequest>(cancellationToken: cancellationToken)
       ?? new VoiceSessionStartRequest();
+
+    if (!string.IsNullOrWhiteSpace(request.ThreadId) || !string.IsNullOrWhiteSpace(request.ProjectId))
+    {
+      var contextPayload = await voiceToolInvocationService.InvokeAsync(
+        userId,
+        bridgeId,
+        new VoiceToolInvocationRequest
+        {
+          ToolName = "get_project_context",
+          ProjectId = request.ProjectId,
+          ThreadId = request.ThreadId
+        },
+        cancellationToken);
+      request = MergeVoiceSessionStartRequest(request, contextPayload);
+    }
+
     var sessionPayload = await voiceSessionService.CreateClientSecretAsync(request, cancellationToken);
     sessionPayload["ok"] = true;
     sessionPayload["bridge_id"] = bridgeId;
@@ -2790,6 +2807,139 @@ static JsonObject NormalizeDashboardArchiveState(JsonNode? node)
   }
 
   return normalized;
+}
+
+static VoiceSessionStartRequest MergeVoiceSessionStartRequest(VoiceSessionStartRequest request, JsonObject? contextPayload)
+{
+  if (contextPayload is null || !(contextPayload["ok"]?.GetValue<bool?>() ?? false))
+  {
+    return request;
+  }
+
+  var project = contextPayload["project"] as JsonObject;
+  var thread = contextPayload["thread"] as JsonObject;
+  var latestHandoffSummary = GetStringValue(contextPayload["latest_handoff_summary"]);
+  var recentMessages = contextPayload["recent_messages"] as JsonArray;
+
+  return new VoiceSessionStartRequest
+  {
+    ProjectId = FirstNonEmpty(request.ProjectId, GetStringValue(project?["id"])),
+    ThreadId = FirstNonEmpty(request.ThreadId, GetStringValue(thread?["id"])),
+    ProjectName = FirstNonEmpty(request.ProjectName, GetStringValue(project?["name"])),
+    ThreadTitle = FirstNonEmpty(request.ThreadTitle, GetStringValue(thread?["title"])),
+    ThreadStatusLabel = FirstNonEmpty(request.ThreadStatusLabel, GetStringValue(thread?["status"])),
+    LatestUserText = FirstNonEmpty(request.LatestUserText, GetLatestVoiceMessageText(recentMessages, "user")),
+    LatestAssistantText = FirstNonEmpty(request.LatestAssistantText, GetLatestVoiceMessageText(recentMessages, "assistant")),
+    ProjectWorkspacePath = FirstNonEmpty(request.ProjectWorkspacePath, GetStringValue(project?["workspace_path"])),
+    ProjectBaseInstructions = FirstNonEmpty(request.ProjectBaseInstructions, GetStringValue(project?["base_instructions"])),
+    ProjectDeveloperInstructions = FirstNonEmpty(request.ProjectDeveloperInstructions, GetStringValue(project?["developer_instructions"])),
+    ThreadDeveloperInstructions = FirstNonEmpty(request.ThreadDeveloperInstructions, GetStringValue(thread?["developer_instructions"])),
+    ThreadContinuitySummary = FirstNonEmpty(request.ThreadContinuitySummary, BuildVoiceThreadContinuitySummary(thread)),
+    LatestHandoffSummary = FirstNonEmpty(request.LatestHandoffSummary, latestHandoffSummary),
+    RecentConversationSummary = FirstNonEmpty(request.RecentConversationSummary, BuildRecentConversationSummary(recentMessages))
+  };
+}
+
+static string? BuildVoiceThreadContinuitySummary(JsonObject? thread)
+{
+  if (thread is null)
+  {
+    return null;
+  }
+
+  var parts = new List<string>();
+  var rootThreadId = GetStringValue(thread["root_thread_id"]);
+  var continuityStatus = GetStringValue(thread["continuity_status"]);
+  var activePhysicalThreadId = GetStringValue(thread["active_physical_thread_id"]);
+  var activeCodexThreadId = GetStringValue(thread["active_codex_thread_id"]);
+  var contextUsagePercent = GetNullableInt(thread["context_usage_percent"]);
+
+  if (!string.IsNullOrWhiteSpace(rootThreadId))
+  {
+    parts.Add($"root_thread_id={rootThreadId}");
+  }
+
+  if (!string.IsNullOrWhiteSpace(continuityStatus))
+  {
+    parts.Add($"continuity_status={continuityStatus}");
+  }
+
+  if (!string.IsNullOrWhiteSpace(activePhysicalThreadId))
+  {
+    parts.Add($"active_physical_thread_id={activePhysicalThreadId}");
+  }
+
+  if (!string.IsNullOrWhiteSpace(activeCodexThreadId))
+  {
+    parts.Add($"active_codex_thread_id={activeCodexThreadId}");
+  }
+
+  if (contextUsagePercent.HasValue)
+  {
+    parts.Add($"context_usage_percent={contextUsagePercent.Value}");
+  }
+
+  return parts.Count == 0 ? null : string.Join(", ", parts);
+}
+
+static string? GetLatestVoiceMessageText(JsonArray? recentMessages, string role)
+{
+  if (recentMessages is null)
+  {
+    return null;
+  }
+
+  for (var index = recentMessages.Count - 1; index >= 0; index -= 1)
+  {
+    if (recentMessages[index] is not JsonObject entry)
+    {
+      continue;
+    }
+
+    var entryRole = GetStringValue(entry["role"]);
+    var content = GetStringValue(entry["content"]);
+
+    if (string.Equals(entryRole, role, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(content))
+    {
+      return content;
+    }
+  }
+
+  return null;
+}
+
+static string? BuildRecentConversationSummary(JsonArray? recentMessages)
+{
+  if (recentMessages is null)
+  {
+    return null;
+  }
+
+  var lines = recentMessages
+    .OfType<JsonObject>()
+    .Select(entry =>
+    {
+      var role = GetStringValue(entry["role"]);
+      var content = GetStringValue(entry["content"]);
+      return string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(content) ? null : $"{role}: {content}";
+    })
+    .Where(line => !string.IsNullOrWhiteSpace(line))
+    .ToArray();
+
+  return lines.Length == 0 ? null : string.Join("\n", lines);
+}
+
+static string? FirstNonEmpty(params string?[] values)
+{
+  foreach (var value in values)
+  {
+    if (!string.IsNullOrWhiteSpace(value))
+    {
+      return value.Trim();
+    }
+  }
+
+  return null;
 }
 
 static int? GetNullableInt(JsonNode? node)

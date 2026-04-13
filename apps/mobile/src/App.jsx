@@ -8216,6 +8216,17 @@ function ThreadDetail({
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const { alert: showAlert } = useMobileFeedback();
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [voicePromptSubmittedAt, setVoicePromptSubmittedAt] = useState("");
+  const handleVoicePromptSubmit = useCallback((prompt) => {
+    const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
+
+    if (!normalizedPrompt || typeof onSubmitPrompt !== "function") {
+      return false;
+    }
+
+    setVoicePromptSubmittedAt(new Date().toISOString());
+    return onSubmitPrompt({ prompt: normalizedPrompt });
+  }, [onSubmitPrompt]);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -8452,6 +8463,33 @@ function ThreadDetail({
 
     return "";
   }, [messages]);
+  const voiceSyncAnchorTimestamp = voicePromptSubmittedAt;
+  const voiceLinkedAssistantText = useMemo(() => {
+    if (!voiceModeEnabled || !voiceSyncAnchorTimestamp) {
+      return "";
+    }
+
+    const anchorTime = Date.parse(voiceSyncAnchorTimestamp);
+
+    if (!Number.isFinite(anchorTime)) {
+      return "";
+    }
+
+    const latestAssistantEntry = [...chatTimeline]
+      .reverse()
+      .find((entry) => {
+        if (entry.role !== "assistant") {
+          return false;
+        }
+
+        const spokenText = buildSpeechFriendlyMessageText(entry.content);
+        const entryTime = Date.parse(entry.timestamp ?? "");
+        return Boolean(spokenText) && Number.isFinite(entryTime) && entryTime >= anchorTime;
+      });
+
+    return buildSpeechFriendlyMessageText(latestAssistantEntry?.content);
+  }, [chatTimeline, voiceModeEnabled, voiceSyncAnchorTimestamp]);
+
   const recentVoiceContextSummary = useMemo(() => {
     const safeMessages = Array.isArray(messages) ? messages : [];
     const normalizedEntries = safeMessages
@@ -8537,7 +8575,8 @@ function ThreadDetail({
     threadDeveloperInstructions: String(thread?.developer_instructions ?? "").trim(),
     threadContinuitySummary: voiceThreadContinuitySummary,
     latestHandoffSummary: latestHandoffSummaryText,
-    recentConversationSummary: recentVoiceContextSummary
+    recentConversationSummary: recentVoiceContextSummary,
+    onSubmitPrompt: handleVoicePromptSubmit
   });
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
@@ -9145,6 +9184,7 @@ function ThreadDetail({
   const handleToggleVoiceMode = useCallback(async () => {
     if (voiceModeEnabled) {
       setVoiceModeEnabled(false);
+      setVoicePromptSubmittedAt("");
       await voiceSession.stopSession({ preserveTranscript: true });
       return;
     }
@@ -9165,6 +9205,7 @@ function ThreadDetail({
       return;
     }
 
+    setVoicePromptSubmittedAt("");
     setVoiceModeEnabled(true);
     void voiceSession.startSession();
   }, [bridgeId, sessionLoginId, showAlert, thread?.id, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
@@ -9178,6 +9219,7 @@ function ThreadDetail({
 
   useEffect(() => {
     setVoiceModeEnabled(false);
+    setVoicePromptSubmittedAt("");
     void voiceSession.stopSession({ preserveTranscript: false });
   }, [thread?.id]);
 
@@ -9303,7 +9345,7 @@ function ThreadDetail({
               <VoiceModePanel
                 open={voiceModeEnabled}
                 latestUserText={voiceSession.latestUserTranscript}
-                latestAssistantText={voiceSession.latestAssistantTranscript}
+                latestAssistantText={voiceLinkedAssistantText || voiceSession.latestAssistantTranscript}
                 connectionState={voiceSession.connectionState}
                 micState={voiceSession.micState}
                 isListening={voiceSession.isListening}
@@ -9316,6 +9358,7 @@ function ThreadDetail({
                 onSelectInputDevice={(deviceId) => void voiceSession.selectInputDevice(deviceId)}
                 onClose={() => {
                   setVoiceModeEnabled(false);
+                  setVoicePromptSubmittedAt("");
                   void voiceSession.stopSession({ preserveTranscript: true });
                 }}
               />

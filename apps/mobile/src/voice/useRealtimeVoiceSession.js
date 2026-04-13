@@ -67,7 +67,8 @@ export default function useRealtimeVoiceSession({
   threadDeveloperInstructions = "",
   threadContinuitySummary = "",
   latestHandoffSummary = "",
-  recentConversationSummary = ""
+  recentConversationSummary = "",
+  onSubmitPrompt = null
 }) {
   const [state, setState] = useState(createInitialState);
   const peerConnectionRef = useRef(null);
@@ -85,6 +86,7 @@ export default function useRealtimeVoiceSession({
   const disconnectingRef = useRef(false);
   const sessionVersionRef = useRef(0);
   const preferredInputDeviceIdRef = useRef("default");
+  const hasSubmittedCurrentSpeechRef = useRef(false);
 
   useEffect(() => {
     setState((current) => {
@@ -377,6 +379,7 @@ export default function useRealtimeVoiceSession({
         }
 
         case "input_audio_buffer.speech_started": {
+          hasSubmittedCurrentSpeechRef.current = false;
           setState((current) => ({
             ...current,
             isListening: true
@@ -411,10 +414,33 @@ export default function useRealtimeVoiceSession({
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = String(event?.transcript ?? "").trim();
           userTranscriptBufferRef.current = transcript || userTranscriptBufferRef.current;
+          const committedTranscript = transcript || userTranscriptBufferRef.current;
           setState((current) => ({
             ...current,
-            latestUserTranscript: transcript || current.latestUserTranscript
+            latestUserTranscript: committedTranscript || current.latestUserTranscript
           }));
+
+          if (!committedTranscript || hasSubmittedCurrentSpeechRef.current || typeof onSubmitPrompt !== "function") {
+            return;
+          }
+
+          hasSubmittedCurrentSpeechRef.current = true;
+
+          try {
+            const accepted = await onSubmitPrompt(committedTranscript);
+
+            if (accepted === false) {
+              setState((current) => ({
+                ...current,
+                error: "음성 요청을 현재 채팅 작업에 반영하지 못했습니다."
+              }));
+            }
+          } catch (error) {
+            setState((current) => ({
+              ...current,
+              error: describeVoiceError(error)
+            }));
+          }
           return;
         }
 
@@ -493,7 +519,7 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [invokeTool]
+    [invokeTool, onSubmitPrompt]
   );
 
   const startSession = useCallback(async () => {
@@ -748,7 +774,8 @@ export default function useRealtimeVoiceSession({
     thread?.status,
     thread?.title,
     threadContinuitySummary,
-    threadDeveloperInstructions
+    threadDeveloperInstructions,
+    onSubmitPrompt
   ]);
 
   const cancelResponse = useCallback(() => {

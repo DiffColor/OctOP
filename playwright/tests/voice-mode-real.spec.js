@@ -377,7 +377,10 @@ async function installVoiceBrowserMocks(page) {
 async function mockMobileApi(page, options = {}) {
   const voiceSessionRequests = options.voiceSessionRequests ?? [];
   const toolInvocations = options.toolInvocations ?? [];
+  const createdIssues = options.createdIssues ?? [];
+  const startedIssueRequests = options.startedIssueRequests ?? [];
   const voiceSessionFailure = options.voiceSessionFailure ?? null;
+  let voiceIssueSequence = 0;
 
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -480,6 +483,51 @@ async function mockMobileApi(page, options = {}) {
       return;
     }
 
+    if (pathname === `/api/threads/${threadId}/issues` && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      voiceIssueSequence += 1;
+      const createdIssue = {
+        id: `voice-created-issue-${voiceIssueSequence}`,
+        thread_id: threadId,
+        root_thread_id: threadId,
+        project_id: projectId,
+        title: payload.title || 'Voice Prompt',
+        prompt: payload.prompt || '',
+        status: 'queued',
+        progress: 0,
+        last_event: 'issue.created',
+        last_message: '',
+        attachments: payload.attachments || [],
+        created_at: '2026-04-13T10:57:00.000Z',
+        updated_at: '2026-04-13T10:57:00.000Z'
+      };
+      createdIssues.push(payload);
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          issue: createdIssue
+        })
+      });
+      return;
+    }
+
+    if (pathname === `/api/threads/${threadId}/issues/start` && method === 'POST') {
+      const payload = request.postDataJSON() ?? {};
+      startedIssueRequests.push(payload);
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accepted: true,
+          thread_id: threadId,
+          issue_ids: payload.issue_ids || []
+        })
+      });
+      return;
+    }
+
     if (pathname === '/api/voice/sessions' && method === 'POST') {
       const payload = request.postDataJSON() ?? {};
       voiceSessionRequests.push(payload);
@@ -561,10 +609,12 @@ test.afterAll(async () => {
 test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const voiceSessionRequests = [];
   const toolInvocations = [];
+  const createdIssues = [];
+  const startedIssueRequests = [];
 
   await seedMobileSession(page);
   await installVoiceBrowserMocks(page);
-  await mockMobileApi(page, { voiceSessionRequests, toolInvocations });
+  await mockMobileApi(page, { voiceSessionRequests, toolInvocations, createdIssues, startedIssueRequests });
 
   await page.goto(baseUrl);
   await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
@@ -683,6 +733,9 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   });
 
   await expect(page.getByTestId('voice-user-bubble')).toHaveText('상태 알려줘');
+  await expect.poll(() => createdIssues.length).toBe(1);
+  await expect.poll(() => startedIssueRequests.length).toBe(1);
+  expect(createdIssues[0].prompt).toBe('상태 알려줘');
   await expect(page.getByTestId('voice-assistant-bubble')).toHaveText(
     '현재 스레드는 유휴 상태입니다.'
   );
@@ -696,6 +749,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
 
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
+  await expect(page.getByTestId('thread-detail-panel')).toContainText('상태 알려줘');
 });
 
 test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) => {
