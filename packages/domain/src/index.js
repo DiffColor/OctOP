@@ -92,6 +92,40 @@ export function bridgeSubjects(userId, bridgeId = "local-bridge") {
   };
 }
 
+const DEFAULT_PUBLIC_GATEWAY_ORIGIN = "https://octop.ilycode.app";
+const LOCAL_API_ORIGIN = "http://127.0.0.1:4000";
+const STATIC_WEB_HOSTNAMES = new Set([
+  "octop-admin.pages.dev",
+  "octop-mobile.pages.dev",
+  "octop.turtlelab.app",
+  "octop-m.turtlelab.app"
+]);
+
+function normalizeApiBaseUrl(value) {
+  const normalized = String(value ?? "").trim().replace(/\/$/, "");
+  return normalized || "";
+}
+
+export function resolveDefaultApiBaseUrl(locationLike = globalThis?.window?.location ?? null) {
+  const hostname = String(locationLike?.hostname ?? "").trim().toLowerCase();
+  const origin = normalizeApiBaseUrl(locationLike?.origin ?? "");
+  const protocol = String(locationLike?.protocol ?? "").trim().toLowerCase();
+
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return LOCAL_API_ORIGIN;
+  }
+
+  if (origin && (protocol === "http:" || protocol === "https:") && !STATIC_WEB_HOSTNAMES.has(hostname)) {
+    return origin;
+  }
+
+  return DEFAULT_PUBLIC_GATEWAY_ORIGIN;
+}
+
+export function resolveApiBaseUrl(configuredBaseUrl, locationLike = globalThis?.window?.location ?? null) {
+  return normalizeApiBaseUrl(configuredBaseUrl) || resolveDefaultApiBaseUrl(locationLike);
+}
+
 export function createBridgeDisconnectEvidence() {
   return {
     socketDisconnectedAt: 0,

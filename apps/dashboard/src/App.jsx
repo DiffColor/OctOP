@@ -3,7 +3,8 @@ import {
   isBridgeDisconnectConfirmed,
   mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
-  reduceBridgeDisconnectEvidence
+  reduceBridgeDisconnectEvidence,
+  resolveApiBaseUrl
 } from "../../../packages/domain/src/index.js";
 import {
   mergeIncomingIssueSnapshot,
@@ -20,12 +21,7 @@ const ARCHIVE_STORAGE_KEY = "octop.dashboard.archives";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.dashboard.selectedBridge";
 const PROJECT_LIST_ORDER_STORAGE_KEY = "octop.dashboard.projectListOrder";
 const ISSUE_SOURCE_APP_ID = "dashboard-web";
-const DEFAULT_API_BASE_URL =
-  typeof window !== "undefined" &&
-  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-    ? "http://127.0.0.1:4000"
-    : "https://octop.ilycode.app";
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;

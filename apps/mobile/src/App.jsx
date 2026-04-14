@@ -14,7 +14,8 @@ import {
   isBridgeDisconnectConfirmed,
   mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
-  reduceBridgeDisconnectEvidence
+  reduceBridgeDisconnectEvidence,
+  resolveApiBaseUrl
 } from "../../../packages/domain/src/index.js";
 import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
@@ -98,12 +99,7 @@ const PWA_PROMPT_DISMISSED_VALUE = "manual";
 const SERVICE_WORKER_CLIENT_CONTEXT_MESSAGE_TYPE = "octop.client.context";
 const SERVICE_WORKER_CLIENT_CONTEXT_REQUEST_MESSAGE_TYPE = "octop.client.context.request";
 const SERVICE_WORKER_NOTIFICATION_LAUNCH_MESSAGE_TYPE = "octop.push.launch";
-const DEFAULT_API_BASE_URL =
-  typeof window !== "undefined" &&
-  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-    ? "http://127.0.0.1:4000"
-    : "https://octop.ilycode.app";
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const VOICE_SESSION_ENABLED = String(import.meta.env.VITE_VOICE_SESSION_ENABLED ?? "true").trim().toLowerCase() !== "false";
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
