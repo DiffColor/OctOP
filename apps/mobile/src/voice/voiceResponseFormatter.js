@@ -225,11 +225,11 @@ export function formatProjectProgramSummaryForVoice(
   }
 
   if (normalizedBaseInstructions) {
-    segments.push(`프로젝트 공통 지침은 ${truncateVoiceText(normalizedBaseInstructions, 180)}입니다.`);
+    segments.push(`프로젝트 운영 메모는 ${truncateVoiceText(normalizedBaseInstructions, 180)}입니다.`);
   }
 
   if (normalizedDeveloperInstructions) {
-    segments.push(`프로젝트 개발 지침은 ${truncateVoiceText(normalizedDeveloperInstructions, 180)}입니다.`);
+    segments.push(`프로젝트 작업 메모는 ${truncateVoiceText(normalizedDeveloperInstructions, 180)}입니다.`);
   }
 
   if (normalizedContinuity) {

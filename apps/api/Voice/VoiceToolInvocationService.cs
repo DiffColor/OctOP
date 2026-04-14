@@ -422,12 +422,12 @@ public sealed class VoiceToolInvocationService(BridgeNatsClient bridgeNatsClient
 
     if (!string.IsNullOrWhiteSpace(projectBaseInstructions))
     {
-      segments.Add($"공통 지침 {CompactInline(projectBaseInstructions, 180)}");
+      segments.Add($"프로젝트 운영 메모 {CompactInline(projectBaseInstructions, 180)}");
     }
 
     if (!string.IsNullOrWhiteSpace(projectInstructions))
     {
-      segments.Add($"개발 지침 {CompactInline(projectInstructions, 180)}");
+      segments.Add($"프로젝트 작업 메모 {CompactInline(projectInstructions, 180)}");
     }
 
     if (!string.IsNullOrWhiteSpace(latestHandoffSummary))
