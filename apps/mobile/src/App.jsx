@@ -3883,11 +3883,12 @@ function normalizeTodoMessage(message) {
 }
 
 function getThreadPreview(thread) {
-  if (thread.last_message) {
-    return thread.last_message;
-  }
+  const rawPreview = thread.last_message || getRealtimeProgressText(thread);
+  const normalizedPreview = normalizeAssistantMessageContent(rawPreview)
+    .replace(/\s+/g, " ")
+    .trim();
 
-  return getRealtimeProgressText(thread);
+  return summarizeMessageContent(normalizedPreview, 120);
 }
 
 function createThreadTitleFromPrompt(prompt) {
