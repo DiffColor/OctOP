@@ -1520,6 +1520,15 @@ function createDefaultThreadDetailCacheStore() {
   };
 }
 
+function createInitialThreadVoiceState() {
+  return {
+    enabled: false,
+    promptSubmittedAt: "",
+    lastSubmittedPrompt: "",
+    delegatedThreadId: ""
+  };
+}
+
 function normalizeCachedThreadMessages(messages = []) {
   return messages
     .map((message, index) => {
@@ -8195,7 +8204,9 @@ function ThreadDetail({
   showBackButton = true,
   standalone = true,
   emptyStateMessage = "",
-  voiceSessionEnabled = true
+  voiceSessionEnabled = true,
+  voiceState = null,
+  onVoiceStateChange = null
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
@@ -8219,10 +8230,54 @@ function ThreadDetail({
   const [activeMessageAction, setActiveMessageAction] = useState(null);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const { alert: showAlert } = useMobileFeedback();
-  const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
-  const [voicePromptSubmittedAt, setVoicePromptSubmittedAt] = useState("");
-  const [voiceLastSubmittedPrompt, setVoiceLastSubmittedPrompt] = useState("");
-  const [voiceDelegatedThreadId, setVoiceDelegatedThreadId] = useState("");
+  const resolvedVoiceState =
+    voiceState && typeof voiceState === "object"
+      ? {
+          enabled: voiceState.enabled === true,
+          promptSubmittedAt: String(voiceState.promptSubmittedAt ?? "").trim(),
+          lastSubmittedPrompt: String(voiceState.lastSubmittedPrompt ?? "").trim(),
+          delegatedThreadId: String(voiceState.delegatedThreadId ?? "").trim()
+        }
+      : createInitialThreadVoiceState();
+  const voiceModeEnabled = resolvedVoiceState.enabled;
+  const voicePromptSubmittedAt = resolvedVoiceState.promptSubmittedAt;
+  const voiceLastSubmittedPrompt = resolvedVoiceState.lastSubmittedPrompt;
+  const voiceDelegatedThreadId = resolvedVoiceState.delegatedThreadId;
+  const updateVoiceState = useCallback(
+    (updater) => {
+      if (typeof onVoiceStateChange !== "function") {
+        return;
+      }
+
+      onVoiceStateChange((current) => {
+        const baseState =
+          current && typeof current === "object"
+            ? {
+                enabled: current.enabled === true,
+                promptSubmittedAt: String(current.promptSubmittedAt ?? "").trim(),
+                lastSubmittedPrompt: String(current.lastSubmittedPrompt ?? "").trim(),
+                delegatedThreadId: String(current.delegatedThreadId ?? "").trim()
+              }
+            : createInitialThreadVoiceState();
+        const nextState = typeof updater === "function" ? updater(baseState) : updater;
+
+        if (!nextState || typeof nextState !== "object") {
+          return baseState;
+        }
+
+        return {
+          enabled: nextState.enabled === true,
+          promptSubmittedAt: String(nextState.promptSubmittedAt ?? "").trim(),
+          lastSubmittedPrompt: String(nextState.lastSubmittedPrompt ?? "").trim(),
+          delegatedThreadId: String(nextState.delegatedThreadId ?? "").trim()
+        };
+      });
+    },
+    [onVoiceStateChange]
+  );
+  const resetVoiceState = useCallback(() => {
+    updateVoiceState(createInitialThreadVoiceState());
+  }, [updateVoiceState]);
   const handleVoicePromptSubmit = useCallback((prompt) => {
     const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
     const delegatePromptHandler =
@@ -8237,8 +8292,11 @@ function ThreadDetail({
     }
 
     const submittedAt = new Date().toISOString();
-    setVoicePromptSubmittedAt(submittedAt);
-    setVoiceLastSubmittedPrompt(normalizedPrompt);
+    updateVoiceState((current) => ({
+      ...current,
+      promptSubmittedAt: submittedAt,
+      lastSubmittedPrompt: normalizedPrompt
+    }));
     return Promise.resolve(
       delegatePromptHandler({
         prompt: normalizedPrompt,
@@ -8257,7 +8315,10 @@ function ThreadDetail({
       const handoffToNewThread = !voiceDelegatedThreadId && Boolean(resolvedThreadId);
 
       if (handoffToNewThread) {
-        setVoiceDelegatedThreadId(resolvedThreadId);
+        updateVoiceState((current) => ({
+          ...current,
+          delegatedThreadId: resolvedThreadId
+        }));
       }
 
       return {
@@ -8272,7 +8333,7 @@ function ThreadDetail({
         voice_handoff: handoffToNewThread
       };
     });
-  }, [onSubmitPrompt, onVoiceDelegatePrompt, project?.id, thread?.id, voiceDelegatedThreadId]);
+  }, [onSubmitPrompt, onVoiceDelegatePrompt, project?.id, thread?.id, updateVoiceState, voiceDelegatedThreadId]);
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -9361,10 +9422,7 @@ function ThreadDetail({
 
   const handleToggleVoiceMode = useCallback(async () => {
     if (voiceModeEnabled) {
-      setVoiceModeEnabled(false);
-      setVoicePromptSubmittedAt("");
-      setVoiceLastSubmittedPrompt("");
-      setVoiceDelegatedThreadId("");
+      resetVoiceState();
       await voiceSession.stopSession({ preserveTranscript: true });
       return;
     }
@@ -9385,11 +9443,13 @@ function ThreadDetail({
       return;
     }
 
-    setVoicePromptSubmittedAt("");
-    setVoiceLastSubmittedPrompt("");
-    setVoiceDelegatedThreadId("");
-    setVoiceModeEnabled(true);
-  }, [bridgeId, project?.id, sessionLoginId, showAlert, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
+    updateVoiceState({
+      enabled: true,
+      promptSubmittedAt: "",
+      lastSubmittedPrompt: "",
+      delegatedThreadId: ""
+    });
+  }, [bridgeId, project?.id, resetVoiceState, sessionLoginId, showAlert, updateVoiceState, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
   useEffect(() => {
     setActiveMessageAction(null);
@@ -9403,10 +9463,8 @@ function ThreadDetail({
       return;
     }
 
-    setVoicePromptSubmittedAt("");
-    setVoiceLastSubmittedPrompt("");
-    setVoiceDelegatedThreadId("");
-  }, [voiceModeEnabled, voicePromptSubmittedAt]);
+    resetVoiceState();
+  }, [resetVoiceState, voiceModeEnabled, voicePromptSubmittedAt]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
   const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
@@ -9544,9 +9602,7 @@ function ThreadDetail({
                 errorMessage={voiceSession.error}
                 onSelectInputDevice={(deviceId) => void voiceSession.selectInputDevice(deviceId)}
                 onClose={() => {
-                  setVoiceModeEnabled(false);
-                  setVoicePromptSubmittedAt("");
-                  setVoiceLastSubmittedPrompt("");
+                  resetVoiceState();
                   void voiceSession.stopSession({ preserveTranscript: true });
                 }}
               />
@@ -9959,7 +10015,9 @@ function MainPage({
   bridgeListSyncing,
   onLogout,
   onBackToInbox,
-  onRegisterBackHandler
+  onRegisterBackHandler,
+  threadVoiceState,
+  onChangeThreadVoiceState
 }) {
   const { confirm: confirmMobileAction } = useMobileFeedback();
   const [searchOpen, setSearchOpen] = useState(false);
@@ -11885,6 +11943,8 @@ function MainPage({
                   standalone={false}
                   emptyStateMessage={splitThreadEmptyStateMessage}
                   voiceSessionEnabled={VOICE_SESSION_ENABLED}
+                  voiceState={threadVoiceState}
+                  onVoiceStateChange={onChangeThreadVoiceState}
                 />
               )}
             </section>
@@ -11945,6 +12005,8 @@ function MainPage({
           onPersistComposerDraft={onChangeThreadComposerDraft}
           isDraft={!selectedThread && !threadDetail?.thread}
           voiceSessionEnabled={VOICE_SESSION_ENABLED}
+          voiceState={threadVoiceState}
+          onVoiceStateChange={onChangeThreadVoiceState}
         />
       </div>
     );
@@ -12379,6 +12441,7 @@ export default function App() {
     tone: "default"
   });
   const [bridgeDisconnectOverrideById, setBridgeDisconnectOverrideById] = useState({});
+  const [threadVoiceState, setThreadVoiceState] = useState(createInitialThreadVoiceState);
   const viewportWidth = useVisualViewportWidth();
   const wideThreadSplitEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX;
   const activeViewRef = useRef(activeView);
@@ -12581,6 +12644,9 @@ export default function App() {
     [projectEditTargetId, projects]
   );
   const selectedProjectId = selectedScope.kind === "project" ? selectedScope.id : "";
+  const resetThreadVoiceState = useCallback(() => {
+    setThreadVoiceState(createInitialThreadVoiceState());
+  }, []);
   const bridgeConnected = !bridgeDisconnectConfirmed;
   const bridgeAvailable = Boolean(selectedBridgeId) && selectedBridgeKnown && bridgeConnected;
   const bridgeSignal = useMemo(
@@ -12604,6 +12670,11 @@ export default function App() {
       streamNow
     ]
   );
+
+  useEffect(() => {
+    resetThreadVoiceState();
+  }, [resetThreadVoiceState, selectedBridgeId, selectedProjectId, selectedScope.kind]);
+
   const currentTodoChatDetail = todoChatDetails[selectedTodoChatId] ?? null;
   const currentThreadDetail = threadDetails[selectedThreadId] ?? null;
   const threadPanelVisible =
@@ -17533,6 +17604,7 @@ export default function App() {
   };
 
   const handleSelectProject = (projectId) => {
+    resetThreadVoiceState();
     selectProjectScope(projectId);
     clearInstantThreadIfNeeded();
     setSelectedThreadId("");
@@ -17543,6 +17615,7 @@ export default function App() {
 
   const handleSelectThread = (threadId) => {
     clearInstantThreadIfNeeded(threadId);
+    resetThreadVoiceState();
 
     startTransition(() => {
       setDraftThreadProjectId("");
@@ -17559,6 +17632,7 @@ export default function App() {
       return;
     }
 
+    resetThreadVoiceState();
     clearInstantThreadIfNeeded();
     selectProjectScope(nextProjectId);
     setSelectedThreadId("");
@@ -17880,6 +17954,8 @@ export default function App() {
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}
         onRegisterBackHandler={registerMainPageBackHandler}
+        threadVoiceState={threadVoiceState}
+        onChangeThreadVoiceState={setThreadVoiceState}
       />
       <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
       <MobileNoticeCenter notices={mobileNotices} onDismiss={dismissMobileNotice} />
