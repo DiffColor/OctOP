@@ -212,6 +212,52 @@ function buildRealtimeAssistantAudioResponse({
   };
 }
 
+function buildVoiceSessionResponseBody(payload = {}, sessionId = 'voice-session-1') {
+  return {
+    ok: true,
+    value: 'client-secret-test',
+    call_url: 'https://voice.test/mock-realtime-call',
+    bridge_id: bridgeId,
+    project_id: payload.project_id || projectId,
+    thread_id: payload.thread_id || '',
+    session: {
+      id: sessionId,
+      type: 'realtime',
+      model: 'gpt-realtime',
+      instructions: `당신은 OctOP의 실시간 음성 비서입니다.\n\n현재 프로젝트: ${payload.project_name || project.name}`,
+      output_modalities: ['text', 'audio'],
+      tool_choice: 'auto',
+      tools: [
+        { type: 'function', name: 'delegate_to_app_server' },
+        { type: 'function', name: 'get_thread_status' },
+        { type: 'function', name: 'interrupt_active_issue' }
+      ],
+      audio: {
+        input: {
+          noise_reduction: {
+            type: 'near_field'
+          },
+          transcription: {
+            model: 'gpt-4o-mini-transcribe',
+            language: 'ko',
+            prompt: `프로젝트: ${payload.project_name || project.name}`
+          },
+          turn_detection: {
+            type: 'server_vad',
+            interrupt_response: true,
+            create_response: false,
+            silence_duration_ms: 550,
+            prefix_padding_ms: 250
+          }
+        },
+        output: {
+          voice: 'alloy'
+        }
+      }
+    }
+  };
+}
+
 function createWorkspaceLayout() {
   return {
     loginId,
@@ -811,15 +857,7 @@ async function mockMobileApi(page, options = {}) {
         contentType: 'application/json',
         body: JSON.stringify(
           voiceSessionResponseBody ?? {
-            ok: true,
-            value: 'client-secret-test',
-            call_url: 'https://voice.test/mock-realtime-call',
-            bridge_id: bridgeId,
-            project_id: projectId,
-            thread_id: payload.thread_id || '',
-            session: {
-              id: `voice-session-${++voiceSessionSequence}`
-            }
+            ...buildVoiceSessionResponseBody(payload, `voice-session-${++voiceSessionSequence}`)
           }
         )
       });
@@ -980,13 +1018,48 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await expect.poll(async () => {
     const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
     return sentEvents.find((event) => event?.type === 'session.update') ?? null;
-  }).toEqual({
+  }).not.toBeNull();
+
+  const sessionUpdateEvent = await page.evaluate(() => {
+    return window.__voiceTest.sentEvents.find((event) => event?.type === 'session.update') ?? null;
+  });
+
+  expect(sessionUpdateEvent).toMatchObject({
     type: 'session.update',
     session: {
       type: 'realtime',
-      output_modalities: ['text', 'audio']
+      model: 'gpt-realtime',
+      output_modalities: ['text', 'audio'],
+      tool_choice: 'auto',
+      audio: {
+        input: {
+          noise_reduction: {
+            type: 'near_field'
+          },
+          transcription: {
+            model: 'gpt-4o-mini-transcribe',
+            language: 'ko'
+          },
+          turn_detection: {
+            type: 'server_vad',
+            interrupt_response: true,
+            create_response: false,
+            silence_duration_ms: 550,
+            prefix_padding_ms: 250
+          }
+        },
+        output: {
+          voice: 'alloy'
+        }
+      }
     }
   });
+  expect(sessionUpdateEvent.session.instructions).toContain('OctOP의 실시간 음성 비서');
+  expect(sessionUpdateEvent.session.tools.map((tool) => tool.name)).toEqual([
+    'delegate_to_app_server',
+    'get_thread_status',
+    'interrupt_active_issue'
+  ]);
 
   await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
   await expect.poll(async () => {

@@ -756,7 +756,7 @@ app.MapGet("/api/projects", async (HttpContext httpContext, BridgeNatsClient bri
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectsGet,
     new
     {
@@ -783,7 +783,7 @@ app.MapGet("/api/todo/chats", async (HttpContext httpContext, BridgeNatsClient b
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoChatsGet,
     new
     {
@@ -814,7 +814,7 @@ app.MapPost("/api/todo/chats", async (HttpContext httpContext, BridgeNatsClient 
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoChatCreate,
     new
     {
@@ -854,7 +854,7 @@ app.MapPatch("/api/todo/chats/{chatId}", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoChatUpdate,
     new
     {
@@ -894,7 +894,7 @@ app.MapDelete("/api/todo/chats/{chatId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoChatDelete,
     new
     {
@@ -930,7 +930,7 @@ app.MapGet("/api/todo/chats/{chatId}/messages", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoMessagesGet,
     new
     {
@@ -967,7 +967,7 @@ app.MapPost("/api/todo/chats/{chatId}/messages", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoMessageCreate,
     new
     {
@@ -1009,7 +1009,7 @@ app.MapPatch("/api/todo/messages/{messageId}", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoMessageUpdate,
     new
     {
@@ -1050,7 +1050,7 @@ app.MapDelete("/api/todo/messages/{messageId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoMessageDelete,
     new
     {
@@ -1097,7 +1097,7 @@ app.MapPost("/api/todo/messages/{messageId}/transfer", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.TodoMessageTransfer,
     new
     {
@@ -1132,7 +1132,7 @@ app.MapGet("/api/workspace-roots", async (HttpContext httpContext, BridgeNatsCli
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.WorkspaceRootsGet,
     new
     {
@@ -1157,7 +1157,7 @@ app.MapGet("/api/folders", async (HttpContext httpContext, BridgeNatsClient brid
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.FolderListGet,
     new
     {
@@ -1189,7 +1189,7 @@ app.MapPost("/api/projects", async (HttpContext httpContext, BridgeNatsClient br
   var requestedKey = body?["key"]?.GetValue<string>();
   var normalizedKey = string.IsNullOrWhiteSpace(requestedKey) ? null : requestedKey;
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectCreate,
     new
     {
@@ -1232,7 +1232,7 @@ app.MapPatch("/api/projects/{projectId}", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectUpdate,
     new
     {
@@ -1273,7 +1273,7 @@ app.MapDelete("/api/projects/{projectId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectDelete,
     new
     {
@@ -1309,7 +1309,7 @@ app.MapGet("/api/projects/{projectId}/threads", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadsGet,
     new
     {
@@ -1344,7 +1344,7 @@ app.MapPost("/api/projects/{projectId}/threads", async (
   await octopStore.EnsureProjectMembershipAsync(userId, bridgeId, projectId);
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadCreate,
     new
     {
@@ -1386,7 +1386,7 @@ app.MapPatch("/api/threads/{threadId}", async (
 
   if (requestedDeveloperInstructionsUpdate)
   {
-    var statusPayload = await GetBridgeStatusPayloadAsync(bridgeNatsClient, userId, bridgeId, cancellationToken);
+    var statusPayload = await GetBridgeStatusPayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, cancellationToken);
 
     if (!BridgeSupportsCapability(statusPayload, "thread_developer_instructions"))
     {
@@ -1399,7 +1399,7 @@ app.MapPatch("/api/threads/{threadId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadUpdate,
     new
     {
@@ -1438,7 +1438,7 @@ app.MapDelete("/api/threads/{threadId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadDelete,
     new
     {
@@ -1474,7 +1474,7 @@ app.MapGet("/api/threads/{threadId}/issues", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssuesGet,
     new
     {
@@ -1511,7 +1511,7 @@ app.MapGet("/api/threads/{threadId}/timeline", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadTimelineGet,
     new
     {
@@ -1548,7 +1548,7 @@ app.MapGet("/api/threads/{threadId}/continuity", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadContinuityGet,
     new
     {
@@ -1582,7 +1582,7 @@ app.MapPost("/api/threads/{threadId}/issues", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueCreate,
     new
     {
@@ -1622,7 +1622,7 @@ app.MapGet("/api/issues/{issueId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueDetailGet,
     new
     {
@@ -1656,7 +1656,7 @@ app.MapPatch("/api/issues/{issueId}", async (
 
   var body = await JsonNode.ParseAsync(httpContext.Request.Body, cancellationToken: cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueUpdate,
     new
     {
@@ -1695,7 +1695,7 @@ app.MapDelete("/api/issues/{issueId}", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueDelete,
     new
     {
@@ -1732,7 +1732,7 @@ app.MapPost("/api/issues/{issueId}/interrupt", async (
 
   var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueInterrupt,
     new
     {
@@ -1777,7 +1777,7 @@ app.MapPost("/api/issues/{issueId}/move", async (
   }
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssueMove,
     new
     {
@@ -1821,7 +1821,7 @@ app.MapPost("/api/threads/{threadId}/issues/start", async (
     .ToArray() ?? [];
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssuesStart,
     new
     {
@@ -1866,7 +1866,7 @@ app.MapPost("/api/threads/{threadId}/issues/reorder", async (
   var stage = body?["stage"]?.GetValue<string>()?.Trim();
 
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ThreadIssuesReorder,
     new
     {
@@ -1905,7 +1905,7 @@ app.MapPost("/api/threads/{threadId}/rollover", async (
 
   var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadRollover,
     new
     {
@@ -1943,7 +1943,7 @@ app.MapPost("/api/threads/{threadId}/normalize", async (
 
   var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadNormalize,
     new
     {
@@ -1981,7 +1981,7 @@ app.MapPost("/api/threads/{threadId}/unlock", async (
 
   var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadUnlock,
     new
     {
@@ -2019,7 +2019,7 @@ app.MapPost("/api/threads/{threadId}/stop", async (
 
   var body = await ReadOptionalJsonBodyAsync(httpContext.Request, cancellationToken);
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.ProjectThreadStop,
     new
     {
@@ -2050,8 +2050,17 @@ app.MapGet("/api/bridge/status", async (HttpContext httpContext, BridgeNatsClien
     return Results.Text("{}", "application/json; charset=utf-8");
   }
 
+  var bridgeSnapshot = await octopStore.GetCanonicalBridgeForUserAsync(userId, bridgeId);
+
+  if (bridgeSnapshot is not null && !octopStore.IsBridgeEffectivelyOnline(bridgeSnapshot))
+  {
+    return Results.Text(
+      BuildOfflineBridgeStatusPayload(bridgeSnapshot).ToString(),
+      "application/json; charset=utf-8");
+  }
+
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.StatusGet,
     new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
     cancellationToken);
@@ -2078,7 +2087,7 @@ app.MapPost("/api/commands/ping", async (HttpContext httpContext, BridgeNatsClie
     await octopStore.EnsureProjectMembershipAsync(userId, bridgeId, projectId);
   }
 
-  var payload = await bridgeNatsClient.RequestAsync(
+  var payload = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId, 
     subjects.PingStart,
     new
     {
@@ -2396,7 +2405,7 @@ app.MapGet("/api/events", async (HttpContext httpContext, BridgeNatsClient bridg
 
   try
   {
-    var snapshot = await bridgeNatsClient.RequestAsync(
+    var snapshot = await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId,
       subjects.StatusGet,
       new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
       cancellationToken);
@@ -2524,17 +2533,90 @@ static async Task<string?> ResolveRouteScopedBridgeIdAsync(
   return null;
 }
 
+static JObject BuildOfflineBridgeStatusPayload(JObject bridge)
+{
+  var payload = bridge["runtime"] is JObject runtime
+    ? (JObject)runtime.DeepClone()
+    : new JObject();
+  var appServer = payload["app_server"] as JObject ?? new JObject();
+  var nats = payload["nats"] as JObject ?? new JObject();
+  var bridgeId = bridge.Value<string>("bridge_id") ?? payload.Value<string>("bridge_id") ?? string.Empty;
+  var deviceName = bridge.Value<string>("device_name") ?? payload.Value<string>("device_name") ?? bridgeId;
+  var hostName = bridge.Value<string>("host_name") ?? payload.Value<string>("host_name");
+  var lastSeenAt = bridge.Value<string>("last_seen_at");
+  var lastError = string.IsNullOrWhiteSpace(lastSeenAt)
+    ? "bridge offline"
+    : $"bridge offline: last seen at {lastSeenAt}";
+
+  payload["bridge_id"] = bridgeId;
+  payload["device_name"] = deviceName;
+
+  if (!string.IsNullOrWhiteSpace(hostName))
+  {
+    payload["host_name"] = hostName;
+  }
+
+  appServer["connected"] = false;
+  appServer["last_error"] = lastError;
+  payload["app_server"] = appServer;
+
+  nats["connected"] = false;
+  payload["nats"] = nats;
+  payload["status"] = bridge.Value<string>("status") ?? "offline";
+  payload["last_seen_at"] = lastSeenAt;
+  payload["is_stale"] = bridge.Value<bool?>("is_stale") ?? false;
+  payload["stale_after_ms"] = bridge.Value<long?>("stale_after_ms");
+  payload["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
+  return payload;
+}
+
+static string BuildBridgeOfflineErrorMessage(JObject bridge)
+{
+  var bridgeId = bridge.Value<string>("bridge_id") ?? "unknown-bridge";
+  var deviceName = bridge.Value<string>("device_name") ?? bridgeId;
+  var lastSeenAt = bridge.Value<string>("last_seen_at");
+
+  return string.IsNullOrWhiteSpace(lastSeenAt)
+    ? $"Bridge {deviceName} is offline. bridge_id={bridgeId}"
+    : $"Bridge {deviceName} is offline. bridge_id={bridgeId}, last_seen_at={lastSeenAt}";
+}
+
 static async Task<JsonNode?> GetBridgeStatusPayloadAsync(
+  OctopStore octopStore,
   BridgeNatsClient bridgeNatsClient,
   string userId,
   string bridgeId,
   CancellationToken cancellationToken)
 {
   var subjects = BridgeSubjects.ForUser(userId, bridgeId);
-  return await bridgeNatsClient.RequestAsync(
+  return await RequestBridgePayloadAsync(octopStore, bridgeNatsClient, userId, bridgeId,
     subjects.StatusGet,
     new { user_id = userId, bridge_id = bridgeId, ensure_ready = false },
     cancellationToken);
+}
+
+static async Task<JsonNode?> RequestBridgePayloadAsync(
+  OctopStore octopStore,
+  BridgeNatsClient bridgeNatsClient,
+  string userId,
+  string bridgeId,
+  string subject,
+  object requestPayload,
+  CancellationToken cancellationToken)
+{
+  var bridgeSnapshot = await octopStore.GetCanonicalBridgeForUserAsync(userId, bridgeId);
+
+  if (bridgeSnapshot is not null && !octopStore.IsBridgeEffectivelyOnline(bridgeSnapshot))
+  {
+    throw new BridgeNatsRequestException(
+      "bridge_offline",
+      BuildBridgeOfflineErrorMessage(bridgeSnapshot),
+      subject,
+      0,
+      new InvalidOperationException("bridge marked offline from stale projection"));
+  }
+
+  return await bridgeNatsClient.RequestAsync(subject, requestPayload, cancellationToken);
 }
 
 static bool BridgeSupportsCapability(JsonNode? statusPayload, string capability)

@@ -10,6 +10,22 @@ import { formatAssistantResponseForVoice } from "./voiceResponseFormatter.js";
 const REALTIME_OUTPUT_MODALITIES = ["text", "audio"];
 const REALTIME_RESPONSE_CHANNEL_VOICE_TURN = "voice_turn";
 const REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT = "app_server_report";
+const REALTIME_SESSION_TOP_LEVEL_FIELDS = [
+  "type",
+  "model",
+  "instructions",
+  "output_modalities",
+  "tools",
+  "tool_choice",
+  "max_output_tokens",
+  "truncation",
+  "prompt",
+  "audio",
+  "include",
+  "metadata"
+];
+const REALTIME_SESSION_AUDIO_INPUT_FIELDS = ["format", "transcription", "noise_reduction", "turn_detection"];
+const REALTIME_SESSION_AUDIO_OUTPUT_FIELDS = ["format", "voice", "speed"];
 
 function createInitialState() {
   return {
@@ -71,13 +87,86 @@ function buildVoiceTurnResponseEvent(metadata = {}) {
   };
 }
 
-function buildSessionUpdateEvent() {
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cloneJsonCompatibleValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => cloneJsonCompatibleValue(entry));
+  }
+
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, cloneJsonCompatibleValue(entryValue)])
+    );
+  }
+
+  return value;
+}
+
+function pickObjectFields(source, fields) {
+  if (!isPlainObject(source)) {
+    return null;
+  }
+
+  const picked = {};
+
+  for (const field of fields) {
+    if (source[field] === undefined) {
+      continue;
+    }
+
+    picked[field] = cloneJsonCompatibleValue(source[field]);
+  }
+
+  return Object.keys(picked).length > 0 ? picked : null;
+}
+
+function normalizeRealtimeSessionUpdateConfig(sessionConfig) {
+  const pickedSession = pickObjectFields(sessionConfig, REALTIME_SESSION_TOP_LEVEL_FIELDS);
+
+  if (!pickedSession) {
+    return null;
+  }
+
+  const normalizedAudioInput = pickObjectFields(pickedSession.audio?.input, REALTIME_SESSION_AUDIO_INPUT_FIELDS);
+  const normalizedAudioOutput = pickObjectFields(pickedSession.audio?.output, REALTIME_SESSION_AUDIO_OUTPUT_FIELDS);
+
+  if (normalizedAudioInput || normalizedAudioOutput) {
+    pickedSession.audio = {
+      ...(normalizedAudioInput ? { input: normalizedAudioInput } : {}),
+      ...(normalizedAudioOutput ? { output: normalizedAudioOutput } : {})
+    };
+  } else {
+    delete pickedSession.audio;
+  }
+
+  pickedSession.type = String(pickedSession.type ?? "realtime").trim() || "realtime";
+
+  if (!Array.isArray(pickedSession.output_modalities) || pickedSession.output_modalities.length === 0) {
+    pickedSession.output_modalities = [...REALTIME_OUTPUT_MODALITIES];
+  }
+
+  return pickedSession;
+}
+
+function buildSessionUpdateEvent(sessionConfig = null) {
+  const normalizedSessionConfig = normalizeRealtimeSessionUpdateConfig(sessionConfig);
+
+  if (!normalizedSessionConfig) {
+    return {
+      type: "session.update",
+      session: {
+        type: "realtime",
+        output_modalities: REALTIME_OUTPUT_MODALITIES
+      }
+    };
+  }
+
   return {
     type: "session.update",
-    session: {
-      type: "realtime",
-      output_modalities: REALTIME_OUTPUT_MODALITIES
-    }
+    session: normalizedSessionConfig
   };
 }
 
@@ -294,6 +383,7 @@ export default function useRealtimeVoiceSession({
   const issuePollSequenceRef = useRef(0);
   const activeSessionContextKeyRef = useRef("");
   const sessionConfigurationAppliedRef = useRef(false);
+  const sessionUpdateConfigRef = useRef(null);
 
   useEffect(() => {
     setState((current) => {
@@ -383,6 +473,7 @@ export default function useRealtimeVoiceSession({
     }
     activeSessionContextKeyRef.current = "";
     sessionConfigurationAppliedRef.current = false;
+    sessionUpdateConfigRef.current = null;
 
     const activePeerConnection = peerConnectionRef.current;
     const activeDataChannel = dataChannelRef.current;
@@ -565,7 +656,7 @@ export default function useRealtimeVoiceSession({
       return false;
     }
 
-    targetChannel.send(JSON.stringify(buildSessionUpdateEvent()));
+    targetChannel.send(JSON.stringify(buildSessionUpdateEvent(sessionUpdateConfigRef.current)));
     sessionConfigurationAppliedRef.current = true;
     return true;
   }, []);
@@ -1152,6 +1243,7 @@ export default function useRealtimeVoiceSession({
 
         const clientSecret = extractClientSecret(sessionPayload);
         const callUrl = extractRealtimeCallUrl(sessionPayload);
+        sessionUpdateConfigRef.current = normalizeRealtimeSessionUpdateConfig(sessionPayload?.session);
 
         if (!clientSecret) {
           throw new Error("OpenAI realtime client secret이 비어 있습니다.");

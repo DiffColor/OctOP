@@ -29,6 +29,7 @@ public sealed class OctopStore : IAsyncDisposable
   private readonly string _db;
   private readonly string _user;
   private readonly string _password;
+  private readonly TimeSpan _bridgeStaleAfter;
   private readonly RethinkDB _r = RethinkDB.R;
   private readonly SemaphoreSlim _storageLock = new(1, 1);
   private RethinkConnection? _connection;
@@ -43,7 +44,13 @@ public sealed class OctopStore : IAsyncDisposable
     _db = Environment.GetEnvironmentVariable("OCTOP_RETHINKDB_DB") ?? "OctOP";
     _user = Environment.GetEnvironmentVariable("OCTOP_RETHINKDB_USER") ?? string.Empty;
     _password = Environment.GetEnvironmentVariable("OCTOP_RETHINKDB_PASSWORD") ?? string.Empty;
+    _bridgeStaleAfter = int.TryParse(Environment.GetEnvironmentVariable("OCTOP_BRIDGE_STALE_AFTER_MINUTES"), out var bridgeStaleAfterMinutes) &&
+      bridgeStaleAfterMinutes > 0
+      ? TimeSpan.FromMinutes(bridgeStaleAfterMinutes)
+      : TimeSpan.FromHours(24);
   }
+
+  public TimeSpan BridgeStaleAfter => _bridgeStaleAfter;
 
   public async Task EnsureStorageAsync()
   {
@@ -112,7 +119,7 @@ public sealed class OctopStore : IAsyncDisposable
   public async Task<JArray> ListBridgesForUserAsync(string userId)
   {
     var bridges = await ListRawBridgesForUserAsync(userId);
-    return new JArray(CanonicalizeBridgeRows(bridges));
+    return new JArray(CanonicalizeBridgeRows(bridges, DateTimeOffset.UtcNow, _bridgeStaleAfter));
   }
 
   public async Task<string?> ResolveCanonicalBridgeIdForUserAsync(string userId, string bridgeId)
@@ -132,10 +139,31 @@ public sealed class OctopStore : IAsyncDisposable
     }
 
     var identityKey = ResolveBridgeIdentityKey(matched);
-    var canonical = CanonicalizeBridgeRows(bridges).FirstOrDefault(bridge =>
+    var canonical = CanonicalizeBridgeRows(bridges, DateTimeOffset.UtcNow, _bridgeStaleAfter).FirstOrDefault(bridge =>
       string.Equals(ResolveBridgeIdentityKey(bridge), identityKey, StringComparison.Ordinal));
 
     return canonical?.Value<string>("bridge_id") ?? matched.Value<string>("bridge_id");
+  }
+
+  public async Task<JObject?> GetCanonicalBridgeForUserAsync(string userId, string bridgeId)
+  {
+    if (string.IsNullOrWhiteSpace(bridgeId))
+    {
+      return null;
+    }
+
+    var bridges = await ListRawBridgesForUserAsync(userId);
+    var matched = bridges.FirstOrDefault(bridge =>
+      string.Equals(bridge.Value<string>("bridge_id"), bridgeId, StringComparison.Ordinal));
+
+    if (matched is null)
+    {
+      return null;
+    }
+
+    var identityKey = ResolveBridgeIdentityKey(matched);
+    return CanonicalizeBridgeRows(bridges, DateTimeOffset.UtcNow, _bridgeStaleAfter).FirstOrDefault(bridge =>
+      string.Equals(ResolveBridgeIdentityKey(bridge), identityKey, StringComparison.Ordinal));
   }
 
   public async Task<string?> ResolveBridgeIdForProjectAsync(string userId, string projectId, CancellationToken cancellationToken)
@@ -637,16 +665,25 @@ public sealed class OctopStore : IAsyncDisposable
       .FirstOrDefault();
   }
 
-  private static IReadOnlyList<JObject> CanonicalizeBridgeRows(IEnumerable<JObject> bridges)
+  public bool IsBridgeEffectivelyOnline(JObject bridge)
+  {
+    return IsBridgeOnline(bridge, DateTimeOffset.UtcNow, _bridgeStaleAfter);
+  }
+
+  private static IReadOnlyList<JObject> CanonicalizeBridgeRows(
+    IEnumerable<JObject> bridges,
+    DateTimeOffset now,
+    TimeSpan bridgeStaleAfter)
   {
     return bridges
       .GroupBy(ResolveBridgeIdentityKey, StringComparer.Ordinal)
       .Select(group => group
-        .OrderByDescending(IsBridgeOnline)
+        .OrderByDescending(bridge => IsBridgeOnline(bridge, now, bridgeStaleAfter))
         .ThenByDescending(GetBridgeLastSeenAt)
         .ThenByDescending(GetBridgeCreatedAt)
         .ThenByDescending(bridge => bridge.Value<string>("bridge_id"), StringComparer.Ordinal)
         .First())
+      .Select(bridge => CreateCanonicalBridgeSnapshot(bridge, now, bridgeStaleAfter))
       .OrderByDescending(GetBridgeLastSeenAt)
       .ThenByDescending(GetBridgeCreatedAt)
       .ToList();
@@ -702,9 +739,58 @@ public sealed class OctopStore : IAsyncDisposable
       : value.Trim().ToLowerInvariant();
   }
 
-  private static bool IsBridgeOnline(JObject bridge)
+  private static JObject CreateCanonicalBridgeSnapshot(JObject bridge, DateTimeOffset now, TimeSpan bridgeStaleAfter)
   {
-    return string.Equals(bridge.Value<string>("status"), "online", StringComparison.OrdinalIgnoreCase);
+    var snapshot = (JObject)bridge.DeepClone();
+    var isStale = IsBridgeStale(snapshot, now, bridgeStaleAfter);
+    var status = snapshot.Value<string>("status");
+
+    snapshot["status"] = isStale &&
+      string.Equals(status, "online", StringComparison.OrdinalIgnoreCase)
+      ? "offline"
+      : status ?? "unknown";
+    snapshot["is_stale"] = isStale;
+    snapshot["stale_after_ms"] = (long)bridgeStaleAfter.TotalMilliseconds;
+
+    if (isStale)
+    {
+      snapshot["stale_reason"] = "last_seen_expired";
+    }
+
+    return snapshot;
+  }
+
+  private static bool IsBridgeOnline(JObject bridge, DateTimeOffset now, TimeSpan bridgeStaleAfter)
+  {
+    return
+      string.Equals(ResolveEffectiveBridgeStatus(bridge, now, bridgeStaleAfter), "online", StringComparison.OrdinalIgnoreCase);
+  }
+
+  private static string ResolveEffectiveBridgeStatus(JObject bridge, DateTimeOffset now, TimeSpan bridgeStaleAfter)
+  {
+    if (IsBridgeStale(bridge, now, bridgeStaleAfter))
+    {
+      return "offline";
+    }
+
+    return bridge.Value<string>("status") ?? "unknown";
+  }
+
+  private static bool IsBridgeStale(JObject bridge, DateTimeOffset now, TimeSpan bridgeStaleAfter)
+  {
+    var lastSeenAt = GetBridgeLastSeenAt(bridge);
+
+    if (lastSeenAt == DateTimeOffset.MinValue)
+    {
+      lastSeenAt = GetBridgeCreatedAt(bridge);
+    }
+
+    if (lastSeenAt == DateTimeOffset.MinValue)
+    {
+      return false;
+    }
+
+    return now - lastSeenAt >= bridgeStaleAfter;
   }
 
   private static DateTimeOffset GetBridgeLastSeenAt(JObject bridge)
