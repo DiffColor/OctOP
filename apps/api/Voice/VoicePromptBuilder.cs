@@ -12,9 +12,11 @@ public sealed class VoicePromptBuilder
     var threadStatus = Normalize(request.ThreadStatusLabel, "상태 미확인");
     var latestUserText = Normalize(request.LatestUserText, "아직 최근 사용자 발화가 없습니다.");
     var latestAssistantText = Normalize(request.LatestAssistantText, "아직 최근 응답이 없습니다.");
+    var priorityInstructionBlock = BuildPriorityInstructionBlock(request);
     var sections = new List<string>
     {
       "당신은 OctOP의 실시간 음성 비서입니다.",
+      priorityInstructionBlock,
       "항상 한국어로 짧고 자연스럽고 분명하게 말합니다.",
       "초기 대화의 주도권은 현재 Realtime 세션이 가집니다.",
       "사용자와 대화하며 작업 의도와 필요한 맥락을 짧게 확인하고, app-server에 전달할 때는 대화 내용을 요약한 핵심 작업 프롬프트로 정리합니다.",
@@ -56,6 +58,9 @@ public sealed class VoicePromptBuilder
 
   public string BuildTranscriptionPrompt(VoiceSessionStartRequest request)
   {
+    var developerInstructions = MergeInstructionTexts(
+      request.ProjectDeveloperInstructions,
+      request.ThreadDeveloperInstructions);
     var fragments = new List<string>
     {
       $"프로젝트: {Normalize(request.ProjectName, "프로젝트 미지정")}",
@@ -64,6 +69,8 @@ public sealed class VoicePromptBuilder
       "전사 목적: 사용자 발화를 정확히 받아 app-server 작업 위임과 상태 보고에 사용"
     };
 
+    AppendInlineFragment(fragments, "기본지침", request.ProjectBaseInstructions);
+    AppendInlineFragment(fragments, "개발지침", developerInstructions);
     AppendInlineFragment(fragments, "작업 경로", request.ProjectWorkspacePath);
     AppendInlineFragment(fragments, "프로그램 요약", request.ProjectProgramSummary);
     AppendInlineFragment(fragments, "파일 정보", request.ThreadFileContextSummary);
@@ -73,6 +80,52 @@ public sealed class VoicePromptBuilder
 
     var prompt = string.Join(" | ", fragments.Where(fragment => !string.IsNullOrWhiteSpace(fragment))).Trim();
     return prompt.Length <= 900 ? prompt : $"{prompt[..900].TrimEnd()}…";
+  }
+
+  private static string BuildPriorityInstructionBlock(VoiceSessionStartRequest request)
+  {
+    var baseInstructions = NormalizeInstructionText(request.ProjectBaseInstructions);
+    var developerInstructions = MergeInstructionTexts(
+      request.ProjectDeveloperInstructions,
+      request.ThreadDeveloperInstructions);
+
+    if (string.IsNullOrWhiteSpace(baseInstructions) && string.IsNullOrWhiteSpace(developerInstructions))
+    {
+      return string.Empty;
+    }
+
+    var sections = new List<string>
+    {
+      "[세션 최우선 지침]",
+      "아래 기본지침과 개발지침은 참고사항이 아니라 현재 음성 세션의 최우선 시스템 규칙입니다.",
+      "첫 응답, 첫 함수 호출, 첫 작업 요약부터 이미 적용된 상태로 행동하고 다른 운영 문구와 충돌하면 아래 지침을 우선합니다."
+    };
+
+    if (!string.IsNullOrWhiteSpace(baseInstructions))
+    {
+      sections.Add($"[기본지침]\n{baseInstructions}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(developerInstructions))
+    {
+      sections.Add($"[개발지침]\n{developerInstructions}");
+    }
+
+    return string.Join("\n\n", sections);
+  }
+
+  private static string MergeInstructionTexts(params string?[] values)
+  {
+    return string.Join(
+      "\n\n",
+      values
+        .Select(NormalizeInstructionText)
+        .Where(value => !string.IsNullOrWhiteSpace(value)));
+  }
+
+  private static string NormalizeInstructionText(string? value)
+  {
+    return value?.Trim() ?? string.Empty;
   }
 
   private static string Normalize(string? value, string fallback)

@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import VoiceOrb from "./VoiceOrb.jsx";
 
+const SUBTITLE_VISIBLE_LINE_COUNT = 2;
+const SUBTITLE_MAX_CHARS_PER_LINE = 23;
+
 const VOICE_ORB_PALETTE = [
   {
     color: "#6ef8ff",
@@ -59,6 +62,94 @@ const VOICE_ORB_ERROR_PALETTE = [
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeSubtitleText(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitSubtitleToken(token, maxCharsPerLine) {
+  const normalizedToken = String(token ?? "").trim();
+
+  if (!normalizedToken) {
+    return [];
+  }
+
+  if (normalizedToken.length <= maxCharsPerLine) {
+    return [normalizedToken];
+  }
+
+  const chunks = [];
+
+  for (let start = 0; start < normalizedToken.length; start += maxCharsPerLine) {
+    chunks.push(normalizedToken.slice(start, start + maxCharsPerLine));
+  }
+
+  return chunks;
+}
+
+function wrapSubtitleLines(text, maxCharsPerLine = SUBTITLE_MAX_CHARS_PER_LINE) {
+  const normalizedText = normalizeSubtitleText(text);
+
+  if (!normalizedText) {
+    return [];
+  }
+
+  const tokens = normalizedText
+    .split(" ")
+    .flatMap((token) => splitSubtitleToken(token, maxCharsPerLine))
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
+    return [];
+  }
+
+  const lines = [];
+  let currentLine = "";
+
+  tokens.forEach((token) => {
+    if (!currentLine) {
+      currentLine = token;
+      return;
+    }
+
+    const nextLine = `${currentLine} ${token}`;
+
+    if (nextLine.length <= maxCharsPerLine) {
+      currentLine = nextLine;
+      return;
+    }
+
+    lines.push(currentLine);
+    currentLine = token;
+  });
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines;
+}
+
+function buildSubtitleFrame(text) {
+  const allLines = wrapSubtitleLines(text);
+
+  if (allLines.length === 0) {
+    return {
+      lines: [],
+      transitionKey: "subtitle-empty"
+    };
+  }
+
+  const visibleStartIndex = Math.max(0, allLines.length - SUBTITLE_VISIBLE_LINE_COUNT);
+  const visibleLines = allLines.slice(visibleStartIndex);
+
+  return {
+    lines: visibleLines,
+    transitionKey: `subtitle-${visibleStartIndex}-${allLines.length}`
+  };
 }
 
 function buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }) {
@@ -189,6 +280,7 @@ export default function VoiceModePanel({
   const connectionLabel = buildConnectionLabel(connectionState, micState);
   const hasAssistantTranscript = Boolean(String(errorMessage || latestAssistantText || "").trim());
   const hasUserTranscript = Boolean(String(latestUserText ?? "").trim());
+  const subtitleFrame = useMemo(() => buildSubtitleFrame(liveTranscript), [liveTranscript]);
   const subtitleToneClassName = [
     "voice-mode-panel__subtitle-bubble",
     hasAssistantTranscript ? "" : "is-placeholder",
@@ -304,10 +396,20 @@ export default function VoiceModePanel({
                   aria-live={errorMessage ? "assertive" : "polite"}
                   aria-atomic="true"
                 >
-                  <span className="voice-mode-panel__subtitle-speaker" aria-hidden="true">
-                    OctOP AI
-                  </span>
-                  <p className="voice-mode-panel__subtitle-text">{liveTranscript}</p>
+                  <span className="voice-mode-panel__sr-only">OctOP AI 자막</span>
+                  <div key={subtitleFrame.transitionKey} className="voice-mode-panel__subtitle-window">
+                    <div
+                      className={`voice-mode-panel__subtitle-text ${
+                        subtitleFrame.lines.length === 1 ? "is-single-line" : ""
+                      }`.trim()}
+                    >
+                      {subtitleFrame.lines.map((line, index) => (
+                        <span key={`${subtitleFrame.transitionKey}-${index}`} className="voice-mode-panel__subtitle-line">
+                          {line}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </article>
               </div>
             </div>
