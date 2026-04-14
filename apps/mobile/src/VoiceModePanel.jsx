@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import VoiceOrb from "./VoiceOrb.jsx";
 
-const SUBTITLE_VISIBLE_LINE_COUNT = 2;
+const SUBTITLE_VISIBLE_LINE_COUNT = 3;
 const SUBTITLE_MAX_CHARS_PER_LINE = 23;
 
 const VOICE_ORB_PALETTE = [
@@ -224,6 +224,8 @@ export default function VoiceModePanel({
   micState = "idle",
   isListening = false,
   isResponding = false,
+  inputAudioLevel = 0,
+  outputAudioLevel = 0,
   audioLevel = 0,
   levelHistory = [],
   inputDevices = [],
@@ -281,6 +283,12 @@ export default function VoiceModePanel({
   const hasAssistantTranscript = Boolean(String(errorMessage || latestAssistantText || "").trim());
   const hasUserTranscript = Boolean(String(latestUserText ?? "").trim());
   const subtitleFrame = useMemo(() => buildSubtitleFrame(liveTranscript), [liveTranscript]);
+  const subtitleLineCountClassName =
+    subtitleFrame.lines.length <= 1
+      ? "is-single-line"
+      : subtitleFrame.lines.length === 2
+        ? "is-two-lines"
+        : "is-three-lines";
   const subtitleToneClassName = [
     "voice-mode-panel__subtitle-bubble",
     hasAssistantTranscript ? "" : "is-placeholder",
@@ -378,6 +386,8 @@ export default function VoiceModePanel({
             >
               <div className="voice-mode-panel__orb-shell" aria-hidden="true">
                 <VoiceOrb
+                  inputAudioLevel={inputAudioLevel}
+                  outputAudioLevel={outputAudioLevel}
                   audioLevel={audioLevel}
                   levelHistory={levelHistory}
                   isListening={isListening}
@@ -400,7 +410,7 @@ export default function VoiceModePanel({
                   <div key={subtitleFrame.transitionKey} className="voice-mode-panel__subtitle-window">
                     <div
                       className={`voice-mode-panel__subtitle-text ${
-                        subtitleFrame.lines.length === 1 ? "is-single-line" : ""
+                        subtitleLineCountClassName
                       }`.trim()}
                     >
                       {subtitleFrame.lines.map((line, index) => (

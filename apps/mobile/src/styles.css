@@ -1815,7 +1815,17 @@ svg {
 }
 
 .voice-mode-panel__subtitle-text.is-single-line {
-  min-height: calc(1.24em * 2);
+  min-height: calc(1.24em * 3);
+  align-content: center;
+}
+
+.voice-mode-panel__subtitle-text.is-two-lines {
+  min-height: calc(1.24em * 3);
+  align-content: center;
+}
+
+.voice-mode-panel__subtitle-text.is-three-lines {
+  min-height: calc(1.24em * 3);
   align-content: center;
 }
 

@@ -71,6 +71,13 @@ function mixNumber(a, b, amount) {
   return a + (b - a) * amount;
 }
 
+function easeToward(current, target, deltaSeconds, risePerSecond, fallPerSecond) {
+  const safeDelta = clamp(Number(deltaSeconds) || 0, 1 / 240, 0.08);
+  const rate = target > current ? risePerSecond : fallPerSecond;
+  const amount = 1 - Math.exp(-Math.max(0.01, rate) * safeDelta);
+  return current + (target - current) * amount;
+}
+
 function normalizeNumber(value, fallback, min, max) {
   const next = Number(value);
 
@@ -252,18 +259,22 @@ function ensureFluidBuffer(bufferRef, resolution) {
 
 function buildFluidBlobFrame(models, time, energy, motionScale) {
   return models.map((model, index) => {
-    const drive = time * model.speed * motionScale * (0.82 + energy * 0.88) + model.phase;
-    const driftX = Math.sin(time * 0.54 + model.phase * 1.3) * model.drift;
-    const driftY = Math.cos(time * 0.47 + model.phase * 0.9) * model.drift * 0.72;
-    const orbitX = model.orbitX * (1 + Math.sin(drive * 0.41 + index) * 0.12);
-    const orbitY = model.orbitY * (1 + Math.cos(drive * 0.36 - index * 0.4) * 0.1);
+    const drive = time * model.speed * motionScale * (0.64 + energy * 0.42) + model.phase;
+    const driftX = Math.sin(time * 0.31 + model.phase * 1.3) * model.drift * 0.58;
+    const driftY = Math.cos(time * 0.27 + model.phase * 0.9) * model.drift * 0.42;
+    const orbitX = model.orbitX * (1 + Math.sin(drive * 0.33 + index) * 0.06);
+    const orbitY = model.orbitY * (1 + Math.cos(drive * 0.28 - index * 0.4) * 0.05);
 
     return {
-      x: Math.cos(drive) * orbitX + Math.sin(drive * 0.56 + model.phase) * 0.05 + driftX,
-      y: Math.sin(drive * model.yFrequency) * orbitY + Math.cos(drive * 0.72 - model.phase) * 0.05 + driftY + model.verticalBias * (0.42 + energy * 0.48),
-      radius: model.radius * (1 + Math.sin(drive * 1.16 + model.phase) * 0.14 + energy * 0.14),
-      stretchX: 1 + Math.sin(drive * 0.88) * 0.22,
-      stretchY: model.stretch + Math.cos(drive * 1.03) * 0.18,
+      x: Math.cos(drive) * orbitX + Math.sin(drive * 0.42 + model.phase) * 0.028 + driftX,
+      y:
+        Math.sin(drive * model.yFrequency) * orbitY +
+        Math.cos(drive * 0.51 - model.phase) * 0.026 +
+        driftY +
+        model.verticalBias * (0.34 + energy * 0.22),
+      radius: model.radius * (1 + Math.sin(drive * 0.82 + model.phase) * 0.08 + energy * 0.08),
+      stretchX: 1 + Math.sin(drive * 0.58) * 0.14,
+      stretchY: model.stretch + Math.cos(drive * 0.64) * 0.11,
       density: model.density,
       swirl: model.swirl,
       phase: model.phase
@@ -590,6 +601,8 @@ function drawSpecularHighlights(context, cx, cy, radius, palette, energy) {
 }
 
 export default function VoiceOrb({
+  inputAudioLevel = 0,
+  outputAudioLevel = 0,
   audioLevel = 0,
   levelHistory = [],
   isListening = false,
@@ -601,26 +614,35 @@ export default function VoiceOrb({
   const fluidBufferRef = useRef({ canvas: null, context: null, imageData: null, resolution: 0 });
   const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
   const drawStateRef = useRef({
+    inputAudioLevel,
+    outputAudioLevel,
     audioLevel,
     levelHistory,
     isListening,
     isResponding,
     connectionState
   });
-  const smoothedLevelRef = useRef(0);
+  const smoothedInputLevelRef = useRef(0);
+  const smoothedOutputLevelRef = useRef(0);
+  const smoothedCombinedLevelRef = useRef(0);
+  const motionEnergyRef = useRef(0.12);
+  const motionTimeRef = useRef(0);
+  const lastFrameTimeRef = useRef(0);
 
   const resolvedVisualConfig = useMemo(() => resolveVisualConfig(visualConfig), [visualConfig]);
   const fluidModels = useMemo(() => createFluidModels(resolvedVisualConfig.fluidBlobCount), [resolvedVisualConfig.fluidBlobCount]);
 
   useEffect(() => {
     drawStateRef.current = {
+      inputAudioLevel,
+      outputAudioLevel,
       audioLevel,
       levelHistory,
       isListening,
       isResponding,
       connectionState
     };
-  }, [audioLevel, connectionState, isListening, isResponding, levelHistory]);
+  }, [audioLevel, connectionState, inputAudioLevel, isListening, isResponding, levelHistory, outputAudioLevel]);
 
   useEffect(() => {
     let raf = 0;
@@ -657,23 +679,44 @@ export default function VoiceOrb({
       const cx = width / 2;
       const cy = height / 2;
       const radius = Math.min(width, height) * 0.31;
-      const time = performance.now() * 0.001;
+      const now = performance.now();
+      const previousFrameTime = lastFrameTimeRef.current || now;
+      const deltaSeconds = clamp((now - previousFrameTime) / 1000, 1 / 120, 1 / 24);
+      lastFrameTimeRef.current = now;
       const state = drawStateRef.current;
       const history = resolveHistory(state.levelHistory);
       const historyAverage = history.reduce((sum, entry) => sum + entry, 0) / history.length;
       const historyPeak = history.reduce((maxValue, entry) => Math.max(maxValue, entry), 0);
-      const responseBoost = state.isResponding ? 0.22 : 0;
-      const listeningBoost = state.isListening ? 0.12 : 0;
-      const targetLevel = clamp(Number(state.audioLevel) + responseBoost + listeningBoost, 0, 1.24);
-      const smoothed = smoothedLevelRef.current + (targetLevel - smoothedLevelRef.current) * 0.14;
-      const energy = clamp(smoothed * 0.74 + historyAverage * 0.44 + historyPeak * 0.2, 0.1, 1.18);
+      const inputLevel = clamp(Number(state.inputAudioLevel ?? state.audioLevel) || 0, 0, 1);
+      const outputLevel = clamp(Number(state.outputAudioLevel ?? state.audioLevel) || 0, 0, 1);
+      const smoothedInput = easeToward(smoothedInputLevelRef.current, inputLevel, deltaSeconds, 9.5, 4.2);
+      const smoothedOutput = easeToward(smoothedOutputLevelRef.current, outputLevel, deltaSeconds, 10.5, 4.8);
+      const combinedTarget = clamp(
+        Math.max(smoothedInput * 0.88, smoothedOutput * 1.02, smoothedInput * 0.38 + smoothedOutput * 0.8, Number(state.audioLevel) || 0),
+        0,
+        1
+      );
+      const smoothedCombined = easeToward(smoothedCombinedLevelRef.current, combinedTarget, deltaSeconds, 8.2, 3.8);
+      const baseActivity = (state.isResponding ? 0.05 : 0) + (state.isListening ? 0.03 : 0);
+      const targetEnergy = clamp(0.12 + smoothedCombined * 0.68 + historyAverage * 0.18 + historyPeak * 0.08 + baseActivity, 0.12, 0.98);
+      const energy = easeToward(motionEnergyRef.current, targetEnergy, deltaSeconds, 5.6, 2.4);
       const activePalette = state.connectionState === "error" ? resolvedVisualConfig.errorPalette : resolvedVisualConfig.palette;
-      const motionScale = resolvedVisualConfig.motionScale * (state.isResponding ? 1.14 : state.isListening ? 1.02 : 0.92);
+      const motionScale =
+        resolvedVisualConfig.motionScale *
+        mixNumber(0.72, 1.02, energy) *
+        mixNumber(0.94, 1.08, clamp(smoothedOutput * 0.7 + smoothedInput * 0.3, 0, 1));
+      const ambientAdvance = 0.18 + resolvedVisualConfig.motionScale * 0.08;
+      const reactiveAdvance = 0.16 + energy * 0.28 + smoothedOutput * 0.18 + smoothedInput * 0.1;
+      motionTimeRef.current += deltaSeconds * (ambientAdvance + reactiveAdvance);
+      const time = motionTimeRef.current;
       const fluidResolution = clamp(Math.round(radius * 0.92), 128, 196);
       const fluidBuffer = ensureFluidBuffer(fluidBufferRef, fluidResolution);
       const blobFrame = buildFluidBlobFrame(fluidModels, time, energy, motionScale);
 
-      smoothedLevelRef.current = smoothed;
+      smoothedInputLevelRef.current = smoothedInput;
+      smoothedOutputLevelRef.current = smoothedOutput;
+      smoothedCombinedLevelRef.current = smoothedCombined;
+      motionEnergyRef.current = energy;
       context.clearRect(0, 0, width, height);
       drawAtmosphere(context, width, height, cx, cy, radius, activePalette, energy);
       drawOuterShell(context, cx, cy, radius, activePalette, energy);

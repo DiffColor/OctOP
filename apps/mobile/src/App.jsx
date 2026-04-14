@@ -8753,7 +8753,9 @@ function ThreadDetail({
     onSubmitPrompt: handleVoicePromptSubmit
   });
   const voicePanelAssistantText =
-    voiceSession.latestAssistantTranscript || (voiceFollowupThreadReady ? voiceProgressReportText || voiceLinkedAssistantText : "");
+    voiceSession.latestAssistantSubtitle ||
+    voiceSession.latestAssistantTranscript ||
+    (voiceFollowupThreadReady ? voiceProgressReportText || voiceLinkedAssistantText : "");
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -9533,6 +9535,8 @@ function ThreadDetail({
                 micState={voiceSession.micState}
                 isListening={voiceSession.isListening}
                 isResponding={voiceSession.isResponding}
+                inputAudioLevel={voiceSession.inputAudioLevel}
+                outputAudioLevel={voiceSession.outputAudioLevel}
                 audioLevel={voiceSession.audioLevel}
                 levelHistory={voiceSession.levelHistory}
                 inputDevices={voiceSession.inputDevices}

@@ -17,12 +17,15 @@ function createInitialState() {
     micState: "idle",
     isListening: false,
     isResponding: false,
+    inputAudioLevel: 0,
+    outputAudioLevel: 0,
     audioLevel: 0,
     levelHistory: [...DEFAULT_VOICE_LEVEL_HISTORY],
     inputDevices: [{ deviceId: "default", label: "기본 마이크" }],
     selectedInputDeviceId: "default",
     latestUserTranscript: "",
     latestAssistantTranscript: "",
+    latestAssistantSubtitle: "",
     error: "",
     sessionId: ""
   };
@@ -237,6 +240,25 @@ function extractLatestAssistantMessageContent(messages) {
   return "";
 }
 
+function computeAnalyserLevel(analyser, frequencyData) {
+  if (!analyser || !frequencyData) {
+    return 0;
+  }
+
+  analyser.getByteFrequencyData(frequencyData);
+  let sum = 0;
+  let peak = 0;
+
+  for (let index = 0; index < frequencyData.length; index += 1) {
+    const normalized = frequencyData[index] / 255;
+    sum += normalized;
+    peak = Math.max(peak, normalized);
+  }
+
+  const average = frequencyData.length > 0 ? sum / frequencyData.length : 0;
+  return Math.min(1, average * 1.35 + peak * 0.55);
+}
+
 export default function useRealtimeVoiceSession({
   enabled = false,
   sessionContextKey = "",
@@ -265,11 +287,15 @@ export default function useRealtimeVoiceSession({
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const analyserRef = useRef(null);
-  const analyserDataRef = useRef(null);
+  const inputAudioContextRef = useRef(null);
+  const outputAudioContextRef = useRef(null);
+  const inputAnalyserRef = useRef(null);
+  const outputAnalyserRef = useRef(null);
+  const inputAnalyserDataRef = useRef(null);
+  const outputAnalyserDataRef = useRef(null);
   const animationFrameRef = useRef(0);
   const assistantTranscriptBufferRef = useRef("");
+  const assistantSubtitleBufferRef = useRef("");
   const userTranscriptBufferRef = useRef("");
   const connectInFlightRef = useRef(null);
   const disconnectingRef = useRef(false);
@@ -288,10 +314,12 @@ export default function useRealtimeVoiceSession({
     setState((current) => {
       const nextUserTranscript = current.latestUserTranscript || String(latestUserText ?? "").trim();
       const nextAssistantTranscript = current.latestAssistantTranscript || String(latestAssistantText ?? "").trim();
+      const nextAssistantSubtitle = current.latestAssistantSubtitle || nextAssistantTranscript;
 
       if (
         nextUserTranscript === current.latestUserTranscript &&
-        nextAssistantTranscript === current.latestAssistantTranscript
+        nextAssistantTranscript === current.latestAssistantTranscript &&
+        nextAssistantSubtitle === current.latestAssistantSubtitle
       ) {
         return current;
       }
@@ -299,7 +327,8 @@ export default function useRealtimeVoiceSession({
       return {
         ...current,
         latestUserTranscript: nextUserTranscript,
-        latestAssistantTranscript: nextAssistantTranscript
+        latestAssistantTranscript: nextAssistantTranscript,
+        latestAssistantSubtitle: nextAssistantSubtitle
       };
     });
   }, [latestAssistantText, latestUserText]);
@@ -381,14 +410,28 @@ export default function useRealtimeVoiceSession({
     }
 
     try {
-      analyserRef.current?.disconnect?.();
+      inputAnalyserRef.current?.disconnect?.();
     } catch {
       // ignore
     }
 
     try {
-      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-        await audioContextRef.current.close();
+      outputAnalyserRef.current?.disconnect?.();
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (inputAudioContextRef.current && inputAudioContextRef.current.state !== "closed") {
+        await inputAudioContextRef.current.close();
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (outputAudioContextRef.current && outputAudioContextRef.current.state !== "closed") {
+        await outputAudioContextRef.current.close();
       }
     } catch {
       // ignore
@@ -437,11 +480,15 @@ export default function useRealtimeVoiceSession({
     peerConnectionRef.current = null;
     dataChannelRef.current = null;
     localStreamRef.current = null;
-    audioContextRef.current = null;
-    analyserRef.current = null;
-    analyserDataRef.current = null;
+    inputAudioContextRef.current = null;
+    outputAudioContextRef.current = null;
+    inputAnalyserRef.current = null;
+    outputAnalyserRef.current = null;
+    inputAnalyserDataRef.current = null;
+    outputAnalyserDataRef.current = null;
     connectInFlightRef.current = null;
     assistantTranscriptBufferRef.current = preserveTranscript ? assistantTranscriptBufferRef.current : "";
+    assistantSubtitleBufferRef.current = preserveTranscript ? assistantSubtitleBufferRef.current : "";
     userTranscriptBufferRef.current = preserveTranscript ? userTranscriptBufferRef.current : "";
 
     setState((current) => ({
@@ -450,12 +497,15 @@ export default function useRealtimeVoiceSession({
       micState: "idle",
       isListening: false,
       isResponding: false,
+      inputAudioLevel: 0,
+      outputAudioLevel: 0,
       audioLevel: 0,
       levelHistory: [...DEFAULT_VOICE_LEVEL_HISTORY],
       error: "",
       sessionId: "",
       latestUserTranscript: preserveTranscript ? current.latestUserTranscript : "",
-      latestAssistantTranscript: preserveTranscript ? current.latestAssistantTranscript : ""
+      latestAssistantTranscript: preserveTranscript ? current.latestAssistantTranscript : "",
+      latestAssistantSubtitle: preserveTranscript ? current.latestAssistantSubtitle : ""
     }));
 
     disconnectingRef.current = false;
@@ -474,8 +524,8 @@ export default function useRealtimeVoiceSession({
     [disconnectSession]
   );
 
-  const startAudioLevelMeter = useCallback((stream) => {
-    if (typeof window === "undefined") {
+  const startAudioLevelMeter = useCallback((stream, kind = "input") => {
+    if (typeof window === "undefined" || !stream) {
       return;
     }
 
@@ -485,45 +535,64 @@ export default function useRealtimeVoiceSession({
       return;
     }
 
+    const isOutputMeter = kind === "output";
+    const audioContextRef = isOutputMeter ? outputAudioContextRef : inputAudioContextRef;
+    const analyserRef = isOutputMeter ? outputAnalyserRef : inputAnalyserRef;
+    const analyserDataRef = isOutputMeter ? outputAnalyserDataRef : inputAnalyserDataRef;
+
+    try {
+      analyserRef.current?.disconnect?.();
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+        void audioContextRef.current.close();
+      }
+    } catch {
+      // ignore
+    }
+
     const audioContext = new AudioContextConstructor();
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.82;
+    analyser.smoothingTimeConstant = isOutputMeter ? 0.9 : 0.86;
 
     const source = audioContext.createMediaStreamSource(stream);
     source.connect(analyser);
 
-    const frequencyData = new Uint8Array(analyser.frequencyBinCount);
     audioContextRef.current = audioContext;
-    analyserRef.current = source;
-    analyserDataRef.current = frequencyData;
+    analyserRef.current = analyser;
+    analyserDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+    void audioContext.resume?.().catch(() => {});
+
+    if (animationFrameRef.current) {
+      window.cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = 0;
+    }
 
     const tick = () => {
-      const activeAnalyser = analyser;
-      const activeData = analyserDataRef.current;
-
-      if (!activeAnalyser || !activeData) {
-        return;
-      }
-
-      activeAnalyser.getByteFrequencyData(activeData);
-      let sum = 0;
-      let peak = 0;
-
-      for (let index = 0; index < activeData.length; index += 1) {
-        const normalized = activeData[index] / 255;
-        sum += normalized;
-        peak = Math.max(peak, normalized);
-      }
-
-      const average = activeData.length > 0 ? sum / activeData.length : 0;
-      const nextLevel = Math.min(1, average * 1.35 + peak * 0.55);
+      const nextInputLevel = computeAnalyserLevel(inputAnalyserRef.current, inputAnalyserDataRef.current);
+      const nextOutputLevel = computeAnalyserLevel(outputAnalyserRef.current, outputAnalyserDataRef.current);
+      const combinedLevel = clamp(
+        Math.max(nextInputLevel * 0.92, nextOutputLevel * 1.04, nextInputLevel * 0.42 + nextOutputLevel * 0.78),
+        0,
+        1
+      );
 
       setState((current) => ({
         ...current,
-        audioLevel: nextLevel,
-        levelHistory: [...current.levelHistory.slice(-23), Math.max(0.08, nextLevel)]
+        inputAudioLevel: nextInputLevel,
+        outputAudioLevel: nextOutputLevel,
+        audioLevel: combinedLevel,
+        levelHistory: [...current.levelHistory.slice(-23), Math.max(0.04, combinedLevel)]
       }));
+
+      if (!inputAnalyserRef.current && !outputAnalyserRef.current) {
+        animationFrameRef.current = 0;
+        return;
+      }
 
       animationFrameRef.current = window.requestAnimationFrame(tick);
     };
@@ -548,10 +617,12 @@ export default function useRealtimeVoiceSession({
 
       if (accepted) {
         assistantTranscriptBufferRef.current = "";
+        assistantSubtitleBufferRef.current = "";
         setState((current) => ({
           ...current,
           isResponding: true,
-          error: ""
+          error: "",
+          latestAssistantSubtitle: ""
         }));
       }
 
@@ -575,10 +646,12 @@ export default function useRealtimeVoiceSession({
     queuedAppServerReportRef.current = null;
     appServerReportInFlightRef.current = true;
     assistantTranscriptBufferRef.current = "";
+    assistantSubtitleBufferRef.current = "";
     setState((current) => ({
       ...current,
       isResponding: true,
-      error: ""
+      error: "",
+      latestAssistantSubtitle: ""
     }));
     return true;
   }, [sendRealtimeClientEvent]);
@@ -788,9 +861,11 @@ export default function useRealtimeVoiceSession({
 
         if (handoffToNewThread) {
           assistantTranscriptBufferRef.current = "";
+          assistantSubtitleBufferRef.current = "";
           setState((current) => ({
             ...current,
             latestAssistantTranscript: "작업을 새 쓰레드로 전달했습니다. 새 Realtime 세션으로 전환합니다.",
+            latestAssistantSubtitle: "작업을 새 쓰레드로 전달했습니다. 새 Realtime 세션으로 전환합니다.",
             isResponding: false,
             error: ""
           }));
@@ -810,6 +885,7 @@ export default function useRealtimeVoiceSession({
         setState((current) => ({
           ...current,
           latestAssistantTranscript: assistantText,
+          latestAssistantSubtitle: current.latestAssistantSubtitle || assistantText,
           error: ""
         }));
       }
@@ -854,10 +930,12 @@ export default function useRealtimeVoiceSession({
 
         case "response.created": {
           assistantTranscriptBufferRef.current = "";
+          assistantSubtitleBufferRef.current = "";
           setState((current) => ({
             ...current,
             isResponding: true,
-            error: ""
+            error: "",
+            latestAssistantSubtitle: ""
           }));
           return;
         }
@@ -900,9 +978,11 @@ export default function useRealtimeVoiceSession({
           }
 
           assistantTranscriptBufferRef.current += delta;
+          assistantSubtitleBufferRef.current += delta;
           setState((current) => ({
             ...current,
-            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim()
+            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim(),
+            latestAssistantSubtitle: assistantSubtitleBufferRef.current.trim()
           }));
           return;
         }
@@ -915,9 +995,11 @@ export default function useRealtimeVoiceSession({
           }
 
           assistantTranscriptBufferRef.current = transcript;
+          assistantSubtitleBufferRef.current = transcript;
           setState((current) => ({
             ...current,
-            latestAssistantTranscript: transcript
+            latestAssistantTranscript: transcript,
+            latestAssistantSubtitle: transcript
           }));
           return;
         }
@@ -1093,7 +1175,7 @@ export default function useRealtimeVoiceSession({
 
         localStreamRef.current = localStream;
         await refreshInputDevices(selectedInputDeviceId);
-        startAudioLevelMeter(localStream);
+        startAudioLevelMeter(localStream, "input");
 
         const sessionPayload = await apiRequest(
           `/api/voice/realtime-token?login_id=${encodeURIComponent(loginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
@@ -1138,7 +1220,13 @@ export default function useRealtimeVoiceSession({
             return;
           }
 
-          remoteAudio.srcObject = event.streams[0];
+          const remoteStream = event.streams[0];
+
+          if (remoteStream) {
+            remoteAudio.srcObject = remoteStream;
+            startAudioLevelMeter(remoteStream, "output");
+          }
+
           void remoteAudio.play().catch(() => {});
         };
 
