@@ -288,24 +288,29 @@ export default function VoiceModePanel({
             </div>
 
             <div className="voice-mode-panel__transcript-shell is-bottom-zone">
+              <div className="voice-mode-panel__transcript-glow" aria-hidden="true" />
               <div className="voice-mode-panel__chat-stack">
-                <article
-                  className="voice-mode-panel__bubble is-user"
-                  data-testid="voice-user-bubble"
-                  data-speaker="You"
-                  aria-label="사용자 입력"
-                >
-                  <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
-                </article>
+                <div className="voice-mode-panel__bubble-lane is-user">
+                  <article
+                    className="voice-mode-panel__bubble is-user"
+                    data-testid="voice-user-bubble"
+                    data-speaker="You"
+                    aria-label="사용자 입력"
+                  >
+                    <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
+                  </article>
+                </div>
 
-                <article
-                  className="voice-mode-panel__bubble is-assistant"
-                  data-testid="voice-assistant-bubble"
-                  data-speaker="OctOP"
-                  aria-label="OctOP 응답"
-                >
-                  <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
-                </article>
+                <div className="voice-mode-panel__bubble-lane is-assistant">
+                  <article
+                    className="voice-mode-panel__bubble is-assistant"
+                    data-testid="voice-assistant-bubble"
+                    data-speaker="OctOP"
+                    aria-label="OctOP 응답"
+                  >
+                    <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
+                  </article>
+                </div>
               </div>
             </div>
           </div>

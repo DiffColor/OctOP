@@ -1696,38 +1696,69 @@ svg {
 }
 
 .voice-mode-panel__transcript-shell {
+  position: relative;
   width: 100%;
   margin-top: auto;
-  padding: 0 0.05rem 0.35rem;
+  padding: 0.1rem 0.05rem 0.95rem;
   min-height: 0;
+  isolation: isolate;
+}
+
+.voice-mode-panel__transcript-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 2rem;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(255, 81, 250, 0.18), transparent 34%),
+    radial-gradient(circle at 82% 68%, rgba(0, 238, 252, 0.18), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
+  filter: blur(12px);
+  opacity: 0.95;
+  pointer-events: none;
 }
 
 .voice-mode-panel__chat-stack {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
   width: 100%;
-  max-height: min(24vh, 13rem);
-  overflow-y: auto;
-  padding-right: 0.15rem;
+}
+
+.voice-mode-panel__bubble-lane {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.voice-mode-panel__bubble-lane.is-user {
+  justify-content: flex-start;
+}
+
+.voice-mode-panel__bubble-lane.is-assistant {
+  justify-content: flex-end;
 }
 
 .voice-mode-panel__bubble {
   position: relative;
-  width: auto;
-  max-width: min(100%, 20rem);
+  width: min(100%, 24rem);
+  max-width: min(74%, 24rem);
   min-height: 0;
   border-radius: 1.6rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 2.05rem 1.05rem 1.05rem;
-  backdrop-filter: blur(18px);
+  padding: 1.55rem 1.05rem 0.95rem;
+  background: transparent;
   overflow-wrap: anywhere;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .voice-mode-panel__bubble::before {
   content: attr(data-speaker);
   position: absolute;
-  top: 1rem;
+  top: 0.72rem;
   left: 1.05rem;
   color: rgba(255, 255, 255, 0.74);
   font-family: "Space Grotesk", "IBM Plex Sans KR", sans-serif;
@@ -1739,26 +1770,31 @@ svg {
 }
 
 .voice-mode-panel__bubble.is-user {
-  justify-self: start;
-  align-self: start;
   border-top-right-radius: 1rem;
-  background: linear-gradient(180deg, rgba(255, 81, 250, 0.12), rgba(60, 18, 75, 0.36));
-  box-shadow: 0 0 26px rgba(255, 81, 250, 0.08);
+  border-color: rgba(255, 81, 250, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 24px rgba(255, 81, 250, 0.14);
 }
 
 .voice-mode-panel__bubble.is-assistant {
-  justify-self: end;
-  align-self: start;
   border-top-left-radius: 1rem;
-  background: linear-gradient(180deg, rgba(0, 238, 252, 0.1), rgba(15, 46, 62, 0.36));
-  box-shadow: 0 0 26px rgba(0, 240, 255, 0.08);
+  border-color: rgba(0, 238, 252, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 24px rgba(0, 240, 255, 0.14);
 }
 
 .voice-mode-panel__bubble-text {
   margin: 0;
   color: rgba(255, 255, 255, 0.92);
   font-size: 0.94rem;
-  line-height: 1.65;
+  line-height: 1.42;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
 }
 
 .voice-mode-panel__side-heading {
@@ -1916,13 +1952,11 @@ svg {
     width: min(100%, 22rem);
   }
 
-  .voice-mode-panel__chat-stack {
-    grid-template-columns: minmax(0, 1fr);
-    max-height: min(26vh, 12rem);
+  .voice-mode-panel__transcript-shell {
+    padding-bottom: 0.85rem;
   }
 
   .voice-mode-panel__bubble {
-    min-height: auto;
     max-width: 100%;
   }
 
@@ -1955,7 +1989,8 @@ svg {
   }
 
   .voice-mode-panel__bubble {
-    padding: 1.95rem 0.95rem 1rem;
+    width: 100%;
+    padding: 1.9rem 0.95rem 0.95rem;
   }
 
   .voice-mode-panel__bubble::before {
