@@ -187,6 +187,16 @@ export default function VoiceModePanel({
   const peakPercent = Math.round(peakLevel * 100);
   const stateHeadline = buildVoiceModeHeadline({ connectionState, isListening, isResponding, micState });
   const connectionLabel = buildConnectionLabel(connectionState, micState);
+  const hasAssistantTranscript = Boolean(String(errorMessage || latestAssistantText || "").trim());
+  const hasUserTranscript = Boolean(String(latestUserText ?? "").trim());
+  const subtitleToneClassName = [
+    "voice-mode-panel__subtitle-bubble",
+    hasAssistantTranscript ? "" : "is-placeholder",
+    isResponding ? "is-speaking" : "",
+    connectionState === "error" || micState === "error" ? "is-error" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const signalNotes = useMemo(() => {
     const notes = [];
@@ -273,9 +283,8 @@ export default function VoiceModePanel({
 
             <div
               className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
-              aria-hidden="true"
             >
-              <div className="voice-mode-panel__orb-shell">
+              <div className="voice-mode-panel__orb-shell" aria-hidden="true">
                 <VoiceOrb
                   audioLevel={audioLevel}
                   levelHistory={levelHistory}
@@ -285,33 +294,30 @@ export default function VoiceModePanel({
                   visualConfig={orbVisualConfig}
                 />
               </div>
+
+              <div className="voice-mode-panel__subtitle-stage" aria-hidden={false}>
+                <div className="voice-mode-panel__subtitle-glow" aria-hidden="true" />
+                <article
+                  className={subtitleToneClassName}
+                  data-testid="voice-assistant-bubble"
+                  aria-label="OctOP 자막 응답"
+                  aria-live={errorMessage ? "assertive" : "polite"}
+                  aria-atomic="true"
+                >
+                  <span className="voice-mode-panel__subtitle-speaker" aria-hidden="true">
+                    OctOP AI
+                  </span>
+                  <p className="voice-mode-panel__subtitle-text">{liveTranscript}</p>
+                </article>
+              </div>
             </div>
 
             <div className="voice-mode-panel__transcript-shell is-bottom-zone">
               <div className="voice-mode-panel__transcript-glow" aria-hidden="true" />
-              <div className="voice-mode-panel__chat-stack">
-                <div className="voice-mode-panel__bubble-lane is-user">
-                  <article
-                    className="voice-mode-panel__bubble is-user"
-                    data-testid="voice-user-bubble"
-                    data-speaker="You"
-                    aria-label="사용자 입력"
-                  >
-                    <p className="voice-mode-panel__bubble-text">{userTranscript}</p>
-                  </article>
-                </div>
-
-                <div className="voice-mode-panel__bubble-lane is-assistant">
-                  <article
-                    className="voice-mode-panel__bubble is-assistant"
-                    data-testid="voice-assistant-bubble"
-                    data-speaker="OctOP"
-                    aria-label="OctOP 응답"
-                  >
-                    <p className="voice-mode-panel__bubble-text">{liveTranscript}</p>
-                  </article>
-                </div>
-              </div>
+              <article className={`voice-mode-panel__prompt-card ${hasUserTranscript ? "" : "is-placeholder"}`.trim()} data-testid="voice-user-bubble" aria-label="최근 사용자 입력">
+                <span className="voice-mode-panel__prompt-card-label">Recent Prompt</span>
+                <p className="voice-mode-panel__prompt-card-text">{userTranscript}</p>
+              </article>
             </div>
           </div>
 
