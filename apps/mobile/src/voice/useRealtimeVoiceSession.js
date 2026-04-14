@@ -148,6 +148,28 @@ function parseFunctionCallArguments(value) {
   return {};
 }
 
+function extractClientSecret(sessionPayload) {
+  const directValue = String(sessionPayload?.value ?? "").trim();
+
+  if (directValue) {
+    return directValue;
+  }
+
+  const nestedValue = String(sessionPayload?.client_secret?.value ?? sessionPayload?.client_secret ?? "").trim();
+  return nestedValue;
+}
+
+function extractRealtimeCallUrl(sessionPayload) {
+  const directCallUrl = String(sessionPayload?.call_url ?? "").trim();
+
+  if (directCallUrl) {
+    return directCallUrl;
+  }
+
+  const nestedCallUrl = String(sessionPayload?.session?.call_url ?? "").trim();
+  return nestedCallUrl || "https://api.openai.com/v1/realtime/calls";
+}
+
 function extractFunctionCallsFromResponse(response) {
   const outputItems = Array.isArray(response?.output) ? response.output : [];
 
@@ -177,7 +199,7 @@ function extractAssistantTextFromResponse(response) {
       const value =
         partType === "output_text" || partType === "text"
           ? String(contentPart?.text ?? "").trim()
-          : partType === "audio"
+          : partType === "audio" || partType === "output_audio"
             ? String(contentPart?.transcript ?? "").trim()
             : "";
 
@@ -899,6 +921,36 @@ export default function useRealtimeVoiceSession({
           return;
         }
 
+        case "response.output_audio_transcript.delta": {
+          const delta = String(event?.delta ?? "");
+
+          if (!delta) {
+            return;
+          }
+
+          assistantTranscriptBufferRef.current += delta;
+          setState((current) => ({
+            ...current,
+            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim()
+          }));
+          return;
+        }
+
+        case "response.output_audio_transcript.done": {
+          const transcript = String(event?.transcript ?? assistantTranscriptBufferRef.current ?? "").trim();
+
+          if (!transcript) {
+            return;
+          }
+
+          assistantTranscriptBufferRef.current = transcript;
+          setState((current) => ({
+            ...current,
+            latestAssistantTranscript: transcript
+          }));
+          return;
+        }
+
         case "response.done": {
           await handleRealtimeResponseDone(event?.response ?? null);
           return;
@@ -1098,8 +1150,8 @@ export default function useRealtimeVoiceSession({
           }
         );
 
-        const clientSecret = String(sessionPayload?.value ?? "").trim();
-        const callUrl = String(sessionPayload?.call_url ?? "https://api.openai.com/v1/realtime/calls").trim();
+        const clientSecret = extractClientSecret(sessionPayload);
+        const callUrl = extractRealtimeCallUrl(sessionPayload);
 
         if (!clientSecret) {
           throw new Error("OpenAI realtime client secret이 비어 있습니다.");

@@ -181,6 +181,37 @@ function buildRealtimeAssistantMessageResponse({
   };
 }
 
+function buildRealtimeAssistantAudioResponse({
+  responseId = 'resp-audio-1',
+  channel = 'voice_turn',
+  kind = '',
+  transcript = ''
+} = {}) {
+  return {
+    type: 'response.done',
+    response: {
+      id: responseId,
+      status: 'completed',
+      metadata: {
+        channel,
+        ...(kind ? { kind } : {})
+      },
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_audio',
+              transcript
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
 function createWorkspaceLayout() {
   return {
     loginId,
@@ -483,6 +514,7 @@ async function mockMobileApi(page, options = {}) {
   const startedIssueRequests = options.startedIssueRequests ?? [];
   const narrationRequests = options.narrationRequests ?? [];
   const voiceSessionFailure = options.voiceSessionFailure ?? null;
+  const voiceSessionResponseBody = options.voiceSessionResponseBody ?? null;
   const authoritativeResponseText = String(options.authoritativeAssistantContent ?? "").trim();
   let voiceIssueSequence = 0;
   let latestCreatedIssue = null;
@@ -777,17 +809,19 @@ async function mockMobileApi(page, options = {}) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          ok: true,
-          value: 'client-secret-test',
-          call_url: 'https://voice.test/mock-realtime-call',
-          bridge_id: bridgeId,
-          project_id: projectId,
-          thread_id: payload.thread_id || '',
-          session: {
-            id: `voice-session-${++voiceSessionSequence}`
+        body: JSON.stringify(
+          voiceSessionResponseBody ?? {
+            ok: true,
+            value: 'client-secret-test',
+            call_url: 'https://voice.test/mock-realtime-call',
+            bridge_id: bridgeId,
+            project_id: projectId,
+            thread_id: payload.thread_id || '',
+            session: {
+              id: `voice-session-${++voiceSessionSequence}`
+            }
           }
-        })
+        )
       });
       return;
     }
@@ -1081,4 +1115,37 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
 
   await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
   await expect(page.getByTestId('voice-assistant-bubble')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');
+});
+
+test('중첩된 client secret과 output_audio transcript 응답을 처리한다', async ({ page }) => {
+  await seedMobileSession(page);
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page, {
+    voiceSessionResponseBody: {
+      ok: true,
+      client_secret: {
+        value: 'client-secret-test'
+      },
+      call_url: 'https://voice.test/mock-realtime-call',
+      bridge_id: bridgeId,
+      project_id: projectId,
+      thread_id: '',
+      session: {
+        id: 'voice-session-nested'
+      }
+    }
+  });
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+  await openVoiceModeByLongPressingSend(page);
+  await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
+
+  await page.evaluate((payload) => {
+    window.__voiceTest.dataChannel.emit(payload);
+  }, buildRealtimeAssistantAudioResponse({
+    transcript: 'output_audio transcript도 정상 반영됩니다.'
+  }));
+
+  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText('output_audio transcript도 정상 반영됩니다.');
 });

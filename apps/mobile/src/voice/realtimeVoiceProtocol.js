@@ -11,6 +11,7 @@ export function parseRealtimeJson(value) {
 
 export function describeVoiceError(error) {
   const message = String(error?.message ?? "").trim();
+  const detail = String(error?.payload?.detail ?? "").trim();
   const normalized = message.toLowerCase();
 
   if (!message) {
@@ -26,7 +27,7 @@ export function describeVoiceError(error) {
   }
 
   if (normalized.includes("openai")) {
-    return "OpenAI 음성 세션을 생성하지 못했습니다.";
+    return detail ? `OpenAI 음성 세션을 생성하지 못했습니다. ${detail}` : "OpenAI 음성 세션을 생성하지 못했습니다.";
   }
 
   return message;

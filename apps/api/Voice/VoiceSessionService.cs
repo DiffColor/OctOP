@@ -12,7 +12,6 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
   private readonly string _apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
   private readonly string _model = Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_MODEL") ?? "gpt-realtime";
   private readonly string _voice = Environment.GetEnvironmentVariable("OCTOP_OPENAI_REALTIME_VOICE") ?? "alloy";
-  private readonly string _apiBaseUrl = (Environment.GetEnvironmentVariable("OCTOP_OPENAI_API_BASE_URL") ?? "https://api.openai.com").TrimEnd('/');
   private readonly int _ttlSeconds = int.TryParse(Environment.GetEnvironmentVariable("OCTOP_VOICE_SESSION_TTL_SECONDS"), out var ttlSeconds)
     ? Math.Clamp(ttlSeconds, 60, 3600)
     : 600;
@@ -44,7 +43,7 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
         ["session"] = BuildSessionConfig(request)
       };
 
-      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_apiBaseUrl}/v1/realtime/client_secrets")
+      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, OpenAiApiUrlResolver.ResolveApiUrl("/realtime/client_secrets"))
       {
         Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
       };
@@ -61,7 +60,7 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
       var parsed = JsonNode.Parse(content) as JsonObject
         ?? throw new InvalidOperationException("voice_session_openai_invalid_response");
 
-      parsed["call_url"] = $"{_apiBaseUrl}/v1/realtime/calls";
+      parsed["call_url"] = OpenAiApiUrlResolver.ResolveApiUrl("/realtime/calls");
       return parsed;
     }
     catch (OperationCanceledException)
