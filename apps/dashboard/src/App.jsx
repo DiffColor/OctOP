@@ -2184,6 +2184,10 @@ function RichMessageContent({ content, tone = "dark" }) {
     tone === "brand"
       ? "border-slate-950/10 bg-slate-950/10 text-slate-950"
       : "border-white/10 bg-white/5 text-slate-100";
+  const textClassName =
+    tone === "brand"
+      ? "thread-detail-message-text whitespace-pre-wrap break-words text-sm leading-6"
+      : "thread-detail-message-text thread-detail-message-text--assistant whitespace-pre-wrap break-words text-[15px] leading-7";
 
   if (segments.length === 0) {
     return null;
@@ -2224,7 +2228,7 @@ function RichMessageContent({ content, tone = "dark" }) {
         }
 
         return (
-          <p key={`text-${index}`} className="whitespace-pre-wrap break-words text-sm leading-6">
+          <p key={`text-${index}`} className={textClassName}>
             {renderInlineCodeTokens(segment.value, inlineCodeClassName, `segment-${index}`)}
           </p>
         );
@@ -5849,16 +5853,13 @@ function ThreadDetailModal({
                             ? thread?.attachments
                             : []
                       );
+                      const messageBubbleClassName = userMessage
+                        ? "max-w-full rounded-3xl bg-sky-500 px-4 py-3 text-slate-950 xl:max-w-[92%]"
+                        : "thread-detail-message-bubble--assistant rounded-[2rem] border border-slate-800 bg-slate-900/95 px-5 py-4 text-slate-100 shadow-[0_18px_42px_rgba(2,6,23,0.24)]";
 
                       return (
                         <div key={message.id} className={`flex ${userMessage ? "justify-end" : "justify-start"}`}>
-                          <div
-                            className={`max-w-full rounded-3xl px-4 py-3 xl:max-w-[92%] ${
-                              userMessage
-                                ? "bg-sky-500 text-slate-950"
-                                : "border border-slate-800 bg-slate-900 text-slate-100"
-                            }`}
-                          >
+                          <div className={messageBubbleClassName}>
                             <div className="mb-2 flex items-center gap-2 text-[11px]">
                               <span className={`font-semibold ${userMessage ? "text-slate-950/80" : "text-slate-400"}`}>
                                 {userMessage ? copy.detail.request : copy.detail.response}
