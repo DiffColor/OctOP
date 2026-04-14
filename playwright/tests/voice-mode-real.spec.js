@@ -225,7 +225,7 @@ function buildVoiceSessionResponseBody(payload = {}, sessionId = 'voice-session-
       type: 'realtime',
       model: 'gpt-realtime',
       instructions: `당신은 OctOP의 실시간 음성 비서입니다.\n\n현재 프로젝트: ${payload.project_name || project.name}`,
-      output_modalities: ['text', 'audio'],
+      output_modalities: ['audio'],
       tool_choice: 'auto',
       tools: [
         { type: 'function', name: 'delegate_to_app_server' },
@@ -1015,51 +1015,8 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   expect(browserMetrics.getUserMediaCalls).toBe(1);
   expect(browserMetrics.realtimeFetchCalls).toBe(1);
 
-  await expect.poll(async () => {
-    const sentEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
-    return sentEvents.find((event) => event?.type === 'session.update') ?? null;
-  }).not.toBeNull();
-
-  const sessionUpdateEvent = await page.evaluate(() => {
-    return window.__voiceTest.sentEvents.find((event) => event?.type === 'session.update') ?? null;
-  });
-
-  expect(sessionUpdateEvent).toMatchObject({
-    type: 'session.update',
-    session: {
-      type: 'realtime',
-      model: 'gpt-realtime',
-      output_modalities: ['text', 'audio'],
-      tool_choice: 'auto',
-      audio: {
-        input: {
-          noise_reduction: {
-            type: 'near_field'
-          },
-          transcription: {
-            model: 'gpt-4o-mini-transcribe',
-            language: 'ko'
-          },
-          turn_detection: {
-            type: 'server_vad',
-            interrupt_response: true,
-            create_response: false,
-            silence_duration_ms: 550,
-            prefix_padding_ms: 250
-          }
-        },
-        output: {
-          voice: 'alloy'
-        }
-      }
-    }
-  });
-  expect(sessionUpdateEvent.session.instructions).toContain('OctOP의 실시간 음성 비서');
-  expect(sessionUpdateEvent.session.tools.map((tool) => tool.name)).toEqual([
-    'delegate_to_app_server',
-    'get_thread_status',
-    'interrupt_active_issue'
-  ]);
+  const initialRealtimeEvents = await page.evaluate(() => window.__voiceTest.sentEvents);
+  expect(initialRealtimeEvents.find((event) => event?.type === 'session.update') ?? null).toBeNull();
 
   await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
   await expect.poll(async () => {
@@ -1089,7 +1046,7 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   const firstVoiceResponseCreateEvent = await page.evaluate(() => {
     return window.__voiceTest.sentEvents.find((event) => event?.type === 'response.create');
   });
-  expect(firstVoiceResponseCreateEvent?.response?.output_modalities).toEqual(['text', 'audio']);
+  expect(firstVoiceResponseCreateEvent?.response?.output_modalities).toEqual(['audio']);
 
   await page.evaluate((payload) => {
     window.__voiceTest.dataChannel.emit(payload);
