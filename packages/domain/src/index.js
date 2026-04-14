@@ -97,6 +97,9 @@ const LOCAL_API_ORIGIN = "http://127.0.0.1:4000";
 const STATIC_WEB_HOSTNAMES = new Set([
   "octop-admin.pages.dev",
   "octop-mobile.pages.dev",
+  "octop-admin.ilycode.app",
+  "octop-mobile.ilycode.app",
+  "octop-m.ilycode.app",
   "octop.turtlelab.app",
   "octop-m.turtlelab.app"
 ]);

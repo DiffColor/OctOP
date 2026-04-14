@@ -43,7 +43,7 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
         ["session"] = BuildSessionConfig(request)
       };
 
-      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, OpenAiApiUrlResolver.ResolveApiUrl("/realtime/client_secrets"))
+      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, OpenAiApiUrlResolver.ResolveRealtimeApiUrl("/realtime/client_secrets"))
       {
         Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
       };
@@ -60,7 +60,7 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
       var parsed = JsonNode.Parse(content) as JsonObject
         ?? throw new InvalidOperationException("voice_session_openai_invalid_response");
 
-      parsed["call_url"] = OpenAiApiUrlResolver.ResolveApiUrl("/realtime/calls");
+      parsed["call_url"] = OpenAiApiUrlResolver.ResolveRealtimeApiUrl("/realtime/calls");
       return parsed;
     }
     catch (OperationCanceledException)

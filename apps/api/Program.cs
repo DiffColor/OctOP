@@ -345,7 +345,7 @@ var createVoiceSessionHandler = async (
         ["detail"] = detail
       }),
       "application/json; charset=utf-8",
-      statusCode: StatusCodes.Status502BadGateway);
+      statusCode: StatusCodes.Status424FailedDependency);
   }
   catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_openai_invalid_response", StringComparison.Ordinal))
   {
@@ -357,7 +357,7 @@ var createVoiceSessionHandler = async (
         ["code"] = "voice_session_openai_invalid_response"
       }),
       "application/json; charset=utf-8",
-      statusCode: StatusCodes.Status502BadGateway);
+      statusCode: StatusCodes.Status424FailedDependency);
   }
   catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_session_openai_request_failed:", StringComparison.Ordinal))
   {
@@ -371,7 +371,7 @@ var createVoiceSessionHandler = async (
         ["detail"] = detail
       }),
       "application/json; charset=utf-8",
-      statusCode: StatusCodes.Status502BadGateway);
+      statusCode: StatusCodes.Status424FailedDependency);
   }
 };
 
