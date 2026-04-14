@@ -247,6 +247,11 @@ export default function VoiceModePanel({
 
           <div className="voice-mode-panel__main-column">
             <div className="voice-mode-panel__topbar">
+              <div className={`voice-mode-panel__status-pill ${connectionState === "error" ? "is-error" : ""}`}>
+                <span className="voice-mode-panel__status-dot" aria-hidden="true" />
+                <span className="voice-mode-panel__status-pill-text">{stateHeadline}</span>
+              </div>
+
               <label className="voice-mode-panel__device-select" aria-label="마이크 입력 선택">
                 <select
                   className="voice-mode-panel__device-select-control"
@@ -266,11 +271,6 @@ export default function VoiceModePanel({
               </label>
             </div>
 
-            <div className={`voice-mode-panel__status-pill ${connectionState === "error" ? "is-error" : ""}`}>
-              <span className="voice-mode-panel__status-dot" aria-hidden="true" />
-              <span className="voice-mode-panel__status-pill-text">{stateHeadline}</span>
-            </div>
-
             <div
               className={`voice-mode-panel__blob-stage ${isResponding ? "is-speaking" : ""} ${connectionState === "error" ? "is-error" : ""}`}
               aria-hidden="true"
@@ -284,19 +284,6 @@ export default function VoiceModePanel({
                   connectionState={connectionState}
                   visualConfig={orbVisualConfig}
                 />
-              </div>
-            </div>
-
-            <div className="voice-mode-panel__mic-dock" aria-hidden="true">
-              <div className="voice-mode-panel__mic-button-shell">
-                <div className="voice-mode-panel__mic-button-core">
-                  <svg className="voice-mode-panel__mic-icon" fill="none" viewBox="0 0 24 24">
-                    <path
-                      d="M12 4.5a2.5 2.5 0 00-2.5 2.5v4.5a2.5 2.5 0 105 0V7A2.5 2.5 0 0012 4.5zm-5 6.25a.75.75 0 011.5 0 3.5 3.5 0 007 0 .75.75 0 011.5 0 5.002 5.002 0 01-4.25 4.942V18.5h2.25a.75.75 0 010 1.5H8.75a.75.75 0 010-1.5H11v-2.808A5.002 5.002 0 017 10.75z"
-                      fill="currentColor"
-                    />
-                  </svg>
-                </div>
               </div>
             </div>
 
@@ -362,8 +349,6 @@ export default function VoiceModePanel({
         </div>
 
         <footer className="voice-mode-panel__footer" data-testid="voice-mode-footer">
-          <div className="voice-mode-panel__footer-copy">{statusMessage}</div>
-
           <div className="voice-mode-panel__actions">
             <button type="button" onClick={onClose} className="voice-mode-panel__action-button is-primary" aria-label="음성입력 종료">
               <span className="voice-mode-panel__action-icon" aria-hidden="true">
