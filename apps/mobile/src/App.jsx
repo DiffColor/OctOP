@@ -10253,10 +10253,12 @@ function MainPage({
   ]);
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
+      const normalizedTitle = String(chat?.title ?? "").toLowerCase();
+      const normalizedLastMessage = String(chat?.last_message ?? "").toLowerCase();
       const matchesSearch =
         !searchKeyword ||
-        chat.title.toLowerCase().includes(searchKeyword) ||
-        (chat.last_message ?? "").toLowerCase().includes(searchKeyword);
+        normalizedTitle.includes(searchKeyword) ||
+        normalizedLastMessage.includes(searchKeyword);
 
       return matchesSearch;
     });
@@ -10270,11 +10272,13 @@ function MainPage({
   }, [effectiveThreadOrderByProjectId, selectedProjectId, selectedScope?.kind, threads]);
   const filteredThreads = useMemo(() => {
     return orderedThreads.filter((thread) => {
+      const normalizedTitle = String(thread?.title ?? "").toLowerCase();
+      const normalizedLastMessage = String(thread?.last_message ?? "").toLowerCase();
       const matchesProject = !selectedProjectId || thread.project_id === selectedProjectId;
       const matchesSearch =
         !searchKeyword ||
-        thread.title.toLowerCase().includes(searchKeyword) ||
-        thread.last_message.toLowerCase().includes(searchKeyword);
+        normalizedTitle.includes(searchKeyword) ||
+        normalizedLastMessage.includes(searchKeyword);
 
       return matchesProject && matchesSearch;
     });
@@ -11906,6 +11910,7 @@ function MainPage({
                 )
               ) : (
                 <ThreadDetail
+                  key={`split-thread-detail:${resolvedThread?.id ?? selectedThreadId ?? draftThreadProjectId ?? "empty"}`}
                   thread={resolvedThread}
                   project={threadProject}
                   bridgeId={selectedBridgeId}
@@ -11971,6 +11976,7 @@ function MainPage({
     return (
       <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
         <ThreadDetail
+          key={`thread-detail:${resolvedThread?.id ?? selectedThreadId ?? draftThreadProjectId ?? "empty"}`}
           thread={resolvedThread}
           project={threadProject}
           bridgeId={selectedBridgeId}
