@@ -6,6 +6,24 @@ import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js
 
 document.documentElement.dataset.octopSurface = "mobile";
 
+(() => {
+  const assetMismatchRecoveryHandledKey = "__octopAssetMismatchRecoveryHandledAt";
+
+  try {
+    const url = new URL(window.location.href);
+
+    if (url.searchParams.get("__octopAssetMismatchRecovery") !== "1") {
+      return;
+    }
+
+    window.sessionStorage?.setItem?.(assetMismatchRecoveryHandledKey, String(Date.now()));
+    url.searchParams.delete("__octopAssetMismatchRecovery");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // ignore malformed location values
+  }
+})();
+
 if ("serviceWorker" in navigator) {
   const SERVICE_WORKER_BUILD_ID = typeof __APP_BUILD_ID__ === "string" ? __APP_BUILD_ID__ : "dev";
   const VERSION_METADATA_URL = "/version.json";

@@ -2,6 +2,8 @@ const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "dev";
 const CACHE_NAME = `octop-dashboard-${BUILD_ID}`;
 const APP_SHELL = ["/", "/favicon.ico", "/icon-192.png", "/icon-512.png"];
 const PUSH_MESSAGE_TYPE = "octop.push.received";
+const ASSET_MISMATCH_RECOVERY_FLAG = "__octopAssetMismatchRecovery";
+let assetMismatchRecoveryPromise = null;
 
 const buildLaunchUrl = (payload) => {
   const explicitUrl = [payload?.launchUrl, payload?.url]
@@ -72,6 +74,83 @@ const cacheResponse = async (request, response) => {
 const removeCachedResponse = async (request) => {
   const cache = await caches.open(CACHE_NAME);
   await cache.delete(request);
+};
+
+const buildAssetMismatchRecoveryResponse = (requestUrl, destination = "") => {
+  const normalizedDestination = String(destination ?? "").trim().toLowerCase();
+  const pathname = String(requestUrl?.pathname ?? "").toLowerCase();
+
+  if (
+    normalizedDestination === "script" ||
+    normalizedDestination === "worker" ||
+    pathname.endsWith(".js") ||
+    pathname.endsWith(".mjs")
+  ) {
+    return new Response("export {};", {
+      status: 200,
+      headers: {
+        "Content-Type": "text/javascript; charset=utf-8",
+        "Cache-Control": "no-store"
+      }
+    });
+  }
+
+  if (normalizedDestination === "style" || pathname.endsWith(".css")) {
+    return new Response("/* octop asset mismatch recovery */", {
+      status: 200,
+      headers: {
+        "Content-Type": "text/css; charset=utf-8",
+        "Cache-Control": "no-store"
+      }
+    });
+  }
+
+  return Response.error();
+};
+
+const recoverFromAssetMismatch = async () => {
+  if (assetMismatchRecoveryPromise) {
+    return assetMismatchRecoveryPromise;
+  }
+
+  assetMismatchRecoveryPromise = (async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.delete("/");
+
+    const clients = await self.clients.matchAll({
+      type: "window",
+      includeUncontrolled: true
+    });
+
+    await Promise.allSettled(
+      clients.map(async (client) => {
+        const targetUrl = new URL(client?.url || "/", self.location.origin);
+
+        if (targetUrl.searchParams.get(ASSET_MISMATCH_RECOVERY_FLAG) !== "1") {
+          targetUrl.searchParams.set(ASSET_MISMATCH_RECOVERY_FLAG, "1");
+        }
+
+        try {
+          if (typeof client.navigate === "function") {
+            await client.navigate(targetUrl.toString());
+            return;
+          }
+        } catch {
+          // ignore navigate failures and continue
+        }
+
+        try {
+          await client.focus?.();
+        } catch {
+          // ignore focus failures
+        }
+      })
+    );
+  })().finally(() => {
+    assetMismatchRecoveryPromise = null;
+  });
+
+  return assetMismatchRecoveryPromise;
 };
 
 self.addEventListener("install", (event) => {
@@ -169,7 +248,8 @@ self.addEventListener("fetch", (event) => {
 
         if (assetRequest && isHtmlResponse(response)) {
           await removeCachedResponse(event.request);
-          return response;
+          void recoverFromAssetMismatch();
+          return buildAssetMismatchRecoveryResponse(requestUrl, event.request.destination);
         }
 
         await cacheResponse(event.request, response);

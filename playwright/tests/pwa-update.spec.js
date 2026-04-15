@@ -20,6 +20,7 @@ const PWA_UPDATE_ACTIVATOR_KEY = '__octopMobilePwaUpdateActivator';
 const PWA_UPDATE_READY_EVENT = 'octop.mobile.pwa.update-ready';
 const QUEUED_PWA_UPDATE_BUILD_ID_KEY = '__octopMobileQueuedPwaUpdateBuildId';
 const SESSION_KEY = 'octop.mobile.session';
+const ASSET_MISMATCH_RECOVERY_HANDLED_KEY = '__octopAssetMismatchRecoveryHandledAt';
 
 const loginId = 'playwright-user';
 const bridgeId = 'bridge-pwa';
@@ -52,6 +53,7 @@ class SwitchableStaticServer {
     this.root = path.resolve(initialRoot);
     this.server = http.createServer(this.handleRequest.bind(this));
     this.listening = false;
+    this.fallbackMissingAssetRequestsToIndexHtml = false;
   }
 
   async start(port) {
@@ -96,6 +98,10 @@ class SwitchableStaticServer {
     this.root = path.resolve(nextRoot);
   }
 
+  async setFallbackMissingAssetRequestsToIndexHtml(enabled) {
+    this.fallbackMissingAssetRequestsToIndexHtml = enabled === true;
+  }
+
   async handleRequest(req, res) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405);
@@ -118,6 +124,11 @@ class SwitchableStaticServer {
       res.end(asset.body);
     } catch (error) {
       if (error.code === 'ENOENT') {
+        if (this.fallbackMissingAssetRequestsToIndexHtml) {
+          await this.serveIndex(res, req.method);
+          return;
+        }
+
         if (req.headers['accept'] && req.headers['accept'].includes('text/html')) {
           await this.serveIndex(res, req.method);
           return;
@@ -566,5 +577,71 @@ test.describe('모바일 PWA 업데이트 통보', () => {
 
     await expect(page.getByText('업데이트가 준비되었습니다')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '지금 새로고침' })).toHaveCount(0);
+  });
+
+  test('누락된 JS asset 요청에 index.html이 잘못 반환돼도 서비스워커가 자동 복구한다', async ({ page }) => {
+    const consoleErrors = [];
+
+    page.on('console', (message) => {
+      if (message.type() === 'error') {
+        consoleErrors.push(message.text());
+      }
+    });
+
+    await prepareMobileShell(page);
+    await page.goto(BASE_URL, { waitUntil: 'load' });
+    await waitForMobileShell(page);
+    await waitForServiceWorkerReady(page);
+
+    await page.reload({ waitUntil: 'load' });
+    await waitForMobileShell(page);
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30_000 });
+
+    const entryAssetPath = await page.evaluate(() => {
+      const entryScript = [...document.querySelectorAll('script[type="module"][src]')].find((element) =>
+        element.getAttribute('src')?.includes('/assets/')
+      );
+
+      if (!entryScript?.src) {
+        throw new Error('entry asset script not found');
+      }
+
+      return new URL(entryScript.src, window.location.href).pathname;
+    });
+
+    const missingAssetProbePath = `${entryAssetPath}?playwright-missing-asset=1`;
+
+    await page.evaluate(async (assetPath) => {
+      const cacheKeys = await caches.keys();
+
+      await Promise.all(
+        cacheKeys.map(async (cacheKey) => {
+          const cache = await caches.open(cacheKey);
+          await cache.delete(assetPath);
+        })
+      );
+    }, missingAssetProbePath);
+
+    await server.setRoot(LATEST_BUILD_DIR);
+    await server.setFallbackMissingAssetRequestsToIndexHtml(true);
+
+    await page.evaluate((assetPath) => {
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = assetPath;
+      script.dataset.playwrightMissingAssetProbe = 'true';
+      document.body.appendChild(script);
+    }, missingAssetProbePath);
+
+    await page.waitForFunction(
+      (storageKey) => window.sessionStorage.getItem(storageKey) !== null,
+      ASSET_MISMATCH_RECOVERY_HANDLED_KEY,
+      { timeout: 30_000 }
+    );
+    await waitForMobileShell(page);
+
+    expect(consoleErrors.find((entry) => entry.includes('Expected a JavaScript-or-Wasm module script')) ?? null).toBeNull();
+
+    await server.setFallbackMissingAssetRequestsToIndexHtml(false);
   });
 });
