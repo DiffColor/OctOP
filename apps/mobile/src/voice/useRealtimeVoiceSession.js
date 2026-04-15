@@ -240,6 +240,10 @@ function extractLatestAssistantMessageContent(messages) {
   return "";
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function computeAnalyserLevel(analyser, frequencyData) {
   if (!analyser || !frequencyData) {
     return 0;
