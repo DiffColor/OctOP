@@ -23,6 +23,9 @@ import PushNotificationCard from "./PushNotificationCard.jsx";
 import MobileInboxScreen from "./mobileInboxScreen.jsx";
 import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mobileRichMessageUi.jsx";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
+import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
+import useProjectChipReorder from "./useProjectChipReorder.js";
+import useThreadListReorder from "./useThreadListReorder.js";
 import {
   BottomSheet,
   LoginPage,
@@ -4014,29 +4017,16 @@ function MainPage({
       bridgeId: selectedBridgeId
     }).wideThreadSplitRatio
   );
-  const projectLongPressTimerRef = useRef(null);
-  const projectLongPressTriggeredRef = useRef(false);
-  const projectChipRowRef = useRef(null);
-  const projectChipNodesRef = useRef(new Map());
-  const projectChipDragStateRef = useRef(null);
-  const projectChipDropIndexRef = useRef(-1);
-  const projectChipLayoutSnapshotRef = useRef(new Map());
-  const threadListItemNodesRef = useRef(new Map());
-  const threadListDragStateRef = useRef(null);
-  const threadListDropIndexRef = useRef(-1);
-  const threadListLayoutSnapshotRef = useRef(new Map());
   const wideThreadSplitLayoutRef = useRef(null);
   const wideThreadSplitResizePointerIdRef = useRef(null);
   const wideThreadSplitResizeStartXRef = useRef(0);
   const wideThreadSplitResizeStartRatioRef = useRef(0.5);
-  const [draggingProjectChipId, setDraggingProjectChipId] = useState("");
-  const [draggingProjectChipOffsetX, setDraggingProjectChipOffsetX] = useState(0);
-  const [draggingThreadId, setDraggingThreadId] = useState("");
-  const [draggingThreadOffsetY, setDraggingThreadOffsetY] = useState(0);
   const [optimisticProjectChipOrder, setOptimisticProjectChipOrder] = useState(null);
   const [optimisticThreadOrderByProjectId, setOptimisticThreadOrderByProjectId] = useState({});
-  const [lockProjectChipDropLayout, setLockProjectChipDropLayout] = useState(false);
-  const [lockThreadListDropLayout, setLockThreadListDropLayout] = useState(false);
+  const resetThreadSelection = useCallback(() => {
+    setThreadSelectionMode(false);
+    setSelectedThreadIds([]);
+  }, []);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
@@ -4054,73 +4044,41 @@ function MainPage({
     return resolveOrderedProjects(projects, projectFilterUsage, effectiveProjectChipOrder);
   }, [effectiveProjectChipOrder, projectFilterUsage, projects]);
   const orderedProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
-  const draggingProjectChipDropIndex =
-    draggingProjectChipId && projectChipDragStateRef.current?.active ? projectChipDropIndexRef.current : -1;
-  const draggingProjectChipShiftDistance = useMemo(() => {
-    if (!draggingProjectChipId) {
-      return 0;
+  const {
+    projectChipRowRef,
+    projectChipNodesRef,
+    projectChipLayoutSnapshotRef,
+    draggingProjectChipId,
+    draggingProjectChipOffsetX,
+    lockProjectChipDropLayout,
+    registerProjectChipNode,
+    resolveProjectChipSlideOffsetX,
+    handleProjectChipPointerDown,
+    handleProjectChipContextMenu,
+    handleProjectChipClick
+  } = useProjectChipReorder({
+    orderedProjectIds,
+    projects,
+    projectChipOrder,
+    optimisticProjectChipOrder,
+    setOptimisticProjectChipOrder,
+    onChangeProjectChipOrder,
+    onOpenProjectEditDialog,
+    setProjectActionProjectId,
+    onResetThreadSelection: resetThreadSelection,
+    onSelectProject,
+    longPressMs: PROJECT_CHIP_LONG_PRESS_MS,
+    reorderMoveTolerancePx: PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX,
+    longPressCancelTolerancePx: PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX,
+    reorderPositionLockFrameCount: REORDER_POSITION_LOCK_FRAME_COUNT,
+    utils: {
+      areStringArraysEqual,
+      buildProjectChipCollapsedLayouts,
+      getFlexRowGapPx,
+      normalizeProjectChipOrder,
+      reorderProjectChipIdsByIndex
     }
-
-    const draggingLayout = projectChipLayoutSnapshotRef.current.get(draggingProjectChipId);
-    const draggingNode = projectChipNodesRef.current.get(draggingProjectChipId);
-    const draggingWidth = draggingLayout?.width ?? draggingNode?.offsetWidth ?? 0;
-
-    if (draggingWidth <= 0) {
-      return 0;
-    }
-
-    return draggingWidth + getFlexRowGapPx(projectChipRowRef.current);
-  }, [draggingProjectChipId, draggingProjectChipOffsetX, orderedProjectIds]);
-  const draggingProjectChipProjectedIds = useMemo(() => {
-    const activeDragState = projectChipDragStateRef.current;
-
-    if (
-      !draggingProjectChipId ||
-      !activeDragState?.active ||
-      !activeDragState.moved ||
-      draggingProjectChipDropIndex < 0
-    ) {
-      return orderedProjectIds;
-    }
-
-    return reorderProjectChipIdsByIndex(orderedProjectIds, draggingProjectChipId, draggingProjectChipDropIndex);
-  }, [draggingProjectChipDropIndex, draggingProjectChipId, draggingProjectChipOffsetX, orderedProjectIds]);
-  const resolveProjectChipSlideOffsetX = useCallback(
-    (projectId) => {
-      const normalizedProjectId = String(projectId ?? "").trim();
-      const activeDragState = projectChipDragStateRef.current;
-
-      if (
-        !normalizedProjectId ||
-        !draggingProjectChipId ||
-        normalizedProjectId === draggingProjectChipId ||
-        !activeDragState?.active ||
-        !activeDragState.moved ||
-        draggingProjectChipShiftDistance <= 0
-      ) {
-        return 0;
-      }
-
-      const fromIndex = orderedProjectIds.indexOf(draggingProjectChipId);
-      const toIndex = draggingProjectChipProjectedIds.indexOf(draggingProjectChipId);
-      const currentIndex = orderedProjectIds.indexOf(normalizedProjectId);
-
-      if (fromIndex < 0 || toIndex < 0 || currentIndex < 0 || fromIndex === toIndex) {
-        return 0;
-      }
-
-      if (toIndex > fromIndex && currentIndex > fromIndex && currentIndex <= toIndex) {
-        return -draggingProjectChipShiftDistance;
-      }
-
-      if (toIndex < fromIndex && currentIndex >= toIndex && currentIndex < fromIndex) {
-        return draggingProjectChipShiftDistance;
-      }
-
-      return 0;
-    },
-    [draggingProjectChipId, draggingProjectChipProjectedIds, draggingProjectChipShiftDistance, orderedProjectIds]
-  );
+  });
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedProjectName = String(selectedProject?.name ?? "").trim();
   const appHeaderTitle = !isTodoScope && selectedProjectName ? selectedProjectName : "OctOP";
@@ -4314,71 +4272,35 @@ function MainPage({
   }, [orderedThreads, searchKeyword, selectedProjectId]);
   const orderedThreadIds = useMemo(() => orderedThreads.map((thread) => thread.id), [orderedThreads]);
   const filteredThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
-  const draggingThreadDropIndex =
-    draggingThreadId && threadListDragStateRef.current?.active ? threadListDropIndexRef.current : -1;
-  const draggingThreadShiftDistance = useMemo(() => {
-    if (!draggingThreadId) {
-      return 0;
+  const {
+    registerThreadListItemNode,
+    draggingThreadId,
+    draggingThreadOffsetY,
+    lockThreadListDropLayout,
+    resolveThreadListItemSlideOffsetY,
+    handleThreadReorderStart,
+    handleThreadReorderMove,
+    handleThreadReorderEnd,
+    handleThreadReorderCancel
+  } = useThreadListReorder({
+    filteredThreadIds,
+    optimisticThreadOrderByProjectId,
+    orderedThreadIds,
+    onChangeThreadOrder,
+    onResetThreadSelection: resetThreadSelection,
+    reorderMoveTolerancePx: THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX,
+    reorderPositionLockFrameCount: REORDER_POSITION_LOCK_FRAME_COUNT,
+    selectedProjectId,
+    setOptimisticThreadOrderByProjectId,
+    threadOrderByProjectId,
+    utils: {
+      applySubsetThreadOrder,
+      areStringArraysEqual,
+      buildThreadListCollapsedLayouts,
+      normalizeThreadOrder,
+      reorderThreadIdsByIndex
     }
-
-    const draggingNode = threadListItemNodesRef.current.get(draggingThreadId);
-
-    if (!draggingNode) {
-      return 0;
-    }
-
-    return draggingNode.offsetHeight;
-  }, [draggingThreadId, draggingThreadOffsetY, filteredThreadIds]);
-  const draggingThreadProjectedIds = useMemo(() => {
-    const activeDragState = threadListDragStateRef.current;
-
-    if (
-      !draggingThreadId ||
-      !activeDragState?.active ||
-      !activeDragState.moved ||
-      draggingThreadDropIndex < 0
-    ) {
-      return filteredThreadIds;
-    }
-
-    return reorderThreadIdsByIndex(filteredThreadIds, draggingThreadId, draggingThreadDropIndex);
-  }, [draggingThreadDropIndex, draggingThreadId, draggingThreadOffsetY, filteredThreadIds]);
-  const resolveThreadListItemSlideOffsetY = useCallback(
-    (threadId) => {
-      const normalizedThreadId = String(threadId ?? "").trim();
-      const activeDragState = threadListDragStateRef.current;
-
-      if (
-        !normalizedThreadId ||
-        !draggingThreadId ||
-        normalizedThreadId === draggingThreadId ||
-        !activeDragState?.active ||
-        !activeDragState.moved ||
-        draggingThreadShiftDistance <= 0
-      ) {
-        return 0;
-      }
-
-      const fromIndex = filteredThreadIds.indexOf(draggingThreadId);
-      const toIndex = draggingThreadProjectedIds.indexOf(draggingThreadId);
-      const currentIndex = filteredThreadIds.indexOf(normalizedThreadId);
-
-      if (fromIndex < 0 || toIndex < 0 || currentIndex < 0 || fromIndex === toIndex) {
-        return 0;
-      }
-
-      if (toIndex > fromIndex && currentIndex > fromIndex && currentIndex <= toIndex) {
-        return -draggingThreadShiftDistance;
-      }
-
-      if (toIndex < fromIndex && currentIndex >= toIndex && currentIndex < fromIndex) {
-        return draggingThreadShiftDistance;
-      }
-
-      return 0;
-    },
-    [draggingThreadId, draggingThreadProjectedIds, draggingThreadShiftDistance, filteredThreadIds]
-  );
+  });
   const selectedProjectThreadIds = useMemo(
     () =>
       new Set(
@@ -4415,198 +4337,6 @@ function MainPage({
   const todoChatMessages = todoChatDetail?.messages ?? [];
   const todoChatLoading = todoChatDetail?.loading ?? false;
   const todoChatError = todoChatDetail?.error ?? "";
-  const clearPendingProjectLongPress = useCallback(() => {
-    if (projectLongPressTimerRef.current) {
-      clearTimeout(projectLongPressTimerRef.current);
-      projectLongPressTimerRef.current = null;
-    }
-  }, []);
-  const resetProjectChipDragInteraction = useCallback(() => {
-    projectChipDragStateRef.current = null;
-    projectChipDropIndexRef.current = -1;
-    projectChipLayoutSnapshotRef.current = new Map();
-    setDraggingProjectChipId("");
-    setDraggingProjectChipOffsetX(0);
-  }, []);
-  const resetThreadListDragInteraction = useCallback(() => {
-    threadListDragStateRef.current = null;
-    threadListDropIndexRef.current = -1;
-    threadListLayoutSnapshotRef.current = new Map();
-    setDraggingThreadId("");
-    setDraggingThreadOffsetY(0);
-  }, []);
-  const holdReorderedLayout = useCallback((setter) => {
-    setter(true);
-
-    if (typeof window === "undefined") {
-      setter(false);
-      return;
-    }
-
-    let remainingFrames = REORDER_POSITION_LOCK_FRAME_COUNT;
-
-    const release = () => {
-      remainingFrames -= 1;
-
-      if (remainingFrames <= 0) {
-        setter(false);
-        return;
-      }
-
-      window.requestAnimationFrame(release);
-    };
-
-    window.requestAnimationFrame(release);
-  }, []);
-  const registerProjectChipNode = useCallback((projectId, node) => {
-    const normalizedProjectId = String(projectId ?? "").trim();
-
-    if (!normalizedProjectId) {
-      return;
-    }
-
-    if (node) {
-      projectChipNodesRef.current.set(normalizedProjectId, node);
-      return;
-    }
-
-    projectChipNodesRef.current.delete(normalizedProjectId);
-  }, []);
-  const registerThreadListItemNode = useCallback((threadId, node) => {
-    const normalizedThreadId = String(threadId ?? "").trim();
-
-    if (!normalizedThreadId) {
-      return;
-    }
-
-    if (node) {
-      threadListItemNodesRef.current.set(normalizedThreadId, node);
-      return;
-    }
-
-    threadListItemNodesRef.current.delete(normalizedThreadId);
-  }, []);
-  const captureProjectChipLayoutSnapshot = useCallback((projectIds) => {
-    const snapshot = new Map();
-    const scrollLeft = projectChipRowRef.current?.scrollLeft ?? 0;
-
-    normalizeProjectChipOrder(projectIds).forEach((projectId) => {
-      const node = projectChipNodesRef.current.get(projectId);
-
-      if (!node) {
-        return;
-      }
-
-      const rect = node.getBoundingClientRect();
-      snapshot.set(projectId, {
-        left: rect.left + scrollLeft,
-        width: rect.width,
-        height: rect.height
-      });
-    });
-
-    projectChipLayoutSnapshotRef.current = snapshot;
-    return snapshot;
-  }, []);
-  const captureThreadListLayoutSnapshot = useCallback((threadIds) => {
-    const snapshot = new Map();
-
-    normalizeThreadOrder(threadIds).forEach((threadId) => {
-      const node = threadListItemNodesRef.current.get(threadId);
-
-      if (!node) {
-        return;
-      }
-
-      const rect = node.getBoundingClientRect();
-      snapshot.set(threadId, {
-        top: rect.top,
-        height: rect.height
-      });
-    });
-
-    threadListLayoutSnapshotRef.current = snapshot;
-    return snapshot;
-  }, []);
-  const resolveProjectChipDropIndex = useCallback(
-    (draggedCenterX, draggedProjectId) => {
-      const normalizedDraggedProjectId = String(draggedProjectId ?? "").trim();
-      const layoutSnapshot = projectChipLayoutSnapshotRef.current;
-      const draggedLayout = layoutSnapshot.get(normalizedDraggedProjectId);
-      const draggedNode = projectChipNodesRef.current.get(normalizedDraggedProjectId);
-      const gapPx = getFlexRowGapPx(projectChipRowRef.current);
-      const {
-        draggedProjectIndex,
-        draggableLayouts
-      } = buildProjectChipCollapsedLayouts(
-        orderedProjectIds,
-        normalizedDraggedProjectId,
-        layoutSnapshot,
-        draggedLayout?.width ?? draggedNode?.offsetWidth ?? 0,
-        gapPx
-      );
-
-      if (draggedProjectIndex < 0) {
-        return -1;
-      }
-
-      for (let index = 0; index < draggableLayouts.length; index += 1) {
-        const layout = draggableLayouts[index];
-        const triggerX = layout.left + layout.width / 2;
-
-        if (draggedCenterX < triggerX) {
-          return index;
-        }
-      }
-
-      return draggableLayouts.length;
-    },
-    [orderedProjectIds]
-  );
-  const maybeAutoScrollProjectChipRow = useCallback((clientX) => {
-    const rowNode = projectChipRowRef.current;
-
-    if (!rowNode) {
-      return;
-    }
-
-    const rect = rowNode.getBoundingClientRect();
-    const edgeThreshold = 36;
-
-    if (clientX <= rect.left + edgeThreshold) {
-      rowNode.scrollLeft = Math.max(0, rowNode.scrollLeft - 18);
-      return;
-    }
-
-    if (clientX >= rect.right - edgeThreshold) {
-      rowNode.scrollLeft = Math.min(rowNode.scrollWidth - rowNode.clientWidth, rowNode.scrollLeft + 18);
-    }
-  }, []);
-  useEffect(
-    () => () => {
-      clearPendingProjectLongPress();
-      resetProjectChipDragInteraction();
-      resetThreadListDragInteraction();
-    },
-    [clearPendingProjectLongPress, resetProjectChipDragInteraction, resetThreadListDragInteraction]
-  );
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const handleTouchMove = (event) => {
-      if (projectChipDragStateRef.current?.active || threadListDragStateRef.current?.active) {
-        event.preventDefault();
-      }
-    };
-
-    window.addEventListener("touchmove", handleTouchMove, { passive: false });
-
-    return () => {
-      window.removeEventListener("touchmove", handleTouchMove);
-    };
-  }, []);
   useEffect(() => {
     setSelectedThreadIds((current) => current.filter((threadId) => selectedProjectThreadIds.has(threadId)));
   }, [selectedProjectThreadIds]);
@@ -4656,471 +4386,6 @@ function MainPage({
     },
     [confirmMobileAction, onDeleteProject]
   );
-  const openProjectActionSheet = useCallback((project) => {
-    if (!project?.id) {
-      return;
-    }
-
-    setProjectActionProjectId(project.id);
-  }, []);
-  const handleProjectChipPointerDown = useCallback(
-    (event, project) => {
-      if (typeof window === "undefined" || !project) {
-        return;
-      }
-
-      const isMousePointer = event?.pointerType === "mouse";
-      const isTouchPointer = event?.pointerType === "touch" || event?.pointerType === "pen";
-
-      if (!isTouchPointer && !(isMousePointer && event?.button === 0)) {
-        return;
-      }
-
-      if (!isMousePointer) {
-        event.preventDefault();
-      }
-
-      projectLongPressTriggeredRef.current = false;
-      clearPendingProjectLongPress();
-      resetProjectChipDragInteraction();
-      projectChipDragStateRef.current = {
-        active: false,
-        moved: false,
-        pointerId: event.pointerId,
-        pointerType: event.pointerType,
-        project,
-        startX: event.clientX,
-        startY: event.clientY,
-        latestClientX: event.clientX,
-        latestClientY: event.clientY,
-        dragOriginCenterX: event.clientX,
-        startScrollLeft: projectChipRowRef.current?.scrollLeft ?? 0
-      };
-      if (event?.currentTarget && typeof event.currentTarget.setPointerCapture === "function") {
-        try {
-          event.currentTarget.setPointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture failures and fall back to window-level listeners
-        }
-      }
-
-      projectLongPressTimerRef.current = window.setTimeout(() => {
-        const activeDragState = projectChipDragStateRef.current;
-
-        if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
-          projectLongPressTimerRef.current = null;
-          return;
-        }
-
-        projectLongPressTimerRef.current = null;
-        projectLongPressTriggeredRef.current = true;
-        activeDragState.active = true;
-        activeDragState.startX = activeDragState.latestClientX ?? event.clientX;
-        activeDragState.startY = activeDragState.latestClientY ?? event.clientY;
-        activeDragState.startScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
-        const layoutSnapshot = captureProjectChipLayoutSnapshot(orderedProjectIds);
-        const draggedLayout = layoutSnapshot.get(project.id);
-        const draggedNode = projectChipNodesRef.current.get(project.id);
-        const draggedRect = draggedNode?.getBoundingClientRect?.();
-        activeDragState.dragOriginCenterX = draggedLayout
-          ? draggedLayout.left + draggedLayout.width / 2
-          : draggedRect
-            ? draggedRect.left + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft) + draggedRect.width / 2
-            : activeDragState.startX + (projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft);
-        activeDragState.latestDraggedCenterX = activeDragState.dragOriginCenterX;
-        projectChipDropIndexRef.current = resolveProjectChipDropIndex(activeDragState.dragOriginCenterX, project.id);
-        setDraggingProjectChipId(project.id);
-        setDraggingProjectChipOffsetX(0);
-      }, PROJECT_CHIP_LONG_PRESS_MS);
-    },
-    [
-      captureProjectChipLayoutSnapshot,
-      clearPendingProjectLongPress,
-      orderedProjectIds,
-      resetProjectChipDragInteraction,
-      resolveProjectChipDropIndex
-    ]
-  );
-  const handleProjectChipContextMenu = useCallback(
-    (event, project) => {
-      event.preventDefault();
-
-      const activeDragState = projectChipDragStateRef.current;
-      const activePointerType = activeDragState?.pointerType ?? "";
-      const suppressActionSheet =
-        Boolean(projectLongPressTimerRef.current) ||
-        Boolean(activeDragState) ||
-        projectLongPressTriggeredRef.current ||
-        activePointerType === "touch" ||
-        activePointerType === "pen";
-
-      if (suppressActionSheet) {
-        return;
-      }
-
-      clearPendingProjectLongPress();
-      projectLongPressTriggeredRef.current = false;
-      resetProjectChipDragInteraction();
-      openProjectActionSheet(project);
-    },
-    [clearPendingProjectLongPress, openProjectActionSheet, resetProjectChipDragInteraction]
-  );
-  const handleProjectChipPointerMove = useCallback(
-    (event) => {
-      const activeDragState = projectChipDragStateRef.current;
-
-      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
-        return;
-      }
-
-      const deltaX = event.clientX - activeDragState.startX;
-      const deltaY = event.clientY - activeDragState.startY;
-      activeDragState.latestClientX = event.clientX;
-      activeDragState.latestClientY = event.clientY;
-
-      if (!activeDragState.active) {
-        if (Math.hypot(deltaX, deltaY) > PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX) {
-          clearPendingProjectLongPress();
-          projectChipDragStateRef.current = null;
-        }
-
-        return;
-      }
-
-      const currentScrollLeft = projectChipRowRef.current?.scrollLeft ?? activeDragState.startScrollLeft;
-      const dragOffsetX = event.clientX - activeDragState.startX + (currentScrollLeft - activeDragState.startScrollLeft);
-      const draggedCenterX = activeDragState.dragOriginCenterX + dragOffsetX;
-      activeDragState.latestDraggedCenterX = draggedCenterX;
-
-      if (!activeDragState.moved && Math.hypot(dragOffsetX, deltaY) > PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX) {
-        activeDragState.moved = true;
-      }
-
-      projectChipDropIndexRef.current = resolveProjectChipDropIndex(draggedCenterX, activeDragState.project.id);
-      setDraggingProjectChipOffsetX(dragOffsetX);
-      maybeAutoScrollProjectChipRow(event.clientX);
-      event.preventDefault();
-    },
-    [clearPendingProjectLongPress, maybeAutoScrollProjectChipRow, resolveProjectChipDropIndex]
-  );
-  const handleProjectChipPointerEnd = useCallback(
-    (event) => {
-      const activeDragState = projectChipDragStateRef.current;
-
-      clearPendingProjectLongPress();
-
-      if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
-        projectLongPressTriggeredRef.current = false;
-        resetProjectChipDragInteraction();
-        return;
-      }
-
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-
-      const { active, moved, project } = activeDragState;
-      const dropIndex = projectChipDropIndexRef.current;
-
-      if (!active) {
-        projectLongPressTriggeredRef.current = false;
-        resetProjectChipDragInteraction();
-        return;
-      }
-
-      event.preventDefault();
-
-      if (moved) {
-        const nextProjectOrder = reorderProjectChipIdsByIndex(orderedProjectIds, project.id, dropIndex);
-
-        if (!areStringArraysEqual(nextProjectOrder, orderedProjectIds)) {
-          holdReorderedLayout(setLockProjectChipDropLayout);
-          setOptimisticProjectChipOrder(nextProjectOrder);
-          onChangeProjectChipOrder(nextProjectOrder);
-        }
-
-        resetProjectChipDragInteraction();
-        window.setTimeout(() => {
-          projectLongPressTriggeredRef.current = false;
-        }, 0);
-        return;
-      }
-
-      resetProjectChipDragInteraction();
-      onOpenProjectEditDialog(project);
-
-      window.setTimeout(() => {
-        projectLongPressTriggeredRef.current = false;
-      }, 0);
-    },
-    [
-      clearPendingProjectLongPress,
-      holdReorderedLayout,
-      onOpenProjectEditDialog,
-      onChangeProjectChipOrder,
-      orderedProjectIds,
-      resetProjectChipDragInteraction
-    ]
-  );
-  const handleProjectChipPointerCancel = useCallback(
-    (event) => {
-      clearPendingProjectLongPress();
-
-      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function" && event.pointerId != null) {
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture release failures
-        }
-      }
-
-      projectLongPressTriggeredRef.current = false;
-      resetProjectChipDragInteraction();
-    },
-    [clearPendingProjectLongPress, resetProjectChipDragInteraction]
-  );
-  const handleProjectChipClick = useCallback(
-    (projectId) => {
-      if (projectLongPressTriggeredRef.current) {
-        projectLongPressTriggeredRef.current = false;
-        return;
-      }
-
-      const normalizedProjectId = String(projectId ?? "").trim();
-
-      setThreadSelectionMode(false);
-      setSelectedThreadIds([]);
-      onSelectProject(normalizedProjectId);
-    },
-    [onSelectProject]
-  );
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const handleWindowPointerMove = (event) => {
-      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
-        return;
-      }
-
-      handleProjectChipPointerMove(event);
-    };
-    const handleWindowPointerEnd = (event) => {
-      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
-        return;
-      }
-
-      handleProjectChipPointerEnd(event);
-    };
-    const handleWindowPointerCancel = (event) => {
-      if (projectChipDragStateRef.current?.pointerId !== event.pointerId) {
-        return;
-      }
-
-      handleProjectChipPointerCancel(event);
-    };
-
-    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
-    window.addEventListener("pointerup", handleWindowPointerEnd);
-    window.addEventListener("pointercancel", handleWindowPointerCancel);
-
-    return () => {
-      window.removeEventListener("pointermove", handleWindowPointerMove);
-      window.removeEventListener("pointerup", handleWindowPointerEnd);
-      window.removeEventListener("pointercancel", handleWindowPointerCancel);
-    };
-  }, [handleProjectChipPointerCancel, handleProjectChipPointerEnd, handleProjectChipPointerMove]);
-  const resolveThreadDropIndex = useCallback(
-    (draggedCenterY, draggedThreadId) => {
-      const activeDragState = threadListDragStateRef.current;
-      const normalizedDraggedThreadId = String(draggedThreadId ?? "").trim();
-      const baseThreadIds = normalizeThreadOrder(activeDragState?.visibleThreadIds ?? filteredThreadIds);
-      const layoutSnapshot = threadListLayoutSnapshotRef.current;
-      const draggedThreadLayout = layoutSnapshot.get(normalizedDraggedThreadId);
-      const draggedNode = threadListItemNodesRef.current.get(normalizedDraggedThreadId);
-      const {
-        draggedThreadIndex,
-        draggableLayouts
-      } = buildThreadListCollapsedLayouts(
-        baseThreadIds,
-        normalizedDraggedThreadId,
-        layoutSnapshot,
-        draggedThreadLayout?.height ?? draggedNode?.offsetHeight ?? 0
-      );
-
-      if (draggedThreadIndex < 0) {
-        return -1;
-      }
-
-      for (let index = 0; index < draggableLayouts.length; index += 1) {
-        const layout = draggableLayouts[index];
-        const triggerY = layout.top + layout.height / 2;
-
-        if (draggedCenterY < triggerY) {
-          return index;
-        }
-      }
-
-      return draggableLayouts.length;
-    },
-    [filteredThreadIds]
-  );
-  const handleThreadReorderStart = useCallback(
-    ({ thread, pointerId, clientY }) => {
-      if (!thread?.id || !selectedProjectId) {
-        return;
-      }
-
-      const visibleThreadIds = [...filteredThreadIds];
-      const layoutSnapshot = captureThreadListLayoutSnapshot(visibleThreadIds);
-      const draggedLayout = layoutSnapshot.get(thread.id);
-      const draggedNode = threadListItemNodesRef.current.get(thread.id);
-      const dragOriginCenterY = draggedLayout
-        ? draggedLayout.top + draggedLayout.height / 2
-        : ((draggedNode?.getBoundingClientRect?.().top ?? clientY) + (draggedNode?.offsetHeight ?? 0) / 2);
-
-      setThreadSelectionMode(false);
-      setSelectedThreadIds([]);
-      threadListDragStateRef.current = {
-        active: true,
-        moved: false,
-        pointerId,
-        thread,
-        startY: clientY,
-        dragOriginCenterY,
-        latestDraggedCenterY: dragOriginCenterY,
-        visibleThreadIds
-      };
-      threadListDropIndexRef.current = resolveThreadDropIndex(dragOriginCenterY, thread.id);
-      setDraggingThreadId(thread.id);
-      setDraggingThreadOffsetY(0);
-    },
-    [captureThreadListLayoutSnapshot, filteredThreadIds, resolveThreadDropIndex, selectedProjectId]
-  );
-  const handleThreadReorderMove = useCallback(
-    ({ threadId, pointerId, clientY }) => {
-      const activeDragState = threadListDragStateRef.current;
-
-      if (
-        !activeDragState ||
-        activeDragState.pointerId !== pointerId ||
-        activeDragState.thread?.id !== String(threadId ?? "").trim()
-      ) {
-        return false;
-      }
-
-      const dragOffsetY = clientY - activeDragState.startY;
-      const draggedCenterY = activeDragState.dragOriginCenterY + dragOffsetY;
-      activeDragState.latestDraggedCenterY = draggedCenterY;
-
-      if (!activeDragState.moved && Math.abs(dragOffsetY) > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
-        activeDragState.moved = true;
-      }
-
-      threadListDropIndexRef.current = resolveThreadDropIndex(draggedCenterY, activeDragState.thread.id);
-      setDraggingThreadOffsetY(dragOffsetY);
-      return true;
-    },
-    [resolveThreadDropIndex]
-  );
-  const handleThreadReorderEnd = useCallback(
-    ({ threadId, pointerId }) => {
-      const activeDragState = threadListDragStateRef.current;
-
-      if (
-        !activeDragState ||
-        activeDragState.pointerId !== pointerId ||
-        activeDragState.thread?.id !== String(threadId ?? "").trim()
-      ) {
-        resetThreadListDragInteraction();
-        return false;
-      }
-
-      const { moved, thread } = activeDragState;
-      const dropIndex = threadListDropIndexRef.current;
-
-      if (!moved || !selectedProjectId) {
-        resetThreadListDragInteraction();
-        return true;
-      }
-
-      const reorderedVisibleThreadIds = reorderThreadIdsByIndex(filteredThreadIds, thread.id, dropIndex);
-      const nextThreadOrder = applySubsetThreadOrder(orderedThreadIds, filteredThreadIds, reorderedVisibleThreadIds);
-
-      if (!areStringArraysEqual(nextThreadOrder, orderedThreadIds)) {
-        holdReorderedLayout(setLockThreadListDropLayout);
-        setOptimisticThreadOrderByProjectId((current) => ({
-          ...current,
-          [selectedProjectId]: nextThreadOrder
-        }));
-        onChangeThreadOrder(selectedProjectId, nextThreadOrder);
-      }
-
-      resetThreadListDragInteraction();
-      return true;
-    },
-    [
-      filteredThreadIds,
-      holdReorderedLayout,
-      onChangeThreadOrder,
-      orderedThreadIds,
-      resetThreadListDragInteraction,
-      selectedProjectId
-    ]
-  );
-  const handleThreadReorderCancel = useCallback(
-    ({ threadId, pointerId }) => {
-      const activeDragState = threadListDragStateRef.current;
-
-      if (
-        activeDragState &&
-        activeDragState.pointerId === pointerId &&
-        activeDragState.thread?.id === String(threadId ?? "").trim()
-      ) {
-        resetThreadListDragInteraction();
-        return true;
-      }
-
-      return false;
-    },
-    [resetThreadListDragInteraction]
-  );
-  useEffect(() => {
-    if (!optimisticProjectChipOrder) {
-      return;
-    }
-
-    const normalizedAvailableProjectIds = projects.map((project) => project.id);
-    const normalizedOptimisticOrder = normalizeProjectChipOrder(optimisticProjectChipOrder, normalizedAvailableProjectIds);
-    const normalizedCommittedOrder = normalizeProjectChipOrder(projectChipOrder, normalizedAvailableProjectIds);
-
-    if (areStringArraysEqual(normalizedOptimisticOrder, normalizedCommittedOrder)) {
-      setOptimisticProjectChipOrder(null);
-    }
-  }, [optimisticProjectChipOrder, projectChipOrder, projects]);
-  useEffect(() => {
-    const optimisticProjectIds = Object.keys(optimisticThreadOrderByProjectId);
-
-    if (optimisticProjectIds.length === 0) {
-      return;
-    }
-
-    setOptimisticThreadOrderByProjectId((current) => {
-      const next = { ...current };
-      let changed = false;
-
-      optimisticProjectIds.forEach((projectId) => {
-        const normalizedOptimisticOrder = normalizeThreadOrder(current[projectId] ?? []);
-        const normalizedCommittedOrder = normalizeThreadOrder(threadOrderByProjectId[projectId] ?? []);
-
-        if (areStringArraysEqual(normalizedOptimisticOrder, normalizedCommittedOrder)) {
-          delete next[projectId];
-          changed = true;
-        }
-      });
-
-      return changed ? next : current;
-    });
-  }, [optimisticThreadOrderByProjectId, threadOrderByProjectId]);
   const handleEnterThreadSelectionMode = useCallback((threadId = "") => {
     const normalizedThreadId = String(threadId ?? "").trim();
 
@@ -5425,127 +4690,80 @@ function MainPage({
     onOpenNewThread,
     onOpenNewTodoChat
   };
-  const shouldRenderDeferredOverlays =
-    threadDeleteDialog.open ||
-    Boolean(todoChatBeingEdited) ||
-    Boolean(activeTodoMessage) ||
-    todoMessageEditorOpen ||
-    todoTransferOpen ||
-    Boolean(projectActionTarget) ||
-    utilityOpen ||
-    projectComposerOpen ||
-    threadCreateDialogOpen ||
-    projectInstructionDialogOpen ||
-    projectEditDialogOpen ||
-    threadInstructionDialogOpen;
+  const { shouldRenderDeferredOverlays, deferredOverlayProps } = useMobileDeferredOverlayProps({
+    threadDeleteDialog,
+    threadBusy,
+    onCloseThreadDeleteDialog,
+    onConfirmThreadDeleteDialog,
+    todoChatBeingEdited,
+    setTodoChatBeingEdited,
+    todoRenameBusy,
+    onRenameTodoChat,
+    activeTodoMessage,
+    setActiveTodoMessage,
+    todoMessageEditorOpen,
+    setTodoMessageEditorOpen,
+    todoTransferOpen,
+    setTodoTransferOpen,
+    onDeleteTodoMessage,
+    todoBusy,
+    onEditTodoMessage,
+    todoTransferBusy,
+    projects,
+    threadOptionsByProjectId,
+    selectedProjectId,
+    onEnsureProjectThreads,
+    onTransferTodoMessage,
+    projectActionTarget,
+    projectEditBusy,
+    projectBusy,
+    setProjectActionProjectId,
+    onOpenProjectEditDialog,
+    requestProjectDeletion,
+    utilityOpen,
+    session,
+    bridgeSignal,
+    selectedProject,
+    pushNotificationCard,
+    onOpenProjectInstructionDialog,
+    onCloseUtility,
+    onOpenProjectComposer,
+    onRefresh,
+    onLogout,
+    projectComposerOpen,
+    workspaceRoots,
+    folderState,
+    folderLoading,
+    selectedWorkspacePath,
+    onBrowseFolder,
+    onSelectWorkspace,
+    onCloseProjectComposer,
+    onSubmitProject,
+    threadCreateDialogOpen,
+    onCloseThreadCreateDialog,
+    onSubmitThreadCreateDialog,
+    projectInstructionDialogOpen,
+    projectInstructionBusy,
+    projectInstructionType,
+    onCloseProjectInstructionDialog,
+    onSubmitProjectInstruction,
+    projectEditDialogOpen,
+    projectEditTarget,
+    projectEditError,
+    onCloseProjectEditDialog,
+    onSubmitProjectEdit,
+    threadInstructionDialogOpen,
+    threadInstructionBusy,
+    threadInstructionTarget,
+    threadInstructionProject,
+    threadInstructionSupported,
+    threadInstructionError,
+    onCloseThreadInstructionDialog,
+    onSubmitThreadInstruction
+  });
   const deferredOverlays = shouldRenderDeferredOverlays ? (
     <Suspense fallback={null}>
-      <MobileDeferredOverlays
-        threadDeleteDialog={threadDeleteDialog}
-        threadBusy={threadBusy}
-        onCloseThreadDeleteDialog={onCloseThreadDeleteDialog}
-        onConfirmThreadDeleteDialog={onConfirmThreadDeleteDialog}
-        todoChatBeingEdited={todoChatBeingEdited}
-        todoRenameBusy={todoRenameBusy}
-        onCloseTodoChatRename={() => setTodoChatBeingEdited(null)}
-        onSubmitTodoChatRename={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
-        activeTodoMessage={activeTodoMessage}
-        todoMessageEditorOpen={todoMessageEditorOpen}
-        todoTransferOpen={todoTransferOpen}
-        onCloseTodoMessageAction={() => setActiveTodoMessage(null)}
-        onOpenTodoMessageEditor={() => setTodoMessageEditorOpen(true)}
-        onDeleteActiveTodoMessage={async () => {
-          const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
-
-          if (accepted !== false) {
-            setActiveTodoMessage(null);
-          }
-        }}
-        onOpenTodoTransfer={() => setTodoTransferOpen(true)}
-        todoBusy={todoBusy}
-        onCloseTodoMessageEditor={() => setTodoMessageEditorOpen(false)}
-        onSubmitTodoMessageEditor={async (content) => {
-          const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
-
-          if (accepted !== false) {
-            setTodoMessageEditorOpen(false);
-            setActiveTodoMessage(null);
-          }
-
-          return accepted;
-        }}
-        todoTransferBusy={todoTransferBusy}
-        projects={projects}
-        threadOptionsByProjectId={threadOptionsByProjectId}
-        selectedProjectId={selectedProjectId}
-        onEnsureProjectThreads={onEnsureProjectThreads}
-        onCloseTodoTransfer={() => setTodoTransferOpen(false)}
-        onSubmitTodoTransfer={async (payload) => {
-          const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
-
-          if (accepted !== false) {
-            setTodoTransferOpen(false);
-            setActiveTodoMessage(null);
-          }
-
-          return accepted;
-        }}
-        projectActionTarget={projectActionTarget}
-        projectActionBusy={projectEditBusy || projectBusy}
-        onCloseProjectAction={() => setProjectActionProjectId("")}
-        onEditProjectAction={() => {
-          if (!projectActionTarget) {
-            return;
-          }
-
-          setProjectActionProjectId("");
-          onOpenProjectEditDialog(projectActionTarget);
-        }}
-        onDeleteProjectAction={() => requestProjectDeletion(projectActionTarget)}
-        utilityOpen={utilityOpen}
-        session={session}
-        bridgeSignal={bridgeSignal}
-        selectedProject={selectedProject}
-        pushNotificationCard={pushNotificationCard}
-        onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
-        onCloseUtility={onCloseUtility}
-        onOpenProjectComposer={onOpenProjectComposer}
-        onRefresh={onRefresh}
-        onLogout={onLogout}
-        projectComposerOpen={projectComposerOpen}
-        projectBusy={projectBusy}
-        workspaceRoots={workspaceRoots}
-        folderState={folderState}
-        folderLoading={folderLoading}
-        selectedWorkspacePath={selectedWorkspacePath}
-        onBrowseFolder={onBrowseFolder}
-        onSelectWorkspace={onSelectWorkspace}
-        onCloseProjectComposer={onCloseProjectComposer}
-        onSubmitProject={onSubmitProject}
-        threadCreateDialogOpen={threadCreateDialogOpen}
-        onCloseThreadCreateDialog={onCloseThreadCreateDialog}
-        onSubmitThreadCreateDialog={onSubmitThreadCreateDialog}
-        projectInstructionDialogOpen={projectInstructionDialogOpen}
-        projectInstructionBusy={projectInstructionBusy}
-        projectInstructionType={projectInstructionType}
-        onCloseProjectInstructionDialog={onCloseProjectInstructionDialog}
-        onSubmitProjectInstruction={onSubmitProjectInstruction}
-        projectEditDialogOpen={projectEditDialogOpen}
-        projectEditBusy={projectEditBusy}
-        projectEditTarget={projectEditTarget}
-        projectEditError={projectEditError}
-        onCloseProjectEditDialog={onCloseProjectEditDialog}
-        onSubmitProjectEdit={onSubmitProjectEdit}
-        onRequestProjectDeletion={requestProjectDeletion}
-        threadInstructionDialogOpen={threadInstructionDialogOpen}
-        threadInstructionBusy={threadInstructionBusy}
-        threadInstructionTarget={threadInstructionTarget}
-        threadInstructionProject={threadInstructionProject}
-        threadInstructionSupported={threadInstructionSupported}
-        threadInstructionError={threadInstructionError}
-        onCloseThreadInstructionDialog={onCloseThreadInstructionDialog}
-        onSubmitThreadInstruction={onSubmitThreadInstruction}
-      />
+      <MobileDeferredOverlays {...deferredOverlayProps} />
     </Suspense>
   ) : null;
   const resolvedTodoChatForDetail = selectedTodoChat ?? todoChatDetail?.chat ?? null;
