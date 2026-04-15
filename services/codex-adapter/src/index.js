@@ -113,6 +113,9 @@ const {
   value: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
   reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
 } = resolveRolloverThreshold(process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT, 85);
+const {
+  value: THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT
+} = resolveRolloverThreshold(process.env.OCTOP_THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT, 100);
 const THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS = Number(
   process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS ?? 30000
 );
@@ -7688,6 +7691,65 @@ async function maybeTriggerContextRollover(userId, rootThreadId, reason = "thres
   return performContextRollover(userId, rootThreadId, reason, options);
 }
 
+async function maybeTriggerContextRolloverForRuntimeUpdate(userId, rootThreadId, reason, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId) ?? null;
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+
+  if (!normalizedUserId || !rootThreadId) {
+    return { accepted: false, reason: "missing_context" };
+  }
+
+  if (!rootThread || rootThread.deleted_at) {
+    return { accepted: false, reason: "missing_root_thread" };
+  }
+
+  if (String(rootThread.continuity_status ?? "healthy").trim() !== "healthy") {
+    return { accepted: false, reason: "continuity_not_healthy" };
+  }
+
+  if (!activePhysicalThread || activePhysicalThread.deleted_at || activePhysicalThread.closed_at) {
+    return { accepted: false, reason: "missing_active_physical_thread" };
+  }
+
+  if (
+    Number(activePhysicalThread.context_usage_percent ?? 0) <
+    THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT
+  ) {
+    return { accepted: false, reason: "below_runtime_threshold" };
+  }
+
+  try {
+    return await maybeTriggerContextRollover(normalizedUserId, rootThreadId, reason, options);
+  } catch (error) {
+    appendDiagnosticLog(
+      "error",
+      "root_thread.rollover.runtime_update.failed",
+      "runtime update rollover trigger failed",
+      {
+        user_id: normalizedUserId,
+        thread_id: rootThreadId,
+        root_thread_id: rootThreadId,
+        reason,
+        error
+      }
+    );
+    console.error("[OctOP bridge] runtime update rollover trigger failed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        event_type: "rootThread.rollover.runtime_update.failed"
+      }),
+      reason,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return {
+      accepted: false,
+      reason: "runtime_update_failed",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 function refreshQueuePositions(userId) {
   const state = ensureUserState(userId);
   const queue = ensurePendingQueue(userId);
@@ -8898,6 +8960,12 @@ class AppServerClient {
             (activeIssueId ? issueCardsById.get(activeIssueId)?.status ?? null : null)
         })
       );
+    }
+
+    if (threadId && method === "thread/tokenUsage/updated") {
+      await maybeTriggerContextRolloverForRuntimeUpdate(owner, threadId, "runtime_threshold", {
+        issueId: activeIssueId
+      });
     }
 
     if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params)) {

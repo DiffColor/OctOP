@@ -970,8 +970,31 @@ function completeIssueOnThread(fakeAppServer, { codexThreadId, delta = REPO_ROOT
 async function triggerPreflightThresholdRollover(
   bridge,
   fakeAppServer,
-  { rootThreadId, sourceCodexThreadId, sourcePhysicalThreadId, nextIssueId, sourceCompletionDelta = REPO_ROOT }
+  {
+    rootThreadId,
+    sourceCodexThreadId,
+    sourcePhysicalThreadId,
+    sourceIssueId = null,
+    nextIssueId,
+    sourceCompletionDelta = REPO_ROOT
+  }
 ) {
+  completeIssueOnThread(fakeAppServer, {
+    codexThreadId: sourceCodexThreadId,
+    delta: sourceCompletionDelta,
+    turnId: "turn-source-final"
+  });
+
+  if (sourceIssueId) {
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${sourceIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      return payload;
+    }, {
+      label: "source issue completed before preflight rollover"
+    });
+  }
+
   await markThreadContextHigh(bridge, fakeAppServer, {
     rootThreadId,
     sourceCodexThreadId
@@ -981,12 +1004,6 @@ async function triggerPreflightThresholdRollover(
   const continuityBeforeRollover = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
   assert.equal(continuityBeforeRollover.physical_threads.length, 1);
   assert.equal(continuityBeforeRollover.active_physical_thread?.id, sourcePhysicalThreadId);
-
-  completeIssueOnThread(fakeAppServer, {
-    codexThreadId: sourceCodexThreadId,
-    delta: sourceCompletionDelta,
-    turnId: "turn-source-final"
-  });
 
   if (nextIssueId) {
     await bridge.request(`/api/threads/${rootThreadId}/issues/start`, {
@@ -2073,6 +2090,7 @@ test("thread 개발지침은 저장 후 재시작에도 유지되고 새 physica
       rootThreadId,
       sourceCodexThreadId: sourceContinuity.active_physical_thread.codex_thread_id,
       sourcePhysicalThreadId: sourceContinuity.active_physical_thread.id,
+      sourceIssueId: activeIssueId,
       nextIssueId: stagedIssueId,
       sourceCompletionDelta: sourceAssistantReply
     });
@@ -4445,6 +4463,7 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
       targetCodexThreadId
     } = await triggerPreflightThresholdRollover(bridge, fakeAppServer, {
       rootThreadId,
+      sourceIssueId: activeIssueId,
       sourceCodexThreadId,
       sourcePhysicalThreadId,
       nextIssueId: stagedIssueId
@@ -4684,16 +4703,6 @@ test("높은 tokenUsage가 누적된 root thread에서 다음 issue 시작 전�
     const sourcePhysicalThreadId = sourceContinuity.active_physical_thread.id;
     const sourceCodexThreadId = sourceContinuity.active_physical_thread.codex_thread_id;
 
-    await markThreadContextHigh(bridge, fakeAppServer, {
-      rootThreadId,
-      sourceCodexThreadId
-    });
-
-    await sleep(750);
-    const continuityBeforeSecondIssue = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
-    assert.equal(continuityBeforeSecondIssue.physical_threads.length, 1);
-    assert.equal(continuityBeforeSecondIssue.active_physical_thread?.id, sourcePhysicalThreadId);
-
     completeIssueOnThread(fakeAppServer, {
       codexThreadId: sourceCodexThreadId,
       turnId: "turn-first-completed"
@@ -4706,6 +4715,16 @@ test("높은 tokenUsage가 누적된 root thread에서 다음 issue 시작 전�
     }, {
       label: "first issue completed"
     });
+
+    await markThreadContextHigh(bridge, fakeAppServer, {
+      rootThreadId,
+      sourceCodexThreadId
+    });
+
+    await sleep(750);
+    const continuityBeforeSecondIssue = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+    assert.equal(continuityBeforeSecondIssue.physical_threads.length, 1);
+    assert.equal(continuityBeforeSecondIssue.active_physical_thread?.id, sourcePhysicalThreadId);
 
     const secondIssuePayload = await bridge.request(`/api/threads/${rootThreadId}/issues`, {
       method: "POST",
@@ -4760,6 +4779,118 @@ test("높은 tokenUsage가 누적된 root thread에서 다음 issue 시작 전�
   }
 });
 
+test("실행 중 thread tokenUsage가 임계치를 넘으면 즉시 rollover되어 같은 issue를 새 physical thread에서 이어간다", { timeout: 120000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-runtime-rollover-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-runtime-rollover-token",
+    userId: "integration-user",
+    bridgeId: `runtime-rollover-bridge-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  try {
+    await bridge.start();
+
+    const project = await getWorkspaceProject(bridge);
+    const {
+      rootThreadId,
+      activeIssueId,
+      sourcePhysicalThreadId,
+      sourceCodexThreadId
+    } = await createRunningIssueScenario(bridge, {
+      project,
+      threadName: "Runtime Threshold Rollover Thread"
+    });
+
+    fakeAppServer.notify("item/agentMessage/delta", {
+      threadId: sourceCodexThreadId,
+      delta: "runtime rollover 직전 응답"
+    });
+    fakeAppServer.notify("thread/tokenUsage/updated", {
+      threadId: sourceCodexThreadId,
+      tokenUsage: {
+        modelContextWindow: 100000,
+        last: {
+          inputTokens: 100000,
+          outputTokens: 1800,
+          totalTokens: 101800
+        },
+        total: {
+          inputTokens: 100000,
+          outputTokens: 1800,
+          totalTokens: 101800
+        }
+      }
+    });
+
+    const rolloverContinuity = await waitFor(async () => {
+      const payload = await bridge.request(`/api/threads/${rootThreadId}/continuity`);
+      assert.equal(payload.physical_threads.length, 2);
+      assert.equal(payload.handoff_summaries.length, 1);
+      assert.notEqual(payload.active_physical_thread?.id, sourcePhysicalThreadId);
+      assert.equal(payload.active_physical_thread?.opened_reason, "context_rollover");
+      assert.equal(
+        payload.recently_closed_physical_threads.some((item) => item.physical_thread_id === sourcePhysicalThreadId),
+        true
+      );
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "runtime threshold rollover"
+    });
+
+    const runningIssueAfterRollover = await bridge.request(`/api/issues/${activeIssueId}`);
+    const healthAfterRollover = await bridge.request("/health");
+
+    assert.equal(runningIssueAfterRollover.issue?.status, "running");
+    assert.equal(
+      runningIssueAfterRollover.issue?.executed_physical_thread_id,
+      rolloverContinuity.active_physical_thread.id
+    );
+    assert.equal(Number(healthAfterRollover.metrics.root_thread_rollover_total ?? 0) >= 1, true);
+    assert.equal(fakeAppServer.getRequests("thread/start").length, 2);
+    assert.equal(fakeAppServer.getRequests("turn/start").length, 2);
+    assert.equal(fakeAppServer.getRequests("turn/interrupt").length, 1);
+
+    completeIssueOnThread(fakeAppServer, {
+      codexThreadId: rolloverContinuity.active_physical_thread.codex_thread_id,
+      delta: "runtime rollover 완료 응답",
+      turnId: "turn-runtime-rollover-completed"
+    });
+
+    await waitFor(async () => {
+      const payload = await bridge.request(`/api/issues/${activeIssueId}`);
+      assert.equal(payload.issue?.status, "completed");
+      assert.equal(
+        payload.messages.some(
+          (message) => message.role === "assistant" && String(message.content ?? "").includes("runtime rollover 완료 응답")
+        ),
+        true
+      );
+      return payload;
+    }, {
+      timeoutMs: 45000,
+      intervalMs: 300,
+      label: "runtime rollover issue completed"
+    });
+  } catch (error) {
+    error.message = `${error.message}\n\n[bridge stdout]\n${bridge.debugOutput().stdout}\n[bridge stderr]\n${bridge.debugOutput().stderr}`;
+    throw error;
+  }
+});
+
 test("브리지 재시작 후 closed/deleted late event 차단 유지", { timeout: 120000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-rollover-restart-int-"));
   const fakeAppServer = new FakeAppServer();
@@ -4791,6 +4922,7 @@ test("브리지 재시작 후 closed/deleted late event 차단 유지", { timeou
     });
     const rolloverResult = await triggerPreflightThresholdRollover(bridge, fakeAppServer, {
       ...scenario,
+      sourceIssueId: scenario.activeIssueId,
       nextIssueId: scenario.stagedIssueId
     });
 
