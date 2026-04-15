@@ -1887,6 +1887,41 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
+function buildRunTimeline(thread) {
+  if (!thread) {
+    return [];
+  }
+
+  const entries = [
+    {
+      id: `${thread.id}-created`,
+      title: "Thread 생성",
+      description: `${thread.title || "새 채팅창"}이 생성되었습니다.`,
+      timestamp: thread.created_at
+    }
+  ];
+
+  if (thread.last_event && thread.last_event !== "issue.created") {
+    entries.push({
+      id: `${thread.id}-latest`,
+      title: "최근 실행 상태",
+      description: `${thread.last_event} · ${getStatusMeta(thread.status).label}`,
+      timestamp: thread.updated_at
+    });
+  }
+
+  if (thread.turn_id) {
+    entries.push({
+      id: `${thread.id}-turn`,
+      title: "최근 turn",
+      description: `turn id ${thread.turn_id}`,
+      timestamp: thread.updated_at
+    });
+  }
+
+  return entries.filter((entry) => entry.timestamp);
+}
+
 function isRetryableIssueStatus(status) {
   return String(status ?? "").trim() === "failed";
 }
