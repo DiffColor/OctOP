@@ -862,10 +862,14 @@ export default function useRealtimeVoiceSession({
         if (handoffToNewThread) {
           assistantTranscriptBufferRef.current = "";
           assistantSubtitleBufferRef.current = "";
+          queuedAppServerReportRef.current = null;
+          appServerReportInFlightRef.current = false;
+          lastProgressReportSourceRef.current = "";
+          lastFinalReportSourceRef.current = "";
           setState((current) => ({
             ...current,
-            latestAssistantTranscript: "작업을 새 쓰레드로 전달했습니다. 새 Realtime 세션으로 전환합니다.",
-            latestAssistantSubtitle: "작업을 새 쓰레드로 전달했습니다. 새 Realtime 세션으로 전환합니다.",
+            latestAssistantTranscript: "",
+            latestAssistantSubtitle: "",
             isResponding: false,
             error: ""
           }));
@@ -1395,15 +1399,12 @@ export default function useRealtimeVoiceSession({
       return;
     }
 
-    const normalizedContextKey =
-      String(sessionContextKey ?? "").trim() || `${String(project?.id ?? "").trim()}:${String(thread?.id ?? "").trim() || "project-intake"}`;
-
-    if (!normalizedContextKey || activeSessionContextKeyRef.current === normalizedContextKey || connectInFlightRef.current) {
+    if (state.connectionState !== "idle" || connectInFlightRef.current || peerConnectionRef.current || dataChannelRef.current) {
       return;
     }
 
     void startSession();
-  }, [enabled, project?.id, sessionContextKey, startSession, thread?.id]);
+  }, [enabled, startSession, state.connectionState]);
 
   const cancelResponse = useCallback(() => {
     const accepted = sendRealtimeClientEvent({

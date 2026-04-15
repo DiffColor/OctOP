@@ -8596,6 +8596,20 @@ function ThreadDetail({
 
     return formatAssistantResponseForVoice(latestAssistantEntry?.content);
   }, [chatTimeline, voiceModeEnabled, voiceSyncAnchorTimestamp]);
+  const voiceSeedUserText = useMemo(() => {
+    const latestUserEntry = [...chatTimeline]
+      .reverse()
+      .find((entry) => entry.role === "user" && Boolean(String(entry.content ?? "").trim()));
+
+    return String(latestUserEntry?.content ?? "").trim();
+  }, [chatTimeline]);
+  const voiceSeedAssistantText = useMemo(() => {
+    const latestAssistantEntry = [...chatTimeline]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && Boolean(String(entry.content ?? "").trim()));
+
+    return formatAssistantResponseForVoice(latestAssistantEntry?.content) || String(latestAssistantEntry?.content ?? "").trim();
+  }, [chatTimeline]);
 
   const recentVoiceContextSummary = useMemo(() => {
     const safeMessages = Array.isArray(messages) ? messages : [];
@@ -8798,8 +8812,8 @@ function ThreadDetail({
     bridgeId,
     project,
     thread: voiceSessionThread,
-    latestUserText: "",
-    latestAssistantText: "",
+    latestUserText: voiceSeedUserText,
+    latestAssistantText: voiceSeedAssistantText,
     appServerFinalText: voiceFollowupThreadReady ? voiceLinkedAssistantText : "",
     appServerProgressText: voiceFollowupThreadReady ? voiceProgressReportText : "",
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
@@ -9447,9 +9461,9 @@ function ThreadDetail({
       enabled: true,
       promptSubmittedAt: "",
       lastSubmittedPrompt: "",
-      delegatedThreadId: ""
+      delegatedThreadId: String(thread?.id ?? "").trim()
     });
-  }, [bridgeId, project?.id, resetVoiceState, sessionLoginId, showAlert, updateVoiceState, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
+  }, [bridgeId, project?.id, resetVoiceState, sessionLoginId, showAlert, thread?.id, updateVoiceState, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
   useEffect(() => {
     setActiveMessageAction(null);
