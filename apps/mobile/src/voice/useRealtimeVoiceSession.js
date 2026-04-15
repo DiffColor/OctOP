@@ -396,29 +396,6 @@ export default function useRealtimeVoiceSession({
     [getAudioMetricsSnapshot, subscribeAudioMetrics]
   );
 
-  useEffect(() => {
-    setState((current) => {
-      const nextUserTranscript = current.latestUserTranscript || String(latestUserText ?? "").trim();
-      const nextAssistantTranscript = current.latestAssistantTranscript || String(latestAssistantText ?? "").trim();
-      const nextAssistantSubtitle = current.latestAssistantSubtitle || nextAssistantTranscript;
-
-      if (
-        nextUserTranscript === current.latestUserTranscript &&
-        nextAssistantTranscript === current.latestAssistantTranscript &&
-        nextAssistantSubtitle === current.latestAssistantSubtitle
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        latestUserTranscript: nextUserTranscript,
-        latestAssistantTranscript: nextAssistantTranscript,
-        latestAssistantSubtitle: nextAssistantSubtitle
-      };
-    });
-  }, [latestAssistantText, latestUserText]);
-
   const refreshInputDevices = useCallback(async (preferredDeviceId = "") => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       setState((current) => ({
@@ -779,6 +756,7 @@ export default function useRealtimeVoiceSession({
           ...current,
           isResponding: true,
           error: "",
+          latestAssistantTranscript: "",
           latestAssistantSubtitle: ""
         }));
       }
@@ -807,8 +785,7 @@ export default function useRealtimeVoiceSession({
     setState((current) => ({
       ...current,
       isResponding: true,
-      error: "",
-      latestAssistantSubtitle: ""
+      error: ""
     }));
     return true;
   }, [sendRealtimeClientEvent]);
@@ -1007,13 +984,20 @@ export default function useRealtimeVoiceSession({
           }
 
           processedFunctionCallIdsRef.current.add(functionCall.callId);
+          const responseDataChannel = dataChannelRef.current;
           const result = await executeVoiceTool(functionCall.name, functionCall.arguments);
 
           if (String(result?.switch_to_thread_id ?? "").trim()) {
             handoffToNewThread = true;
           }
 
-          sendRealtimeClientEvent(buildFunctionCallOutputEvent(functionCall.callId, result));
+          const functionCallOutputEvent = buildFunctionCallOutputEvent(functionCall.callId, result);
+
+          if (isOpenDataChannel(responseDataChannel)) {
+            responseDataChannel.send(JSON.stringify(functionCallOutputEvent));
+          } else {
+            sendRealtimeClientEvent(functionCallOutputEvent);
+          }
         }
 
         if (handoffToNewThread) {
@@ -1043,10 +1027,11 @@ export default function useRealtimeVoiceSession({
 
       if (assistantText) {
         assistantTranscriptBufferRef.current = assistantText;
+        assistantSubtitleBufferRef.current = assistantText;
         setState((current) => ({
           ...current,
           latestAssistantTranscript: assistantText,
-          latestAssistantSubtitle: current.latestAssistantSubtitle || assistantText,
+          latestAssistantSubtitle: assistantText,
           error: ""
         }));
       }
@@ -1090,13 +1075,17 @@ export default function useRealtimeVoiceSession({
         }
 
         case "response.created": {
+          const responseChannel = String(event?.response?.metadata?.channel ?? "").trim();
           assistantTranscriptBufferRef.current = "";
           assistantSubtitleBufferRef.current = "";
           setState((current) => ({
             ...current,
             isResponding: true,
             error: "",
-            latestAssistantSubtitle: ""
+            latestAssistantTranscript:
+              responseChannel === REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT ? current.latestAssistantTranscript : "",
+            latestAssistantSubtitle:
+              responseChannel === REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT ? current.latestAssistantSubtitle : ""
           }));
           return;
         }
@@ -1111,7 +1100,8 @@ export default function useRealtimeVoiceSession({
           assistantTranscriptBufferRef.current += delta;
           setState((current) => ({
             ...current,
-            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim()
+            latestAssistantTranscript: assistantTranscriptBufferRef.current.trim(),
+            latestAssistantSubtitle: assistantTranscriptBufferRef.current.trim()
           }));
           return;
         }
@@ -1126,7 +1116,8 @@ export default function useRealtimeVoiceSession({
           assistantTranscriptBufferRef.current = transcript;
           setState((current) => ({
             ...current,
-            latestAssistantTranscript: transcript
+            latestAssistantTranscript: transcript,
+            latestAssistantSubtitle: transcript
           }));
           return;
         }
@@ -1550,6 +1541,29 @@ export default function useRealtimeVoiceSession({
 
     void startSession();
   }, [enabled, startSession, state.connectionState]);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    const normalizedSessionContextKey =
+      String(sessionContextKey ?? "").trim() || `${String(project?.id ?? "").trim()}:${String(thread?.id ?? "").trim() || "project-intake"}`;
+
+    if (!normalizedSessionContextKey) {
+      return;
+    }
+
+    if (normalizedSessionContextKey === activeSessionContextKeyRef.current) {
+      return;
+    }
+
+    if (disconnectingRef.current) {
+      return;
+    }
+
+    void startSession();
+  }, [enabled, project?.id, sessionContextKey, startSession, thread?.id]);
 
   const cancelResponse = useCallback(() => {
     const accepted = sendRealtimeClientEvent({

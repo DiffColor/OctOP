@@ -140,21 +140,21 @@ function wrapSubtitleLines(text, maxCharsPerLine = SUBTITLE_MAX_CHARS_PER_LINE) 
 }
 
 function buildSubtitleFrame(text) {
+  const normalizedText = normalizeSubtitleText(text);
   const allLines = wrapSubtitleLines(text);
 
-  if (allLines.length === 0) {
+  if (!normalizedText || allLines.length === 0) {
     return {
-      lines: [],
+      text: "",
+      lineCount: 0,
       transitionKey: "subtitle-empty"
     };
   }
 
-  const visibleStartIndex = Math.max(0, allLines.length - SUBTITLE_VISIBLE_LINE_COUNT);
-  const visibleLines = allLines.slice(visibleStartIndex);
-
   return {
-    lines: visibleLines,
-    transitionKey: `subtitle-${visibleStartIndex}-${allLines.length}`
+    text: normalizedText,
+    lineCount: Math.min(allLines.length, SUBTITLE_VISIBLE_LINE_COUNT),
+    transitionKey: `subtitle-0-${allLines.length}`
   };
 }
 
@@ -365,9 +365,9 @@ export default function VoiceModePanel({
   const hasUserTranscript = Boolean(String(latestUserText ?? "").trim());
   const subtitleFrame = useMemo(() => buildSubtitleFrame(liveTranscript), [liveTranscript]);
   const subtitleLineCountClassName =
-    subtitleFrame.lines.length <= 1
+    subtitleFrame.lineCount <= 1
       ? "is-single-line"
-      : subtitleFrame.lines.length === 2
+      : subtitleFrame.lineCount === 2
         ? "is-two-lines"
         : "is-three-lines";
   const subtitleToneClassName = [
@@ -465,6 +465,13 @@ export default function VoiceModePanel({
                   visualConfig={orbVisualConfig}
                 />
               </div>
+            </div>
+
+            <div className="voice-mode-panel__transcript-shell is-bottom-zone">
+              <div className="voice-mode-panel__transcript-glow" aria-hidden="true" />
+              <article className={`voice-mode-panel__prompt-card ${hasUserTranscript ? "" : "is-placeholder"}`.trim()} data-testid="voice-user-bubble" aria-label="최근 사용자 입력">
+                <p className="voice-mode-panel__prompt-card-text">{userTranscript}</p>
+              </article>
 
               <div className="voice-mode-panel__subtitle-stage" aria-hidden={false}>
                 <div className="voice-mode-panel__subtitle-glow" aria-hidden="true" />
@@ -475,30 +482,17 @@ export default function VoiceModePanel({
                   aria-live={errorMessage ? "assertive" : "polite"}
                   aria-atomic="true"
                 >
-                  <span className="voice-mode-panel__sr-only">OctOP AI 자막</span>
                   <div key={subtitleFrame.transitionKey} className="voice-mode-panel__subtitle-window">
                     <div
                       className={`voice-mode-panel__subtitle-text ${
                         subtitleLineCountClassName
                       }`.trim()}
                     >
-                      {subtitleFrame.lines.map((line, index) => (
-                        <span key={`${subtitleFrame.transitionKey}-${index}`} className="voice-mode-panel__subtitle-line">
-                          {line}
-                        </span>
-                      ))}
+                      {subtitleFrame.text}
                     </div>
                   </div>
                 </article>
               </div>
-            </div>
-
-            <div className="voice-mode-panel__transcript-shell is-bottom-zone">
-              <div className="voice-mode-panel__transcript-glow" aria-hidden="true" />
-              <article className={`voice-mode-panel__prompt-card ${hasUserTranscript ? "" : "is-placeholder"}`.trim()} data-testid="voice-user-bubble" aria-label="최근 사용자 입력">
-                <span className="voice-mode-panel__prompt-card-label">Recent Prompt</span>
-                <p className="voice-mode-panel__prompt-card-text">{userTranscript}</p>
-              </article>
             </div>
           </div>
 

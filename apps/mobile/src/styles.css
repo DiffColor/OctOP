@@ -905,7 +905,10 @@ svg {
 
 .voice-mode-panel__transcript-shell {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0.7rem;
   padding-inline: 0.1rem;
 }
 
@@ -1670,7 +1673,7 @@ svg {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  padding: 0.1rem 0 4.9rem;
+  padding: 0.1rem 0 0.8rem;
 }
 
 .voice-mode-panel__orb-shell {
@@ -1718,14 +1721,12 @@ svg {
 }
 
 .voice-mode-panel__subtitle-stage {
-  position: absolute;
-  left: 50%;
-  bottom: 0.3rem;
-  z-index: 2;
+  position: relative;
+  z-index: 1;
   display: flex;
-  width: min(calc(100% - 0.8rem), 38rem);
+  width: min(100%, 34rem);
   justify-content: center;
-  transform: translateX(-50%);
+  align-self: center;
   pointer-events: none;
 }
 
@@ -1799,9 +1800,7 @@ svg {
 
 .voice-mode-panel__subtitle-text {
   margin: 0;
-  display: grid;
-  gap: 0.08rem;
-  justify-items: center;
+  display: -webkit-box;
   color: rgba(255, 255, 255, 0.98);
   font-size: clamp(1.08rem, 1rem + 0.5vw, 1.46rem);
   font-weight: 800;
@@ -1812,6 +1811,9 @@ svg {
     0 0 10px rgba(0, 0, 0, 0.42);
   word-break: keep-all;
   overflow-wrap: anywhere;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .voice-mode-panel__subtitle-text.is-single-line {
@@ -1827,11 +1829,6 @@ svg {
 .voice-mode-panel__subtitle-text.is-three-lines {
   min-height: calc(1.24em * 3);
   align-content: center;
-}
-
-.voice-mode-panel__subtitle-line {
-  display: block;
-  min-height: 1.24em;
 }
 
 .voice-mode-panel__subtitle-bubble.is-placeholder .voice-mode-panel__subtitle-text {
@@ -2058,7 +2055,7 @@ svg {
 
   .voice-mode-panel__blob-stage {
     min-height: 13.5rem;
-    padding-bottom: 4.6rem;
+    padding-bottom: 0.6rem;
   }
 
   .voice-mode-panel__orb-shell {
@@ -2066,7 +2063,7 @@ svg {
   }
 
   .voice-mode-panel__subtitle-stage {
-    width: min(calc(100% - 0.6rem), 34rem);
+    width: 100%;
   }
 
   .voice-mode-panel__subtitle-bubble {
@@ -2116,12 +2113,11 @@ svg {
   }
 
   .voice-mode-panel__blob-stage {
-    padding-bottom: 4.2rem;
+    padding-bottom: 0.5rem;
   }
 
   .voice-mode-panel__subtitle-stage {
-    width: calc(100% - 0.4rem);
-    bottom: 0.3rem;
+    width: 100%;
   }
 
   .voice-mode-panel__subtitle-bubble {

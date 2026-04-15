@@ -8206,7 +8206,8 @@ function ThreadDetail({
   emptyStateMessage = "",
   voiceSessionEnabled = true,
   voiceState = null,
-  onVoiceStateChange = null
+  onVoiceStateChange = null,
+  voiceFollowupThreadDetail = null
 }) {
   const status = thread ? getStatusMeta(thread.status) : null;
   const responseSignal = thread ? buildThreadResponseSignal(thread, signalNow) : null;
@@ -8315,10 +8316,18 @@ function ThreadDetail({
       const handoffToNewThread = !voiceDelegatedThreadId && Boolean(resolvedThreadId);
 
       if (handoffToNewThread) {
-        updateVoiceState((current) => ({
-          ...current,
-          delegatedThreadId: resolvedThreadId
-        }));
+        const applyVoiceThreadHandoff = () => {
+          updateVoiceState((current) => ({
+            ...current,
+            delegatedThreadId: resolvedThreadId
+          }));
+        };
+
+        if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+          window.setTimeout(applyVoiceThreadHandoff, 0);
+        } else {
+          applyVoiceThreadHandoff();
+        }
       }
 
       return {
@@ -8344,6 +8353,38 @@ function ThreadDetail({
     () => safeIssues.map((issue) => normalizeIssue(issue, thread?.id)).filter(Boolean),
     [safeIssues, thread?.id]
   );
+  const voiceFollowupThreadState = useMemo(() => {
+    const normalizedVoiceThreadId = String(voiceDelegatedThreadId ?? "").trim();
+
+    if (!normalizedVoiceThreadId) {
+      return null;
+    }
+
+    if (String(thread?.id ?? "").trim() === normalizedVoiceThreadId) {
+      return {
+        thread,
+        messages: Array.isArray(messages) ? messages : [],
+        issues: normalizedIssues
+      };
+    }
+
+    const fallbackThread =
+      String(voiceFollowupThreadDetail?.thread?.id ?? "").trim() === normalizedVoiceThreadId
+        ? voiceFollowupThreadDetail.thread
+        : {
+            id: normalizedVoiceThreadId,
+            title: "",
+            status: ""
+          };
+
+    return {
+      thread: fallbackThread,
+      messages: Array.isArray(voiceFollowupThreadDetail?.messages) ? voiceFollowupThreadDetail.messages : [],
+      issues: (Array.isArray(voiceFollowupThreadDetail?.issues) ? voiceFollowupThreadDetail.issues : [])
+        .map((issue) => normalizeIssue(issue, normalizedVoiceThreadId))
+        .filter(Boolean)
+    };
+  }, [messages, normalizedIssues, thread, voiceDelegatedThreadId, voiceFollowupThreadDetail]);
   const issueById = useMemo(() => {
     const next = new Map();
 
@@ -8353,6 +8394,11 @@ function ThreadDetail({
 
     return next;
   }, [normalizedIssues]);
+  const voiceFollowupThreadReady = Boolean(String(voiceDelegatedThreadId ?? "").trim());
+  const voiceContextThread = voiceFollowupThreadReady ? voiceFollowupThreadState?.thread ?? null : thread;
+  const voiceContextMessages =
+    voiceFollowupThreadReady ? voiceFollowupThreadState?.messages ?? [] : Array.isArray(messages) ? messages : [];
+  const voiceContextIssues = voiceFollowupThreadReady ? voiceFollowupThreadState?.issues ?? [] : normalizedIssues;
   const activePhysicalThreadId = thread?.active_physical_thread_id ?? null;
   const interruptibleIssue = useMemo(() => {
     const activeIssue = findActiveIssueForThread(normalizedIssues, activePhysicalThreadId);
@@ -8552,7 +8598,7 @@ function ThreadDetail({
     [visibleChatTimeline]
   );
   const latestHandoffSummaryText = useMemo(() => {
-    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
 
     for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
       const message = safeMessages[index];
@@ -8569,7 +8615,7 @@ function ThreadDetail({
     }
 
     return "";
-  }, [messages]);
+  }, [voiceContextMessages]);
   const voiceSyncAnchorTimestamp = voicePromptSubmittedAt;
   const voiceLinkedAssistantText = useMemo(() => {
     if (!voiceModeEnabled || !voiceSyncAnchorTimestamp) {
@@ -8582,37 +8628,42 @@ function ThreadDetail({
       return "";
     }
 
-    const latestAssistantEntry = [...chatTimeline]
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
+    const fallbackTimestamp =
+      voiceContextThread?.updated_at ?? voiceContextThread?.created_at ?? thread?.updated_at ?? thread?.created_at ?? new Date().toISOString();
+    const latestAssistantEntry = [...safeMessages]
       .reverse()
-      .find((entry) => {
-        if (entry.role !== "assistant") {
+      .find((message) => {
+        if (message?.role !== "assistant") {
           return false;
         }
 
-        const spokenText = formatAssistantResponseForVoice(entry.content);
-        const entryTime = Date.parse(entry.timestamp ?? "");
+        const spokenText = formatAssistantResponseForVoice(message.content);
+        const entryTime = Date.parse(message.timestamp ?? fallbackTimestamp);
         return Boolean(spokenText) && Number.isFinite(entryTime) && entryTime >= anchorTime;
       });
 
     return formatAssistantResponseForVoice(latestAssistantEntry?.content);
-  }, [chatTimeline, voiceModeEnabled, voiceSyncAnchorTimestamp]);
+  }, [thread?.created_at, thread?.updated_at, voiceContextMessages, voiceContextThread, voiceModeEnabled, voiceSyncAnchorTimestamp]);
   const voiceSeedUserText = useMemo(() => {
-    const latestUserEntry = [...chatTimeline]
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
+    const latestUserEntry = [...safeMessages]
       .reverse()
-      .find((entry) => entry.role === "user" && Boolean(String(entry.content ?? "").trim()));
+      .find((message) => message?.role !== "assistant" && message?.role !== "system" && Boolean(String(message?.content ?? "").trim()));
 
-    return String(latestUserEntry?.content ?? "").trim();
-  }, [chatTimeline]);
+    return String(latestUserEntry?.content ?? voiceLastSubmittedPrompt ?? "").trim();
+  }, [voiceContextMessages, voiceLastSubmittedPrompt]);
   const voiceSeedAssistantText = useMemo(() => {
-    const latestAssistantEntry = [...chatTimeline]
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
+    const latestAssistantEntry = [...safeMessages]
       .reverse()
-      .find((entry) => entry.role === "assistant" && Boolean(String(entry.content ?? "").trim()));
+      .find((message) => message?.role === "assistant" && Boolean(String(message?.content ?? "").trim()));
 
     return formatAssistantResponseForVoice(latestAssistantEntry?.content) || String(latestAssistantEntry?.content ?? "").trim();
-  }, [chatTimeline]);
+  }, [voiceContextMessages]);
 
   const recentVoiceContextSummary = useMemo(() => {
-    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
     const normalizedEntries = safeMessages
       .map((message) => {
         if (!message) {
@@ -8638,28 +8689,38 @@ function ThreadDetail({
       })
       .filter(Boolean);
 
+    const latestVoicePromptEntry = String(voiceLastSubmittedPrompt ?? "").trim();
+
+    if (latestVoicePromptEntry) {
+      const normalizedPromptEntry = `user: ${latestVoicePromptEntry}`;
+
+      if (normalizedEntries[normalizedEntries.length - 1] !== normalizedPromptEntry) {
+        normalizedEntries.push(normalizedPromptEntry);
+      }
+    }
+
     if (normalizedEntries.length === 0) {
       return "";
     }
 
     return normalizedEntries.slice(-8).join("\n");
-  }, [messages]);
+  }, [voiceContextMessages, voiceLastSubmittedPrompt]);
   const voiceFileContextSummary = useMemo(() => {
-    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeMessages = Array.isArray(voiceContextMessages) ? voiceContextMessages : [];
     const attachments = [
-      ...normalizedIssues.flatMap((issue) => normalizeMessageAttachments(issue?.attachments)),
+      ...voiceContextIssues.flatMap((issue) => normalizeMessageAttachments(issue?.attachments)),
       ...safeMessages.flatMap((message) => normalizeMessageAttachments(message?.attachments))
     ];
 
     return formatFileContextSummaryForVoice(attachments);
-  }, [messages, normalizedIssues]);
+  }, [voiceContextIssues, voiceContextMessages]);
   const voiceThreadContinuitySummary = useMemo(() => {
     const summaryParts = [];
-    const continuityStatus = String(thread?.continuity_status ?? "").trim();
-    const rootThreadId = String(thread?.root_thread_id ?? thread?.id ?? "").trim();
-    const activePhysicalThreadId = String(thread?.active_physical_thread_id ?? "").trim();
-    const lastEvent = String(thread?.last_event ?? "").trim();
-    const contextUsage = Number(thread?.context_usage_percent);
+    const continuityStatus = String(voiceContextThread?.continuity_status ?? "").trim();
+    const rootThreadId = String(voiceContextThread?.root_thread_id ?? voiceContextThread?.id ?? "").trim();
+    const activePhysicalThreadId = String(voiceContextThread?.active_physical_thread_id ?? "").trim();
+    const lastEvent = String(voiceContextThread?.last_event ?? "").trim();
+    const contextUsage = Number(voiceContextThread?.context_usage_percent);
 
     if (rootThreadId) {
       summaryParts.push(`root_thread_id=${rootThreadId}`);
@@ -8683,12 +8744,12 @@ function ThreadDetail({
 
     return summaryParts.join(", ");
   }, [
-    thread?.active_physical_thread_id,
-    thread?.context_usage_percent,
-    thread?.continuity_status,
-    thread?.id,
-    thread?.last_event,
-    thread?.root_thread_id
+    voiceContextThread?.active_physical_thread_id,
+    voiceContextThread?.context_usage_percent,
+    voiceContextThread?.continuity_status,
+    voiceContextThread?.id,
+    voiceContextThread?.last_event,
+    voiceContextThread?.root_thread_id
   ]);
   const voiceProgramSummary = useMemo(
     () =>
@@ -8730,24 +8791,13 @@ function ThreadDetail({
       }),
     [project?.base_instructions, project?.developer_instructions, project?.name, project?.workspace_path]
   );
-  const voiceFollowupThreadReady = Boolean(String(voiceDelegatedThreadId ?? "").trim());
   const voiceSessionThread = useMemo(() => {
-    const normalizedVoiceThreadId = String(voiceDelegatedThreadId ?? "").trim();
-
-    if (!normalizedVoiceThreadId) {
+    if (!voiceFollowupThreadReady) {
       return null;
     }
 
-    if (String(thread?.id ?? "").trim() === normalizedVoiceThreadId) {
-      return thread;
-    }
-
-    return {
-      id: normalizedVoiceThreadId,
-      title: "",
-      status: ""
-    };
-  }, [thread, voiceDelegatedThreadId]);
+    return voiceFollowupThreadState?.thread ?? null;
+  }, [voiceFollowupThreadReady, voiceFollowupThreadState]);
   const voiceSessionContextKey = useMemo(() => {
     const normalizedProjectId = String(project?.id ?? "").trim() || "project-unknown";
     const normalizedVoiceThreadId = String(voiceDelegatedThreadId ?? "").trim();
@@ -8766,27 +8816,27 @@ function ThreadDetail({
       return "";
     }
 
-    const recentIssue = [...normalizedIssues]
+    const recentIssue = [...voiceContextIssues]
       .filter((issue) => {
         const updatedAt = Date.parse(issue.updated_at ?? issue.created_at ?? "");
         return Number.isFinite(updatedAt) && updatedAt >= anchorTimestamp;
       })
       .sort((left, right) => Date.parse(right.updated_at ?? right.created_at ?? "") - Date.parse(left.updated_at ?? left.created_at ?? ""))[0] ?? null;
 
-    const threadUpdatedAt = Date.parse(thread?.updated_at ?? thread?.created_at ?? "");
+    const threadUpdatedAt = Date.parse(voiceContextThread?.updated_at ?? voiceContextThread?.created_at ?? "");
     const progressTarget =
       recentIssue ??
       (Number.isFinite(threadUpdatedAt) && threadUpdatedAt >= anchorTimestamp
-        ? thread
-        : isThreadExecutionInProgress(thread)
-          ? thread
+        ? voiceContextThread
+        : isThreadExecutionInProgress(voiceContextThread)
+          ? voiceContextThread
           : null);
 
     if (!progressTarget && !voiceLastSubmittedPrompt) {
       return "";
     }
 
-    const progressText = getRealtimeProgressText(progressTarget ?? thread);
+    const progressText = getRealtimeProgressText(progressTarget ?? voiceContextThread);
     const statusMessage = formatAssistantResponseForVoice(progressTarget?.last_message ?? "", { maxLength: 120 });
 
     return formatVoiceExecutionReportForVoice({
@@ -8796,8 +8846,8 @@ function ThreadDetail({
       lastMessage: statusMessage
     });
   }, [
-    normalizedIssues,
-    thread,
+    voiceContextIssues,
+    voiceContextThread,
     voiceLastSubmittedPrompt,
     voiceLinkedAssistantText,
     voiceModeEnabled,
@@ -8819,7 +8869,7 @@ function ThreadDetail({
     projectWorkspacePath: String(project?.workspace_path ?? "").trim(),
     projectBaseInstructions: String(project?.base_instructions ?? "").trim(),
     projectDeveloperInstructions: String(project?.developer_instructions ?? "").trim(),
-    threadDeveloperInstructions: voiceFollowupThreadReady ? String(thread?.developer_instructions ?? "").trim() : "",
+    threadDeveloperInstructions: voiceFollowupThreadReady ? String(voiceContextThread?.developer_instructions ?? "").trim() : "",
     threadContinuitySummary: voiceFollowupThreadReady ? voiceThreadContinuitySummary : "",
     latestHandoffSummary: voiceFollowupThreadReady ? latestHandoffSummaryText : "",
     recentConversationSummary: voiceFollowupThreadReady ? recentVoiceContextSummary : "",
@@ -9461,7 +9511,7 @@ function ThreadDetail({
       enabled: true,
       promptSubmittedAt: "",
       lastSubmittedPrompt: "",
-      delegatedThreadId: String(thread?.id ?? "").trim()
+      delegatedThreadId: ""
     });
   }, [bridgeId, project?.id, resetVoiceState, sessionLoginId, showAlert, thread?.id, updateVoiceState, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
 
@@ -10029,6 +10079,7 @@ function MainPage({
   onBackToInbox,
   onRegisterBackHandler,
   threadVoiceState,
+  voiceFollowupThreadDetail,
   onChangeThreadVoiceState
 }) {
   const { confirm: confirmMobileAction } = useMobileFeedback();
@@ -11945,7 +11996,7 @@ function MainPage({
                         ...payload,
                         project_id: resolvedThread?.project_id ?? threadProject?.id ?? payload?.project_id
                       },
-                      { stayOnThread: true }
+                      { stayOnThread: true, preserveCurrentThreadSelection: true }
                     )
                   }
                   submitBusy={threadBusy}
@@ -11961,6 +12012,7 @@ function MainPage({
                   emptyStateMessage={splitThreadEmptyStateMessage}
                   voiceSessionEnabled={VOICE_SESSION_ENABLED}
                   voiceState={threadVoiceState}
+                  voiceFollowupThreadDetail={voiceFollowupThreadDetail}
                   onVoiceStateChange={onChangeThreadVoiceState}
                 />
               )}
@@ -12011,7 +12063,7 @@ function MainPage({
                 ...payload,
                 project_id: resolvedThread?.project_id ?? threadProject?.id ?? payload?.project_id
               },
-              { stayOnThread: true }
+              { stayOnThread: true, preserveCurrentThreadSelection: true }
             )
           }
           submitBusy={threadBusy}
@@ -12024,6 +12076,7 @@ function MainPage({
           isDraft={!selectedThread && !threadDetail?.thread}
           voiceSessionEnabled={VOICE_SESSION_ENABLED}
           voiceState={threadVoiceState}
+          voiceFollowupThreadDetail={voiceFollowupThreadDetail}
           onVoiceStateChange={onChangeThreadVoiceState}
         />
       </div>
@@ -16613,6 +16666,7 @@ export default function App() {
         : [];
 
       const stayOnThread = Boolean(options?.stayOnThread);
+      const preserveCurrentThreadSelection = Boolean(options?.preserveCurrentThreadSelection);
 
       if (threadId) {
         clearInstantThreadIfNeeded(threadId);
@@ -16633,9 +16687,11 @@ export default function App() {
         } else {
           setThreads((current) => upsertThread(current, createdThread.thread));
         }
-        setSelectedThreadId(threadId);
-        setDraftThreadProjectId("");
-        setThreadMessageFilter("all");
+        if (!preserveCurrentThreadSelection) {
+          setSelectedThreadId(threadId);
+          setDraftThreadProjectId("");
+          setThreadMessageFilter("all");
+        }
 
         if (issueId) {
           const startIssuePath =
@@ -16664,7 +16720,9 @@ export default function App() {
       }
 
       if (stayOnThread && threadId) {
-        setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
+        if (!preserveCurrentThreadSelection) {
+          setActiveView(wideThreadSplitEnabled ? "inbox" : "thread");
+        }
         scheduleThreadMessagesReload(threadId, {
           force: true,
           mode: "active",
@@ -17830,6 +17888,8 @@ export default function App() {
     history_error: "",
     loaded_issue_ids: []
   };
+  const voiceFollowupThreadId = String(threadVoiceState?.delegatedThreadId ?? "").trim();
+  const currentVoiceFollowupThreadDetailState = voiceFollowupThreadId ? threadDetails[voiceFollowupThreadId] ?? null : null;
 
   return (
     <MobileFeedbackContext.Provider value={mobileFeedbackValue}>
@@ -17973,6 +18033,7 @@ export default function App() {
         onBackToInbox={handleBackToInbox}
         onRegisterBackHandler={registerMainPageBackHandler}
         threadVoiceState={threadVoiceState}
+        voiceFollowupThreadDetail={currentVoiceFollowupThreadDetailState}
         onChangeThreadVoiceState={setThreadVoiceState}
       />
       <PwaUpdateDialog visible={pwaUpdateVisible} busy={pwaUpdateBusy} onConfirm={handleConfirmPwaUpdate} />
