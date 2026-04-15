@@ -8943,6 +8943,34 @@ class AppServerClient {
       return;
     }
 
+    if (threadId && activeIssueId && codexThreadId) {
+      try {
+        await syncRemoteTurnSnapshotForNotification(owner, {
+          threadId,
+          physicalThreadId,
+          codexThreadId,
+          issueId: activeIssueId,
+          method,
+          params
+        });
+      } catch (error) {
+        appendDiagnosticLog(
+          "warn",
+          "thread.notification.result_sync.failed",
+          "remote turn snapshot sync before notification publish failed",
+          {
+            user_id: owner,
+            thread_id: threadId,
+            physical_thread_id: physicalThreadId,
+            codex_thread_id: codexThreadId,
+            issue_id: activeIssueId,
+            method,
+            error
+          }
+        );
+      }
+    }
+
     const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
     if (!ignoreTerminalThreadStatusChanged) {
       await publishEvent(
@@ -10225,16 +10253,140 @@ function clearRunningIssueBackfill(threadId) {
   });
 }
 
-async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecified") {
+async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecified", options = {}) {
   const response = await appServer.request(
     "thread/read",
     {
       threadId: codexThreadId,
       includeTurns: true
     },
-    `thread/read.${reason}`
+    `thread/read.${reason}`,
+    options
   );
   return response.result?.thread ?? response.thread ?? null;
+}
+
+function shouldSyncRemoteTurnSnapshotForNotification(method, params = {}) {
+  if (method === "turn/completed") {
+    return true;
+  }
+
+  if (method !== "thread/status/changed") {
+    return false;
+  }
+
+  return ["waitingForInput", "idle", "error"].includes(String(params.status?.type ?? "").trim());
+}
+
+async function syncRemoteTurnSnapshotForNotification(
+  userId,
+  {
+    threadId = null,
+    physicalThreadId = null,
+    codexThreadId = null,
+    issueId = null,
+    method = "",
+    params = {}
+  } = {}
+) {
+  if (!shouldSyncRemoteTurnSnapshotForNotification(method, params)) {
+    return null;
+  }
+
+  const normalizedCodexThreadId = String(codexThreadId ?? "").trim();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  const normalizedIssueId = String(issueId ?? "").trim();
+  const owner = sanitizeUserId(userId);
+
+  if (!normalizedCodexThreadId || !normalizedThreadId || !normalizedIssueId) {
+    return null;
+  }
+
+  const thread = threadStateById.get(normalizedThreadId) ?? null;
+  const issue = issueCardsById.get(normalizedIssueId) ?? null;
+  const currentPhysicalThread = physicalThreadId
+    ? physicalThreadStateById.get(physicalThreadId) ?? null
+    : null;
+
+  if (!thread || !issue || thread.deleted_at || issue.deleted_at) {
+    return null;
+  }
+
+  const remoteThread = await readThreadSnapshotFromAppServer(
+    normalizedCodexThreadId,
+    `notificationSync:${method.replaceAll("/", ".")}`,
+    {
+      affectConnectionHealth: false,
+      timeoutMs: Math.min(APP_SERVER_REQUEST_TIMEOUT_MS, 5000)
+    }
+  );
+
+  if (!remoteThread?.id) {
+    return null;
+  }
+
+  const remoteTurn = selectRemoteTurnForBackfill(
+    remoteThread,
+    currentPhysicalThread?.turn_id ?? thread.turn_id ?? null
+  );
+  const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+  const syncedAssistant = syncAssistantSnapshotToIssue(
+    normalizedIssueId,
+    remoteAssistantText,
+    physicalThreadId
+  );
+  const tokenUsageState = normalizeThreadTokenUsage(
+    remoteThread.tokenUsage ?? remoteThread.token_usage ?? null,
+    currentPhysicalThread ?? thread ?? {}
+  );
+  const tokenUsageChanged =
+    physicalThreadId != null &&
+    !areThreadTokenUsageStatesEqual(currentPhysicalThread ?? {}, tokenUsageState);
+  const recoveredMessage = syncedAssistant.content || String(issue.last_message ?? "").trim();
+
+  if (tokenUsageChanged) {
+    updateBackfilledPhysicalThread(normalizedThreadId, physicalThreadId, {
+      ...tokenUsageState
+    });
+  }
+
+  if (syncedAssistant.changed) {
+    updateIssueCard(normalizedIssueId, {
+      ...(physicalThreadId ? { executed_physical_thread_id: physicalThreadId } : {}),
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+  }
+
+  const eventContext = {
+    codexThreadId: remoteThread.id,
+    threadId: normalizedThreadId,
+    rootThreadId: normalizedThreadId,
+    physicalThreadId,
+    projectId: thread.project_id ?? "",
+    issueId: normalizedIssueId,
+    issueStatus: issueCardsById.get(normalizedIssueId)?.status ?? issue.status ?? null
+  };
+
+  if (syncedAssistant.appendedDelta) {
+    await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
+      threadId: remoteThread.id,
+      delta: syncedAssistant.appendedDelta
+    }, eventContext);
+  }
+
+  if (tokenUsageChanged) {
+    await publishSyntheticRemoteEvent(owner, "thread/tokenUsage/updated", {
+      threadId: remoteThread.id,
+      tokenUsage: remoteThread.tokenUsage ?? remoteThread.token_usage ?? null
+    }, eventContext);
+  }
+
+  return {
+    remoteThread,
+    remoteTurn,
+    syncedAssistant,
+    tokenUsageChanged
+  };
 }
 
 function buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, options = {}) {
