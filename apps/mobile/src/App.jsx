@@ -22,12 +22,9 @@ import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js
 import PushNotificationCard from "./PushNotificationCard.jsx";
 import MobileInboxScreen from "./mobileInboxScreen.jsx";
 import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mobileRichMessageUi.jsx";
-import TodoChatListItem from "./mobileTodoChatListItem.jsx";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import {
   BottomSheet,
-  BridgeDropdown,
-  InstallPromptBanner,
   LoginPage,
   MobileConfirmDialog,
   MobileFeedbackContext,
@@ -3883,418 +3880,6 @@ function getThreadPreview(thread) {
   return summarizeMessageContent(normalizedPreview, 120);
 }
 
-function ThreadListItem({
-  thread,
-  active,
-  selected = false,
-  selectionMode = false,
-  signalNow,
-  registerNode,
-  reorderActive = false,
-  reorderOffsetY = 0,
-  transitionLocked = false,
-  onStartReorder,
-  onMoveReorder,
-  onEndReorder,
-  onCancelReorder,
-  onOpen,
-  onRename,
-  onDelete,
-  onToggleSelect,
-  onEnterSelectionMode
-}) {
-  const status = getStatusMeta(thread.status);
-  const responseSignal = buildThreadResponseSignal(thread, signalNow);
-  const contextUsageLabel = formatThreadContextUsage(thread);
-  const startPointRef = useRef(null);
-  const baseOffsetRef = useRef(0);
-  const pointerIdRef = useRef(null);
-  const swipeAxisRef = useRef(null);
-  const offsetRef = useRef(0);
-  const movedRef = useRef(false);
-  const latestPointerPointRef = useRef(null);
-  const longPressTimerRef = useRef(null);
-  const longPressTriggeredRef = useRef(false);
-  const longPressReadyRef = useRef(false);
-  const reorderRequestedRef = useRef(false);
-  const ACTION_WIDTH = 92;
-  const SNAP_THRESHOLD = 42;
-  const [offset, setOffset] = useState(0);
-  const [dragging, setDragging] = useState(false);
-  const highlighted = selectionMode ? selected : active;
-
-  const clearPendingLongPress = useCallback(() => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
-  const setRevealOffset = useCallback((nextOffset) => {
-    const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
-    offsetRef.current = clamped;
-    setOffset(clamped);
-  }, []);
-
-  const handlePointerDown = useCallback((event) => {
-    if (event.pointerType === "mouse" && event.button !== 0) {
-      return;
-    }
-
-    startPointRef.current = { x: event.clientX, y: event.clientY };
-    latestPointerPointRef.current = { x: event.clientX, y: event.clientY };
-    baseOffsetRef.current = offsetRef.current;
-    pointerIdRef.current = event.pointerId;
-    swipeAxisRef.current = null;
-    movedRef.current = false;
-    longPressTriggeredRef.current = false;
-    longPressReadyRef.current = false;
-    reorderRequestedRef.current = false;
-    setDragging(false);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-
-    clearPendingLongPress();
-
-    if (
-      event.pointerType === "touch" ||
-      event.pointerType === "pen" ||
-      (event.pointerType === "mouse" && event.button === 0)
-    ) {
-      longPressTimerRef.current = window.setTimeout(() => {
-        longPressTimerRef.current = null;
-        longPressTriggeredRef.current = true;
-        longPressReadyRef.current = true;
-        reorderRequestedRef.current = false;
-        setRevealOffset(0);
-      }, THREAD_LIST_ITEM_LONG_PRESS_MS);
-    }
-  }, [clearPendingLongPress, setRevealOffset]);
-
-  const handlePointerMove = useCallback(
-    (event) => {
-      if (reorderActive) {
-        if (event.cancelable) {
-          event.preventDefault();
-        }
-
-        onMoveReorder?.({
-          threadId: thread.id,
-          pointerId: event.pointerId,
-          clientY: event.clientY
-        });
-        return;
-      }
-
-      if (
-        startPointRef.current === null ||
-        (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)
-      ) {
-        return;
-      }
-
-      const deltaX = event.clientX - startPointRef.current.x;
-      const deltaY = event.clientY - startPointRef.current.y;
-      const absX = Math.abs(deltaX);
-      const absY = Math.abs(deltaY);
-      latestPointerPointRef.current = { x: event.clientX, y: event.clientY };
-
-      if (longPressReadyRef.current) {
-        if (!reorderRequestedRef.current && absY > THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX) {
-          reorderRequestedRef.current = true;
-          onStartReorder?.({
-            thread,
-            pointerId: event.pointerId,
-            clientY: startPointRef.current?.y ?? event.clientY
-          });
-          onMoveReorder?.({
-            threadId: thread.id,
-            pointerId: event.pointerId,
-            clientY: event.clientY
-          });
-        }
-
-        if (event.cancelable) {
-          event.preventDefault();
-        }
-
-        return;
-      }
-
-      if (Math.hypot(deltaX, deltaY) > THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX) {
-        clearPendingLongPress();
-      }
-
-      if (swipeAxisRef.current === null) {
-        if (absX < 6 && absY < 6) {
-          return;
-        }
-
-        clearPendingLongPress();
-        swipeAxisRef.current = absX > absY ? "x" : "y";
-      }
-
-      if (swipeAxisRef.current !== "x") {
-        return;
-      }
-
-      if (event.cancelable) {
-        event.preventDefault();
-      }
-
-      if (absX > 6) {
-        movedRef.current = true;
-      }
-
-      setDragging(true);
-      setRevealOffset(baseOffsetRef.current + deltaX);
-    },
-    [clearPendingLongPress, onMoveReorder, onStartReorder, reorderActive, setRevealOffset, thread]
-  );
-
-  const handlePointerUp = useCallback((event) => {
-    if (reorderActive) {
-      clearPendingLongPress();
-      startPointRef.current = null;
-      baseOffsetRef.current = 0;
-      pointerIdRef.current = null;
-      swipeAxisRef.current = null;
-      latestPointerPointRef.current = null;
-      setDragging(false);
-      onEndReorder?.({
-        threadId: thread.id,
-        pointerId: event.pointerId
-      });
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-      return;
-    }
-
-    if (startPointRef.current === null) {
-      return;
-    }
-
-    const longPressReady = longPressReadyRef.current;
-    const reorderRequested = reorderRequestedRef.current;
-
-    clearPendingLongPress();
-
-    if (longPressReady) {
-      startPointRef.current = null;
-      baseOffsetRef.current = 0;
-      pointerIdRef.current = null;
-      swipeAxisRef.current = null;
-      latestPointerPointRef.current = null;
-      longPressReadyRef.current = false;
-      reorderRequestedRef.current = false;
-      movedRef.current = false;
-      setDragging(false);
-      setRevealOffset(0);
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-
-      if (!reorderRequested) {
-        if (event.cancelable) {
-          event.preventDefault();
-        }
-
-        onEnterSelectionMode?.(thread.id);
-      }
-
-      return;
-    }
-
-    if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
-      setRevealOffset(-ACTION_WIDTH);
-    } else if (swipeAxisRef.current === "x" && offsetRef.current >= SNAP_THRESHOLD) {
-      setRevealOffset(ACTION_WIDTH);
-    } else if (swipeAxisRef.current === "x") {
-      setRevealOffset(0);
-    }
-
-    startPointRef.current = null;
-    baseOffsetRef.current = 0;
-    pointerIdRef.current = null;
-    swipeAxisRef.current = null;
-    latestPointerPointRef.current = null;
-    longPressReadyRef.current = false;
-    reorderRequestedRef.current = false;
-    setDragging(false);
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }, [clearPendingLongPress, onEndReorder, onEnterSelectionMode, reorderActive, setRevealOffset, thread.id]);
-
-  const handlePointerCancel = useCallback(
-    (event) => {
-      clearPendingLongPress();
-
-      if (reorderActive) {
-        onCancelReorder?.({
-          threadId: thread.id,
-          pointerId: event.pointerId
-        });
-      }
-
-      startPointRef.current = null;
-      baseOffsetRef.current = 0;
-      pointerIdRef.current = null;
-      swipeAxisRef.current = null;
-      latestPointerPointRef.current = null;
-      longPressReadyRef.current = false;
-      reorderRequestedRef.current = false;
-      setDragging(false);
-
-      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture release failures
-        }
-      }
-    },
-    [clearPendingLongPress, onCancelReorder, reorderActive, thread.id]
-  );
-
-  const showDeleteAction = offset > 0;
-  const showRenameAction = offset < 0;
-
-  return (
-    <div
-      className={`relative border-b border-white/8 ${
-        reorderActive || reorderOffsetY !== 0 ? "overflow-visible" : "overflow-hidden"
-      }`}
-      style={{ zIndex: reorderActive ? 20 : reorderOffsetY !== 0 ? 10 : 0 }}
-    >
-      <button
-        type="button"
-        onClick={() => {
-          setRevealOffset(0);
-          onDelete(thread);
-        }}
-        className={`absolute inset-y-0 left-0 flex w-[92px] items-center justify-center bg-rose-500 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          !selectionMode && showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        삭제
-      </button>
-
-      <button
-        type="button"
-        onClick={() => {
-          setRevealOffset(0);
-          onRename(thread);
-        }}
-        className={`absolute inset-y-0 right-0 flex w-[92px] items-center justify-center bg-slate-800 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          !selectionMode && showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        편집
-      </button>
-
-      <button
-        type="button"
-        ref={(node) => registerNode?.(thread.id, node)}
-        data-testid={`thread-list-item-${thread.id}`}
-        onPointerDown={selectionMode ? undefined : handlePointerDown}
-        onPointerMove={selectionMode ? undefined : handlePointerMove}
-        onPointerUp={selectionMode ? undefined : handlePointerUp}
-        onPointerCancel={selectionMode ? undefined : handlePointerCancel}
-        onClick={() => {
-          if (longPressTriggeredRef.current) {
-            longPressTriggeredRef.current = false;
-            return;
-          }
-
-          if (movedRef.current) {
-            movedRef.current = false;
-            return;
-          }
-
-          if (offsetRef.current !== 0) {
-            setRevealOffset(0);
-            return;
-          }
-
-          if (selectionMode) {
-            onToggleSelect?.(thread.id);
-            return;
-          }
-
-          onOpen(thread.id);
-        }}
-        onContextMenu={(event) => {
-          if (!selectionMode) {
-            event.preventDefault();
-          }
-        }}
-        className={`thread-list-item-touch-target relative w-full px-3 py-3 text-left ${
-          dragging || reorderActive || transitionLocked ? "" : "transition-transform duration-180 ease-out"
-        } ${highlighted ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"} `}
-        aria-pressed={selectionMode ? selected : undefined}
-        aria-label={selectionMode ? `${thread.title} 선택` : undefined}
-        style={{
-          transform: `translate3d(${offset}px, ${reorderOffsetY}px, 0) scale(${reorderActive ? 1.01 : 1})`,
-          transition: transitionLocked ? "none" : undefined,
-          touchAction: selectionMode ? "auto" : reorderActive ? "none" : "pan-y",
-          zIndex: reorderActive ? 20 : 0,
-          willChange: "transform"
-        }}
-      >
-        <div
-          className={`min-w-0 rounded-2xl border px-3 py-3 ${
-            highlighted
-              ? "border-white/12 bg-white/[0.03]"
-              : "border-transparent bg-transparent"
-          } ${reorderActive ? "shadow-[0_18px_42px_rgba(15,23,42,0.38)]" : ""}`}
-        >
-          <div className="flex items-start gap-3">
-            {selectionMode ? (
-              <span
-                className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
-                  selected
-                    ? "border-telegram-400 bg-telegram-500 text-white"
-                    : "border-white/20 bg-white/[0.03] text-transparent"
-                }`}
-                aria-hidden="true"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
-                </svg>
-              </span>
-            ) : null}
-
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-3">
-                <p className="thread-title min-w-0 flex-1 truncate text-sm font-semibold text-white">{thread.title}</p>
-                <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(thread.updated_at)}</span>
-              </div>
-
-              <p className="thread-preview mt-1 text-[13px] leading-5 text-slate-300">{getThreadPreview(thread)}</p>
-
-              <div className="mt-2 flex items-center gap-2">
-                <span
-                  className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[10px] ${
-                    responseSignal ? "" : `${status.chipClassName} border-transparent`
-                  }`}
-                  style={responseSignal?.chipStyle}
-                  title={responseSignal?.title}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full ${responseSignal ? "" : status.dotClassName}`}
-                    style={responseSignal ? { backgroundColor: responseSignal.dotColor } : undefined}
-                  />
-                  {status.label}
-                </span>
-                {contextUsageLabel ? (
-                  <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-slate-300">
-                    {contextUsageLabel}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </div>
-      </button>
-    </div>
-  );
-}
-
 function MainPage({
   pushNotificationCard,
   session,
@@ -4625,6 +4210,16 @@ function MainPage({
     resolveMessageAttachmentBadge,
     restoreScrollAnchorSnapshot,
     useTouchScrollBoundaryLock
+  };
+  const threadListItemHelpers = {
+    buildThreadResponseSignal,
+    formatRelativeTime,
+    formatThreadContextUsage,
+    getStatusMeta,
+    getThreadPreview,
+    longPressMs: THREAD_LIST_ITEM_LONG_PRESS_MS,
+    reorderMoveTolerancePx: THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX,
+    longPressCancelTolerancePx: THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX
   };
 
   useEffect(() => {
@@ -5605,89 +5200,24 @@ function MainPage({
       : "";
   const wideThreadSplitLeftWeight = Math.max(1, Math.round(wideThreadSplitRatio * 100));
   const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
-  const projectChipRow = (
-    <div className="border-b border-white/10 px-4 py-1.5">
-      <div
-        ref={projectChipRowRef}
-        className={`project-chip-row -mx-1 flex gap-1.5 overflow-x-auto px-1 ${draggingProjectChipId ? "cursor-grabbing" : ""}`}
-      >
-        <button
-          type="button"
-          onClick={() => onSelectTodoScope()}
-          className={`project-chip-button shrink-0 rounded-full px-3.5 text-[12px] font-medium transition select-none touch-manipulation ${
-            isTodoScope ? "bg-white text-slate-900" : "bg-transparent text-slate-400 hover:text-white"
-          }`}
-        >
-          ToDo
-        </button>
-        {orderedProjects.map((project) => {
-          const isDraggingProjectChip = draggingProjectChipId === project.id;
-          const projectChipSlideOffsetX = resolveProjectChipSlideOffsetX(project.id);
-          const disableProjectChipTransition = lockProjectChipDropLayout || Boolean(optimisticProjectChipOrder);
-          const projectChipLayout = projectChipLayoutSnapshotRef.current.get(project.id);
-          const projectChipNode = projectChipNodesRef.current.get(project.id);
-          const projectChipPlaceholderWidth = projectChipLayout?.width ?? projectChipNode?.offsetWidth ?? undefined;
-          const projectChipPlaceholderHeight = projectChipLayout?.height ?? projectChipNode?.offsetHeight ?? undefined;
-
-          return (
-            <div
-              key={project.id}
-              ref={(node) => registerProjectChipNode(project.id, node)}
-              data-testid={`project-chip-item-${project.id}`}
-              className="relative shrink-0"
-              style={
-                isDraggingProjectChip
-                  ? {
-                      width: projectChipPlaceholderWidth ? `${projectChipPlaceholderWidth}px` : undefined,
-                      height: projectChipPlaceholderHeight ? `${projectChipPlaceholderHeight}px` : undefined
-                    }
-                    : projectChipSlideOffsetX !== 0
-                    ? {
-                        transform: `translateX(${projectChipSlideOffsetX}px)`,
-                        transition: disableProjectChipTransition ? "none" : "transform 180ms ease-out"
-                      }
-                    : disableProjectChipTransition
-                      ? { transition: "none" }
-                      : undefined
-              }
-            >
-              <button
-                type="button"
-                onClick={() => handleProjectChipClick(project.id)}
-                onPointerDown={(event) => handleProjectChipPointerDown(event, project)}
-                onContextMenu={(event) => handleProjectChipContextMenu(event, project)}
-                title={project.name}
-                className={`project-chip-button max-w-[68vw] overflow-hidden text-ellipsis whitespace-nowrap rounded-full px-3.5 text-[12px] font-medium select-none touch-manipulation ${
-                  isDraggingProjectChip ? "w-full" : "shrink-0"
-                } ${
-                  isDraggingProjectChip
-                    ? "bg-white text-slate-900 shadow-[0_12px_24px_rgba(15,23,42,0.35)]"
-                    : !isTodoScope && project.id === selectedProjectId
-                      ? "bg-white text-slate-900"
-                      : "bg-transparent text-slate-400 hover:text-white"
-                }`}
-                style={
-                  isDraggingProjectChip
-                    ? {
-                        position: "absolute",
-                        inset: 0,
-                        zIndex: 20,
-                        transform: `translateX(${draggingProjectChipOffsetX}px) scale(1.02)`,
-                        transition: "none",
-                        touchAction: "none",
-                        pointerEvents: "none"
-                      }
-                    : undefined
-                }
-              >
-                {project.name}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+  const projectChipRowProps = {
+    isTodoScope,
+    orderedProjects,
+    selectedProjectId,
+    draggingProjectChipId,
+    draggingProjectChipOffsetX,
+    lockProjectChipDropLayout,
+    optimisticProjectChipOrder,
+    projectChipRowRef,
+    projectChipNodesRef,
+    projectChipLayoutSnapshotRef,
+    registerProjectChipNode,
+    resolveProjectChipSlideOffsetX,
+    onSelectTodoScope,
+    onProjectChipClick: handleProjectChipClick,
+    onProjectChipPointerDown: handleProjectChipPointerDown,
+    onProjectChipContextMenu: handleProjectChipContextMenu
+  };
 
   useEffect(() => {
     const storedRatio = readStoredMobileWorkspaceLayout({
@@ -5823,194 +5353,78 @@ function MainPage({
       window.removeEventListener("pointercancel", handleWindowPointerUp);
     };
   }, [updateWideThreadSplitRatioFromClientX, wideThreadSplitResizeEnabled]);
-  const inboxListContent = isTodoScope ? (
-    filteredTodoChats.length === 0 ? (
-      <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
-        {loadingState === "loading"
-          ? "데이터를 불러오고 있습니다."
-          : "조건에 맞는 ToDo 채팅이 없습니다. 새 ToDo 채팅을 만들어 아이디어를 모아 주세요."}
-      </div>
-    ) : (
-      filteredTodoChats.map((chat) => (
-        <TodoChatListItem
-          key={chat.id}
-          chat={chat}
-          active={chat.id === selectedTodoChatId}
-          updatedLabel={formatRelativeTime(chat.updated_at)}
-          preview={getTodoChatPreview(chat)}
-          onOpen={onSelectTodoChat}
-          onRename={(targetChat) => setTodoChatBeingEdited(targetChat)}
-          onDelete={(targetChat) => void onDeleteTodoChat(targetChat.id)}
-        />
-      ))
-    )
-  ) : (
-    <>
-      {!bridgeAvailable ? (
-        <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
-          브리지가 연결되지 않아 채팅창 목록을 표시할 수 없습니다.
-        </div>
-      ) : filteredThreads.length === 0 ? (
-        <div className="px-2 py-10 text-center text-sm leading-7 text-slate-400">
-          {loadingState === "loading"
-            ? "데이터를 불러오고 있습니다."
-            : "조건에 맞는 채팅창이 없습니다. 새 채팅창을 열어 작업을 시작해 주세요."}
-        </div>
-      ) : (
-        filteredThreads.map((thread) => (
-          <ThreadListItem
-            key={thread.id}
-            thread={thread}
-            active={thread.id === selectedThreadId}
-            selected={selectedThreadIds.includes(thread.id)}
-            selectionMode={threadSelectionMode}
-            signalNow={signalNow}
-            registerNode={registerThreadListItemNode}
-            reorderActive={draggingThreadId === thread.id}
-            transitionLocked={lockThreadListDropLayout || Boolean(optimisticThreadOrderByProjectId[selectedProjectId])}
-            reorderOffsetY={
-              draggingThreadId === thread.id ? draggingThreadOffsetY : resolveThreadListItemSlideOffsetY(thread.id)
-            }
-            onStartReorder={handleThreadReorderStart}
-            onMoveReorder={handleThreadReorderMove}
-            onEndReorder={handleThreadReorderEnd}
-            onCancelReorder={handleThreadReorderCancel}
-            onOpen={onSelectThread}
-            onRename={onOpenThreadInstructionDialog}
-            onDelete={(targetThread) => void onDeleteThread(targetThread.id)}
-            onToggleSelect={handleToggleThreadSelection}
-            onEnterSelectionMode={handleEnterThreadSelectionMode}
-          />
-        ))
-      )}
-    </>
-  );
-  const threadCreateActionButtons = !isTodoScope ? (
-    <div className="flex w-full items-center gap-3">
-      <button
-        type="button"
-        data-testid="thread-create-instant-button"
-        onClick={() => void onCreateInstantThread()}
-        disabled={!selectedProject || !bridgeAvailable || threadBusy}
-        className="flex-[2_1_0%] rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-      >
-        +인스턴트
-      </button>
-      <button
-        type="button"
-        data-testid="thread-create-button"
-        onClick={() => onOpenNewThread(selectedProjectId)}
-        disabled={!selectedProject || !bridgeAvailable || threadBusy}
-        className="flex-[3_1_0%] rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-      >
-        +채팅
-      </button>
-    </div>
-  ) : null;
-  const actionBarContent =
-    threadSelectionMode && !isTodoScope ? (
-      <div className="flex w-full items-center gap-3">
-        <button
-          type="button"
-          onClick={handleCancelThreadSelection}
-          disabled={threadBusy}
-          className="rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          취소
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleDeleteSelectedThreads()}
-          disabled={threadBusy || selectedThreadIds.length === 0}
-          aria-label="선택한 채팅창 삭제"
-          className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          {threadBusy ? "삭제 중..." : `선택 ${selectedThreadIds.length}개 삭제`}
-        </button>
-      </div>
-    ) : (
-      <div className="flex w-full items-center gap-3">
-        {!isTodoScope ? (
-          threadCreateActionButtons
-        ) : (
-          <button
-            type="button"
-            onClick={() => onOpenNewTodoChat()}
-            disabled={threadBusy}
-            className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            + ToDo 채팅
-          </button>
-        )}
-      </div>
-    );
-  const appChrome = (
-    <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
-      <header className="border-b border-white/10 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onOpenUtility}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
 
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-white">{appHeaderTitle}</h1>
-            <div className="mt-0.5">
-              <BridgeDropdown
-                bridges={bridges}
-                selectedBridgeId={selectedBridgeId}
-                bridgeSignal={bridgeSignal}
-                onSelectBridge={onSelectBridge}
-                onOpen={onOpenBridgeDropdown}
-                syncing={bridgeListSyncing}
-              />
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setSearchOpen((current) => !current)}
-            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
-              searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
-            }`}
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </button>
-        </div>
-
-        {searchOpen ? (
-          <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
-            <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-            <input
-              type="text"
-              value={search}
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="채팅창 검색"
-              className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
-            />
-          </div>
-        ) : null}
-      </header>
-
-      <InstallPromptBanner
-        visible={installPromptVisible}
-        installing={installBusy}
-        onInstall={onInstallPwa}
-        onDismiss={onDismissInstallPrompt}
-      />
-
-      {projectChipRow}
-    </div>
-  );
+  const chromeProps = {
+    appHeaderTitle,
+    bridges,
+    selectedBridgeId,
+    bridgeSignal,
+    bridgeListSyncing,
+    searchOpen,
+    search,
+    installPromptVisible,
+    installBusy,
+    projectChipRowProps,
+    onOpenUtility,
+    onSelectBridge,
+    onOpenBridgeDropdown,
+    onToggleSearch: () => setSearchOpen((current) => !current),
+    onSearchChange,
+    onInstallPwa,
+    onDismissInstallPrompt
+  };
+  const todoListProps = {
+    chats: filteredTodoChats,
+    selectedTodoChatId,
+    formatRelativeTime,
+    getTodoChatPreview,
+    onOpenTodoChat: onSelectTodoChat,
+    onRenameTodoChat: (targetChat) => setTodoChatBeingEdited(targetChat),
+    onDeleteTodoChat: (targetChat) => void onDeleteTodoChat(targetChat.id)
+  };
+  const threadListProps = {
+    threads: filteredThreads,
+    selectedThreadId,
+    selectedThreadIds,
+    threadSelectionMode,
+    signalNow,
+    registerThreadListItemNode,
+    draggingThreadId,
+    draggingThreadOffsetY,
+    transitionLocked: lockThreadListDropLayout || Boolean(optimisticThreadOrderByProjectId[selectedProjectId]),
+    resolveThreadListItemSlideOffsetY,
+    onStartThreadReorder: handleThreadReorderStart,
+    onMoveThreadReorder: handleThreadReorderMove,
+    onEndThreadReorder: handleThreadReorderEnd,
+    onCancelThreadReorder: handleThreadReorderCancel,
+    onOpenThread: onSelectThread,
+    onRenameThread: onOpenThreadInstructionDialog,
+    onDeleteThread: (targetThread) => void onDeleteThread(targetThread.id),
+    onToggleThreadSelection: handleToggleThreadSelection,
+    onEnterThreadSelectionMode: handleEnterThreadSelectionMode,
+    threadListItemHelpers
+  };
+  const listProps = {
+    isTodoScope,
+    bridgeAvailable,
+    loadingState,
+    todoListProps,
+    threadListProps
+  };
+  const actionBarProps = {
+    threadSelectionMode,
+    isTodoScope,
+    threadBusy,
+    selectedThreadCount: selectedThreadIds.length,
+    selectedProjectReady: Boolean(selectedProject),
+    bridgeAvailable,
+    selectedProjectId,
+    onCancelThreadSelection: handleCancelThreadSelection,
+    onDeleteSelectedThreads: handleDeleteSelectedThreads,
+    onCreateInstantThread,
+    onOpenNewThread,
+    onOpenNewTodoChat
+  };
   const shouldRenderDeferredOverlays =
     threadDeleteDialog.open ||
     Boolean(todoChatBeingEdited) ||
@@ -6280,9 +5694,9 @@ function MainPage({
 
   return (
     <MobileInboxScreen
-      appChrome={appChrome}
-      inboxListContent={inboxListContent}
-      actionBarContent={actionBarContent}
+      chromeProps={chromeProps}
+      listProps={listProps}
+      actionBarProps={actionBarProps}
       deferredOverlays={deferredOverlays}
     />
   );
