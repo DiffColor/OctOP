@@ -275,6 +275,34 @@ function computeAnalyserLevel(analyser, frequencyData) {
   return Math.min(1, average * 1.35 + peak * 0.55);
 }
 
+function buildAudioConstraints(selectedInputDeviceId = "default") {
+  const normalizedDeviceId = String(selectedInputDeviceId ?? "").trim() || "default";
+
+  return {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    ...(normalizedDeviceId !== "default"
+      ? {
+          deviceId: {
+            exact: normalizedDeviceId
+          }
+        }
+      : {})
+  };
+}
+
+function isRetryableExactDeviceError(error) {
+  const normalizedName = String(error?.name ?? "").trim();
+
+  return (
+    normalizedName === "OverconstrainedError" ||
+    normalizedName === "NotFoundError" ||
+    normalizedName === "DevicesNotFoundError" ||
+    normalizedName === "ConstraintNotSatisfiedError"
+  );
+}
+
 export default function useRealtimeVoiceSession({
   enabled = false,
   sessionContextKey = "",
@@ -428,6 +456,36 @@ export default function useRealtimeVoiceSession({
         inputDevices: [{ deviceId: "default", label: "기본 마이크" }]
       }));
       return [{ deviceId: "default", label: "기본 마이크" }];
+    }
+  }, []);
+
+  const requestPreferredMicrophoneStream = useCallback(async (selectedInputDeviceId = "default") => {
+    const normalizedDeviceId = String(selectedInputDeviceId ?? "").trim() || "default";
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: buildAudioConstraints(normalizedDeviceId)
+      });
+
+      return {
+        stream,
+        resolvedInputDeviceId: normalizedDeviceId
+      };
+    } catch (error) {
+      if (normalizedDeviceId === "default" || !isRetryableExactDeviceError(error)) {
+        throw error;
+      }
+
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({
+        audio: buildAudioConstraints("default")
+      });
+
+      preferredInputDeviceIdRef.current = "default";
+
+      return {
+        stream: fallbackStream,
+        resolvedInputDeviceId: "default"
+      };
     }
   }, []);
 
@@ -1256,20 +1314,7 @@ export default function useRealtimeVoiceSession({
 
         const selectedInputDeviceId = String(preferredInputDeviceIdRef.current || "default").trim() || "default";
 
-        const localStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            ...(selectedInputDeviceId !== "default"
-              ? {
-                  deviceId: {
-                    exact: selectedInputDeviceId
-                  }
-                }
-              : {})
-          }
-        });
+        const { stream: localStream, resolvedInputDeviceId } = await requestPreferredMicrophoneStream(selectedInputDeviceId);
 
         if (sessionVersionRef.current !== sessionVersion) {
           localStream.getTracks().forEach((track) => track.stop());
@@ -1277,7 +1322,7 @@ export default function useRealtimeVoiceSession({
         }
 
         localStreamRef.current = localStream;
-        await refreshInputDevices(selectedInputDeviceId);
+        await refreshInputDevices(resolvedInputDeviceId);
         startAudioLevelMeter(localStream, "input");
 
         const sessionPayload = await apiRequest(
@@ -1483,6 +1528,7 @@ export default function useRealtimeVoiceSession({
     projectWorkspacePath,
     recentConversationSummary,
     refreshInputDevices,
+    requestPreferredMicrophoneStream,
     startAudioLevelMeter,
     latestHandoffSummary,
     threadFileContextSummary,

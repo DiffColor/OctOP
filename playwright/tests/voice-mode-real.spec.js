@@ -356,6 +356,7 @@ async function installVoiceBrowserMocks(page) {
       realtimeFetchCalls: [],
       narrationRequests: [],
       sentEvents: [],
+      failingExactDeviceIds: [],
       audioInputDevices: [
         { deviceId: 'default', kind: 'audioinput', label: '기본 마이크' },
         { deviceId: 'usb-mic', kind: 'audioinput', label: 'USB 마이크' },
@@ -393,6 +394,12 @@ async function installVoiceBrowserMocks(page) {
       writable: true,
       value: async (constraints) => {
         window.__voiceTest.getUserMediaCalls.push(constraints);
+        const exactDeviceId = String(constraints?.audio?.deviceId?.exact ?? '').trim();
+        if (exactDeviceId && window.__voiceTest.failingExactDeviceIds.includes(exactDeviceId)) {
+          const error = new Error(`requested device unavailable: ${exactDeviceId}`);
+          error.name = 'NotFoundError';
+          throw error;
+        }
         return new FakeMediaStream();
       }
     });
@@ -1122,6 +1129,39 @@ test('음성 모드 성공 경로 실테스트', async ({ page }) => {
   await page.getByRole('button', { name: '음성입력 종료' }).click();
   await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
   await expect(page.getByTestId('thread-detail-panel')).toContainText('상태 알려줘');
+});
+
+test('선택한 마이크 장치가 데스크탑 PWA에서 무효하면 기본 마이크로 자동 복구한다', async ({ page }) => {
+  await seedMobileSession(page);
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page, {
+    authoritativeAssistantContent
+  });
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+  await openVoiceModeByLongPressingSend(page);
+  await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__voiceTest.failingExactDeviceIds = ['usb-mic'];
+  });
+
+  await page.getByRole('combobox', { name: '마이크 입력 선택' }).selectOption('usb-mic');
+
+  await expect.poll(async () => {
+    return page.evaluate(() => window.__voiceTest.getUserMediaCalls.length);
+  }).toBeGreaterThanOrEqual(3);
+
+  await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toHaveValue('default');
+  await expect(page.getByTestId('voice-assistant-bubble')).not.toContainText('requested device unavailable');
+
+  const getUserMediaCalls = await page.evaluate(() => window.__voiceTest.getUserMediaCalls);
+  const retryCall = getUserMediaCalls[getUserMediaCalls.length - 1];
+  const failedCall = getUserMediaCalls[getUserMediaCalls.length - 2];
+
+  expect(failedCall?.audio?.deviceId?.exact).toBe('usb-mic');
+  expect(retryCall?.audio?.deviceId).toBeUndefined();
 });
 
 test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) => {

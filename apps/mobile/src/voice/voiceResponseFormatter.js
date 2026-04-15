@@ -159,7 +159,8 @@ export function formatAssistantResponseForVoice(content, { maxLength = 420 } = {
       continue;
     }
 
-    const previousLine = currentSection.lines.at(-1);
+    const previousLine =
+      currentSection.lines.length > 0 ? currentSection.lines[currentSection.lines.length - 1] : undefined;
 
     if (previousLine === line) {
       continue;
