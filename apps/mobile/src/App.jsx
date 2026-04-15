@@ -9607,10 +9607,8 @@ function ThreadDetail({
                 micState={voiceSession.micState}
                 isListening={voiceSession.isListening}
                 isResponding={voiceSession.isResponding}
-                inputAudioLevel={voiceSession.inputAudioLevel}
-                outputAudioLevel={voiceSession.outputAudioLevel}
-                audioLevel={voiceSession.audioLevel}
-                levelHistory={voiceSession.levelHistory}
+                audioMetricsRef={voiceSession.audioMetricsRef}
+                audioMetricsStore={voiceSession.audioMetricsStore}
                 inputDevices={voiceSession.inputDevices}
                 selectedInputDeviceId={voiceSession.selectedInputDeviceId}
                 errorMessage={voiceSession.error}

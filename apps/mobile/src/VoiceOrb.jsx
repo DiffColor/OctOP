@@ -601,10 +601,7 @@ function drawSpecularHighlights(context, cx, cy, radius, palette, energy) {
 }
 
 export default function VoiceOrb({
-  inputAudioLevel = 0,
-  outputAudioLevel = 0,
-  audioLevel = 0,
-  levelHistory = [],
+  audioMetricsRef = null,
   isListening = false,
   isResponding = false,
   connectionState = "idle",
@@ -614,10 +611,10 @@ export default function VoiceOrb({
   const fluidBufferRef = useRef({ canvas: null, context: null, imageData: null, resolution: 0 });
   const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
   const drawStateRef = useRef({
-    inputAudioLevel,
-    outputAudioLevel,
-    audioLevel,
-    levelHistory,
+    inputAudioLevel: Number(audioMetricsRef?.current?.inputAudioLevel) || 0,
+    outputAudioLevel: Number(audioMetricsRef?.current?.outputAudioLevel) || 0,
+    audioLevel: Number(audioMetricsRef?.current?.audioLevel) || 0,
+    levelHistory: Array.isArray(audioMetricsRef?.current?.levelHistory) ? audioMetricsRef.current.levelHistory : [],
     isListening,
     isResponding,
     connectionState
@@ -633,16 +630,18 @@ export default function VoiceOrb({
   const fluidModels = useMemo(() => createFluidModels(resolvedVisualConfig.fluidBlobCount), [resolvedVisualConfig.fluidBlobCount]);
 
   useEffect(() => {
+    const nextAudioMetrics = audioMetricsRef?.current;
+
     drawStateRef.current = {
-      inputAudioLevel,
-      outputAudioLevel,
-      audioLevel,
-      levelHistory,
+      inputAudioLevel: Number(nextAudioMetrics?.inputAudioLevel) || 0,
+      outputAudioLevel: Number(nextAudioMetrics?.outputAudioLevel) || 0,
+      audioLevel: Number(nextAudioMetrics?.audioLevel) || 0,
+      levelHistory: Array.isArray(nextAudioMetrics?.levelHistory) ? nextAudioMetrics.levelHistory : [],
       isListening,
       isResponding,
       connectionState
     };
-  }, [audioLevel, connectionState, inputAudioLevel, isListening, isResponding, levelHistory, outputAudioLevel]);
+  }, [audioMetricsRef, connectionState, isListening, isResponding]);
 
   useEffect(() => {
     let raf = 0;
@@ -683,7 +682,14 @@ export default function VoiceOrb({
       const previousFrameTime = lastFrameTimeRef.current || now;
       const deltaSeconds = clamp((now - previousFrameTime) / 1000, 1 / 120, 1 / 24);
       lastFrameTimeRef.current = now;
-      const state = drawStateRef.current;
+      const liveAudioMetrics = audioMetricsRef?.current;
+      const state = {
+        ...drawStateRef.current,
+        inputAudioLevel: Number(liveAudioMetrics?.inputAudioLevel ?? drawStateRef.current.inputAudioLevel) || 0,
+        outputAudioLevel: Number(liveAudioMetrics?.outputAudioLevel ?? drawStateRef.current.outputAudioLevel) || 0,
+        audioLevel: Number(liveAudioMetrics?.audioLevel ?? drawStateRef.current.audioLevel) || 0,
+        levelHistory: Array.isArray(liveAudioMetrics?.levelHistory) ? liveAudioMetrics.levelHistory : drawStateRef.current.levelHistory
+      };
       const history = resolveHistory(state.levelHistory);
       const historyAverage = history.reduce((sum, entry) => sum + entry, 0) / history.length;
       const historyPeak = history.reduce((maxValue, entry) => Math.max(maxValue, entry), 0);
@@ -762,7 +768,7 @@ export default function VoiceOrb({
     return () => {
       window.cancelAnimationFrame(raf);
     };
-  }, [fluidModels, resolvedVisualConfig]);
+  }, [audioMetricsRef, fluidModels, resolvedVisualConfig]);
 
   return <canvas ref={canvasRef} className="voice-mode-panel__orb-canvas" aria-hidden="true" />;
 }

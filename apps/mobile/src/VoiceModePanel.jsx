@@ -1,8 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import VoiceOrb from "./VoiceOrb.jsx";
 
 const SUBTITLE_VISIBLE_LINE_COUNT = 3;
 const SUBTITLE_MAX_CHARS_PER_LINE = 23;
+const EMPTY_AUDIO_METRICS = Object.freeze({
+  inputAudioLevel: 0,
+  outputAudioLevel: 0,
+  audioLevel: 0,
+  levelHistory: []
+});
 
 const VOICE_ORB_PALETTE = [
   {
@@ -216,6 +222,104 @@ function buildConnectionLabel(connectionState, micState) {
   return "standby";
 }
 
+function subscribeEmptyStore() {
+  return () => {};
+}
+
+function getEmptyAudioMetricsSnapshot() {
+  return EMPTY_AUDIO_METRICS;
+}
+
+function useVoiceAudioMetrics(audioMetricsStore) {
+  const subscribe = audioMetricsStore?.subscribe ?? subscribeEmptyStore;
+  const getSnapshot = audioMetricsStore?.getSnapshot ?? getEmptyAudioMetricsSnapshot;
+  return useSyncExternalStore(subscribe, getSnapshot, getEmptyAudioMetricsSnapshot);
+}
+
+function buildAudioMetricSummary(audioMetricsSnapshot) {
+  const audioLevel = clamp(Number(audioMetricsSnapshot?.audioLevel) || 0, 0, 1);
+  const levelHistory = Array.isArray(audioMetricsSnapshot?.levelHistory) ? audioMetricsSnapshot.levelHistory : [];
+  const normalizedHistory = levelHistory.map((entry) => clamp(Number(entry) || 0, 0, 1));
+  const averageLevel =
+    normalizedHistory.length > 0
+      ? clamp(normalizedHistory.reduce((sum, entry) => sum + entry, 0) / normalizedHistory.length, 0, 1)
+      : audioLevel;
+  const peakLevel =
+    normalizedHistory.length > 0 ? normalizedHistory.reduce((maxValue, entry) => Math.max(maxValue, entry), 0) : audioLevel;
+
+  return {
+    inputAudioLevel: clamp(Number(audioMetricsSnapshot?.inputAudioLevel) || 0, 0, 1),
+    outputAudioLevel: clamp(Number(audioMetricsSnapshot?.outputAudioLevel) || 0, 0, 1),
+    audioLevel,
+    levelHistory: normalizedHistory,
+    averageLevel,
+    peakLevel,
+    levelPercent: Math.round(audioLevel * 100),
+    averagePercent: Math.round(averageLevel * 100),
+    peakPercent: Math.round(peakLevel * 100)
+  };
+}
+
+function VoiceSessionSummaryCard({ audioMetricsStore }) {
+  const audioMetrics = useVoiceAudioMetrics(audioMetricsStore);
+  const { averagePercent } = useMemo(() => buildAudioMetricSummary(audioMetrics), [audioMetrics]);
+
+  return (
+    <article className="voice-mode-panel__glass-card">
+      <p className="voice-mode-panel__section-label">Session Summary</p>
+      <div className="voice-mode-panel__metric-row">
+        <span className="voice-mode-panel__metric-value is-secondary">{averagePercent}%</span>
+        <span className="voice-mode-panel__metric-caption">audio resonance</span>
+      </div>
+      <div className="voice-mode-panel__meter" aria-hidden="true">
+        <span style={{ width: `${Math.max(12, averagePercent)}%` }} />
+      </div>
+    </article>
+  );
+}
+
+function VoicePerformancePanel({ audioMetricsStore, signalNotes = [] }) {
+  const audioMetrics = useVoiceAudioMetrics(audioMetricsStore);
+  const { averageLevel, levelPercent, peakPercent } = useMemo(() => buildAudioMetricSummary(audioMetrics), [audioMetrics]);
+
+  return (
+    <>
+      <article className="voice-mode-panel__glass-card is-compact">
+        <div className="voice-mode-panel__card-headline-row">
+          <span className="voice-mode-panel__section-label">Input Level</span>
+          <span className="voice-mode-panel__metric-value">{levelPercent}%</span>
+        </div>
+        <div className="voice-mode-panel__bars" aria-hidden="true">
+          {Array.from({ length: 7 }, (_, index) => {
+            const ratio = (index + 1) / 7;
+            const active = ratio <= Math.max(0.18, averageLevel + 0.08);
+            return <span key={`voice-bar-${index}`} className={`voice-mode-panel__bar ${active ? "is-active" : ""}`} />;
+          })}
+        </div>
+      </article>
+
+      <article className="voice-mode-panel__glass-card is-compact">
+        <div className="voice-mode-panel__card-headline-row">
+          <span className="voice-mode-panel__section-label">Peak Presence</span>
+          <span className="voice-mode-panel__metric-value is-secondary">{peakPercent}%</span>
+        </div>
+        <div className="voice-mode-panel__meter is-magenta" aria-hidden="true">
+          <span style={{ width: `${Math.max(14, peakPercent)}%` }} />
+        </div>
+      </article>
+
+      <ul className="voice-mode-panel__signal-list">
+        {signalNotes.map((note) => (
+          <li key={note} className="voice-mode-panel__signal-item">
+            <span className="voice-mode-panel__signal-dot" aria-hidden="true" />
+            <span>{note}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 export default function VoiceModePanel({
   open,
   latestUserText = "",
@@ -224,10 +328,8 @@ export default function VoiceModePanel({
   micState = "idle",
   isListening = false,
   isResponding = false,
-  inputAudioLevel = 0,
-  outputAudioLevel = 0,
-  audioLevel = 0,
-  levelHistory = [],
+  audioMetricsRef = null,
+  audioMetricsStore = null,
   inputDevices = [],
   selectedInputDeviceId = "default",
   errorMessage = "",
@@ -257,27 +359,6 @@ export default function VoiceModePanel({
   const liveTranscript = errorMessage || latestAssistantText || statusMessage;
   const userTranscript = latestUserText || "말씀하시면 여기에 사용자 입력이 표시됩니다.";
   const resolvedInputDevices = Array.isArray(inputDevices) && inputDevices.length > 0 ? inputDevices : [{ deviceId: "default", label: "기본 마이크" }];
-
-  const averageLevel = useMemo(() => {
-    if (!Array.isArray(levelHistory) || levelHistory.length === 0) {
-      return clamp(Number(audioLevel) || 0, 0, 1);
-    }
-
-    const sum = levelHistory.reduce((accumulator, entry) => accumulator + clamp(Number(entry) || 0, 0, 1), 0);
-    return clamp(sum / levelHistory.length, 0, 1);
-  }, [audioLevel, levelHistory]);
-
-  const peakLevel = useMemo(() => {
-    if (!Array.isArray(levelHistory) || levelHistory.length === 0) {
-      return clamp(Number(audioLevel) || 0, 0, 1);
-    }
-
-    return levelHistory.reduce((maxValue, entry) => Math.max(maxValue, clamp(Number(entry) || 0, 0, 1)), 0);
-  }, [audioLevel, levelHistory]);
-
-  const levelPercent = Math.round(clamp(Number(audioLevel) || 0, 0, 1) * 100);
-  const averagePercent = Math.round(averageLevel * 100);
-  const peakPercent = Math.round(peakLevel * 100);
   const stateHeadline = buildVoiceModeHeadline({ connectionState, isListening, isResponding, micState });
   const connectionLabel = buildConnectionLabel(connectionState, micState);
   const hasAssistantTranscript = Boolean(String(errorMessage || latestAssistantText || "").trim());
@@ -343,16 +424,7 @@ export default function VoiceModePanel({
               <p className="voice-mode-panel__glass-copy">{userTranscript}</p>
             </article>
 
-            <article className="voice-mode-panel__glass-card">
-              <p className="voice-mode-panel__section-label">Session Summary</p>
-              <div className="voice-mode-panel__metric-row">
-                <span className="voice-mode-panel__metric-value is-secondary">{averagePercent}%</span>
-                <span className="voice-mode-panel__metric-caption">audio resonance</span>
-              </div>
-              <div className="voice-mode-panel__meter" aria-hidden="true">
-                <span style={{ width: `${Math.max(12, averagePercent)}%` }} />
-              </div>
-            </article>
+            <VoiceSessionSummaryCard audioMetricsStore={audioMetricsStore} />
           </aside>
 
           <div className="voice-mode-panel__main-column">
@@ -386,10 +458,7 @@ export default function VoiceModePanel({
             >
               <div className="voice-mode-panel__orb-shell" aria-hidden="true">
                 <VoiceOrb
-                  inputAudioLevel={inputAudioLevel}
-                  outputAudioLevel={outputAudioLevel}
-                  audioLevel={audioLevel}
-                  levelHistory={levelHistory}
+                  audioMetricsRef={audioMetricsRef}
                   isListening={isListening}
                   isResponding={isResponding}
                   connectionState={connectionState}
@@ -435,39 +504,7 @@ export default function VoiceModePanel({
 
           <aside className="voice-mode-panel__side-column is-right" aria-label="음성 모드 성능 지표">
             <h3 className="voice-mode-panel__side-heading">AI Performance</h3>
-
-            <article className="voice-mode-panel__glass-card is-compact">
-              <div className="voice-mode-panel__card-headline-row">
-                <span className="voice-mode-panel__section-label">Input Level</span>
-                <span className="voice-mode-panel__metric-value">{levelPercent}%</span>
-              </div>
-              <div className="voice-mode-panel__bars" aria-hidden="true">
-                {Array.from({ length: 7 }, (_, index) => {
-                  const ratio = (index + 1) / 7;
-                  const active = ratio <= Math.max(0.18, averageLevel + 0.08);
-                  return <span key={`voice-bar-${index}`} className={`voice-mode-panel__bar ${active ? "is-active" : ""}`} />;
-                })}
-              </div>
-            </article>
-
-            <article className="voice-mode-panel__glass-card is-compact">
-              <div className="voice-mode-panel__card-headline-row">
-                <span className="voice-mode-panel__section-label">Peak Presence</span>
-                <span className="voice-mode-panel__metric-value is-secondary">{peakPercent}%</span>
-              </div>
-              <div className="voice-mode-panel__meter is-magenta" aria-hidden="true">
-                <span style={{ width: `${Math.max(14, peakPercent)}%` }} />
-              </div>
-            </article>
-
-            <ul className="voice-mode-panel__signal-list">
-              {signalNotes.map((note) => (
-                <li key={note} className="voice-mode-panel__signal-item">
-                  <span className="voice-mode-panel__signal-dot" aria-hidden="true" />
-                  <span>{note}</span>
-                </li>
-              ))}
-            </ul>
+            <VoicePerformancePanel audioMetricsStore={audioMetricsStore} signalNotes={signalNotes} />
           </aside>
         </div>
 

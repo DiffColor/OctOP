@@ -10,6 +10,18 @@ import { formatAssistantResponseForVoice } from "./voiceResponseFormatter.js";
 const REALTIME_OUTPUT_MODALITIES = ["audio"];
 const REALTIME_RESPONSE_CHANNEL_VOICE_TURN = "voice_turn";
 const REALTIME_RESPONSE_CHANNEL_APP_SERVER_REPORT = "app_server_report";
+const AUDIO_LEVEL_UI_COMMIT_INTERVAL_MS = 80;
+const AUDIO_LEVEL_FORCE_SYNC_DELTA = 0.035;
+
+function createAudioMetricsSnapshot(overrides = {}) {
+  return {
+    inputAudioLevel: 0,
+    outputAudioLevel: 0,
+    audioLevel: 0,
+    levelHistory: [...DEFAULT_VOICE_LEVEL_HISTORY],
+    ...overrides
+  };
+}
 
 function createInitialState() {
   return {
@@ -298,6 +310,16 @@ export default function useRealtimeVoiceSession({
   const inputAnalyserDataRef = useRef(null);
   const outputAnalyserDataRef = useRef(null);
   const animationFrameRef = useRef(0);
+  const meterHistoryRef = useRef([...DEFAULT_VOICE_LEVEL_HISTORY]);
+  const audioMetricsRef = useRef(createAudioMetricsSnapshot());
+  const audioMetricsUiSnapshotRef = useRef(createAudioMetricsSnapshot());
+  const audioMetricsUiListenersRef = useRef(new Set());
+  const lastMeterUiCommitTimeRef = useRef(0);
+  const lastCommittedMeterLevelsRef = useRef({
+    inputAudioLevel: 0,
+    outputAudioLevel: 0,
+    audioLevel: 0
+  });
   const assistantTranscriptBufferRef = useRef("");
   const assistantSubtitleBufferRef = useRef("");
   const userTranscriptBufferRef = useRef("");
@@ -313,6 +335,38 @@ export default function useRealtimeVoiceSession({
   const lastFinalReportSourceRef = useRef("");
   const issuePollSequenceRef = useRef(0);
   const activeSessionContextKeyRef = useRef("");
+
+  const publishAudioMetricsUiSnapshot = useCallback((snapshot) => {
+    audioMetricsUiSnapshotRef.current = snapshot;
+    audioMetricsUiListenersRef.current.forEach((listener) => {
+      try {
+        listener();
+      } catch {
+        // ignore
+      }
+    });
+  }, []);
+
+  const getAudioMetricsSnapshot = useCallback(() => audioMetricsUiSnapshotRef.current, []);
+
+  const subscribeAudioMetrics = useCallback((listener) => {
+    if (typeof listener !== "function") {
+      return () => {};
+    }
+
+    audioMetricsUiListenersRef.current.add(listener);
+    return () => {
+      audioMetricsUiListenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const audioMetricsStore = useMemo(
+    () => ({
+      getSnapshot: getAudioMetricsSnapshot,
+      subscribe: subscribeAudioMetrics
+    }),
+    [getAudioMetricsSnapshot, subscribeAudioMetrics]
+  );
 
   useEffect(() => {
     setState((current) => {
@@ -400,6 +454,16 @@ export default function useRealtimeVoiceSession({
     processedFunctionCallIdsRef.current = new Set();
     queuedAppServerReportRef.current = null;
     appServerReportInFlightRef.current = false;
+    const resetAudioMetrics = createAudioMetricsSnapshot();
+    meterHistoryRef.current = [...DEFAULT_VOICE_LEVEL_HISTORY];
+    audioMetricsRef.current = resetAudioMetrics;
+    lastMeterUiCommitTimeRef.current = 0;
+    lastCommittedMeterLevelsRef.current = {
+      inputAudioLevel: 0,
+      outputAudioLevel: 0,
+      audioLevel: 0
+    };
+    publishAudioMetricsUiSnapshot(resetAudioMetrics);
     if (!preservePendingIssuePoll) {
       issuePollSequenceRef.current += 1;
     }
@@ -494,6 +558,7 @@ export default function useRealtimeVoiceSession({
     assistantTranscriptBufferRef.current = preserveTranscript ? assistantTranscriptBufferRef.current : "";
     assistantSubtitleBufferRef.current = preserveTranscript ? assistantSubtitleBufferRef.current : "";
     userTranscriptBufferRef.current = preserveTranscript ? userTranscriptBufferRef.current : "";
+    publishAudioMetricsUiSnapshot(createAudioMetricsSnapshot());
 
     setState((current) => ({
       ...current,
@@ -513,7 +578,7 @@ export default function useRealtimeVoiceSession({
     }));
 
     disconnectingRef.current = false;
-  }, []);
+  }, [publishAudioMetricsUiSnapshot]);
 
   useEffect(() => {
     if (!enabled) {
@@ -576,6 +641,17 @@ export default function useRealtimeVoiceSession({
       animationFrameRef.current = 0;
     }
 
+    const resetAudioMetrics = createAudioMetricsSnapshot();
+    meterHistoryRef.current = [...DEFAULT_VOICE_LEVEL_HISTORY];
+    audioMetricsRef.current = resetAudioMetrics;
+    audioMetricsUiSnapshotRef.current = resetAudioMetrics;
+    lastMeterUiCommitTimeRef.current = 0;
+    lastCommittedMeterLevelsRef.current = {
+      inputAudioLevel: 0,
+      outputAudioLevel: 0,
+      audioLevel: 0
+    };
+
     const tick = () => {
       const nextInputLevel = computeAnalyserLevel(inputAnalyserRef.current, inputAnalyserDataRef.current);
       const nextOutputLevel = computeAnalyserLevel(outputAnalyserRef.current, outputAnalyserDataRef.current);
@@ -584,14 +660,33 @@ export default function useRealtimeVoiceSession({
         0,
         1
       );
-
-      setState((current) => ({
-        ...current,
+      const nextHistory = [...meterHistoryRef.current.slice(-23), Math.max(0.04, combinedLevel)];
+      const nextAudioMetricsSnapshot = createAudioMetricsSnapshot({
         inputAudioLevel: nextInputLevel,
         outputAudioLevel: nextOutputLevel,
         audioLevel: combinedLevel,
-        levelHistory: [...current.levelHistory.slice(-23), Math.max(0.04, combinedLevel)]
-      }));
+        levelHistory: nextHistory
+      });
+      meterHistoryRef.current = nextHistory;
+      audioMetricsRef.current = nextAudioMetricsSnapshot;
+
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const lastCommitted = lastCommittedMeterLevelsRef.current;
+      const shouldCommitUiState =
+        now - lastMeterUiCommitTimeRef.current >= AUDIO_LEVEL_UI_COMMIT_INTERVAL_MS ||
+        Math.abs(nextInputLevel - lastCommitted.inputAudioLevel) >= AUDIO_LEVEL_FORCE_SYNC_DELTA ||
+        Math.abs(nextOutputLevel - lastCommitted.outputAudioLevel) >= AUDIO_LEVEL_FORCE_SYNC_DELTA ||
+        Math.abs(combinedLevel - lastCommitted.audioLevel) >= AUDIO_LEVEL_FORCE_SYNC_DELTA;
+
+      if (shouldCommitUiState) {
+        lastMeterUiCommitTimeRef.current = now;
+        lastCommittedMeterLevelsRef.current = {
+          inputAudioLevel: nextInputLevel,
+          outputAudioLevel: nextOutputLevel,
+          audioLevel: combinedLevel
+        };
+        publishAudioMetricsUiSnapshot(nextAudioMetricsSnapshot);
+      }
 
       if (!inputAnalyserRef.current && !outputAnalyserRef.current) {
         animationFrameRef.current = 0;
@@ -602,7 +697,7 @@ export default function useRealtimeVoiceSession({
     };
 
     animationFrameRef.current = window.requestAnimationFrame(tick);
-  }, []);
+  }, [publishAudioMetricsUiSnapshot]);
 
   const sendRealtimeClientEvent = useCallback((event) => {
     const dataChannel = dataChannelRef.current;
@@ -1468,6 +1563,8 @@ export default function useRealtimeVoiceSession({
 
   return {
     ...summary,
+    audioMetricsRef,
+    audioMetricsStore,
     startSession,
     stopSession: disconnectSession,
     cancelResponse,
