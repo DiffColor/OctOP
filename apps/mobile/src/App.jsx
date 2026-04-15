@@ -1,8 +1,8 @@
 import {
-  createContext,
+  Suspense,
+  lazy,
   startTransition,
   useCallback,
-  useContext,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -20,7 +20,23 @@ import {
 import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
+import AttachmentPreviewDialog from "./mobileAttachmentPreviewDialog.jsx";
+import { MessageAttachmentBadge, MessageAttachmentPreview } from "./mobileMessageAttachmentUi.jsx";
+import TodoChatListItem from "./mobileTodoChatListItem.jsx";
 import VoiceModePanel from "./VoiceModePanel.jsx";
+import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
+import ThreadMessageActionSheet from "./mobileThreadMessageActionSheet.jsx";
+import {
+  BottomSheet,
+  BridgeDropdown,
+  InstallPromptBanner,
+  LoginPage,
+  MobileConfirmDialog,
+  MobileFeedbackContext,
+  MobileNoticeCenter,
+  PwaUpdateDialog,
+  useMobileFeedback
+} from "./mobileSharedUi.jsx";
 import useRealtimeVoiceSession from "./voice/useRealtimeVoiceSession.js";
 import {
   formatAssistantResponseForVoice,
@@ -28,6 +44,8 @@ import {
   formatProjectProgramSummaryForVoice,
   formatVoiceExecutionReportForVoice
 } from "./voice/voiceResponseFormatter.js";
+
+const MobileDeferredOverlays = lazy(() => import("./MobileDeferredOverlays.jsx"));
 
 const LOCAL_STORAGE_KEY = "octop.mobile.session";
 const SESSION_STORAGE_KEY = "octop.mobile.session.ephemeral";
@@ -1839,54 +1857,6 @@ function formatRelativeTime(value) {
   }
 
   return formatter.format(Math.round(diffSeconds / 604800), "week");
-}
-
-function getPathLabel(value) {
-  if (!value) {
-    return "";
-  }
-
-  const normalized = String(value).replace(/\\/g, "/");
-  const segments = normalized.split("/").filter(Boolean);
-  return segments.at(-1) ?? normalized;
-}
-
-function normalizePath(value) {
-  return String(value ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-function getDisplayPathFromStartFolder(value, depth = 2) {
-  const normalized = normalizePath(value);
-
-  if (!normalized) {
-    return "";
-  }
-
-  const segments = normalized.split("/").filter(Boolean);
-  return segments.slice(-depth).join("/");
-}
-
-function getRelativeWorkspacePath(value, roots = []) {
-  const normalizedValue = normalizePath(value);
-
-  if (!normalizedValue) {
-    return "";
-  }
-
-  const matchingRoot = [...roots]
-    .map((root) => normalizePath(root?.path))
-    .filter(Boolean)
-    .filter((rootPath) => normalizedValue === rootPath || normalizedValue.startsWith(`${rootPath}/`))
-    .sort((left, right) => right.length - left.length)[0];
-
-  if (!matchingRoot) {
-    return getDisplayPathFromStartFolder(normalizedValue);
-  }
-
-  const relativePath = normalizedValue.slice(matchingRoot.length).replace(/^\/+/, "");
-  const rootLabel = getPathLabel(matchingRoot);
-
-  return relativePath ? `${rootLabel}/${relativePath}` : rootLabel;
 }
 
 function shortenPath(value) {
@@ -3900,18 +3870,6 @@ function getThreadPreview(thread) {
   return summarizeMessageContent(normalizedPreview, 120);
 }
 
-function createThreadTitleFromPrompt(prompt) {
-  const normalized = String(prompt ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!normalized) {
-    return "";
-  }
-
-  return normalized.length <= 34 ? normalized : `${normalized.slice(0, 34)}...`;
-}
-
 function summarizeMessageContent(content, limit = 160) {
   const normalized = String(content ?? "").trim();
 
@@ -4338,918 +4296,6 @@ function RichMessageContent({ content, tone = "light" }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function MessageAttachmentBadge({ attachment, compact = false }) {
-  const badge = resolveMessageAttachmentBadge(attachment?.name, attachment?.mime_type);
-
-  return (
-    <span
-      className={`inline-flex items-center justify-center border font-semibold tracking-[0.18em] ${
-        compact ? "h-7 min-w-[2.6rem] rounded-lg px-2 text-[10px]" : "h-8 min-w-[3rem] rounded-xl px-2 text-[11px]"
-      } ${badge.className}`}
-    >
-      {badge.label}
-    </span>
-  );
-}
-
-function MessageAttachmentPreview({
-  attachments,
-  bubbleTone = "light",
-  onOpenAttachment
-}) {
-  const normalizedAttachments = normalizeMessageAttachments(attachments);
-
-  if (normalizedAttachments.length === 0) {
-    return null;
-  }
-
-  const imageAttachments = normalizedAttachments.filter((attachment) => attachment.kind === "image" && attachment.preview_url);
-  const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind !== "image" || !attachment.preview_url);
-  const fileCardClassName =
-    bubbleTone === "brand"
-      ? "border-white/15 bg-slate-950/15 text-white"
-      : "border-slate-900/10 bg-slate-950/5 text-slate-900";
-
-  return (
-    <div className="mt-3 space-y-2.5">
-      {imageAttachments.length > 0 ? (
-        <div className={`grid gap-2 ${imageAttachments.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
-          {imageAttachments.slice(0, 4).map((attachment, index) => {
-            const remainingCount = imageAttachments.length - 4;
-            const showOverflow = index === 3 && remainingCount > 0;
-
-            return (
-              <button
-                key={attachment.id}
-                type="button"
-                data-message-attachment-interactive="true"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onOpenAttachment?.(attachment);
-                }}
-                className="group relative overflow-hidden rounded-2xl border border-black/10 bg-black/10 text-left"
-              >
-                <div className="aspect-[4/3] w-full overflow-hidden bg-black/20">
-                  <img
-                    src={attachment.preview_url}
-                    alt={attachment.name}
-                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
-                    loading="lazy"
-                  />
-                </div>
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent px-3 pb-2 pt-6">
-                  <p className="truncate text-[11px] font-medium text-white">{attachment.name}</p>
-                </div>
-                {showOverflow ? (
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-lg font-semibold text-white">
-                    +{remainingCount}
-                  </div>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-
-      {fileAttachments.length > 0 ? (
-        <div className="space-y-2">
-          {fileAttachments.map((attachment) => (
-            <button
-              key={attachment.id}
-              type="button"
-              data-message-attachment-interactive="true"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenAttachment?.(attachment);
-              }}
-              className={`flex w-full min-w-0 items-center gap-3 rounded-2xl border px-3 py-3 text-left ${fileCardClassName}`}
-            >
-              <div className="shrink-0">
-                <MessageAttachmentBadge attachment={attachment} compact />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{attachment.name}</p>
-                <div className="mt-1 flex items-center gap-1.5 text-[11px] opacity-70">
-                  <span>{formatMessageAttachmentSize(attachment.size_bytes)}</span>
-                  {attachment.text_content ? (
-                    <>
-                      <span>·</span>
-                      <span>{attachment.text_truncated ? "본문 일부 포함" : "본문 포함"}</span>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AttachmentPreviewDialog({ attachment, onClose }) {
-  if (!attachment || typeof document === "undefined") {
-    return null;
-  }
-
-  const imageSource = attachment.preview_url || attachment.download_url || null;
-  const isImage = attachment.kind === "image" && imageSource;
-  const hasTextPreview = !isImage && attachment.text_content;
-
-  return createPortal(
-    <div className="fixed inset-0 z-[90] bg-slate-950/92 backdrop-blur-sm">
-      <button
-        type="button"
-        aria-label="첨부 미리보기 닫기"
-        className="absolute right-4 top-4 z-[1] flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/30 text-white"
-        onClick={onClose}
-      >
-        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-        </svg>
-      </button>
-
-      <div
-        role="button"
-        tabIndex={0}
-        className="flex h-full w-full items-center justify-center px-4 pb-8 pt-16"
-        onClick={onClose}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onClose();
-          }
-        }}
-      >
-        <div
-          className="max-h-full w-full max-w-4xl overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-950 shadow-[0_24px_72px_rgba(2,6,23,0.55)]"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="border-b border-white/10 px-5 py-4">
-            <p className="truncate text-sm font-semibold text-white">{attachment.name}</p>
-            <p className="mt-1 text-[11px] text-slate-400">
-              {formatMessageAttachmentSize(attachment.size_bytes)}
-              {attachment.mime_type ? ` · ${attachment.mime_type}` : ""}
-            </p>
-          </div>
-
-          {isImage ? (
-            <div className="flex max-h-[calc(100vh-10rem)] items-center justify-center bg-black px-3 py-3">
-              <img
-                src={imageSource}
-                alt={attachment.name}
-                className="max-h-[calc(100vh-12rem)] w-auto max-w-full rounded-2xl object-contain"
-              />
-            </div>
-          ) : hasTextPreview ? (
-            <div className="max-h-[calc(100vh-12rem)] overflow-auto px-5 py-4">
-              <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-slate-100">
-                {attachment.text_content}
-              </pre>
-              {attachment.text_truncated ? (
-                <p className="mt-3 text-xs text-amber-200">본문이 일부만 포함되어 있습니다.</p>
-              ) : null}
-            </div>
-          ) : (
-            <div className="px-5 py-6 text-sm text-slate-200">
-              미리보기를 표시할 수 없는 첨부입니다.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
-function AutoSizingReadOnlyTextarea({ id, value, placeholder, className = "", maxHeight = 320 }) {
-  const textareaRef = useRef(null);
-  const syncHeight = useCallback(() => {
-    const textarea = textareaRef.current;
-
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "0px";
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [maxHeight]);
-
-  useLayoutEffect(() => {
-    syncHeight();
-  }, [syncHeight, value]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-
-    if (!textarea) {
-      return undefined;
-    }
-
-    if (typeof window === "undefined" || typeof window.ResizeObserver !== "function") {
-      window.addEventListener("resize", syncHeight);
-      return () => {
-        window.removeEventListener("resize", syncHeight);
-      };
-    }
-
-    const resizeObserver = new window.ResizeObserver(() => {
-      syncHeight();
-    });
-
-    resizeObserver.observe(textarea);
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, [syncHeight]);
-
-  return (
-    <textarea
-      ref={textareaRef}
-      id={id}
-      rows="1"
-      value={value}
-      readOnly
-      placeholder={placeholder}
-      className={className}
-    />
-  );
-}
-
-function buildRunTimeline(thread) {
-  if (!thread) {
-    return [];
-  }
-
-  const entries = [
-    {
-      id: `${thread.id}-created`,
-      title: "Thread 생성",
-      description: `${thread.title || "새 채팅창"}이 생성되었습니다.`,
-      timestamp: thread.created_at
-    }
-  ];
-
-  if (thread.last_event && thread.last_event !== "issue.created") {
-    entries.push({
-      id: `${thread.id}-latest`,
-      title: "최근 실행 상태",
-      description: `${thread.last_event} · ${getStatusMeta(thread.status).label}`,
-      timestamp: thread.updated_at
-    });
-  }
-
-  if (thread.turn_id) {
-    entries.push({
-      id: `${thread.id}-turn`,
-      title: "최근 turn",
-      description: `turn id ${thread.turn_id}`,
-      timestamp: thread.updated_at
-    });
-  }
-
-  return entries.filter((entry) => entry.timestamp);
-}
-
-function BottomSheet({
-  open,
-  title,
-  description,
-  onClose,
-  children,
-  variant = "bottom",
-  headerActions = null,
-  headerActionsLayout = "inline",
-  panelTestId = ""
-}) {
-  const closeOnBackdropClickRef = useRef(false);
-
-  if (!open) {
-    return null;
-  }
-
-  const isCenterDialog = variant === "center";
-  const shouldStackHeaderActions = headerActionsLayout === "stacked" && Boolean(headerActions);
-  const containerClassName = isCenterDialog
-    ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/86 px-4 py-6 backdrop-blur-sm"
-    : "fixed inset-0 z-50 flex items-end justify-center bg-slate-950/75 px-4 pb-4 pt-10 backdrop-blur-sm";
-  const panelClassName = isCenterDialog
-    ? "modal-enter relative z-10 flex w-full max-w-xl max-h-[min(720px,88dvh)] flex-col overflow-hidden rounded-[1.75rem] border border-white/15 bg-[#0b1622] shadow-[0_30px_90px_rgba(0,0,0,0.65)] ring-1 ring-white/8"
-    : "sheet-enter relative z-10 w-full max-w-xl overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950 shadow-telegram-soft";
-
-  const handleContainerPointerDown = (event) => {
-    closeOnBackdropClickRef.current = event.target === event.currentTarget;
-  };
-
-  const handleContainerClick = (event) => {
-    const shouldClose = closeOnBackdropClickRef.current && event.target === event.currentTarget;
-    closeOnBackdropClickRef.current = false;
-
-    if (shouldClose) {
-      onClose();
-    }
-  };
-
-  return (
-    <div className={containerClassName} onPointerDown={handleContainerPointerDown} onClick={handleContainerClick}>
-      <section
-        className={panelClassName}
-        onClick={(event) => event.stopPropagation()}
-        data-testid={panelTestId || undefined}
-      >
-        <div className="border-b border-white/10 bg-white/5 px-5 py-4">
-          {isCenterDialog ? null : <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/15" />}
-          {shouldStackHeaderActions ? (
-            <div className="space-y-3">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white">{title}</h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">{headerActions}</div>
-            </div>
-          ) : (
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold text-white">{title}</h2>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {headerActions}
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/20 text-slate-300 transition hover:bg-white/10 hover:text-white"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="telegram-scroll max-h-[80dvh] overflow-y-auto">{children}</div>
-      </section>
-    </div>
-  );
-}
-
-const MobileFeedbackContext = createContext({
-  alert: () => {},
-  confirm: async () => false
-});
-
-function useMobileFeedback() {
-  return useContext(MobileFeedbackContext);
-}
-
-function MobileNoticeCenter({ notices, onDismiss }) {
-  if (typeof document === "undefined" || !Array.isArray(notices) || notices.length === 0) {
-    return null;
-  }
-
-  return createPortal(
-    <div className="pointer-events-none fixed inset-x-0 top-3 z-[120] flex flex-col items-center gap-3 px-3 pt-[max(env(safe-area-inset-top),0px)]">
-      {notices.map((notice) => {
-        const isError = notice.tone === "error";
-        const cardClassName = isError
-          ? "border-rose-400/35 bg-[rgba(33,12,18,0.92)] text-rose-50 shadow-[0_18px_40px_rgba(127,29,29,0.28)]"
-          : "border-white/15 bg-[rgba(15,23,42,0.88)] text-slate-50 shadow-[0_18px_40px_rgba(15,23,42,0.38)]";
-        const iconClassName = isError
-          ? "bg-rose-400/20 text-rose-100"
-          : "bg-sky-400/18 text-sky-100";
-
-        return (
-          <div
-            key={notice.id}
-            className={`pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-[1.15rem] border px-4 py-3 backdrop-blur-xl ${cardClassName}`}
-          >
-            <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconClassName}`}>
-              {isError ? (
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 9v4m0 4h.01M10.29 3.86l-8.09 14A2 2 0 004 21h16a2 2 0 001.8-3.14l-8.09-14a2 2 0 00-3.42 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-                </svg>
-              ) : (
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 8h.01M11 12h1v4h1m-6 4h10a2 2 0 002-2V6a2 2 0 00-2-2H7a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-                </svg>
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-[12px] font-semibold tracking-[0.04em] text-white/90">
-                {notice.title || (isError ? "오류" : "알림")}
-              </p>
-              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-white/90">
-                {notice.message}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onDismiss(notice.id)}
-              aria-label="알림 닫기"
-              title="닫기"
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-              </svg>
-            </button>
-          </div>
-        );
-      })}
-    </div>,
-    document.body
-  );
-}
-
-function MobileConfirmDialog({ state, onResolve }) {
-  if (!state?.open) {
-    return null;
-  }
-
-  const isDanger = state.tone === "danger";
-
-  return (
-    <BottomSheet
-      open={state.open}
-      title={state.title || "확인"}
-      description={state.message || ""}
-      onClose={() => onResolve(false)}
-      variant="center"
-      panelTestId="mobile-confirm-dialog"
-    >
-      <div className="space-y-4 px-5 py-5">
-        <div
-          className={`rounded-[1.25rem] border px-4 py-4 text-sm leading-6 ${
-            isDanger
-              ? "border-rose-400/20 bg-rose-500/10 text-rose-50"
-              : "border-white/10 bg-white/[0.04] text-slate-100"
-          }`}
-        >
-          {state.message}
-        </div>
-        <div className="flex justify-end gap-3">
-          <button
-            type="button"
-            onClick={() => onResolve(false)}
-            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10"
-          >
-            {state.cancelLabel || "취소"}
-          </button>
-          <button
-            type="button"
-            onClick={() => onResolve(true)}
-            className={`rounded-full px-4 py-2 text-sm font-semibold text-white transition ${
-              isDanger ? "bg-rose-500 hover:bg-rose-400" : "bg-telegram-500 hover:bg-telegram-400"
-            }`}
-          >
-            {state.confirmLabel || "확인"}
-          </button>
-        </div>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function InstallPromptBanner({ visible, installing, onInstall, onDismiss }) {
-  if (!visible) {
-    return null;
-  }
-
-  return (
-    <div className="border-b border-telegram-400/20 bg-telegram-500/10 px-4 py-3">
-      <div className="flex items-center gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-telegram-500/20 text-telegram-100">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 19h14" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-white">앱으로 설치해서 바로 여시겠습니까?</p>
-            <p className="truncate text-xs text-telegram-100/70">홈 화면에 추가하면 더 빠르게 접근하실 수 있습니다.</p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onInstall}
-          disabled={installing}
-          className="shrink-0 rounded-full bg-telegram-500 px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {installing ? "설치 중" : "설치"}
-        </button>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="shrink-0 text-[11px] text-slate-300 transition hover:text-white"
-        >
-          다시 보지 않음
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PwaUpdateDialog({ visible, busy, onConfirm }) {
-  if (!visible) {
-    return null;
-  }
-
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center px-6 py-8">
-      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
-      <div className="relative w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/95 px-6 py-7 text-center shadow-2xl">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-telegram-500/10 text-telegram-300">
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path d="M12 8v4l2.5 1.5M12 22a10 10 0 100-20 10 10 0 000 20z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-          </svg>
-        </div>
-        <h2 className="mt-4 text-base font-semibold text-white">업데이트가 준비되었습니다</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-300">최신 버전을 적용하려면 새로고침을 진행해 주세요.</p>
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={busy}
-          className="mt-5 inline-flex w-full items-center justify-center rounded-full bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {busy ? (
-            <>
-              <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-slate-900" />
-              새로고침 중...
-            </>
-          ) : (
-            "지금 새로고침"
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function LoginPage({ initialLoginId, loading, error, onSubmit }) {
-  const [loginId, setLoginId] = useState(initialLoginId ?? "");
-  const [password, setPassword] = useState("");
-  const [rememberDevice, setRememberDevice] = useState(Boolean(initialLoginId));
-
-  useEffect(() => {
-    setLoginId(initialLoginId ?? "");
-  }, [initialLoginId]);
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
-    if (!loginId.trim() || !password.trim()) {
-      return;
-    }
-
-    await onSubmit({
-      loginId: loginId.trim(),
-      password,
-      rememberDevice
-    });
-  };
-
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-brand-dark text-slate-200">
-      <div className="fixed inset-0 -z-10 overflow-hidden">
-        <div className="bg-mesh absolute inset-0" />
-        <div className="absolute left-[-6%] top-[-8%] h-[20rem] w-[20rem] rounded-full bg-sky-500/8 blur-[140px]" />
-        <div className="absolute bottom-[-14%] right-[-10%] h-[22rem] w-[22rem] rounded-full bg-emerald-500/8 blur-[160px]" />
-      </div>
-
-      <div className="mx-auto flex min-h-screen max-w-md items-center justify-center px-5 py-8">
-        <main className="relative z-10 w-full">
-          <header className="mb-10 text-center">
-            <div className="inline-flex h-14 w-14 items-center justify-center rounded-3xl border border-white/10 bg-slate-950/70">
-              <img src="/octop-login-icon.png" alt="OctOP" className="h-full w-full rounded-3xl object-contain" />
-            </div>
-            <p className="mt-6 text-[11px] uppercase tracking-[0.34em] text-slate-500">OctOP Workspace</p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">Sign in</h1>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Use your LicenseHub login ID to open the mobile workspace.
-            </p>
-          </header>
-
-          <section className="rounded-[28px] border border-white/8 bg-slate-950/72 p-8 shadow-2xl shadow-slate-950/30 backdrop-blur">
-            <form className="space-y-6" onSubmit={handleSubmit}>
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="loginId">
-              Login ID
-            </label>
-            <input
-              id="loginId"
-              name="loginId"
-              type="text"
-              autoComplete="username"
-              required
-              value={loginId}
-              onChange={(event) => setLoginId(event.target.value)}
-              placeholder="LicenseHub 로그인 ID"
-              className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            />
-          </div>
-
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <label className="block text-sm font-medium text-slate-300" htmlFor="password">
-                Password
-              </label>
-              <span className="text-xs text-slate-500">LicenseHub password</span>
-            </div>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="••••••••"
-              className="w-full rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/30"
-            />
-          </div>
-
-          <label className="flex items-center gap-3 text-sm text-slate-400">
-            <input
-              type="checkbox"
-              checked={rememberDevice}
-              onChange={(event) => setRememberDevice(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-sky-400 focus:ring-sky-400"
-            />
-            Keep me signed in on this device
-          </label>
-
-          {error ? (
-            <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-              {error}
-            </div>
-          ) : null}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? (
-              <>
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-950/25 border-t-slate-950" />
-                Signing in...
-              </>
-            ) : (
-              "Sign in"
-            )}
-          </button>
-            </form>
-
-            <div className="mt-6 border-t border-slate-800 pt-4 text-xs leading-6 text-slate-500">
-              After sign-in, your connected bridge, projects, and thread board sync automatically.
-            </div>
-          </section>
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function UtilitySheet({
-  open,
-  session,
-  bridgeSignal,
-  selectedProject,
-  pushNotificationCard,
-  onOpenProjectInstructionDialog,
-  onClose,
-  onOpenProjectComposer,
-  onRefresh,
-  onLogout
-}) {
-  return (
-    <BottomSheet
-      open={open}
-      title="워크스페이스 설정"
-      onClose={onClose}
-      variant="center"
-    >
-      <div className="px-5 py-5">
-        <section className="flex items-start gap-3 border-b border-white/10 pb-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-telegram-500/15 text-sm font-semibold text-white">
-            {(session.displayName || session.loginId || "O").slice(0, 1).toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <p className="truncate text-sm font-semibold text-white">{session.displayName || session.loginId}</p>
-              <span
-                className="h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: bridgeSignal.dotColor }}
-                title={bridgeSignal.title}
-              />
-            </div>
-            <p className="mt-1 text-[11px]" style={{ color: bridgeSignal.chipStyle.color }}>
-              {bridgeSignal.label}
-            </p>
-            <p className="truncate text-xs text-slate-400">{session.loginId}</p>
-          </div>
-        </section>
-
-        <section className="grid grid-cols-2 gap-2 border-t border-white/10 py-4">
-          <button
-            type="button"
-            disabled={!selectedProject}
-            onClick={() => onOpenProjectInstructionDialog("base")}
-            className="rounded-full bg-sky-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
-          >
-            일반지침 설정
-          </button>
-          <button
-            type="button"
-            disabled={!selectedProject}
-            onClick={() => onOpenProjectInstructionDialog("developer")}
-            className="rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300 disabled:opacity-60"
-          >
-            개발지침 설정
-          </button>
-        </section>
-
-        {pushNotificationCard ? <section className="border-t border-white/10 pt-4">{pushNotificationCard}</section> : null}
-
-        <section className="grid grid-cols-2 gap-2 border-t border-white/10 pt-4">
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onRefresh();
-            }}
-            className="flex-1 rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/5"
-          >
-            새로고침
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onOpenProjectComposer();
-            }}
-            className="flex-1 rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400"
-          >
-            프로젝트 등록
-          </button>
-        </section>
-
-        <button
-          type="button"
-          onClick={onLogout}
-          className="mt-4 w-full rounded-full border border-rose-400/20 px-4 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/10"
-        >
-          로그아웃
-        </button>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function BridgeDropdown({
-  bridges,
-  selectedBridgeId,
-  bridgeSignal,
-  onSelectBridge,
-  onOpen = null,
-  syncing = false
-}) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef(null);
-  const selectedBridge = useMemo(
-    () => bridges.find((bridge) => bridge.bridge_id === selectedBridgeId) ?? null,
-    [bridges, selectedBridgeId]
-  );
-  const statusLabel = bridgeSignal.label;
-
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-
-    function handlePointerDown(event) {
-      if (!containerRef.current) {
-        return;
-      }
-
-      if (!containerRef.current.contains(event.target)) {
-        setOpen(false);
-      }
-    }
-
-    function handleKeyDown(event) {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen((current) => {
-            const nextOpen = !current;
-
-            if (nextOpen && typeof onOpen === "function") {
-              onOpen();
-            }
-
-            return nextOpen;
-          });
-        }}
-        className="flex w-full items-center gap-2 text-left text-xs text-slate-400 transition hover:text-white focus:outline-none"
-      >
-        <span className="truncate">
-          {selectedBridge?.device_name ?? selectedBridge?.bridge_id ?? "브릿지 없음"}
-        </span>
-        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: bridgeSignal.dotColor }} />
-        <span>{statusLabel}</span>
-        <svg
-          className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition ${open ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-        </svg>
-      </button>
-
-      {open ? (
-        <div className="absolute left-0 z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 shadow-2xl shadow-black/40 backdrop-blur">
-          <div className="border-b border-white/5 px-4 py-3">
-            <p className="text-xs font-semibold text-white">브릿지 선택</p>
-            <p className="mt-0.5 text-[11px] text-slate-400">
-              {syncing ? "브릿지 목록을 동기화하는 중입니다." : "연결할 브릿지를 선택하세요."}
-            </p>
-          </div>
-          <div className="max-h-64 overflow-y-auto">
-            {bridges.length === 0 ? (
-              <p className="px-4 py-5 text-sm text-slate-400">연결된 브릿지가 없습니다.</p>
-            ) : (
-              bridges.map((bridge) => {
-                const active = bridge.bridge_id === selectedBridgeId;
-
-                return (
-                  <button
-                    key={bridge.bridge_id}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    onClick={() => {
-                      onSelectBridge(bridge.bridge_id);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition ${
-                      active ? "bg-telegram-500/10 text-white" : "text-slate-200 hover:bg-white/[0.04]"
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{bridge.device_name ?? bridge.bridge_id}</p>
-                      <p className="truncate text-[11px] text-slate-400">{bridge.bridge_id}</p>
-                    </div>
-                    <div className="text-right text-[11px] text-slate-400">
-                      <p>{formatRelativeTime(bridge.last_seen_at)}</p>
-                      {active ? <p className="mt-0.5 text-telegram-200">선택됨</p> : null}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -5833,7 +4879,11 @@ function InlineIssueComposer({
                         {hasImagePreview ? (
                           <img src={attachment.preview_url} alt={attachment.name} className="h-full w-full object-cover" />
                         ) : (
-                          <MessageAttachmentBadge attachment={attachment} compact />
+                          <MessageAttachmentBadge
+                            attachment={attachment}
+                            compact
+                            resolveBadge={resolveMessageAttachmentBadge}
+                          />
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
@@ -5981,975 +5031,6 @@ function InlineIssueComposer({
   );
 }
 
-function ProjectComposerSheet({
-  open,
-  busy,
-  roots,
-  folderState,
-  folderLoading,
-  selectedWorkspacePath,
-  onBrowseFolder,
-  onSelectWorkspace,
-  onClose,
-  onSubmit
-}) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [developerInstructions, setDeveloperInstructions] = useState("");
-  const tapStateRef = useRef({ path: "", timestamp: 0 });
-
-  useEffect(() => {
-    if (!open) {
-      setName("");
-      setDescription("");
-      setDeveloperInstructions("");
-      tapStateRef.current = { path: "", timestamp: 0 };
-      return;
-    }
-  }, [open]);
-
-  const selectedWorkspaceLabel = useMemo(
-    () => getRelativeWorkspacePath(selectedWorkspacePath, roots),
-    [roots, selectedWorkspacePath]
-  );
-
-  const handleFolderTap = useCallback(
-    (path) => {
-      const now = Date.now();
-      const lastTap = tapStateRef.current;
-      const isSecondTap = lastTap.path === path && now - lastTap.timestamp < 320;
-
-      tapStateRef.current = {
-        path,
-        timestamp: now
-      };
-
-      onSelectWorkspace(path);
-      setName(getPathLabel(path));
-
-      if (isSecondTap) {
-        tapStateRef.current = { path: "", timestamp: 0 };
-        void onBrowseFolder(path);
-      }
-    },
-    [onBrowseFolder, onSelectWorkspace]
-  );
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
-    if (!name.trim() || !selectedWorkspacePath) {
-      return;
-    }
-
-    await onSubmit({
-      name: name.trim(),
-      description: description.trim(),
-      developerInstructions,
-      workspace_path: selectedWorkspacePath
-    });
-  };
-
-  return (
-    <BottomSheet
-      open={open}
-      title="새 프로젝트 등록"
-      onClose={onClose}
-      variant="center"
-    >
-      <form className="space-y-5 px-5 py-5" onSubmit={handleSubmit}>
-        <section className="border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-white">워크스페이스 선택</p>
-            {folderLoading ? <span className="text-xs text-slate-400">불러오는 중...</span> : null}
-          </div>
-
-          <div className="mt-4 rounded-[1rem] border border-white/10 bg-black/10 px-3 py-2 text-[11px] text-slate-400">
-            한 번 클릭하면 선택되고, 더블 클릭하면 폴더 내부로 들어갑니다.
-          </div>
-
-          <div className="telegram-scroll mt-3 max-h-72 overflow-y-auto rounded-[1rem] border border-white/10">
-            {folderState.parent_path ? (
-              <button
-                type="button"
-                onClick={() => handleFolderTap(folderState.parent_path)}
-                className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left transition ${
-                  selectedWorkspacePath === folderState.parent_path
-                    ? "bg-telegram-500/10"
-                    : "bg-transparent hover:bg-white/[0.03]"
-                }`}
-              >
-                <span className="text-sm font-medium text-white">..</span>
-              </button>
-            ) : null}
-
-            {folderState.entries?.length ? (
-              folderState.entries.map((entry) => {
-                const active = selectedWorkspacePath === entry.path;
-
-                return (
-                  <button
-                    key={entry.path}
-                    type="button"
-                    onClick={() => handleFolderTap(entry.path)}
-                    className={`flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left last:border-b-0 transition ${
-                      active ? "bg-telegram-500/10" : "bg-transparent hover:bg-white/[0.03]"
-                    }`}
-                  >
-                    <span className="text-sm font-medium text-white">{entry.name}</span>
-                  </button>
-                );
-              })
-            ) : (
-              <div className="px-4 py-4 text-sm text-slate-400">
-                하위 폴더가 없습니다.
-              </div>
-            )}
-          </div>
-        </section>
-
-        <div className="border border-white/10 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Selected Workspace</p>
-          <p className="mt-2 break-all text-sm text-white">
-            {selectedWorkspaceLabel || "아직 선택된 경로가 없습니다."}
-          </p>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-name">
-            프로젝트 이름
-          </label>
-          <input
-            id="project-name"
-            type="text"
-            required
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="예: OctOP 모바일 운영"
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-description">
-            프로젝트 설명
-          </label>
-          <textarea
-            id="project-description"
-            rows="4"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="프로젝트 목적과 작업 범위를 적어 주세요."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-developer-instructions">
-            공통 개발지침
-          </label>
-          <textarea
-            id="project-developer-instructions"
-            rows="8"
-            value={developerInstructions}
-            onChange={(event) => setDeveloperInstructions(event.target.value)}
-            placeholder="예: 답변 언어, 금지사항, 출력 형식, 코드 수정 원칙 등 이 프로젝트 전체에 공통으로 적용할 개발지침을 입력해 주세요."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
-          />
-          <div className="mt-3 rounded-[1rem] border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-[12px] leading-6 text-emerald-50">
-            여기 저장한 공통 개발지침은 이 프로젝트의 새 채팅창이 실행될 때 기본 developerInstructions로 자동 적용됩니다.
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !selectedWorkspacePath}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "등록 중..." : "프로젝트 등록"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function ThreadCreateDialog({ open, busy, project, onClose, onSubmit }) {
-  const [title, setTitle] = useState("");
-  const [developerInstructions, setDeveloperInstructions] = useState("");
-  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
-  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
-
-  useEffect(() => {
-    if (!open) {
-      setTitle("");
-      setDeveloperInstructions("");
-    }
-  }, [open]);
-
-  if (!open || !project) {
-    return null;
-  }
-
-  return (
-    <BottomSheet
-      open={open}
-      title="새 채팅창 시작"
-      onClose={onClose}
-      variant="center"
-    >
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          const accepted = await onSubmit({
-            title,
-            developerInstructions
-          });
-
-          if (accepted !== false) {
-            onClose();
-          }
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-title">
-            제목
-          </label>
-          <input
-            id="thread-create-title"
-            type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="비워두면 제목없음으로 생성됩니다."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        {hasProjectDeveloperInstructions ? (
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-project-developer-instructions">
-              프로젝트 공통 개발지침
-            </label>
-            <AutoSizingReadOnlyTextarea
-              id="thread-create-project-developer-instructions"
-              value={projectDeveloperInstructions}
-              placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
-              className="w-full resize-none rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
-            />
-            <p className="mt-2 text-[11px] leading-5 text-slate-400">
-              프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
-            </p>
-          </div>
-        ) : null}
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-create-developer-instructions">
-            개발지침
-          </label>
-          <textarea
-            id="thread-create-developer-instructions"
-            rows="8"
-            value={developerInstructions}
-            onChange={(event) => setDeveloperInstructions(event.target.value)}
-            placeholder="이 채팅창에서만 추가로 적용할 개발지침이 있으면 입력해 주세요."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
-          />
-          {hasProjectDeveloperInstructions ? (
-            <div className="mt-3 rounded-[1rem] border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-[12px] leading-6 text-emerald-50">
-              이 프로젝트의 공통 개발지침이 새 채팅창 기본 지침으로 자동 적용됩니다. 여기 입력한 채팅창 개발지침은 그 뒤에 이어 붙습니다.
-            </div>
-          ) : (
-            <p className="mt-2 text-[11px] leading-5 text-slate-400">
-              프로젝트 공통 개발지침이 없으면 이 값만 이 채팅창의 다음 실행부터 적용됩니다.
-            </p>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "생성 중..." : "채팅 시작"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function TodoChatListItem({ chat, active, onOpen, onRename, onDelete }) {
-  const startPointRef = useRef(null);
-  const baseOffsetRef = useRef(0);
-  const pointerIdRef = useRef(null);
-  const swipeAxisRef = useRef(null);
-  const offsetRef = useRef(0);
-  const movedRef = useRef(false);
-  const ACTION_WIDTH = 92;
-  const SNAP_THRESHOLD = 42;
-  const [offset, setOffset] = useState(0);
-  const [dragging, setDragging] = useState(false);
-
-  const setRevealOffset = useCallback((nextOffset) => {
-    const clamped = Math.max(-ACTION_WIDTH, Math.min(ACTION_WIDTH, nextOffset));
-    offsetRef.current = clamped;
-    setOffset(clamped);
-  }, []);
-
-  const handlePointerDown = useCallback((event) => {
-    if (event.pointerType === "mouse" && event.button !== 0) {
-      return;
-    }
-
-    startPointRef.current = { x: event.clientX, y: event.clientY };
-    baseOffsetRef.current = offsetRef.current;
-    pointerIdRef.current = event.pointerId;
-    swipeAxisRef.current = null;
-    movedRef.current = false;
-    setDragging(false);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, []);
-
-  const handlePointerMove = useCallback(
-    (event) => {
-      if (
-        startPointRef.current === null ||
-        (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current)
-      ) {
-        return;
-      }
-
-      const deltaX = event.clientX - startPointRef.current.x;
-      const deltaY = event.clientY - startPointRef.current.y;
-      const absX = Math.abs(deltaX);
-      const absY = Math.abs(deltaY);
-
-      if (swipeAxisRef.current === null) {
-        if (absX < 6 && absY < 6) {
-          return;
-        }
-
-        swipeAxisRef.current = absX > absY ? "x" : "y";
-      }
-
-      if (swipeAxisRef.current !== "x") {
-        return;
-      }
-
-      if (event.cancelable) {
-        event.preventDefault();
-      }
-
-      if (absX > 6) {
-        movedRef.current = true;
-      }
-
-      setDragging(true);
-      setRevealOffset(baseOffsetRef.current + deltaX);
-    },
-    [setRevealOffset]
-  );
-
-  const handlePointerUp = useCallback(
-    (event) => {
-      if (startPointRef.current === null) {
-        return;
-      }
-
-      if (swipeAxisRef.current === "x" && offsetRef.current <= -SNAP_THRESHOLD) {
-        setRevealOffset(-ACTION_WIDTH);
-      } else if (swipeAxisRef.current === "x" && offsetRef.current >= SNAP_THRESHOLD) {
-        setRevealOffset(ACTION_WIDTH);
-      } else if (swipeAxisRef.current === "x") {
-        setRevealOffset(0);
-      }
-
-      startPointRef.current = null;
-      baseOffsetRef.current = 0;
-      pointerIdRef.current = null;
-      swipeAxisRef.current = null;
-      setDragging(false);
-      if (event?.currentTarget && typeof event.currentTarget.releasePointerCapture === "function") {
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // ignore pointer capture release failures
-        }
-      }
-    },
-    [setRevealOffset]
-  );
-
-  const showDeleteAction = offset > 0;
-  const showRenameAction = offset < 0;
-
-  return (
-    <div className="relative overflow-hidden border-b border-white/8">
-      <button
-        type="button"
-        onClick={() => {
-          setRevealOffset(0);
-          onDelete(chat);
-        }}
-        className={`absolute inset-y-0 left-0 flex w-[92px] items-center justify-center bg-rose-500 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          showDeleteAction ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        삭제
-      </button>
-
-      <button
-        type="button"
-        onClick={() => {
-          setRevealOffset(0);
-          onRename(chat);
-        }}
-        className={`absolute inset-y-0 right-0 flex w-[92px] items-center justify-center bg-slate-800 text-[12px] font-semibold text-white transition-opacity duration-150 ${
-          showRenameAction ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        편집
-      </button>
-
-      <button
-        type="button"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-        onClick={() => {
-          if (movedRef.current) {
-            movedRef.current = false;
-            return;
-          }
-
-          if (offsetRef.current !== 0) {
-            setRevealOffset(0);
-            return;
-          }
-
-          onOpen(chat.id);
-        }}
-        className={`relative w-full px-3 py-3 text-left ${
-          dragging ? "" : "transition-transform duration-180 ease-out"
-        } ${active ? "bg-slate-900" : "bg-slate-950 hover:bg-slate-900/90"}`}
-        style={{
-          transform: `translate3d(${offset}px, 0, 0)`,
-          touchAction: "pan-y",
-          willChange: "transform"
-        }}
-      >
-        <div
-          className={`min-w-0 rounded-2xl border px-3 py-3 ${
-            active ? "border-white/12 bg-white/[0.03]" : "border-transparent bg-transparent"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="min-w-0 flex-1 truncate text-sm font-semibold text-white">{chat.title}</p>
-            <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTime(chat.updated_at)}</span>
-          </div>
-          <p className="mt-1 text-[13px] leading-5 text-slate-300">{getTodoChatPreview(chat)}</p>
-          <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-500">
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-slate-300">
-              메모 {chat.message_count}
-            </span>
-          </div>
-        </div>
-      </button>
-    </div>
-  );
-}
-
-function DeleteConfirmDialog({
-  open,
-  busy,
-  title,
-  description,
-  confirmLabel = "삭제",
-  cancelLabel = "취소",
-  onClose,
-  onConfirm
-}) {
-  return (
-    <BottomSheet
-      open={open}
-      title={title}
-      description={description}
-      onClose={busy ? () => {} : onClose}
-      variant="center"
-    >
-      <div className="space-y-5 px-5 py-5">
-        <div className="rounded-3xl border border-rose-400/15 bg-rose-500/10 px-4 py-4 text-sm leading-7 text-slate-200">
-          삭제한 항목은 목록에서 즉시 사라집니다.
-        </div>
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="flex-1 rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className="flex-1 rounded-full bg-rose-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            {busy ? "삭제 중..." : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function TodoChatRenameDialog({ open, busy, chat, onClose, onSubmit }) {
-  const [title, setTitle] = useState("");
-
-  useEffect(() => {
-    if (!open) {
-      setTitle("");
-      return;
-    }
-
-    setTitle(chat?.title ?? "");
-  }, [chat, open]);
-
-  if (!open || !chat) {
-    return null;
-  }
-
-  return (
-    <BottomSheet open={open} title="ToDo 채팅 이름 변경" onClose={onClose} variant="center">
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-
-          if (!title.trim()) {
-            return;
-          }
-
-          const accepted = await onSubmit(title.trim());
-
-          if (accepted !== false) {
-            onClose();
-          }
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-chat-title">
-            제목
-          </label>
-          <input
-            id="todo-chat-title"
-            type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !title.trim()}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "저장 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function TodoMessageEditorDialog({ open, busy, message, onClose, onSubmit }) {
-  const [content, setContent] = useState("");
-
-  useEffect(() => {
-    if (!open) {
-      setContent("");
-      return;
-    }
-
-    setContent(message?.content ?? "");
-  }, [message, open]);
-
-  if (!open || !message) {
-    return null;
-  }
-
-  return (
-    <BottomSheet open={open} title="메모 수정" onClose={onClose} variant="center">
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-
-          if (!content.trim()) {
-            return;
-          }
-
-          const accepted = await onSubmit(content.trim());
-
-          if (accepted !== false) {
-            onClose();
-          }
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-message-content">
-            내용
-          </label>
-          <textarea
-            id="todo-message-content"
-            rows="6"
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !content.trim()}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "저장 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function TodoMessageActionSheet({ open, message, onClose, onEdit, onDelete, onTransfer }) {
-  if (!open || !message) {
-    return null;
-  }
-
-  return (
-    <BottomSheet open={open} title="메모 작업" onClose={onClose} variant="center">
-      <div className="space-y-3 px-5 py-5">
-        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
-          {message.content}
-        </div>
-        <button
-          type="button"
-          onClick={onEdit}
-          className="w-full rounded-full border border-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/5"
-        >
-          편집
-        </button>
-        <button
-          type="button"
-          onClick={onTransfer}
-          className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400"
-        >
-          프로젝트-쓰레드로 이동
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400"
-        >
-          삭제
-        </button>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function ThreadMessageActionSheet({ open, message, busy, onClose, onCopy, onRetry, onDelete }) {
-  if (!open || !message) {
-    return null;
-  }
-
-  return (
-    <BottomSheet
-      open={open}
-      title="메시지 작업"
-      onClose={busy ? () => {} : onClose}
-      variant="center"
-      panelTestId="thread-message-action-dialog"
-      headerActionsLayout="stacked"
-      headerActions={
-        <>
-          {onCopy ? (
-            <button
-              type="button"
-              onClick={onCopy}
-              disabled={busy}
-              className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              텍스트 복사
-            </button>
-          ) : null}
-          {onRetry ? (
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={busy}
-              className="shrink-0 rounded-full bg-telegram-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              다시 진행
-            </button>
-          ) : null}
-          {onDelete ? (
-            <button
-              type="button"
-              onClick={onDelete}
-              disabled={busy}
-              className="shrink-0 rounded-full bg-rose-500/90 px-3 py-2 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              이슈 제거
-            </button>
-          ) : null}
-        </>
-      }
-    >
-      <div className="px-5 py-5">
-        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3">
-          <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400">
-            <span>{message.title ?? "메시지"}</span>
-            {message.meta ? <span>{message.meta}</span> : null}
-          </div>
-          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-200">
-            {message.content || "내용이 없습니다."}
-          </p>
-        </div>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function TodoTransferSheet({
-  open,
-  busy,
-  message,
-  projects,
-  threadOptionsByProjectId,
-  selectedProjectId,
-  onEnsureProjectThreads,
-  onClose,
-  onSubmit
-}) {
-  const [projectId, setProjectId] = useState("");
-  const [threadMode, setThreadMode] = useState("existing");
-  const [threadId, setThreadId] = useState("");
-  const [threadName, setThreadName] = useState("");
-
-  useEffect(() => {
-    if (!open) {
-      setProjectId("");
-      setThreadMode("existing");
-      setThreadId("");
-      setThreadName("");
-      return;
-    }
-
-    const nextProjectId = selectedProjectId || projects[0]?.id || "";
-    setProjectId(nextProjectId);
-    setThreadMode("existing");
-    setThreadId("");
-    setThreadName(createThreadTitleFromPrompt(message?.content ?? "") || "새 채팅창");
-  }, [message, open, projects, selectedProjectId]);
-
-  useEffect(() => {
-    if (!open || !projectId || !onEnsureProjectThreads) {
-      return;
-    }
-
-    void onEnsureProjectThreads(projectId);
-  }, [onEnsureProjectThreads, open, projectId]);
-
-  const availableThreads = useMemo(
-    () => threadOptionsByProjectId[projectId] ?? [],
-    [projectId, threadOptionsByProjectId]
-  );
-
-  if (!open || !message) {
-    return null;
-  }
-
-  return (
-    <BottomSheet
-      open={open}
-      title="프로젝트-쓰레드로 이동"
-      description="이 메모를 staged issue로 넘깁니다. 실행은 자동으로 시작되지 않습니다."
-      onClose={onClose}
-      variant="center"
-    >
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-
-          if (!projectId) {
-            return;
-          }
-
-          if (threadMode === "existing" && !threadId) {
-            return;
-          }
-
-          if (threadMode === "new" && !threadName.trim()) {
-            return;
-          }
-
-          const accepted = await onSubmit({
-            project_id: projectId,
-            thread_mode: threadMode,
-            thread_id: threadMode === "existing" ? threadId : null,
-            thread_name: threadMode === "new" ? threadName.trim() : null
-          });
-
-          if (accepted !== false) {
-            onClose();
-          }
-        }}
-      >
-        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
-          {message.content}
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-project">
-            프로젝트
-          </label>
-          <select
-            id="todo-transfer-project"
-            value={projectId}
-            onChange={(event) => {
-              setProjectId(event.target.value);
-              setThreadId("");
-            }}
-            className="w-full rounded-[1rem] border border-white/10 bg-[#0b1622] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          >
-            <option value="">프로젝트 선택</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={() => setThreadMode("existing")}
-            className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
-              threadMode === "existing"
-                ? "bg-white text-slate-900"
-                : "border border-white/10 text-slate-200 hover:bg-white/5"
-            }`}
-          >
-            기존 쓰레드
-          </button>
-          <button
-            type="button"
-            onClick={() => setThreadMode("new")}
-            className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
-              threadMode === "new"
-                ? "bg-white text-slate-900"
-                : "border border-white/10 text-slate-200 hover:bg-white/5"
-            }`}
-          >
-            신규 쓰레드
-          </button>
-        </div>
-
-        {threadMode === "existing" ? (
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-thread">
-              대상 쓰레드
-            </label>
-            <select
-              id="todo-transfer-thread"
-              value={threadId}
-              onChange={(event) => setThreadId(event.target.value)}
-              className="w-full rounded-[1rem] border border-white/10 bg-[#0b1622] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-            >
-              <option value="">쓰레드 선택</option>
-              {availableThreads.map((thread) => (
-                <option key={thread.id} value={thread.id}>
-                  {thread.title}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="todo-transfer-thread-name">
-              새 쓰레드 이름
-            </label>
-            <input
-              id="todo-transfer-thread-name"
-              type="text"
-              value={threadName}
-              onChange={(event) => setThreadName(event.target.value)}
-              className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-            />
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !projectId || (threadMode === "existing" ? !threadId : !threadName.trim())}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "이동 중..." : "이동"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
 function TodoChatDetail({
   chat,
   bridgeId = "",
@@ -7089,7 +5170,14 @@ function TodoChatDetail({
             >
               <MessageBubble align="right" tone="brand" title="메모" meta={formatRelativeTime(message.updated_at)}>
                 <RichMessageContent content={message.content} tone="brand" />
-                <MessageAttachmentPreview attachments={message.attachments} bubbleTone="brand" onOpenAttachment={handleOpenAttachment} />
+                <MessageAttachmentPreview
+                  attachments={message.attachments}
+                  bubbleTone="brand"
+                  onOpenAttachment={handleOpenAttachment}
+                  normalizeAttachments={normalizeMessageAttachments}
+                  resolveBadge={resolveMessageAttachmentBadge}
+                  formatSize={formatMessageAttachmentSize}
+                />
               </MessageBubble>
             </button>
           ))}
@@ -7123,441 +5211,12 @@ function TodoChatDetail({
         </div>
       </div>
 
-      <AttachmentPreviewDialog attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+      <AttachmentPreviewDialog
+        attachment={previewAttachment}
+        sizeLabel={previewAttachment ? formatMessageAttachmentSize(previewAttachment.size_bytes) : ""}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
-  );
-}
-
-function ProjectActionSheet({ open, project, busy = false, onClose, onEdit, onDelete }) {
-  if (!open || !project) {
-    return null;
-  }
-
-  return (
-    <BottomSheet
-      open={open}
-      title="프로젝트 작업"
-      description={`${project.name} 프로젝트를 편집하거나 삭제할 수 있습니다.`}
-      onClose={busy ? () => {} : onClose}
-      variant="center"
-    >
-      <div className="space-y-3 px-5 py-5">
-        <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm leading-6 text-slate-200">
-          공통 개발지침은 새 채팅창이 실행될 때 기본 지침으로 자동 주입됩니다.
-        </div>
-        <button
-          type="button"
-          onClick={onEdit}
-          disabled={busy}
-          className="w-full rounded-full bg-telegram-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          편집
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          disabled={busy}
-          className="w-full rounded-full bg-rose-500/90 px-4 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          삭제
-        </button>
-      </div>
-    </BottomSheet>
-  );
-}
-
-function ProjectEditDialog({ open, busy, deleteBusy = false, project, errorMessage, onClose, onSubmit, onDelete }) {
-  const [name, setName] = useState("");
-  const [developerInstructions, setDeveloperInstructions] = useState("");
-  const [dirty, setDirty] = useState(false);
-  const draftProjectIdRef = useRef("");
-  const draftProjectId = open && project ? project.id : "";
-
-  useEffect(() => {
-    if (!open) {
-      setName("");
-      setDeveloperInstructions("");
-      setDirty(false);
-      draftProjectIdRef.current = "";
-      return;
-    }
-
-    if (!project) {
-      return;
-    }
-
-    if (draftProjectIdRef.current !== draftProjectId) {
-      draftProjectIdRef.current = draftProjectId;
-      setName(project?.name ?? "");
-      setDeveloperInstructions(project?.developer_instructions ?? "");
-      setDirty(false);
-      return;
-    }
-
-    if (!dirty) {
-      setName(project?.name ?? "");
-      setDeveloperInstructions(project?.developer_instructions ?? "");
-    }
-  }, [dirty, draftProjectId, open, project]);
-
-  if (!open || !project) {
-    return null;
-  }
-
-  const actionBusy = busy || deleteBusy;
-
-  return (
-    <BottomSheet
-      open={open}
-      title="프로젝트 편집"
-      description="프로젝트 이름과 공통 개발지침을 수정합니다. 공통 개발지침은 새 채팅창 실행 시 기본 developerInstructions로 들어갑니다."
-      onClose={onClose}
-      variant="center"
-    >
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          await onSubmit({
-            name: name.trim(),
-            developerInstructions
-          });
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-name">
-            프로젝트 이름
-          </label>
-          <input
-            id="project-edit-name"
-            type="text"
-            value={name}
-            disabled={actionBusy}
-            onChange={(event) => {
-              setName(event.target.value);
-              setDirty(true);
-            }}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-edit-developer-instructions">
-            공통 개발지침
-          </label>
-          <textarea
-            id="project-edit-developer-instructions"
-            rows="10"
-            value={developerInstructions}
-            disabled={actionBusy}
-            onChange={(event) => {
-              setDeveloperInstructions(event.target.value);
-              setDirty(true);
-            }}
-            placeholder="예: 코드 스타일, 테스트 기준, 금지사항, 응답 형식 같은 프로젝트 공통 규칙을 입력해 주세요."
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-400/30"
-          />
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            비워 두고 저장하면 공통 개발지침이 제거됩니다.
-          </p>
-        </div>
-
-        {errorMessage ? (
-          <div className="rounded-[1rem] border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[12px] leading-6 text-rose-100">
-            {errorMessage}
-          </div>
-        ) : null}
-
-        {typeof onDelete === "function" ? (
-          <button
-            type="button"
-            onClick={() => void onDelete(project)}
-            disabled={actionBusy}
-            className="w-full rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {deleteBusy ? "삭제 중..." : "프로젝트 삭제"}
-          </button>
-        ) : null}
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={actionBusy}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={actionBusy || !name.trim()}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "저장 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function ProjectInstructionDialog({ open, busy, project, instructionType, onClose, onSubmit }) {
-  const [value, setValue] = useState("");
-  const [dirty, setDirty] = useState(false);
-  const draftScopeRef = useRef("");
-  const instructionValue = instructionType === "developer" ? (project?.developer_instructions ?? "") : (project?.base_instructions ?? "");
-  const draftScope = open && project ? `${project.id}:${instructionType}` : "";
-
-  useEffect(() => {
-    if (!open) {
-      setValue("");
-      setDirty(false);
-      draftScopeRef.current = "";
-      return;
-    }
-
-    if (!project) {
-      return;
-    }
-
-    if (draftScopeRef.current !== draftScope) {
-      draftScopeRef.current = draftScope;
-      setValue(instructionValue);
-      setDirty(false);
-      return;
-    }
-
-    if (!dirty) {
-      setValue(instructionValue);
-    }
-  }, [dirty, draftScope, instructionValue, open, project]);
-
-  if (!open || !project) {
-    return null;
-  }
-
-  const isDeveloperInstruction = instructionType === "developer";
-
-  return (
-    <BottomSheet
-      open={open}
-      title={isDeveloperInstruction ? "개발지침" : "일반지침"}
-      description={
-        isDeveloperInstruction
-          ? `${project.name} 프로젝트에 저장하고 새 thread 시작 시 app-server에 주입합니다.`
-          : "공통 일반지침으로 저장하고 모든 프로젝트의 새 thread 시작 시 app-server에 동일하게 주입합니다."
-      }
-      onClose={onClose}
-      variant="center"
-    >
-      <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          await onSubmit({
-            instructionType,
-            value
-          });
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="project-instruction-input">
-            {isDeveloperInstruction ? "개발지침 본문" : "일반지침 본문"}
-          </label>
-          <textarea
-            id="project-instruction-input"
-            rows="10"
-            value={value}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setDirty(true);
-            }}
-            placeholder={
-              isDeveloperInstruction
-                ? "예: 코드 스타일, 테스트 기준, 금지사항 같은 개발 규칙을 입력해 주세요."
-                : "예: 작업 방식, 응답 톤, 우선순위 같은 공통 기본 지침을 입력해 주세요."
-            }
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            비워 두고 저장하면 해당 지침은 제거됩니다.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "저장 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
-  );
-}
-
-function ThreadEditDialog({
-  open,
-  busy,
-  thread,
-  project,
-  threadInstructionSupported = false,
-  errorMessage,
-  onClose,
-  onSubmit
-}) {
-  const [title, setTitle] = useState("");
-  const [developerInstructions, setDeveloperInstructions] = useState("");
-  const [dirty, setDirty] = useState(false);
-  const draftThreadIdRef = useRef("");
-  const instructionValue = thread?.developer_instructions ?? "";
-  const projectDeveloperInstructions = String(project?.developer_instructions ?? "");
-  const hasProjectDeveloperInstructions = projectDeveloperInstructions.trim().length > 0;
-  const draftThreadId = open && thread ? thread.id : "";
-
-  useEffect(() => {
-    if (!open) {
-      setTitle("");
-      setDeveloperInstructions("");
-      setDirty(false);
-      draftThreadIdRef.current = "";
-      return;
-    }
-
-    if (!thread) {
-      return;
-    }
-
-    if (draftThreadIdRef.current !== draftThreadId) {
-      draftThreadIdRef.current = draftThreadId;
-      setTitle(thread?.title ?? "");
-      setDeveloperInstructions(instructionValue);
-      setDirty(false);
-      return;
-    }
-
-    if (!dirty) {
-      setTitle(thread?.title ?? "");
-      setDeveloperInstructions(instructionValue);
-    }
-  }, [dirty, draftThreadId, instructionValue, open, thread]);
-
-  if (!open || !thread) {
-    return null;
-  }
-
-  return (
-    <BottomSheet
-      open={open}
-      title="채팅창 편집"
-      description={`${thread.title ?? "채팅창"}의 제목을 수정하고, 필요하면 이 채팅창 전용 개발지침도 함께 저장합니다.`}
-      onClose={onClose}
-      variant="center"
-      >
-        <form
-        className="space-y-5 px-5 py-5"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          await onSubmit({
-            title: title.trim(),
-            developerInstructions
-          });
-        }}
-      >
-        <div>
-          <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-title">
-            제목
-          </label>
-          <input
-            id="thread-edit-title"
-            type="text"
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              setDirty(true);
-            }}
-            className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-telegram-300 focus:ring-2 focus:ring-telegram-400/30"
-          />
-        </div>
-
-        {hasProjectDeveloperInstructions ? (
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-edit-project-developer-instructions">
-              프로젝트 공통 개발지침
-            </label>
-            <AutoSizingReadOnlyTextarea
-              id="thread-edit-project-developer-instructions"
-              value={projectDeveloperInstructions}
-              placeholder="저장된 프로젝트 공통 개발지침이 없습니다."
-              className="w-full resize-none rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white/90 outline-none"
-            />
-            <p className="mt-2 text-[11px] leading-5 text-slate-400">
-              프로젝트에 저장된 공통 개발지침이며 여기서는 읽기 전용으로만 표시됩니다.
-            </p>
-          </div>
-        ) : null}
-
-        {threadInstructionSupported ? (
-          <>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-300" htmlFor="thread-instruction-input">
-                개발지침 본문
-              </label>
-              <textarea
-                id="thread-instruction-input"
-                rows="10"
-                value={developerInstructions}
-                onChange={(event) => {
-                  setDeveloperInstructions(event.target.value);
-                  setDirty(true);
-                }}
-                placeholder="예: 이 채팅창에서만 지켜야 할 출력 형식, 금지사항, 역할 제약을 입력해 주세요."
-                className="w-full rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-white outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-400/30"
-              />
-              <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                비워 두고 저장하면 이 채팅창 전용 개발지침이 제거됩니다.
-              </p>
-            </div>
-          </>
-        ) : (
-          <div className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-[12px] leading-6 text-slate-300">
-            현재 연결된 브리지는 채팅창 전용 개발지침 저장을 지원하지 않아 제목만 수정할 수 있습니다.
-          </div>
-        )}
-
-        {errorMessage ? (
-          <div className="rounded-[1rem] border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[12px] leading-6 text-rose-100">
-            {errorMessage}
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
-          >
-            취소
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !title.trim()}
-            className="rounded-full bg-telegram-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-telegram-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "저장 중..." : "저장"}
-          </button>
-        </div>
-      </form>
-    </BottomSheet>
   );
 }
 
@@ -9770,7 +7429,14 @@ function ThreadDetail({
                       }
                       tone={message.tone}
                     />
-                    <MessageAttachmentPreview attachments={message.attachments} bubbleTone={message.tone} onOpenAttachment={handleOpenAttachment} />
+                    <MessageAttachmentPreview
+                      attachments={message.attachments}
+                      bubbleTone={message.tone}
+                      onOpenAttachment={handleOpenAttachment}
+                      normalizeAttachments={normalizeMessageAttachments}
+                      resolveBadge={resolveMessageAttachmentBadge}
+                      formatSize={formatMessageAttachmentSize}
+                    />
                   </MessageBubble>
                 </div>
               );
@@ -9958,7 +7624,11 @@ function ThreadDetail({
         </div>
       ) : null}
 
-      <AttachmentPreviewDialog attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+      <AttachmentPreviewDialog
+        attachment={previewAttachment}
+        sizeLabel={previewAttachment ? formatMessageAttachmentSize(previewAttachment.size_bytes) : ""}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   );
 }
@@ -11453,6 +9123,8 @@ function MainPage({
           key={chat.id}
           chat={chat}
           active={chat.id === selectedTodoChatId}
+          updatedLabel={formatRelativeTime(chat.updated_at)}
+          preview={getTodoChatPreview(chat)}
           onOpen={onSelectTodoChat}
           onRename={(targetChat) => setTodoChatBeingEdited(targetChat)}
           onDelete={(targetChat) => void onDeleteTodoChat(targetChat.id)}
@@ -11626,44 +9298,46 @@ function MainPage({
       {projectChipRow}
     </div>
   );
-  const mainOverlays = (
-    <>
-      <DeleteConfirmDialog
-        open={threadDeleteDialog.open}
-        busy={threadBusy}
-        title={threadDeleteDialog.title}
-        description={threadDeleteDialog.description}
-        confirmLabel={threadDeleteDialog.confirmLabel}
-        onClose={onCloseThreadDeleteDialog}
-        onConfirm={onConfirmThreadDeleteDialog}
-      />
-      <TodoChatRenameDialog
-        open={Boolean(todoChatBeingEdited)}
-        busy={todoRenameBusy}
-        chat={todoChatBeingEdited}
-        onClose={() => setTodoChatBeingEdited(null)}
-        onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
-      />
-      <TodoMessageActionSheet
-        open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
-        message={activeTodoMessage}
-        onClose={() => setActiveTodoMessage(null)}
-        onEdit={() => setTodoMessageEditorOpen(true)}
-        onDelete={async () => {
+  const shouldRenderDeferredOverlays =
+    threadDeleteDialog.open ||
+    Boolean(todoChatBeingEdited) ||
+    Boolean(activeTodoMessage) ||
+    todoMessageEditorOpen ||
+    todoTransferOpen ||
+    Boolean(projectActionTarget) ||
+    utilityOpen ||
+    projectComposerOpen ||
+    threadCreateDialogOpen ||
+    projectInstructionDialogOpen ||
+    projectEditDialogOpen ||
+    threadInstructionDialogOpen;
+  const deferredOverlays = shouldRenderDeferredOverlays ? (
+    <Suspense fallback={null}>
+      <MobileDeferredOverlays
+        threadDeleteDialog={threadDeleteDialog}
+        threadBusy={threadBusy}
+        onCloseThreadDeleteDialog={onCloseThreadDeleteDialog}
+        onConfirmThreadDeleteDialog={onConfirmThreadDeleteDialog}
+        todoChatBeingEdited={todoChatBeingEdited}
+        todoRenameBusy={todoRenameBusy}
+        onCloseTodoChatRename={() => setTodoChatBeingEdited(null)}
+        onSubmitTodoChatRename={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
+        activeTodoMessage={activeTodoMessage}
+        todoMessageEditorOpen={todoMessageEditorOpen}
+        todoTransferOpen={todoTransferOpen}
+        onCloseTodoMessageAction={() => setActiveTodoMessage(null)}
+        onOpenTodoMessageEditor={() => setTodoMessageEditorOpen(true)}
+        onDeleteActiveTodoMessage={async () => {
           const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
 
           if (accepted !== false) {
             setActiveTodoMessage(null);
           }
         }}
-        onTransfer={() => setTodoTransferOpen(true)}
-      />
-      <TodoMessageEditorDialog
-        open={todoMessageEditorOpen}
-        busy={todoBusy}
-        message={activeTodoMessage}
-        onClose={() => setTodoMessageEditorOpen(false)}
-        onSubmit={async (content) => {
+        onOpenTodoTransfer={() => setTodoTransferOpen(true)}
+        todoBusy={todoBusy}
+        onCloseTodoMessageEditor={() => setTodoMessageEditorOpen(false)}
+        onSubmitTodoMessageEditor={async (content) => {
           const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
 
           if (accepted !== false) {
@@ -11673,17 +9347,13 @@ function MainPage({
 
           return accepted;
         }}
-      />
-      <TodoTransferSheet
-        open={todoTransferOpen}
-        busy={todoTransferBusy}
-        message={activeTodoMessage}
+        todoTransferBusy={todoTransferBusy}
         projects={projects}
         threadOptionsByProjectId={threadOptionsByProjectId}
         selectedProjectId={selectedProjectId}
         onEnsureProjectThreads={onEnsureProjectThreads}
-        onClose={() => setTodoTransferOpen(false)}
-        onSubmit={async (payload) => {
+        onCloseTodoTransfer={() => setTodoTransferOpen(false)}
+        onSubmitTodoTransfer={async (payload) => {
           const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
 
           if (accepted !== false) {
@@ -11693,13 +9363,10 @@ function MainPage({
 
           return accepted;
         }}
-      />
-      <ProjectActionSheet
-        open={Boolean(projectActionTarget)}
-        project={projectActionTarget}
-        busy={projectEditBusy || projectBusy}
-        onClose={() => setProjectActionProjectId("")}
-        onEdit={() => {
+        projectActionTarget={projectActionTarget}
+        projectActionBusy={projectEditBusy || projectBusy}
+        onCloseProjectAction={() => setProjectActionProjectId("")}
+        onEditProjectAction={() => {
           if (!projectActionTarget) {
             return;
           }
@@ -11707,70 +9374,53 @@ function MainPage({
           setProjectActionProjectId("");
           onOpenProjectEditDialog(projectActionTarget);
         }}
-        onDelete={() => requestProjectDeletion(projectActionTarget)}
-      />
-      <UtilitySheet
-        open={utilityOpen}
+        onDeleteProjectAction={() => requestProjectDeletion(projectActionTarget)}
+        utilityOpen={utilityOpen}
         session={session}
         bridgeSignal={bridgeSignal}
         selectedProject={selectedProject}
         pushNotificationCard={pushNotificationCard}
         onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
-        onClose={onCloseUtility}
+        onCloseUtility={onCloseUtility}
         onOpenProjectComposer={onOpenProjectComposer}
         onRefresh={onRefresh}
         onLogout={onLogout}
-      />
-      <ProjectComposerSheet
-        open={projectComposerOpen}
-        busy={projectBusy}
-        roots={workspaceRoots}
+        projectComposerOpen={projectComposerOpen}
+        projectBusy={projectBusy}
+        workspaceRoots={workspaceRoots}
         folderState={folderState}
         folderLoading={folderLoading}
         selectedWorkspacePath={selectedWorkspacePath}
-        onBrowseRoot={onBrowseWorkspaceRoot}
         onBrowseFolder={onBrowseFolder}
         onSelectWorkspace={onSelectWorkspace}
-        onClose={onCloseProjectComposer}
-        onSubmit={onSubmitProject}
-      />
-      <ThreadCreateDialog
-        open={threadCreateDialogOpen}
-        busy={threadBusy}
-        project={selectedProject}
-        onClose={onCloseThreadCreateDialog}
-        onSubmit={onSubmitThreadCreateDialog}
-      />
-      <ProjectInstructionDialog
-        open={projectInstructionDialogOpen}
-        busy={projectInstructionBusy}
-        project={selectedProject}
-        instructionType={projectInstructionType}
-        onClose={onCloseProjectInstructionDialog}
-        onSubmit={onSubmitProjectInstruction}
-      />
-      <ProjectEditDialog
-        open={projectEditDialogOpen}
-        busy={projectEditBusy}
-        deleteBusy={projectBusy}
-        project={projectEditTarget}
-        errorMessage={projectEditError}
-        onClose={onCloseProjectEditDialog}
-        onSubmit={onSubmitProjectEdit}
-        onDelete={(project) => requestProjectDeletion(project)}
-      />
-      <ThreadEditDialog
-        open={threadInstructionDialogOpen}
-        busy={threadInstructionBusy}
-        thread={threadInstructionTarget}
-        project={threadInstructionProject}
+        onCloseProjectComposer={onCloseProjectComposer}
+        onSubmitProject={onSubmitProject}
+        threadCreateDialogOpen={threadCreateDialogOpen}
+        onCloseThreadCreateDialog={onCloseThreadCreateDialog}
+        onSubmitThreadCreateDialog={onSubmitThreadCreateDialog}
+        projectInstructionDialogOpen={projectInstructionDialogOpen}
+        projectInstructionBusy={projectInstructionBusy}
+        projectInstructionType={projectInstructionType}
+        onCloseProjectInstructionDialog={onCloseProjectInstructionDialog}
+        onSubmitProjectInstruction={onSubmitProjectInstruction}
+        projectEditDialogOpen={projectEditDialogOpen}
+        projectEditBusy={projectEditBusy}
+        projectEditTarget={projectEditTarget}
+        projectEditError={projectEditError}
+        onCloseProjectEditDialog={onCloseProjectEditDialog}
+        onSubmitProjectEdit={onSubmitProjectEdit}
+        onRequestProjectDeletion={requestProjectDeletion}
+        threadInstructionDialogOpen={threadInstructionDialogOpen}
+        threadInstructionBusy={threadInstructionBusy}
+        threadInstructionTarget={threadInstructionTarget}
+        threadInstructionProject={threadInstructionProject}
         threadInstructionSupported={threadInstructionSupported}
-        errorMessage={threadInstructionError}
-        onClose={onCloseThreadInstructionDialog}
-        onSubmit={onSubmitThreadInstruction}
+        threadInstructionError={threadInstructionError}
+        onCloseThreadInstructionDialog={onCloseThreadInstructionDialog}
+        onSubmitThreadInstruction={onSubmitThreadInstruction}
       />
-    </>
-  );
+    </Suspense>
+  ) : null;
 
   if (!showWideTodoSplitLayout && activeView === "todo" && selectedTodoChatId) {
     return (
@@ -11800,63 +9450,7 @@ function MainPage({
           onSelectMessage={(message) => setActiveTodoMessage(message)}
           onSubmitMessage={onSubmitTodoMessage}
         />
-        <TodoChatRenameDialog
-          open={Boolean(todoChatBeingEdited)}
-          busy={todoRenameBusy}
-          chat={todoChatBeingEdited}
-          onClose={() => setTodoChatBeingEdited(null)}
-          onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
-        />
-        <TodoMessageActionSheet
-          open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
-          message={activeTodoMessage}
-          onClose={() => setActiveTodoMessage(null)}
-          onEdit={() => setTodoMessageEditorOpen(true)}
-          onDelete={async () => {
-            const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
-
-            if (accepted !== false) {
-              setActiveTodoMessage(null);
-            }
-          }}
-          onTransfer={() => setTodoTransferOpen(true)}
-        />
-        <TodoMessageEditorDialog
-          open={todoMessageEditorOpen}
-          busy={todoBusy}
-          message={activeTodoMessage}
-          onClose={() => setTodoMessageEditorOpen(false)}
-          onSubmit={async (content) => {
-            const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
-
-            if (accepted !== false) {
-              setTodoMessageEditorOpen(false);
-              setActiveTodoMessage(null);
-            }
-
-            return accepted;
-          }}
-        />
-        <TodoTransferSheet
-          open={todoTransferOpen}
-          busy={todoTransferBusy}
-          message={activeTodoMessage}
-          projects={projects}
-          threadOptionsByProjectId={threadOptionsByProjectId}
-          selectedProjectId={selectedProjectId}
-          onEnsureProjectThreads={onEnsureProjectThreads}
-          onClose={() => setTodoTransferOpen(false)}
-          onSubmit={async (payload) => {
-            const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
-
-            if (accepted !== false) {
-              setTodoTransferOpen(false);
-              setActiveTodoMessage(null);
-            }
-
-            return accepted;
-          }}
-        />
+        {deferredOverlays}
       </div>
     );
   }
@@ -12019,7 +9613,7 @@ function MainPage({
             </section>
           </main>
         </div>
-        {mainOverlays}
+        {deferredOverlays}
       </div>
     );
   }
@@ -12167,6 +9761,8 @@ function MainPage({
                     key={chat.id}
                     chat={chat}
                     active={chat.id === selectedTodoChatId}
+                    updatedLabel={formatRelativeTime(chat.updated_at)}
+                    preview={getTodoChatPreview(chat)}
                     onOpen={onSelectTodoChat}
                     onRename={(targetChat) => setTodoChatBeingEdited(targetChat)}
                     onDelete={(targetChat) => void onDeleteTodoChat(targetChat.id)}
@@ -12254,147 +9850,7 @@ function MainPage({
           )}
         </div>
       </div>
-      <DeleteConfirmDialog
-        open={threadDeleteDialog.open}
-        busy={threadBusy}
-        title={threadDeleteDialog.title}
-        description={threadDeleteDialog.description}
-        confirmLabel={threadDeleteDialog.confirmLabel}
-        onClose={onCloseThreadDeleteDialog}
-        onConfirm={onConfirmThreadDeleteDialog}
-      />
-      <TodoChatRenameDialog
-        open={Boolean(todoChatBeingEdited)}
-        busy={todoRenameBusy}
-        chat={todoChatBeingEdited}
-        onClose={() => setTodoChatBeingEdited(null)}
-        onSubmit={(title) => onRenameTodoChat(todoChatBeingEdited?.id, title)}
-      />
-      <TodoMessageActionSheet
-        open={Boolean(activeTodoMessage) && !todoMessageEditorOpen && !todoTransferOpen}
-        message={activeTodoMessage}
-        onClose={() => setActiveTodoMessage(null)}
-        onEdit={() => setTodoMessageEditorOpen(true)}
-        onDelete={async () => {
-          const accepted = await onDeleteTodoMessage(activeTodoMessage?.id);
-
-          if (accepted !== false) {
-            setActiveTodoMessage(null);
-          }
-        }}
-        onTransfer={() => setTodoTransferOpen(true)}
-      />
-      <TodoMessageEditorDialog
-        open={todoMessageEditorOpen}
-        busy={todoBusy}
-        message={activeTodoMessage}
-        onClose={() => setTodoMessageEditorOpen(false)}
-        onSubmit={async (content) => {
-          const accepted = await onEditTodoMessage(activeTodoMessage?.id, content);
-
-          if (accepted !== false) {
-            setTodoMessageEditorOpen(false);
-            setActiveTodoMessage(null);
-          }
-
-          return accepted;
-        }}
-      />
-      <TodoTransferSheet
-        open={todoTransferOpen}
-        busy={todoTransferBusy}
-        message={activeTodoMessage}
-        projects={projects}
-        threadOptionsByProjectId={threadOptionsByProjectId}
-        selectedProjectId={selectedProjectId}
-        onEnsureProjectThreads={onEnsureProjectThreads}
-        onClose={() => setTodoTransferOpen(false)}
-        onSubmit={async (payload) => {
-          const accepted = await onTransferTodoMessage(activeTodoMessage?.id, payload);
-
-          if (accepted !== false) {
-            setTodoTransferOpen(false);
-            setActiveTodoMessage(null);
-          }
-
-          return accepted;
-        }}
-      />
-      <ProjectActionSheet
-        open={Boolean(projectActionTarget)}
-        project={projectActionTarget}
-        busy={projectEditBusy || projectBusy}
-        onClose={() => setProjectActionProjectId("")}
-        onEdit={() => {
-          if (!projectActionTarget) {
-            return;
-          }
-
-          setProjectActionProjectId("");
-          onOpenProjectEditDialog(projectActionTarget);
-        }}
-        onDelete={() => requestProjectDeletion(projectActionTarget)}
-      />
-      <UtilitySheet
-        open={utilityOpen}
-        session={session}
-        bridgeSignal={bridgeSignal}
-        selectedProject={selectedProject}
-        pushNotificationCard={pushNotificationCard}
-        onOpenProjectInstructionDialog={onOpenProjectInstructionDialog}
-        onClose={onCloseUtility}
-        onOpenProjectComposer={onOpenProjectComposer}
-        onRefresh={onRefresh}
-        onLogout={onLogout}
-      />
-      <ProjectComposerSheet
-        open={projectComposerOpen}
-        busy={projectBusy}
-        roots={workspaceRoots}
-        folderState={folderState}
-        folderLoading={folderLoading}
-        selectedWorkspacePath={selectedWorkspacePath}
-        onBrowseRoot={onBrowseWorkspaceRoot}
-        onBrowseFolder={onBrowseFolder}
-        onSelectWorkspace={onSelectWorkspace}
-        onClose={onCloseProjectComposer}
-        onSubmit={onSubmitProject}
-      />
-      <ThreadCreateDialog
-        open={threadCreateDialogOpen}
-        busy={threadBusy}
-        project={selectedProject}
-        onClose={onCloseThreadCreateDialog}
-        onSubmit={onSubmitThreadCreateDialog}
-      />
-      <ProjectInstructionDialog
-        open={projectInstructionDialogOpen}
-        busy={projectInstructionBusy}
-        project={selectedProject}
-        instructionType={projectInstructionType}
-        onClose={onCloseProjectInstructionDialog}
-        onSubmit={onSubmitProjectInstruction}
-      />
-      <ProjectEditDialog
-        open={projectEditDialogOpen}
-        busy={projectEditBusy}
-        deleteBusy={projectBusy}
-        project={projectEditTarget}
-        errorMessage={projectEditError}
-        onClose={onCloseProjectEditDialog}
-        onSubmit={onSubmitProjectEdit}
-        onDelete={(project) => requestProjectDeletion(project)}
-      />
-      <ThreadEditDialog
-        open={threadInstructionDialogOpen}
-        busy={threadInstructionBusy}
-        thread={threadInstructionTarget}
-        project={threadInstructionProject}
-        threadInstructionSupported={threadInstructionSupported}
-        errorMessage={threadInstructionError}
-        onClose={onCloseThreadInstructionDialog}
-        onSubmit={onSubmitThreadInstruction}
-      />
+      {deferredOverlays}
     </div>
   );
 }
