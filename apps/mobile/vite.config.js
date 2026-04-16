@@ -1,10 +1,20 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const mobileBuildId = process.env.OCTOP_MOBILE_BUILD_ID ?? `${Date.now()}`;
+const mobilePackage = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+const mobileAppVersion = String(process.env.OCTOP_MOBILE_APP_VERSION ?? mobilePackage.version ?? "").trim() || "0.0.0";
+const mobileBuildId = String(process.env.OCTOP_MOBILE_BUILD_ID ?? mobileAppVersion).trim() || mobileAppVersion;
 
 function mobileBuildMetadataPlugin(buildId) {
-  const source = JSON.stringify({ buildId }, null, 2);
+  const source = JSON.stringify(
+    {
+      buildId,
+      version: mobileAppVersion
+    },
+    null,
+    2
+  );
 
   return {
     name: "octop-mobile-build-metadata",
@@ -34,7 +44,8 @@ export default defineConfig({
   plugins: [react(), mobileBuildMetadataPlugin(mobileBuildId)],
   envDir: "../../",
   define: {
-    __APP_BUILD_ID__: JSON.stringify(mobileBuildId)
+    __APP_BUILD_ID__: JSON.stringify(mobileBuildId),
+    __APP_VERSION__: JSON.stringify(mobileAppVersion)
   },
   server: {
     host: "0.0.0.0",
