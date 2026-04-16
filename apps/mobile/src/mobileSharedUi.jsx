@@ -471,6 +471,7 @@ function BridgeDropdown({
   bridges,
   selectedBridgeId,
   bridgeSignal,
+  formatRelativeTime,
   onSelectBridge,
   onOpen = null,
   syncing = false
@@ -582,7 +583,7 @@ function BridgeDropdown({
                       <p className="truncate text-[11px] text-slate-400">{bridge.bridge_id}</p>
                     </div>
                     <div className="text-right text-[11px] text-slate-400">
-                      <p>{formatRelativeTime(bridge.last_seen_at)}</p>
+                      <p>{typeof formatRelativeTime === "function" ? formatRelativeTime(bridge.last_seen_at) : ""}</p>
                       {active ? <p className="mt-0.5 text-telegram-200">선택됨</p> : null}
                     </div>
                   </button>

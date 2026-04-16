@@ -93,6 +93,7 @@ export default function buildMobileInboxScreenProps({
     bridges,
     selectedBridgeId,
     bridgeSignal,
+    formatRelativeTime,
     bridgeListSyncing,
     searchOpen,
     search,

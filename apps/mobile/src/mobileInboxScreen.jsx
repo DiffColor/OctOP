@@ -298,6 +298,7 @@ export function MobileInboxChrome({
   bridges,
   selectedBridgeId,
   bridgeSignal,
+  formatRelativeTime,
   bridgeListSyncing,
   searchOpen,
   search,
@@ -333,6 +334,7 @@ export function MobileInboxChrome({
                 bridges={bridges}
                 selectedBridgeId={selectedBridgeId}
                 bridgeSignal={bridgeSignal}
+                formatRelativeTime={formatRelativeTime}
                 onSelectBridge={onSelectBridge}
                 onOpen={onOpenBridgeDropdown}
                 syncing={bridgeListSyncing}
