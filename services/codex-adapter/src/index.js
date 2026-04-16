@@ -3316,6 +3316,19 @@ function isVisibleIssueMessage(message) {
   return !message?.deleted_at && message?.kind !== "handoff_summary";
 }
 
+function isPrimaryAssistantIssueMessage(message) {
+  if (!message || typeof message !== "object" || message.deleted_at) {
+    return false;
+  }
+
+  if (String(message.role ?? "").trim() !== "assistant") {
+    return false;
+  }
+
+  const normalizedKind = String(message.kind ?? "message").trim() || "message";
+  return normalizedKind === "message";
+}
+
 function listStoredIssueMessages(issueId) {
   return [...(issueMessagesById.get(issueId) ?? [])].filter((message) => !message.deleted_at);
 }
@@ -3323,13 +3336,13 @@ function listStoredIssueMessages(issueId) {
 function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null) {
   const issue = issueCardsById.get(issueId);
   const messages = ensureIssueMessages(issueId);
-  const lastMessage = messages.at(-1);
   const resolvedPhysicalThreadId =
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
+  const latestAssistantMessage = findLatestAssistantMessage(issueId, resolvedPhysicalThreadId);
 
-  if (lastMessage?.role === "assistant" && (lastMessage.physical_thread_id ?? null) === resolvedPhysicalThreadId) {
-    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
-    lastMessage.timestamp = now();
+  if (latestAssistantMessage) {
+    latestAssistantMessage.content = normalizeAssistantMessageContent(`${latestAssistantMessage.content ?? ""}${delta}`);
+    latestAssistantMessage.timestamp = now();
     return;
   }
 
@@ -3351,7 +3364,7 @@ function findLatestAssistantMessage(issueId, physicalThreadId = null) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = messages[index];
 
-    if (candidate?.deleted_at || candidate?.role !== "assistant") {
+    if (!isPrimaryAssistantIssueMessage(candidate)) {
       continue;
     }
 

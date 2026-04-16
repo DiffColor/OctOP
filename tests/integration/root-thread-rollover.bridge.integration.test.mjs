@@ -1705,6 +1705,114 @@ test("정상 notification 경로에서도 skill 결과 item만으로 assistant �
   assert.equal(fakeAppServer.connectionCount, 1);
 });
 
+test("function_result 이후 assistant delta는 숨겨진 결과 메시지가 아니라 기존 assistant message에 누적된다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-function-result-delta-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-function-result-delta-token",
+    userId: "function-result-delta-user",
+    bridgeId: `function-result-delta-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Function Result Delta Thread"
+  });
+
+  fakeAppServer.notify("item/agentMessage/delta", {
+    threadId: scenario.sourceCodexThreadId,
+    delta: "[진행 내역]\n- 첫 응답"
+  });
+
+  await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const primaryAssistantMessages = payload.messages.filter(
+      (message) => message.role === "assistant" && String(message.kind ?? "message") === "message"
+    );
+    assert.equal(primaryAssistantMessages.length >= 1, true);
+    assert.equal(primaryAssistantMessages.at(-1)?.content, "[진행 내역]\n- 첫 응답");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "first assistant delta persisted"
+  });
+
+  const currentTurn = fakeAppServer.getCurrentTurn(scenario.sourceCodexThreadId);
+  assert.ok(currentTurn, "현재 turn이 있어야 합니다.");
+  currentTurn.items.push({
+    type: "function_result",
+    functionResult: {
+      content: [
+        {
+          text: "함수 응답 본문"
+        }
+      ]
+    }
+  });
+
+  fakeAppServer.notify("item/functionCallOutput", {
+    threadId: scenario.sourceCodexThreadId,
+    callId: `call-${randomUUID().slice(0, 8)}`
+  });
+
+  await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const functionResultMessages = payload.messages.filter((message) => message.kind === "function_result");
+    assert.equal(functionResultMessages.length >= 1, true);
+    assert.equal(functionResultMessages.at(-1)?.content, "함수 응답 본문");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "function result synced"
+  });
+
+  fakeAppServer.notify("item/agentMessage/delta", {
+    threadId: scenario.sourceCodexThreadId,
+    delta: "\n- 이어진 응답"
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const primaryAssistantMessages = payload.messages.filter(
+      (message) => message.role === "assistant" && String(message.kind ?? "message") === "message"
+    );
+    const functionResultMessages = payload.messages.filter((message) => message.kind === "function_result");
+    assert.equal(primaryAssistantMessages.length >= 1, true);
+    assert.equal(primaryAssistantMessages.at(-1)?.content, "[진행 내역]\n- 첫 응답\n- 이어진 응답");
+    assert.equal(functionResultMessages.length >= 1, true);
+    assert.equal(functionResultMessages.at(-1)?.content, "함수 응답 본문");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "assistant delta stays on primary message"
+  });
+
+  assert.equal(
+    issueDetail.messages.some(
+      (message) =>
+        message.kind === "function_result" &&
+        String(message.content ?? "").includes("이어진 응답")
+    ),
+    false
+  );
+});
+
 test("app-server RPC timeout zombie 상태에서도 강제 reconnect 후 backfill로 메시지와 상태를 복구한다", { timeout: 90000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-timeout-backfill-int-"));
   const fakeAppServer = new FakeAppServer({
