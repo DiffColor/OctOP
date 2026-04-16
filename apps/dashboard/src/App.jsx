@@ -2038,6 +2038,22 @@ function inferModifiedSourceFilesFromMessages(messages = []) {
   return collected;
 }
 
+const HIDDEN_THREAD_DETAIL_MESSAGE_KINDS = new Set([
+  "tool_call",
+  "tool_result",
+  "mcp_call",
+  "mcp_result",
+  "skill_call",
+  "skill_result",
+  "function_call",
+  "function_result"
+]);
+
+function shouldHideThreadDetailMessage(message) {
+  const normalizedKind = String(message?.kind ?? "").trim();
+  return HIDDEN_THREAD_DETAIL_MESSAGE_KINDS.has(normalizedKind);
+}
+
 function inferSourceLanguageFromPath(path = "") {
   const normalizedPath = normalizeSourceFilePathCandidate(path);
   const baseName = normalizedPath.split("/").at(-1)?.toLowerCase() ?? "";
@@ -5676,7 +5692,11 @@ function ThreadDetailModal({
   const contextUsage = getThreadContextUsage(thread);
   const responseSignal = buildThreadResponseSignal({ thread, now: signalNow, language });
   const interruptible = ["running", "awaiting_input"].includes(String(thread?.status ?? "").trim());
-  const modifiedSourceFiles = useMemo(() => inferModifiedSourceFilesFromMessages(messages), [messages]);
+  const visibleMessages = useMemo(
+    () => (Array.isArray(messages) ? messages.filter((message) => !shouldHideThreadDetailMessage(message)) : []),
+    [messages]
+  );
+  const modifiedSourceFiles = useMemo(() => inferModifiedSourceFilesFromMessages(visibleMessages), [visibleMessages]);
   const selectedPreviewPath = normalizeSourceFilePathCandidate(selectedSourcePath);
   const scrollRef = useRef(null);
   const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
@@ -5748,7 +5768,7 @@ function ThreadDetailModal({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [loading, messages, open, recomputeJumpButtonVisibility, thread?.id]);
+  }, [loading, open, recomputeJumpButtonVisibility, thread?.id, visibleMessages]);
 
   useEffect(() => {
     if (!open || typeof onSelectSourceFile !== "function" || modifiedSourceFiles.length === 0) {
@@ -5834,13 +5854,13 @@ function ThreadDetailModal({
                   <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-6 text-sm text-slate-400">
                     {copy.detail.loading}
                   </div>
-                ) : messages.length === 0 ? (
+                ) : visibleMessages.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-6 text-sm text-slate-500">
                     {copy.detail.empty}
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {messages.map((message) => {
+                    {visibleMessages.map((message) => {
                       const userMessage = message.role === "user";
                       const attachments = normalizeIssueAttachments(
                         Array.isArray(message.attachments) && message.attachments.length > 0

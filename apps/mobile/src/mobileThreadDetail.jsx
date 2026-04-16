@@ -43,6 +43,27 @@ const CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const HEADER_MENU_VIEWPORT_SETTLE_MS = 320;
 const VOICE_MODE_VALUES = new Set(["off", "realtime", "tts", "stt_only"]);
+const SYSTEM_MESSAGE_TITLE_BY_KIND = {
+  handoff_summary: "핸드오프 요약",
+  tool_call: "도구 호출",
+  tool_result: "도구 응답",
+  mcp_call: "MCP 호출",
+  mcp_result: "MCP 응답",
+  skill_call: "스킬 호출",
+  skill_result: "스킬 응답",
+  function_call: "함수 호출",
+  function_result: "함수 응답"
+};
+const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
+  "tool_call",
+  "tool_result",
+  "mcp_call",
+  "mcp_result",
+  "skill_call",
+  "skill_result",
+  "function_call",
+  "function_result"
+]);
 
 function normalizeVoiceMode(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -92,6 +113,25 @@ function describeTtsAvailabilityError(error) {
   }
 
   return message || "음성 TTS를 사용할 수 없습니다.";
+}
+
+function isSystemLikeMessage(message) {
+  return message?.role === "system" || message?.kind === "handoff_summary";
+}
+
+function shouldHideMessageFromChatWindow(message) {
+  const normalizedKind = String(message?.kind ?? "").trim();
+  return HIDDEN_CHAT_MESSAGE_KINDS.has(normalizedKind);
+}
+
+function getSystemMessageTitle(message, fallback = "시스템") {
+  const normalizedKind = String(message?.kind ?? "").trim();
+  return SYSTEM_MESSAGE_TITLE_BY_KIND[normalizedKind] ?? fallback;
+}
+
+function getAssistantMessageTitle(message, fallback = "응답") {
+  const normalizedKind = String(message?.kind ?? "").trim();
+  return SYSTEM_MESSAGE_TITLE_BY_KIND[normalizedKind] ?? fallback;
 }
 
 function ConversationTimeline({ entries, formatDateTime, formatRelativeTime }) {
@@ -653,7 +693,7 @@ export default function ThreadDetail({
     const normalized = [];
     let lastPrompt = null;
 
-    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeMessages = Array.isArray(messages) ? messages.filter((message) => !shouldHideMessageFromChatWindow(message)) : [];
 
     safeMessages.forEach((message, index) => {
       if (!message) {
@@ -663,7 +703,7 @@ export default function ThreadDetail({
       const role =
         message.role === "assistant"
           ? "assistant"
-          : message.role === "system" || message.kind === "handoff_summary"
+          : isSystemLikeMessage(message)
             ? "system"
             : "user";
       const content = String(message.content ?? "").trim();
@@ -686,7 +726,7 @@ export default function ThreadDetail({
           ...base,
           align: "center",
           tone: "system",
-          title: message.kind === "handoff_summary" ? "핸드오프 요약" : "시스템"
+          title: getSystemMessageTitle(message)
         });
         return;
       }
@@ -706,7 +746,7 @@ export default function ThreadDetail({
         ...base,
         align: "left",
         tone: "light",
-        title: "응답",
+        title: getAssistantMessageTitle(message),
         replyTo: lastPrompt
       });
     });
@@ -715,7 +755,7 @@ export default function ThreadDetail({
   }, [issueById, messages, thread?.created_at, thread?.updated_at]);
   const conversationTimeline = useMemo(() => {
     const fallbackTimestamp = thread?.updated_at ?? thread?.created_at ?? new Date().toISOString();
-    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeMessages = Array.isArray(messages) ? messages.filter((message) => !shouldHideMessageFromChatWindow(message)) : [];
     const groups = [];
     let currentGroup = null;
     let syntheticIndex = 0;
@@ -742,7 +782,7 @@ export default function ThreadDetail({
       const role =
         message.role === "assistant"
           ? "assistant"
-          : message.role === "system" || message.kind === "handoff_summary"
+          : isSystemLikeMessage(message)
             ? "system"
             : "user";
       const content = String(message.content ?? "").trim();
@@ -753,7 +793,7 @@ export default function ThreadDetail({
         commitGroup();
         groups.push({
           id: identifier,
-          prompt: message.kind === "handoff_summary" ? "핸드오프 요약" : "시스템 메시지",
+          prompt: getSystemMessageTitle(message, "시스템 메시지"),
           promptAt: timestamp,
           responses: [
             {
