@@ -157,6 +157,7 @@ export default function ThreadDetail({
     formatThreadContextUsage,
     getDistanceFromBottom,
     getRealtimeProgressText,
+    isRetryableIssueStatus,
     getStatusMeta,
     getThreadContextUsage,
     isBottomBoundaryMomentumLocked,

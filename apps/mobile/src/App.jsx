@@ -4111,6 +4111,7 @@ function MainPage({
     formatThreadContextUsage,
     getDistanceFromBottom,
     getRealtimeProgressText,
+    isRetryableIssueStatus,
     getStatusMeta,
     getThreadContextUsage,
     getThreadPreview,
