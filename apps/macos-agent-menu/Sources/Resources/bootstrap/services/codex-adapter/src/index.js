@@ -3316,6 +3316,20 @@ function isVisibleIssueMessage(message) {
   return !message?.deleted_at && message?.kind !== "handoff_summary";
 }
 
+function normalizeAssistantMessagePhase(phase = null) {
+  const normalized = String(phase ?? "").trim().toLowerCase();
+
+  if (normalized === "final" || normalized === "final_answer") {
+    return "final_answer";
+  }
+
+  if (normalized === "commentary") {
+    return "commentary";
+  }
+
+  return "";
+}
+
 function isPrimaryAssistantIssueMessage(message) {
   if (!message || typeof message !== "object" || message.deleted_at) {
     return false;
@@ -3333,15 +3347,58 @@ function listStoredIssueMessages(issueId) {
   return [...(issueMessagesById.get(issueId) ?? [])].filter((message) => !message.deleted_at);
 }
 
-function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null) {
+function findAssistantMessageByRemoteItemId(issueId, remoteItemId, physicalThreadId = null) {
+  const normalizedRemoteItemId = String(remoteItemId ?? "").trim();
+
+  if (!normalizedRemoteItemId) {
+    return null;
+  }
+
+  const messages = ensureIssueMessages(issueId);
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+
+    if (!isPrimaryAssistantIssueMessage(candidate)) {
+      continue;
+    }
+
+    if (String(candidate.remote_item_id ?? "").trim() !== normalizedRemoteItemId) {
+      continue;
+    }
+
+    if (
+      physicalThreadId !== null &&
+      (candidate.physical_thread_id ?? null) !== physicalThreadId
+    ) {
+      continue;
+    }
+
+    return candidate;
+  }
+
+  return null;
+}
+
+function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null, remoteItemId = null, phase = null) {
   const issue = issueCardsById.get(issueId);
   const messages = ensureIssueMessages(issueId);
   const resolvedPhysicalThreadId =
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
-  const latestAssistantMessage = findLatestAssistantMessage(issueId, resolvedPhysicalThreadId);
+  const normalizedRemoteItemId = String(remoteItemId ?? "").trim() || null;
+  const normalizedPhase = normalizeAssistantMessagePhase(phase) || null;
+  const latestAssistantMessage =
+    findAssistantMessageByRemoteItemId(issueId, normalizedRemoteItemId, resolvedPhysicalThreadId) ??
+    findLatestAssistantMessage(issueId, resolvedPhysicalThreadId);
 
   if (latestAssistantMessage) {
     latestAssistantMessage.content = normalizeAssistantMessageContent(`${latestAssistantMessage.content ?? ""}${delta}`);
+    if (normalizedRemoteItemId && !String(latestAssistantMessage.remote_item_id ?? "").trim()) {
+      latestAssistantMessage.remote_item_id = normalizedRemoteItemId;
+    }
+    if (normalizedPhase && !normalizeAssistantMessagePhase(latestAssistantMessage.phase)) {
+      latestAssistantMessage.phase = normalizedPhase;
+    }
     latestAssistantMessage.timestamp = now();
     return;
   }
@@ -3354,6 +3411,8 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     kind: "message",
     message_class: "assistant",
     content: normalizeAssistantMessageContent(String(delta ?? "")),
+    remote_item_id: normalizedRemoteItemId,
+    phase: normalizedPhase,
     timestamp: now()
   });
 }
@@ -8265,7 +8324,17 @@ function buildCompactRemoteNotificationPayload(method, params = {}) {
       };
     case "item/agentMessage/delta":
       return {
-        delta: String(params.delta ?? "")
+        delta: String(params.delta ?? ""),
+        ...(params.itemId ?? params.item_id
+          ? {
+              item_id: String(params.itemId ?? params.item_id ?? "").trim()
+            }
+          : {}),
+        ...(params.phase
+          ? {
+              phase: normalizeAssistantMessagePhase(params.phase) || String(params.phase ?? "").trim()
+            }
+          : {})
       };
     case "turn/plan/updated":
     case "turn/diff/updated":
@@ -8952,7 +9021,13 @@ class AppServerClient {
           activeIssueByThreadId.get(threadId);
 
         if (activeIssueId) {
-          appendAssistantDeltaToIssue(activeIssueId, params.delta, physicalThreadId);
+          appendAssistantDeltaToIssue(
+            activeIssueId,
+            params.delta,
+            physicalThreadId,
+            params.itemId ?? params.item_id ?? null,
+            params.phase ?? null
+          );
         }
       }
 
@@ -10837,14 +10912,14 @@ async function syncRemoteTurnSnapshotForNotification(
     currentPhysicalThread?.turn_id ?? thread.turn_id ?? null
   );
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
-  const syncedRemoteItems = syncRemoteTurnItemsToIssue(
+  const syncedAssistantMessages = syncRemoteTurnAssistantMessagesToIssue(
     normalizedIssueId,
     remoteTurn,
     physicalThreadId
   );
-  const syncedAssistant = syncAssistantSnapshotToIssue(
+  const syncedRemoteItems = syncRemoteTurnItemsToIssue(
     normalizedIssueId,
-    remoteAssistantText,
+    remoteTurn,
     physicalThreadId
   );
   const tokenUsageState = normalizeThreadTokenUsage(
@@ -10855,10 +10930,10 @@ async function syncRemoteTurnSnapshotForNotification(
     physicalThreadId != null &&
     !areThreadTokenUsageStatesEqual(currentPhysicalThread ?? {}, tokenUsageState);
   const recoveredMessage =
-    syncedAssistant.content ||
+    syncedAssistantMessages.latestContent ||
     syncedRemoteItems.latestContent ||
     String(issue.last_message ?? "").trim();
-  const recoveredMessageKind = syncedAssistant.content
+  const recoveredMessageKind = syncedAssistantMessages.latestContent
     ? "message"
     : syncedRemoteItems.latestKind || String(issue.last_message_kind ?? "").trim();
 
@@ -10868,7 +10943,7 @@ async function syncRemoteTurnSnapshotForNotification(
     });
   }
 
-  if (syncedAssistant.changed || (syncedRemoteItems.changed && recoveredMessage !== String(issue.last_message ?? "").trim())) {
+  if (syncedAssistantMessages.changed || (syncedRemoteItems.changed && recoveredMessage !== String(issue.last_message ?? "").trim())) {
     updateIssueCard(normalizedIssueId, {
       ...(physicalThreadId ? { executed_physical_thread_id: physicalThreadId } : {}),
       ...(recoveredMessage
@@ -10890,10 +10965,16 @@ async function syncRemoteTurnSnapshotForNotification(
     issueStatus: issueCardsById.get(normalizedIssueId)?.status ?? issue.status ?? null
   };
 
-  if (syncedAssistant.appendedDelta) {
+  if (syncedAssistantMessages.appendedDelta) {
     await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
       threadId: remoteThread.id,
-      delta: syncedAssistant.appendedDelta
+      delta: syncedAssistantMessages.appendedDelta,
+      ...(syncedAssistantMessages.latestRemoteItemId
+        ? { itemId: syncedAssistantMessages.latestRemoteItemId }
+        : {}),
+      ...(syncedAssistantMessages.latestPhase
+        ? { phase: syncedAssistantMessages.latestPhase }
+        : {})
     }, eventContext);
   }
 
@@ -10916,7 +10997,7 @@ async function syncRemoteTurnSnapshotForNotification(
     remoteThread,
     remoteTurn,
     syncedRemoteItems,
-    syncedAssistant,
+    syncedAssistantMessages,
     tokenUsageChanged
   };
 }
@@ -11303,6 +11384,260 @@ function buildRemoteTurnItemStableKey(turn = {}, item = {}, index = 0, kind = ""
   ).trim() || String(index);
 
   return `${turnId}:${kind}:${itemId}`;
+}
+
+function extractRemoteTurnAssistantPayload(item = {}) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const normalizedType = normalizeRemoteItemType(item);
+  const nestedPayload =
+    normalizedType === "agent_message"
+      ? item
+      : item.agentMessage && typeof item.agentMessage === "object"
+        ? item.agentMessage
+        : null;
+
+  if (!nestedPayload) {
+    return null;
+  }
+
+  const text = normalizeAssistantMessageContent(
+    (
+      String(nestedPayload.text ?? "").trim() ||
+      collectTextFromRemoteMessageContent(nestedPayload.content) ||
+      String(item.text ?? "").trim() ||
+      collectTextFromRemoteMessageContent(item.content)
+    )
+  );
+
+  return {
+    remoteItemId: String(
+      nestedPayload.id ??
+      item.id ??
+      item.item_id ??
+      item.itemId ??
+      ""
+    ).trim() || null,
+    content: text,
+    phase: normalizeAssistantMessagePhase(nestedPayload.phase ?? item.phase) || null,
+    remoteItemType: normalizedType || "agent_message"
+  };
+}
+
+function buildRemoteTurnAssistantIssueMessage(turn = {}, item = {}, index = 0, physicalThreadId = null) {
+  const payload = extractRemoteTurnAssistantPayload(item);
+
+  if (!payload || !payload.content) {
+    return null;
+  }
+
+  return {
+    role: "assistant",
+    kind: "message",
+    message_class: "assistant",
+    content: payload.content,
+    phase: payload.phase,
+    physical_thread_id: physicalThreadId,
+    remote_turn_id: String(turn?.id ?? "").trim() || null,
+    remote_item_key: buildRemoteTurnItemStableKey(
+      turn,
+      {
+        ...item,
+        id: payload.remoteItemId ?? item?.id ?? index
+      },
+      index,
+      `message:${payload.phase ?? "default"}`
+    ),
+    remote_item_id: payload.remoteItemId,
+    remote_item_type: payload.remoteItemType,
+    remote_call_id: String(item?.call_id ?? item?.callId ?? "").trim() || null
+  };
+}
+
+function selectPreferredRemoteAssistantIssueMessage(messages = []) {
+  const visibleMessages = messages.filter((message) => String(message?.content ?? "").trim());
+  const finalAnswerMessage = [...visibleMessages].reverse().find(
+    (message) => normalizeAssistantMessagePhase(message?.phase) === "final_answer"
+  );
+
+  return finalAnswerMessage ?? visibleMessages.at(-1) ?? messages.at(-1) ?? null;
+}
+
+function findExistingRemoteAssistantIssueMessage(messages = [], remoteMessage = {}) {
+  const normalizedRemoteItemKey = String(remoteMessage.remote_item_key ?? "").trim();
+  const normalizedRemoteItemId = String(remoteMessage.remote_item_id ?? "").trim();
+  const normalizedRemotePhase = normalizeAssistantMessagePhase(remoteMessage.phase);
+  const normalizedRemoteContent = String(remoteMessage.content ?? "");
+  const normalizedPhysicalThreadId = String(remoteMessage.physical_thread_id ?? "").trim();
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+
+    if (!isPrimaryAssistantIssueMessage(candidate)) {
+      continue;
+    }
+
+    if (
+      normalizedRemoteItemKey &&
+      String(candidate.remote_item_key ?? "").trim() === normalizedRemoteItemKey
+    ) {
+      return candidate;
+    }
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+
+    if (!isPrimaryAssistantIssueMessage(candidate)) {
+      continue;
+    }
+
+    if (
+      normalizedRemoteItemId &&
+      String(candidate.remote_item_id ?? "").trim() === normalizedRemoteItemId
+    ) {
+      return candidate;
+    }
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+
+    if (!isPrimaryAssistantIssueMessage(candidate)) {
+      continue;
+    }
+
+    if (String(candidate.remote_item_key ?? "").trim() || String(candidate.remote_item_id ?? "").trim()) {
+      continue;
+    }
+
+    if (
+      normalizedPhysicalThreadId &&
+      String(candidate.physical_thread_id ?? "").trim() &&
+      String(candidate.physical_thread_id ?? "").trim() !== normalizedPhysicalThreadId
+    ) {
+      continue;
+    }
+
+    const candidatePhase = normalizeAssistantMessagePhase(candidate.phase);
+
+    if (normalizedRemotePhase && candidatePhase && normalizedRemotePhase !== candidatePhase) {
+      continue;
+    }
+
+    const candidateContent = String(candidate.content ?? "");
+
+    if (candidateContent === normalizedRemoteContent) {
+      return candidate;
+    }
+
+    if (
+      candidateContent &&
+      normalizedRemoteContent &&
+      (
+        normalizedRemoteContent.startsWith(candidateContent) ||
+        candidateContent.startsWith(normalizedRemoteContent)
+      )
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function syncRemoteTurnAssistantMessagesToIssue(issueId, turn, physicalThreadId = null) {
+  const messages = ensureIssueMessages(issueId);
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const normalizedRemoteMessages = items
+    .map((item, index) => buildRemoteTurnAssistantIssueMessage(turn, item, index, physicalThreadId))
+    .filter(Boolean);
+  const preferredRemoteMessage = selectPreferredRemoteAssistantIssueMessage(normalizedRemoteMessages);
+  let changed = false;
+  let appendedDelta = "";
+  let replaced = false;
+  let ignoredStaleSnapshot = false;
+
+  for (const remoteMessage of normalizedRemoteMessages) {
+    const isPreferredMessage =
+      Boolean(preferredRemoteMessage) &&
+      remoteMessage.remote_item_key === preferredRemoteMessage.remote_item_key;
+    const existingMessage = findExistingRemoteAssistantIssueMessage(messages, remoteMessage);
+
+    if (existingMessage) {
+      const previousContent = String(existingMessage.content ?? "");
+      const shouldIgnoreCandidateStaleSnapshot =
+        Boolean(previousContent) &&
+        Boolean(remoteMessage.content) &&
+        previousContent !== remoteMessage.content &&
+        (
+          previousContent.startsWith(remoteMessage.content) ||
+          previousContent.length > remoteMessage.content.length
+        );
+      const hasMetadataChanged =
+        String(existingMessage.remote_item_key ?? "") !== String(remoteMessage.remote_item_key ?? "") ||
+        String(existingMessage.remote_item_id ?? "") !== String(remoteMessage.remote_item_id ?? "") ||
+        String(existingMessage.remote_item_type ?? "") !== String(remoteMessage.remote_item_type ?? "") ||
+        String(existingMessage.remote_turn_id ?? "") !== String(remoteMessage.remote_turn_id ?? "") ||
+        String(existingMessage.physical_thread_id ?? "") !== String(remoteMessage.physical_thread_id ?? "") ||
+        normalizeAssistantMessagePhase(existingMessage.phase) !== normalizeAssistantMessagePhase(remoteMessage.phase);
+      const hasContentChanged =
+        String(existingMessage.content ?? "") !== String(remoteMessage.content ?? "");
+      const hasChanged = hasContentChanged || hasMetadataChanged;
+
+      if (hasChanged) {
+        if (!shouldIgnoreCandidateStaleSnapshot) {
+          existingMessage.content = remoteMessage.content;
+        }
+        existingMessage.remote_item_key = remoteMessage.remote_item_key;
+        existingMessage.remote_item_id = remoteMessage.remote_item_id;
+        existingMessage.remote_item_type = remoteMessage.remote_item_type;
+        existingMessage.remote_turn_id = remoteMessage.remote_turn_id;
+        existingMessage.physical_thread_id = remoteMessage.physical_thread_id;
+        existingMessage.phase = remoteMessage.phase;
+        existingMessage.timestamp = now();
+        changed = true;
+
+        if (isPreferredMessage) {
+          if (shouldIgnoreCandidateStaleSnapshot) {
+            appendedDelta = "";
+            ignoredStaleSnapshot = true;
+          } else if (remoteMessage.content.startsWith(previousContent)) {
+            appendedDelta = remoteMessage.content.slice(previousContent.length);
+          } else {
+            appendedDelta = "";
+            replaced = hasContentChanged;
+          }
+        }
+      }
+
+      continue;
+    }
+
+    pushIssueMessage(issueId, remoteMessage);
+    changed = true;
+
+    if (isPreferredMessage) {
+      appendedDelta = remoteMessage.content;
+    }
+  }
+
+  const latestMessage = preferredRemoteMessage
+    ? findExistingRemoteAssistantIssueMessage(messages, preferredRemoteMessage) ?? preferredRemoteMessage
+    : null;
+
+  return {
+    changed,
+    appendedDelta,
+    replaced,
+    ignoredStaleSnapshot,
+    latestContent: latestMessage?.content ?? preferredRemoteMessage?.content ?? "",
+    latestPhase: latestMessage?.phase ?? preferredRemoteMessage?.phase ?? null,
+    latestRemoteItemId: latestMessage?.remote_item_id ?? preferredRemoteMessage?.remote_item_id ?? null,
+    count: normalizedRemoteMessages.length
+  };
 }
 
 function buildVisibleRemoteTurnIssueMessage(turn = {}, item = {}, index = 0, physicalThreadId = null) {
@@ -11729,9 +12064,9 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
   const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
   const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+  const syncedAssistantMessages = syncRemoteTurnAssistantMessagesToIssue(activeIssueId, remoteTurn, physicalThreadId);
   const syncedRemoteItems = syncRemoteTurnItemsToIssue(activeIssueId, remoteTurn, physicalThreadId);
   const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
-  const syncedAssistant = syncAssistantSnapshotToIssue(activeIssueId, remoteAssistantText, physicalThreadId);
   const tokenUsageState = normalizeThreadTokenUsage(
     remoteThread.tokenUsage ?? remoteThread.token_usage ?? null,
     physicalThread ?? thread ?? {}
@@ -11757,11 +12092,11 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       ? issue?.last_event
       : "turn.started";
   const recoveredMessage =
-    syncedAssistant.content ||
+    syncedAssistantMessages.latestContent ||
     syncedRemoteItems.latestContent ||
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
     String(issue.last_message ?? "").trim();
-  const recoveredMessageKind = syncedAssistant.content
+  const recoveredMessageKind = syncedAssistantMessages.latestContent
     ? "message"
     : syncedRemoteItems.latestKind || "";
   const tokenUsageChanged = !areThreadTokenUsageStatesEqual(previousComparableState.physicalThread ?? {}, tokenUsageState);
@@ -11783,7 +12118,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       remoteThread?.token_usage
     );
   const hasObservableRunningProgress =
-    syncedAssistant.changed ||
+    syncedAssistantMessages.changed ||
     syncedRemoteItems.changed ||
     tokenUsageChanged ||
     remoteTurnChanged ||
@@ -11792,12 +12127,12 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
   const hasRecoverableRunningSnapshot =
     hasObservableRunningProgress || hasResponsiveRunningSnapshot;
   const recoveredRunningLastEvent =
-    syncedAssistant.changed || String(remoteAssistantText ?? "").trim()
+    syncedAssistantMessages.changed || String(remoteAssistantText ?? "").trim()
       ? "item.agentMessage.delta"
       : syncedRemoteItems.lastEvent ?? preservedRunningLastEvent;
   const threadReadDebugPatch = buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, {
     fallbackStatus: issue.status ?? thread.status ?? "running",
-    appendedDeltaLength: syncedAssistant.appendedDelta.length,
+    appendedDeltaLength: syncedAssistantMessages.appendedDelta.length,
     hadProgress: hasRecoverableRunningSnapshot
   });
   const nextNoProgressBackfillCount =
@@ -11820,7 +12155,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     });
   }
 
-  if (syncedAssistant.changed) {
+  if (syncedAssistantMessages.changed) {
     updateBackfilledPhysicalThread(threadId, physicalThreadId, {
       ...tokenUsageState,
       status: "running",
@@ -11845,7 +12180,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       updateBackfilledPhysicalThread(threadId, physicalThreadId, {
         ...tokenUsageState,
         status: "running",
-        progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+        progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistantMessages.changed ? 90 : 20),
         last_event: recoveredRunningLastEvent,
         last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
         ...(recoveredMessage ? { last_message_kind: recoveredMessageKind } : {}),
@@ -11854,7 +12189,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       updateIssueCard(activeIssueId, {
         executed_physical_thread_id: physicalThreadId,
         status: "running",
-        progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
+        progress: Math.max(Number(issue.progress ?? 0), syncedAssistantMessages.changed ? 90 : 20),
         last_event: recoveredRunningLastEvent,
         ...(recoveredMessage
           ? {
@@ -12022,10 +12357,16 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     issueStatus: nextIssue?.status ?? issue?.status ?? null
   };
 
-  if (syncedAssistant.appendedDelta) {
+  if (syncedAssistantMessages.appendedDelta) {
     await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
       threadId: remoteThread.id,
-      delta: syncedAssistant.appendedDelta
+      delta: syncedAssistantMessages.appendedDelta,
+      ...(syncedAssistantMessages.latestRemoteItemId
+        ? { itemId: syncedAssistantMessages.latestRemoteItemId }
+        : {}),
+      ...(syncedAssistantMessages.latestPhase
+        ? { phase: syncedAssistantMessages.latestPhase }
+        : {})
     }, eventContext);
   }
 
@@ -12097,8 +12438,8 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       active_physical_thread_id: physicalThreadId,
       codex_thread_id: remoteThread.id,
       remote_status: remoteStatus,
-      appended_delta_length: syncedAssistant.appendedDelta.length,
-      stale_snapshot_ignored: syncedAssistant.ignoredStaleSnapshot,
+      appended_delta_length: syncedAssistantMessages.appendedDelta.length,
+      stale_snapshot_ignored: syncedAssistantMessages.ignoredStaleSnapshot,
       token_usage_changed: tokenUsageChanged,
       observable_progress: hasObservableRunningProgress,
       no_progress_backfill_count: nextNoProgressBackfillCount,
@@ -12167,8 +12508,8 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
   return {
     accepted: true,
     remote_status: remoteStatus,
-    appended_delta: syncedAssistant.appendedDelta,
-    replaced: syncedAssistant.replaced
+    appended_delta: syncedAssistantMessages.appendedDelta,
+    replaced: syncedAssistantMessages.replaced
   };
 }
 
