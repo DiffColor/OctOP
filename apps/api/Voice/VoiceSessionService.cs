@@ -80,6 +80,59 @@ public sealed class VoiceSessionService(IHttpClientFactory httpClientFactory, Vo
     }
   }
 
+  public async Task<string> CreateRealtimeCallAnswerAsync(string authorizationHeader, string offerSdp, CancellationToken cancellationToken)
+  {
+    if (!IsEnabled)
+    {
+      throw new InvalidOperationException("voice_session_disabled");
+    }
+
+    if (string.IsNullOrWhiteSpace(authorizationHeader))
+    {
+      throw new InvalidOperationException("voice_realtime_call_client_secret_missing");
+    }
+
+    if (!AuthenticationHeaderValue.TryParse(authorizationHeader, out var parsedAuthorizationHeader))
+    {
+      throw new InvalidOperationException("voice_realtime_call_client_secret_invalid");
+    }
+
+    try
+    {
+      using var httpRequest = new HttpRequestMessage(HttpMethod.Post, OpenAiApiUrlResolver.ResolveRealtimeApiUrl("/realtime/calls"))
+      {
+        Content = new StringContent(offerSdp ?? string.Empty, Encoding.UTF8, "application/sdp")
+      };
+      httpRequest.Headers.Authorization = parsedAuthorizationHeader;
+
+      using var response = await _httpClientFactory.CreateClient().SendAsync(httpRequest, cancellationToken);
+      var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+      if (!response.IsSuccessStatusCode)
+      {
+        throw new InvalidOperationException($"voice_realtime_call_openai_error:{content}");
+      }
+
+      return content;
+    }
+    catch (OperationCanceledException)
+    {
+      throw;
+    }
+    catch (InvalidOperationException exception) when (
+      string.Equals(exception.Message, "voice_session_disabled", StringComparison.Ordinal) ||
+      exception.Message.StartsWith("voice_realtime_call_", StringComparison.Ordinal))
+    {
+      throw;
+    }
+    catch (Exception exception)
+    {
+      throw new InvalidOperationException(
+        $"voice_realtime_call_openai_request_failed:{exception.GetType().Name}:{exception.Message}",
+        exception);
+    }
+  }
+
   private JsonObject BuildSessionConfig(VoiceSessionStartRequest request)
   {
     return new JsonObject

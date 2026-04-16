@@ -313,6 +313,9 @@ var createVoiceSessionHandler = async (
     sessionPayload["bridge_id"] = bridgeId;
     sessionPayload["thread_id"] = request.ThreadId?.Trim();
     sessionPayload["project_id"] = request.ProjectId?.Trim();
+    sessionPayload["call_url"] = BuildGatewayAbsoluteUrl(
+      httpContext,
+      $"/api/voice/realtime-call?login_id={Uri.EscapeDataString(userId)}&bridge_id={Uri.EscapeDataString(bridgeId)}");
 
     return Results.Text(
       sessionPayload.ToJsonString(),
@@ -377,6 +380,95 @@ var createVoiceSessionHandler = async (
 
 app.MapPost("/api/voice/sessions", createVoiceSessionHandler);
 app.MapPost("/api/voice/realtime-token", createVoiceSessionHandler);
+app.MapPost("/api/voice/realtime-call", async (
+  HttpContext httpContext,
+  OctopStore octopStore,
+  VoiceSessionService voiceSessionService,
+  CancellationToken cancellationToken) =>
+{
+  var userId = ResolveIdentityKey(httpContext);
+  var bridgeId = await ResolveBridgeIdAsync(httpContext, octopStore, userId, cancellationToken);
+
+  if (bridgeId is null)
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"bridge not found\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status404NotFound);
+  }
+
+  var authorizationHeader = httpContext.Request.Headers.Authorization.ToString().Trim();
+
+  if (string.IsNullOrWhiteSpace(authorizationHeader))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"realtime client secret is required\",\"code\":\"voice_realtime_call_client_secret_missing\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  using var reader = new StreamReader(httpContext.Request.Body, Encoding.UTF8);
+  var offerSdp = await reader.ReadToEndAsync(cancellationToken);
+
+  if (string.IsNullOrWhiteSpace(offerSdp))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"realtime sdp offer is required\",\"code\":\"voice_realtime_call_offer_missing\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+
+  try
+  {
+    var answerSdp = await voiceSessionService.CreateRealtimeCallAnswerAsync(authorizationHeader, offerSdp, cancellationToken);
+    return Results.Text(
+      answerSdp,
+      "application/sdp; charset=utf-8",
+      statusCode: StatusCodes.Status200OK);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_session_disabled", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"voice session disabled\",\"code\":\"voice_session_disabled\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status503ServiceUnavailable);
+  }
+  catch (InvalidOperationException exception) when (string.Equals(exception.Message, "voice_realtime_call_client_secret_invalid", StringComparison.Ordinal))
+  {
+    return Results.Text(
+      "{\"ok\":false,\"error\":\"invalid realtime client secret\",\"code\":\"voice_realtime_call_client_secret_invalid\"}",
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status400BadRequest);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_realtime_call_openai_error:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_realtime_call_openai_error:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to create OpenAI realtime call answer",
+        ["code"] = "voice_realtime_call_openai_error",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status424FailedDependency);
+  }
+  catch (InvalidOperationException exception) when (exception.Message.StartsWith("voice_realtime_call_openai_request_failed:", StringComparison.Ordinal))
+  {
+    var detail = exception.Message["voice_realtime_call_openai_request_failed:".Length..];
+    return Results.Text(
+      JsonSerializer.Serialize(new Dictionary<string, object?>
+      {
+        ["ok"] = false,
+        ["error"] = "failed to reach OpenAI realtime call endpoint",
+        ["code"] = "voice_realtime_call_openai_request_failed",
+        ["detail"] = detail
+      }),
+      "application/json; charset=utf-8",
+      statusCode: StatusCodes.Status424FailedDependency);
+  }
+});
 
 app.MapPost("/api/voice/narrations", async (
   HttpContext httpContext,
@@ -3134,6 +3226,18 @@ static VoiceSessionStartRequest MergeVoiceSessionStartRequest(VoiceSessionStartR
     ProjectProgramSummary = FirstNonEmpty(request.ProjectProgramSummary, programSummary),
     ThreadFileContextSummary = FirstNonEmpty(request.ThreadFileContextSummary, fileContextSummary)
   };
+}
+
+static string BuildGatewayAbsoluteUrl(HttpContext httpContext, string pathAndQuery)
+{
+  var normalizedPathAndQuery = string.IsNullOrWhiteSpace(pathAndQuery) ? "/" : pathAndQuery.Trim();
+
+  if (!normalizedPathAndQuery.StartsWith("/", StringComparison.Ordinal))
+  {
+    normalizedPathAndQuery = $"/{normalizedPathAndQuery}";
+  }
+
+  return $"{httpContext.Request.Scheme}://{httpContext.Request.Host.ToUriComponent()}{httpContext.Request.PathBase}{normalizedPathAndQuery}";
 }
 
 static string? BuildVoiceThreadContinuitySummary(JsonObject? thread)
