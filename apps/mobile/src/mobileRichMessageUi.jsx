@@ -67,7 +67,7 @@ function parseRichMessageContent(content) {
   return segments;
 }
 
-function normalizeAssistantMessageContent(content) {
+export function normalizeAssistantMessageContent(content) {
   const normalized = String(content ?? "");
 
   if (!normalized) {

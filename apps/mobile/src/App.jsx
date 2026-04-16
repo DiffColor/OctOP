@@ -28,7 +28,12 @@ import MobileInboxScreen, {
   MobileInboxChrome,
   MobileInboxListContent
 } from "./mobileInboxScreen.jsx";
-import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mobileRichMessageUi.jsx";
+import {
+  MessageBubble,
+  RichMessageContent,
+  normalizeAssistantMessageContent,
+  summarizeMessageContent
+} from "./mobileRichMessageUi.jsx";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
 import useMobileFeedbackState from "./useMobileFeedbackState.js";
