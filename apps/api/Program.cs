@@ -2757,7 +2757,104 @@ static string ResolvePublicApiBaseUrl(HttpContext httpContext)
     return configured.TrimEnd('/');
   }
 
-  return $"{httpContext.Request.Scheme}://{httpContext.Request.Host.Value}".TrimEnd('/');
+  return $"{ResolveExternalRequestOrigin(httpContext)}{httpContext.Request.PathBase}".TrimEnd('/');
+}
+
+static string ResolveExternalRequestOrigin(HttpContext httpContext)
+{
+  var forwarded = ParseForwardedHeader(httpContext.Request.Headers["Forwarded"].ToString());
+  var forwardedProto = ResolveForwardedHeaderValue(forwarded.proto, httpContext.Request.Headers["X-Forwarded-Proto"].ToString());
+  var forwardedHost = ResolveForwardedHeaderValue(forwarded.host, httpContext.Request.Headers["X-Forwarded-Host"].ToString());
+  var scheme = string.Equals(forwardedProto, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+    ? Uri.UriSchemeHttps
+    : string.Equals(forwardedProto, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+      ? Uri.UriSchemeHttp
+      : httpContext.Request.Scheme;
+  var host = string.IsNullOrWhiteSpace(forwardedHost)
+    ? httpContext.Request.Host.ToUriComponent()
+    : forwardedHost;
+
+  return $"{scheme}://{host}".TrimEnd('/');
+}
+
+static string ResolveForwardedHeaderValue(params string?[] values)
+{
+  foreach (var candidate in values)
+  {
+    var normalized = ExtractPrimaryHeaderValue(candidate);
+
+    if (!string.IsNullOrWhiteSpace(normalized))
+    {
+      return normalized;
+    }
+  }
+
+  return string.Empty;
+}
+
+static string ExtractPrimaryHeaderValue(string? value)
+{
+  if (string.IsNullOrWhiteSpace(value))
+  {
+    return string.Empty;
+  }
+
+  var firstSegment = value
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .FirstOrDefault();
+
+  return firstSegment?.Trim().Trim('"') ?? string.Empty;
+}
+
+static (string proto, string host) ParseForwardedHeader(string? value)
+{
+  if (string.IsNullOrWhiteSpace(value))
+  {
+    return (string.Empty, string.Empty);
+  }
+
+  var firstEntry = value
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    .FirstOrDefault();
+
+  if (string.IsNullOrWhiteSpace(firstEntry))
+  {
+    return (string.Empty, string.Empty);
+  }
+
+  var proto = string.Empty;
+  var host = string.Empty;
+
+  foreach (var segment in firstEntry.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+  {
+    var delimiterIndex = segment.IndexOf('=');
+
+    if (delimiterIndex <= 0 || delimiterIndex >= segment.Length - 1)
+    {
+      continue;
+    }
+
+    var key = segment[..delimiterIndex].Trim();
+    var parsedValue = segment[(delimiterIndex + 1)..].Trim().Trim('"');
+
+    if (string.IsNullOrWhiteSpace(parsedValue))
+    {
+      continue;
+    }
+
+    if (string.Equals(key, "proto", StringComparison.OrdinalIgnoreCase))
+    {
+      proto = parsedValue;
+      continue;
+    }
+
+    if (string.Equals(key, "host", StringComparison.OrdinalIgnoreCase))
+    {
+      host = parsedValue;
+    }
+  }
+
+  return (proto, host);
 }
 
 static string ResolvePushAppId(HttpContext httpContext)
@@ -3237,7 +3334,7 @@ static string BuildGatewayAbsoluteUrl(HttpContext httpContext, string pathAndQue
     normalizedPathAndQuery = $"/{normalizedPathAndQuery}";
   }
 
-  return $"{httpContext.Request.Scheme}://{httpContext.Request.Host.ToUriComponent()}{httpContext.Request.PathBase}{normalizedPathAndQuery}";
+  return $"{ResolvePublicApiBaseUrl(httpContext)}{normalizedPathAndQuery}";
 }
 
 static string? BuildVoiceThreadContinuitySummary(JsonObject? thread)
