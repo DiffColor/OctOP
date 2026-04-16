@@ -3794,14 +3794,7 @@ function buildMessagePreview(thread, language) {
   const copy = getCopy(language);
   const prompt = String(thread.prompt ?? "").trim();
   const lastMessage = String(thread.last_message ?? "").trim();
-  const status = String(thread?.status ?? "")
-    .trim()
-    .toLowerCase();
-  const shouldHideLastMessage =
-    HIDDEN_THREAD_DETAIL_MESSAGE_KINDS.has(getThreadPreviewEventKind(thread)) ||
-    status === "queued" ||
-    status === "running" ||
-    status === "awaiting_input";
+  const shouldHideLastMessage = HIDDEN_THREAD_DETAIL_MESSAGE_KINDS.has(getThreadPreviewEventKind(thread));
 
   return (
     (shouldHideLastMessage ? "" : lastMessage) ||

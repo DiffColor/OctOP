@@ -2195,6 +2195,9 @@ function normalizePhysicalThread(physicalThread = {}, fallbackRootThread = null)
     turn_id: physicalThread.turn_id ? String(physicalThread.turn_id).trim() : null,
     last_event: String(physicalThread.last_event ?? fallbackRootThread?.last_event ?? "physicalThread.ready").trim(),
     last_message: String(physicalThread.last_message ?? fallbackRootThread?.last_message ?? "").trim(),
+    last_message_kind: String(
+      physicalThread.last_message_kind ?? physicalThread.lastMessageKind ?? fallbackRootThread?.last_message_kind ?? ""
+    ).trim(),
     token_usage: tokenUsageState.token_usage,
     context_window_tokens: tokenUsageState.context_window_tokens,
     context_used_tokens: tokenUsageState.context_used_tokens,
@@ -2536,6 +2539,11 @@ function syncRootThreadFromActivePhysicalThread(rootThreadId) {
   const nextRootThread = {
     ...rootThread,
     codex_thread_id: activePhysicalThread.codex_thread_id ?? null,
+    status: activePhysicalThread.status ?? rootThread.status,
+    turn_id: activePhysicalThread.turn_id ?? rootThread.turn_id ?? null,
+    last_event: activePhysicalThread.last_event ?? rootThread.last_event,
+    last_message: activePhysicalThread.last_message ?? rootThread.last_message,
+    last_message_kind: activePhysicalThread.last_message_kind ?? rootThread.last_message_kind ?? "",
     context_window_tokens: activePhysicalThread.context_window_tokens,
     context_used_tokens: activePhysicalThread.context_used_tokens,
     context_usage_percent: activePhysicalThread.context_usage_percent,
@@ -2546,6 +2554,11 @@ function syncRootThreadFromActivePhysicalThread(rootThreadId) {
 
   if (
     nextRootThread.codex_thread_id === rootThread.codex_thread_id &&
+    nextRootThread.status === rootThread.status &&
+    nextRootThread.turn_id === rootThread.turn_id &&
+    nextRootThread.last_event === rootThread.last_event &&
+    nextRootThread.last_message === rootThread.last_message &&
+    nextRootThread.last_message_kind === rootThread.last_message_kind &&
     nextRootThread.context_window_tokens === rootThread.context_window_tokens &&
     nextRootThread.context_used_tokens === rootThread.context_used_tokens &&
     nextRootThread.context_usage_percent === rootThread.context_usage_percent &&
@@ -2955,6 +2968,7 @@ function settlePhysicalThreadExecutionState(
     turnId = null,
     lastEvent = "thread.execution.settled",
     lastMessage = undefined,
+    lastMessageKind = undefined,
     updatedAt = undefined
   } = {}
 ) {
@@ -2988,6 +3002,7 @@ function settlePhysicalThreadExecutionState(
     turn_id: turnId,
     last_event: lastEvent,
     last_message: lastMessage ?? currentPhysicalThread.last_message,
+    last_message_kind: lastMessageKind ?? currentPhysicalThread.last_message_kind ?? "",
     updated_at: updatedAt ?? now()
   };
 
@@ -3024,6 +3039,7 @@ function resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, opt
     turn_id: nextTurnId,
     last_event: nextLastEvent,
     last_message: nextLastMessage,
+    last_message_kind: String(options.last_message_kind ?? currentPhysicalThread.last_message_kind ?? "").trim(),
     updated_at: nextUpdatedAt
   };
 
@@ -3035,6 +3051,7 @@ function resetExecutionProjectionForNewIssue(rootThreadId, physicalThreadId, opt
     progress: nextProgress,
     last_event: nextLastEvent,
     last_message: nextLastMessage,
+    last_message_kind: String(options.last_message_kind ?? currentRootThread.last_message_kind ?? "").trim(),
     turn_id: nextTurnId,
     continuity_status: "healthy",
     active_physical_thread_id: physicalThreadId,
