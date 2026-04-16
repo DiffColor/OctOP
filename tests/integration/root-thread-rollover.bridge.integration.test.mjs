@@ -1813,6 +1813,84 @@ test("function_result 이후 assistant delta는 숨겨진 결과 메시지가 �
   );
 });
 
+test("function_result만 남은 turn은 assistant message로 승격하지 않는다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-function-result-only-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-function-result-only-token",
+    userId: "function-result-only-user",
+    bridgeId: `function-result-only-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Function Result Only Thread"
+  });
+
+  const currentTurn = fakeAppServer.getCurrentTurn(scenario.sourceCodexThreadId);
+  assert.ok(currentTurn, "현재 turn이 있어야 합니다.");
+  currentTurn.items.push({
+    type: "function_result",
+    functionResult: {
+      content: [
+        {
+          text: "[최종 보고]\n- 함수 내부 결과"
+        }
+      ]
+    }
+  });
+
+  fakeAppServer.notify("item/functionCallOutput", {
+    threadId: scenario.sourceCodexThreadId,
+    callId: `call-${randomUUID().slice(0, 8)}`
+  });
+  fakeAppServer.notify("turn/completed", {
+    threadId: scenario.sourceCodexThreadId,
+    turn: {
+      id: currentTurn.id,
+      status: "completed"
+    }
+  });
+  fakeAppServer.notify("thread/status/changed", {
+    threadId: scenario.sourceCodexThreadId,
+    status: {
+      type: "idle"
+    }
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const primaryAssistantMessages = payload.messages.filter(
+      (message) => message.role === "assistant" && String(message.kind ?? "message") === "message"
+    );
+    const functionResultMessages = payload.messages.filter((message) => message.kind === "function_result");
+    assert.equal(payload.issue?.status, "completed");
+    assert.equal(primaryAssistantMessages.length, 0);
+    assert.equal(functionResultMessages.length >= 1, true);
+    assert.equal(functionResultMessages.at(-1)?.content, "[최종 보고]\n- 함수 내부 결과");
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "function result only stays typed"
+  });
+
+  assert.equal(issueDetail.issue?.last_message_kind, "function_result");
+});
+
 test("app-server RPC timeout zombie 상태에서도 강제 reconnect 후 backfill로 메시지와 상태를 복구한다", { timeout: 90000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-timeout-backfill-int-"));
   const fakeAppServer = new FakeAppServer({

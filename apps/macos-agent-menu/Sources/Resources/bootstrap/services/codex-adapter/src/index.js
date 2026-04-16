@@ -11068,6 +11068,10 @@ const REMOTE_VISIBLE_RESULT_KIND_SET = new Set([
   "skill_result",
   "function_result"
 ]);
+const REMOTE_ASSISTANT_BACKFILL_RESULT_KIND_SET = new Set([
+  "mcp_result",
+  "skill_result"
+]);
 
 function dedupeBackfillTextSegments(segments = []) {
   const seen = new Set();
@@ -11530,7 +11534,19 @@ function collectAssistantTextFromRemoteTurn(turn) {
   }
 
   const resultSegments = items
-    .map((item) => (isRemoteResultBearingItem(item) ? collectTextFromRemoteResultItem(item) : ""))
+    .map((item) => {
+      if (!isRemoteResultBearingItem(item)) {
+        return "";
+      }
+
+      const visibleKind = inferRemoteVisibleItemKind(item);
+
+      if (!REMOTE_ASSISTANT_BACKFILL_RESULT_KIND_SET.has(visibleKind)) {
+        return "";
+      }
+
+      return collectTextFromRemoteResultItem(item);
+    })
     .filter(Boolean);
 
   return normalizeAssistantMessageContent(joinBackfillTextSegments(resultSegments));

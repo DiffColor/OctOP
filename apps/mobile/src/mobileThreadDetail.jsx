@@ -61,13 +61,6 @@ const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "function_call",
   "function_result"
 ]);
-const USER_VISIBLE_REPORT_SECTION_HEADINGS = [
-  "[목표]",
-  "[계획]",
-  "[진행 내역]",
-  "[최종 보고]",
-  "[최종 정리]"
-];
 
 function normalizeVoiceMode(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -123,65 +116,9 @@ function isSystemLikeMessage(message) {
   return message?.role === "system" || message?.kind === "handoff_summary";
 }
 
-function messageContainsUserVisibleReportSections(content) {
-  const normalizedContent = String(content ?? "");
-  return USER_VISIBLE_REPORT_SECTION_HEADINGS.some((heading) => normalizedContent.includes(heading));
-}
-
-function isPrimaryAssistantReportMessage(message) {
-  return (
-    message?.role === "assistant" &&
-    String(message?.kind ?? "message").trim() === "message" &&
-    messageContainsUserVisibleReportSections(message?.content ?? "")
-  );
-}
-
-function hasMatchingAssistantReportMessage(message, assistantReportMessages = []) {
-  const normalizedPhysicalThreadId = String(message?.physical_thread_id ?? "").trim();
-  const normalizedIssueId = String(message?.issue_id ?? "").trim();
-  const normalizedContent = String(message?.content ?? "").trim();
-
-  return assistantReportMessages.some((candidate) => {
-    if (!candidate) {
-      return false;
-    }
-
-    if (
-      normalizedPhysicalThreadId &&
-      normalizedPhysicalThreadId === String(candidate?.physical_thread_id ?? "").trim()
-    ) {
-      return true;
-    }
-
-    if (normalizedIssueId && normalizedIssueId === String(candidate?.issue_id ?? "").trim()) {
-      return true;
-    }
-
-    return normalizedContent && normalizedContent === String(candidate?.content ?? "").trim();
-  });
-}
-
-function shouldHideMessageFromChatWindow(message, assistantReportMessages = []) {
+function shouldHideMessageFromChatWindow(message) {
   const normalizedKind = String(message?.kind ?? "").trim();
-  if (!HIDDEN_CHAT_MESSAGE_KINDS.has(normalizedKind)) {
-    return false;
-  }
-
-  if (normalizedKind !== "function_result") {
-    return true;
-  }
-
-  if (!messageContainsUserVisibleReportSections(message?.content ?? "")) {
-    return true;
-  }
-
-  return hasMatchingAssistantReportMessage(message, assistantReportMessages);
-}
-
-function buildVisibleChatMessages(messages = []) {
-  const normalizedMessages = Array.isArray(messages) ? messages : [];
-  const assistantReportMessages = normalizedMessages.filter(isPrimaryAssistantReportMessage);
-  return normalizedMessages.filter((message) => !shouldHideMessageFromChatWindow(message, assistantReportMessages));
+  return HIDDEN_CHAT_MESSAGE_KINDS.has(normalizedKind);
 }
 
 function getSystemMessageTitle(message, fallback = "시스템") {
@@ -753,7 +690,7 @@ export default function ThreadDetail({
     const normalized = [];
     let lastPrompt = null;
 
-    const safeMessages = buildVisibleChatMessages(messages);
+    const safeMessages = Array.isArray(messages) ? messages.filter((message) => !shouldHideMessageFromChatWindow(message)) : [];
 
     safeMessages.forEach((message, index) => {
       if (!message) {
@@ -815,7 +752,7 @@ export default function ThreadDetail({
   }, [issueById, messages, thread?.created_at, thread?.updated_at]);
   const conversationTimeline = useMemo(() => {
     const fallbackTimestamp = thread?.updated_at ?? thread?.created_at ?? new Date().toISOString();
-    const safeMessages = buildVisibleChatMessages(messages);
+    const safeMessages = Array.isArray(messages) ? messages.filter((message) => !shouldHideMessageFromChatWindow(message)) : [];
     const groups = [];
     let currentGroup = null;
     let syntheticIndex = 0;
