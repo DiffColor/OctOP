@@ -74,6 +74,30 @@ export default function InlineIssueComposer({
     value: normalizedDraftValue
   });
   const lastExternalPromptInsertTokenRef = useRef("");
+  const syncPromptHeight = useCallback((element) => {
+    const textarea = element ?? textareaRef.current;
+
+    if (!textarea) {
+      return;
+    }
+
+    const viewportHeight =
+      typeof window !== "undefined"
+        ? window.visualViewport?.height ?? window.innerHeight ?? 0
+        : 0;
+    const computedLimit = viewportHeight > 0 ? viewportHeight * 0.45 : CHAT_COMPOSER_MAX_HEIGHT_PX;
+    const maxHeight =
+      computedLimit > 0 ? Math.min(CHAT_COMPOSER_MAX_HEIGHT_PX, computedLimit) : CHAT_COMPOSER_MAX_HEIGHT_PX;
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+
+    if (textarea.scrollHeight <= maxHeight) {
+      textarea.scrollTop = textarea.scrollHeight;
+    }
+  }, []);
 
   useEffect(() => {
     promptRef.current = prompt;
@@ -158,31 +182,6 @@ export default function InlineIssueComposer({
     },
     [normalizedDraftKey, onDraftPersist]
   );
-
-  const syncPromptHeight = useCallback((element) => {
-    const textarea = element ?? textareaRef.current;
-
-    if (!textarea) {
-      return;
-    }
-
-    const viewportHeight =
-      typeof window !== "undefined"
-        ? window.visualViewport?.height ?? window.innerHeight ?? 0
-        : 0;
-    const computedLimit = viewportHeight > 0 ? viewportHeight * 0.45 : CHAT_COMPOSER_MAX_HEIGHT_PX;
-    const maxHeight =
-      computedLimit > 0 ? Math.min(CHAT_COMPOSER_MAX_HEIGHT_PX, computedLimit) : CHAT_COMPOSER_MAX_HEIGHT_PX;
-
-    textarea.style.height = "auto";
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
-
-    if (textarea.scrollHeight <= maxHeight) {
-      textarea.scrollTop = textarea.scrollHeight;
-    }
-  }, []);
 
   const readCurrentViewportMetrics = useCallback(() => {
     if (typeof window === "undefined") {
