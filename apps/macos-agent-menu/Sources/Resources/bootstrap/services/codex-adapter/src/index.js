@@ -113,6 +113,9 @@ const {
   value: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT,
   reason: THREAD_CONTEXT_ROLLOVER_THRESHOLD_PARSE_REASON
 } = resolveRolloverThreshold(process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_THRESHOLD_PERCENT, 85);
+const {
+  value: THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT
+} = resolveRolloverThreshold(process.env.OCTOP_THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT, 100);
 const THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS = Number(
   process.env.OCTOP_THREAD_CONTEXT_ROLLOVER_COOLDOWN_MS ?? 30000
 );
@@ -2811,7 +2814,11 @@ function isExecutionLifecycleNotification(method) {
     "turn/diff/updated",
     "turn/completed",
     "item/agentMessage/delta"
-  ].includes(method);
+  ].includes(method) || isRemoteTurnItemNotification(method);
+}
+
+function isRemoteTurnItemNotification(method = "") {
+  return String(method ?? "").trim().startsWith("item/");
 }
 
 function shouldIgnoreLocallyStoppedExecutionNotification(
@@ -7688,6 +7695,65 @@ async function maybeTriggerContextRollover(userId, rootThreadId, reason = "thres
   return performContextRollover(userId, rootThreadId, reason, options);
 }
 
+async function maybeTriggerContextRolloverForRuntimeUpdate(userId, rootThreadId, reason, options = {}) {
+  const normalizedUserId = sanitizeUserId(userId);
+  const rootThread = threadStateById.get(rootThreadId) ?? null;
+  const activePhysicalThread = getActivePhysicalThread(rootThreadId);
+
+  if (!normalizedUserId || !rootThreadId) {
+    return { accepted: false, reason: "missing_context" };
+  }
+
+  if (!rootThread || rootThread.deleted_at) {
+    return { accepted: false, reason: "missing_root_thread" };
+  }
+
+  if (String(rootThread.continuity_status ?? "healthy").trim() !== "healthy") {
+    return { accepted: false, reason: "continuity_not_healthy" };
+  }
+
+  if (!activePhysicalThread || activePhysicalThread.deleted_at || activePhysicalThread.closed_at) {
+    return { accepted: false, reason: "missing_active_physical_thread" };
+  }
+
+  if (
+    Number(activePhysicalThread.context_usage_percent ?? 0) <
+    THREAD_CONTEXT_RUNTIME_ROLLOVER_THRESHOLD_PERCENT
+  ) {
+    return { accepted: false, reason: "below_runtime_threshold" };
+  }
+
+  try {
+    return await maybeTriggerContextRollover(normalizedUserId, rootThreadId, reason, options);
+  } catch (error) {
+    appendDiagnosticLog(
+      "error",
+      "root_thread.rollover.runtime_update.failed",
+      "runtime update rollover trigger failed",
+      {
+        user_id: normalizedUserId,
+        thread_id: rootThreadId,
+        root_thread_id: rootThreadId,
+        reason,
+        error
+      }
+    );
+    console.error("[OctOP bridge] runtime update rollover trigger failed", {
+      ...buildLogContext({
+        root_thread_id: rootThreadId,
+        event_type: "rootThread.rollover.runtime_update.failed"
+      }),
+      reason,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return {
+      accepted: false,
+      reason: "runtime_update_failed",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 function refreshQueuePositions(userId) {
   const state = ensureUserState(userId);
   const queue = ensurePendingQueue(userId);
@@ -7991,7 +8057,7 @@ function isContinuityRecoverySignal(method, params = {}) {
     case "thread/status/changed":
       return String(params.status?.type ?? "").trim() !== "error";
     default:
-      return false;
+      return isRemoteTurnItemNotification(method);
   }
 }
 
@@ -8771,7 +8837,7 @@ class AppServerClient {
         method === "turn/started" ||
         method === "turn/plan/updated" ||
         method === "turn/diff/updated" ||
-        method === "item/agentMessage/delta"
+        isRemoteTurnItemNotification(method)
       ) {
         markRunningIssueActivity(threadId, {
           reconcileAttempts: 0,
@@ -8881,6 +8947,34 @@ class AppServerClient {
       return;
     }
 
+    if (threadId && activeIssueId && codexThreadId) {
+      try {
+        await syncRemoteTurnSnapshotForNotification(owner, {
+          threadId,
+          physicalThreadId,
+          codexThreadId,
+          issueId: activeIssueId,
+          method,
+          params
+        });
+      } catch (error) {
+        appendDiagnosticLog(
+          "warn",
+          "thread.notification.result_sync.failed",
+          "remote turn snapshot sync before notification publish failed",
+          {
+            user_id: owner,
+            thread_id: threadId,
+            physical_thread_id: physicalThreadId,
+            codex_thread_id: codexThreadId,
+            issue_id: activeIssueId,
+            method,
+            error
+          }
+        );
+      }
+    }
+
     const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
     if (!ignoreTerminalThreadStatusChanged) {
       await publishEvent(
@@ -8898,6 +8992,12 @@ class AppServerClient {
             (activeIssueId ? issueCardsById.get(activeIssueId)?.status ?? null : null)
         })
       );
+    }
+
+    if (threadId && method === "thread/tokenUsage/updated") {
+      await maybeTriggerContextRolloverForRuntimeUpdate(owner, threadId, "runtime_threshold", {
+        issueId: activeIssueId
+      });
     }
 
     if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params)) {
@@ -9755,13 +9855,15 @@ function getThreadDetail(userId, threadId) {
   if (!thread || threadOwners.get(threadId) !== normalizedUserId) {
     return {
       thread: null,
+      issues: [],
       messages: []
     };
   }
 
   return {
     thread,
-    messages: []
+    issues: listThreadIssuesForClient(threadId),
+    messages: listThreadTimeline(threadId)
   };
 }
 
@@ -10157,16 +10259,590 @@ function clearRunningIssueBackfill(threadId) {
   });
 }
 
-async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecified") {
+const sessionTurnItemsCacheByPath = new Map();
+
+function extractTextFromSessionMessageContent(content = []) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      return String(item.text ?? item.value ?? item.input_text ?? item.output_text ?? "").trim();
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function parseMcpFunctionName(value = "") {
+  const trimmed = String(value ?? "").trim();
+
+  if (!trimmed.startsWith("mcp__")) {
+    return null;
+  }
+
+  const segments = trimmed.split("__");
+
+  if (segments.length < 3) {
+    return null;
+  }
+
+  return {
+    server: String(segments[1] ?? "").trim(),
+    tool: String(segments.slice(2).join("__") ?? "").trim()
+  };
+}
+
+function classifySessionResponseCall(payload = {}) {
+  const normalizedType = normalizeRemoteItemType(payload);
+  const name = String(payload.name ?? "").trim();
+  const parsedMcpName = parseMcpFunctionName(name);
+
+  if (normalizedType === "mcp_call" || parsedMcpName) {
+    return {
+      kind: "mcp_call",
+      server: String(payload.server ?? parsedMcpName?.server ?? "").trim(),
+      tool: String(payload.tool ?? parsedMcpName?.tool ?? "").trim()
+    };
+  }
+
+  if (normalizedType === "skill_call") {
+    return {
+      kind: "skill_call",
+      server: "",
+      tool: ""
+    };
+  }
+
+  if (normalizedType === "custom_tool_call" || normalizedType === "tool_call") {
+    return {
+      kind: "tool_call",
+      server: "",
+      tool: String(payload.tool ?? payload.name ?? "").trim()
+    };
+  }
+
+  return {
+    kind: "function_call",
+    server: "",
+    tool: ""
+  };
+}
+
+function normalizeSessionResponseOutputValue(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function buildSessionResponseTurnItem(payload = {}, turnState = {}, index = 0) {
+  const normalizedType = normalizeRemoteItemType(payload);
+
+  if (normalizedType === "message") {
+    const role = String(payload.role ?? "").trim();
+    const text = extractTextFromSessionMessageContent(payload.content).trim();
+
+    if (!text) {
+      return null;
+    }
+
+    if (role === "assistant") {
+      return {
+        type: "agentMessage",
+        id: String(payload.id ?? `session-agent-${index}`).trim(),
+        text,
+        phase: payload.phase ?? null
+      };
+    }
+
+    if (role === "user") {
+      return {
+        type: "userMessage",
+        id: String(payload.id ?? `session-user-${index}`).trim(),
+        content: [
+          {
+            type: "text",
+            text,
+            text_elements: []
+          }
+        ]
+      };
+    }
+
+    return null;
+  }
+
+  if (
+    normalizedType === "function_call" ||
+    normalizedType === "custom_tool_call" ||
+    normalizedType === "tool_call" ||
+    normalizedType === "mcp_call" ||
+    normalizedType === "skill_call"
+  ) {
+    const callMeta = classifySessionResponseCall(payload);
+    const callId = String(payload.call_id ?? payload.callId ?? "").trim();
+    const item = {
+      type: callMeta.kind,
+      id: String((payload.id ?? callId) || `session-call-${index}`).trim(),
+      name: String(payload.name ?? "").trim(),
+      arguments: normalizeSessionResponseOutputValue(payload.arguments ?? payload.args ?? payload.input ?? ""),
+      call_id: callId
+    };
+
+    if (callMeta.server) {
+      item.server = callMeta.server;
+    }
+
+    if (callMeta.tool) {
+      item.tool = callMeta.tool;
+    }
+
+    if (callId) {
+      turnState.callById?.set(callId, {
+        kind: callMeta.kind,
+        name: item.name,
+        server: item.server ?? "",
+        tool: item.tool ?? ""
+      });
+    }
+
+    return item;
+  }
+
+  if (
+    normalizedType === "function_call_output" ||
+    normalizedType === "custom_tool_call_output" ||
+    normalizedType === "tool_result" ||
+    normalizedType === "mcp_result" ||
+    normalizedType === "skill_result" ||
+    normalizedType === "function_result"
+  ) {
+    const callId = String(payload.call_id ?? payload.callId ?? "").trim();
+    const callMeta = callId ? turnState.callById?.get(callId) ?? null : null;
+    let resultKind = normalizedType;
+
+    if (normalizedType === "function_call_output") {
+      resultKind =
+        callMeta?.kind === "mcp_call"
+          ? "mcp_result"
+          : callMeta?.kind === "skill_call"
+            ? "skill_result"
+            : callMeta?.kind === "tool_call"
+              ? "tool_result"
+              : "function_result";
+    } else if (normalizedType === "custom_tool_call_output") {
+      resultKind = "tool_result";
+    }
+
+    const item = {
+      type: resultKind,
+      id: String((payload.id ?? callId) || `session-result-${index}`).trim(),
+      call_id: callId,
+      output: normalizeSessionResponseOutputValue(
+        payload.output ?? payload.result ?? payload.results ?? payload.value ?? payload.data ?? ""
+      )
+    };
+
+    if (callMeta?.name) {
+      item.name = callMeta.name;
+    }
+
+    if (callMeta?.server) {
+      item.server = callMeta.server;
+    }
+
+    if (callMeta?.tool) {
+      item.tool = callMeta.tool;
+    }
+
+    return item;
+  }
+
+  return null;
+}
+
+function readSessionTurnItemsFromLog(sessionPath) {
+  const normalizedPath = String(sessionPath ?? "").trim();
+
+  if (!normalizedPath || !isAbsolute(normalizedPath) || !existsSync(normalizedPath)) {
+    return new Map();
+  }
+
+  let stats = null;
+
+  try {
+    stats = statSync(normalizedPath);
+  } catch {
+    return new Map();
+  }
+
+  const cached = sessionTurnItemsCacheByPath.get(normalizedPath);
+
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return cached.turnItemsByTurnId;
+  }
+
+  const turnItemsByTurnId = new Map();
+  const turnStateById = new Map();
+  let activeTurnId = null;
+  let sequence = 0;
+
+  const ensureTurnState = (turnId) => {
+    const normalizedTurnId = String(turnId ?? "").trim();
+
+    if (!normalizedTurnId) {
+      return null;
+    }
+
+    if (!turnItemsByTurnId.has(normalizedTurnId)) {
+      turnItemsByTurnId.set(normalizedTurnId, []);
+    }
+
+    if (!turnStateById.has(normalizedTurnId)) {
+      turnStateById.set(normalizedTurnId, {
+        callById: new Map()
+      });
+    }
+
+    return turnStateById.get(normalizedTurnId);
+  };
+
+  const rawLines = readFileSync(normalizedPath, "utf8").split(/\r?\n/u);
+
+  for (const rawLine of rawLines) {
+    const trimmedLine = rawLine.trim();
+
+    if (!trimmedLine) {
+      continue;
+    }
+
+    let entry = null;
+
+    try {
+      entry = JSON.parse(trimmedLine);
+    } catch {
+      continue;
+    }
+
+    const payload = entry?.payload ?? {};
+
+    if (entry?.type === "turn_context" && payload.turn_id) {
+      activeTurnId = String(payload.turn_id).trim();
+      ensureTurnState(activeTurnId);
+      continue;
+    }
+
+    if (entry?.type === "event_msg" && payload.type === "task_started" && payload.turn_id) {
+      activeTurnId = String(payload.turn_id).trim();
+      ensureTurnState(activeTurnId);
+      continue;
+    }
+
+    if (entry?.type !== "response_item" || !activeTurnId) {
+      continue;
+    }
+
+    const turnState = ensureTurnState(activeTurnId);
+    const item = buildSessionResponseTurnItem(payload, turnState, sequence);
+    sequence += 1;
+
+    if (!item) {
+      continue;
+    }
+
+    turnItemsByTurnId.get(activeTurnId).push(item);
+  }
+
+  sessionTurnItemsCacheByPath.set(normalizedPath, {
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+    turnItemsByTurnId
+  });
+
+  return turnItemsByTurnId;
+}
+
+function extractComparableRemoteTurnMessageText(item = {}) {
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+
+  const normalizedType = normalizeRemoteItemType(item);
+
+  if (normalizedType === "agent_message") {
+    return String(item.text ?? item.agentMessage?.text ?? "").trim();
+  }
+
+  if (normalizedType === "user_message") {
+    return collectTextFromRemoteMessageContent(item.content ?? item.userMessage?.content ?? "").trim();
+  }
+
+  return "";
+}
+
+function mergeRemoteTurnItemsFromSessionLog(turn = {}, sessionItems = []) {
+  const existingItems = Array.isArray(turn?.items) ? turn.items : [];
+  const normalizedSessionItems = Array.isArray(sessionItems) ? sessionItems : [];
+
+  if (existingItems.length === 0 || normalizedSessionItems.length === 0) {
+    return turn;
+  }
+
+  const hiddenToolItems = normalizedSessionItems.filter((item) => Boolean(inferRemoteVisibleItemKind(item)));
+
+  if (hiddenToolItems.length === 0) {
+    return turn;
+  }
+
+  const comparableMessageCounts = new Map();
+  const existingComparableMessageCount = existingItems.reduce((count, item) => {
+    const text = extractComparableRemoteTurnMessageText(item);
+
+    if (!text) {
+      return count;
+    }
+
+    comparableMessageCounts.set(text, Number(comparableMessageCounts.get(text) ?? 0) + 1);
+    return count + 1;
+  }, 0);
+
+  let matchedComparableMessages = 0;
+  const sessionOrderedItems = [];
+
+  for (const item of normalizedSessionItems) {
+    const text = extractComparableRemoteTurnMessageText(item);
+
+    if (!text) {
+      if (inferRemoteVisibleItemKind(item)) {
+        sessionOrderedItems.push(item);
+      }
+      continue;
+    }
+
+    const remaining = Number(comparableMessageCounts.get(text) ?? 0);
+
+    if (remaining <= 0) {
+      continue;
+    }
+
+    comparableMessageCounts.set(text, remaining - 1);
+    matchedComparableMessages += 1;
+    sessionOrderedItems.push(item);
+  }
+
+  if (matchedComparableMessages >= existingComparableMessageCount && sessionOrderedItems.length > hiddenToolItems.length) {
+    return {
+      ...turn,
+      items: sessionOrderedItems
+    };
+  }
+
+  return {
+    ...turn,
+    items: [...existingItems, ...hiddenToolItems]
+  };
+}
+
+function augmentRemoteThreadWithSessionLogItems(remoteThread) {
+  if (!remoteThread || typeof remoteThread !== "object") {
+    return remoteThread;
+  }
+
+  const sessionPath = String(remoteThread.path ?? "").trim();
+  const turns = Array.isArray(remoteThread.turns) ? remoteThread.turns : [];
+
+  if (!sessionPath || turns.length === 0) {
+    return remoteThread;
+  }
+
+  const sessionTurnItemsByTurnId = readSessionTurnItemsFromLog(sessionPath);
+
+  if (sessionTurnItemsByTurnId.size === 0) {
+    return remoteThread;
+  }
+
+  const nextTurns = turns.map((turn) =>
+    mergeRemoteTurnItemsFromSessionLog(turn, sessionTurnItemsByTurnId.get(String(turn?.id ?? "").trim()) ?? [])
+  );
+
+  return {
+    ...remoteThread,
+    turns: nextTurns
+  };
+}
+
+async function readThreadSnapshotFromAppServer(codexThreadId, reason = "unspecified", options = {}) {
   const response = await appServer.request(
     "thread/read",
     {
       threadId: codexThreadId,
       includeTurns: true
     },
-    `thread/read.${reason}`
+    `thread/read.${reason}`,
+    options
   );
-  return response.result?.thread ?? response.thread ?? null;
+  return augmentRemoteThreadWithSessionLogItems(response.result?.thread ?? response.thread ?? null);
+}
+
+function shouldSyncRemoteTurnSnapshotForNotification(method, params = {}) {
+  if (["turn/started", "turn/plan/updated", "turn/diff/updated", "turn/completed"].includes(method)) {
+    return true;
+  }
+
+  if (isRemoteTurnItemNotification(method) && method !== "item/agentMessage/delta") {
+    return true;
+  }
+
+  if (method !== "thread/status/changed") {
+    return false;
+  }
+
+  return ["active", "running", "waitingForInput", "idle", "error"].includes(String(params.status?.type ?? "").trim());
+}
+
+async function syncRemoteTurnSnapshotForNotification(
+  userId,
+  {
+    threadId = null,
+    physicalThreadId = null,
+    codexThreadId = null,
+    issueId = null,
+    method = "",
+    params = {}
+  } = {}
+) {
+  if (!shouldSyncRemoteTurnSnapshotForNotification(method, params)) {
+    return null;
+  }
+
+  const normalizedCodexThreadId = String(codexThreadId ?? "").trim();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  const normalizedIssueId = String(issueId ?? "").trim();
+  const owner = sanitizeUserId(userId);
+
+  if (!normalizedCodexThreadId || !normalizedThreadId || !normalizedIssueId) {
+    return null;
+  }
+
+  const thread = threadStateById.get(normalizedThreadId) ?? null;
+  const issue = issueCardsById.get(normalizedIssueId) ?? null;
+  const currentPhysicalThread = physicalThreadId
+    ? physicalThreadStateById.get(physicalThreadId) ?? null
+    : null;
+
+  if (!thread || !issue || thread.deleted_at || issue.deleted_at) {
+    return null;
+  }
+
+  const remoteThread = await readThreadSnapshotFromAppServer(
+    normalizedCodexThreadId,
+    `notificationSync:${method.replaceAll("/", ".")}`,
+    {
+      affectConnectionHealth: false,
+      timeoutMs: Math.min(APP_SERVER_REQUEST_TIMEOUT_MS, 5000)
+    }
+  );
+
+  if (!remoteThread?.id) {
+    return null;
+  }
+
+  const remoteTurn = selectRemoteTurnForBackfill(
+    remoteThread,
+    currentPhysicalThread?.turn_id ?? thread.turn_id ?? null
+  );
+  const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+  const syncedRemoteItems = syncRemoteTurnItemsToIssue(
+    normalizedIssueId,
+    remoteTurn,
+    physicalThreadId
+  );
+  const syncedAssistant = syncAssistantSnapshotToIssue(
+    normalizedIssueId,
+    remoteAssistantText,
+    physicalThreadId
+  );
+  const tokenUsageState = normalizeThreadTokenUsage(
+    remoteThread.tokenUsage ?? remoteThread.token_usage ?? null,
+    currentPhysicalThread ?? thread ?? {}
+  );
+  const tokenUsageChanged =
+    physicalThreadId != null &&
+    !areThreadTokenUsageStatesEqual(currentPhysicalThread ?? {}, tokenUsageState);
+  const recoveredMessage =
+    syncedAssistant.content ||
+    syncedRemoteItems.latestContent ||
+    String(issue.last_message ?? "").trim();
+
+  if (tokenUsageChanged) {
+    updateBackfilledPhysicalThread(normalizedThreadId, physicalThreadId, {
+      ...tokenUsageState
+    });
+  }
+
+  if (syncedAssistant.changed || (syncedRemoteItems.changed && recoveredMessage !== String(issue.last_message ?? "").trim())) {
+    updateIssueCard(normalizedIssueId, {
+      ...(physicalThreadId ? { executed_physical_thread_id: physicalThreadId } : {}),
+      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+    });
+  }
+
+  const eventContext = {
+    codexThreadId: remoteThread.id,
+    threadId: normalizedThreadId,
+    rootThreadId: normalizedThreadId,
+    physicalThreadId,
+    projectId: thread.project_id ?? "",
+    issueId: normalizedIssueId,
+    issueStatus: issueCardsById.get(normalizedIssueId)?.status ?? issue.status ?? null
+  };
+
+  if (syncedAssistant.appendedDelta) {
+    await publishSyntheticRemoteEvent(owner, "item/agentMessage/delta", {
+      threadId: remoteThread.id,
+      delta: syncedAssistant.appendedDelta
+    }, eventContext);
+  }
+
+  if (syncedRemoteItems.changed) {
+    await publishEvent(owner, "logicalThread.timeline.updated", {
+      root_thread_id: normalizedThreadId,
+      thread_id: normalizedThreadId,
+      entries: listThreadTimeline(normalizedThreadId)
+    });
+  }
+
+  if (tokenUsageChanged) {
+    await publishSyntheticRemoteEvent(owner, "thread/tokenUsage/updated", {
+      threadId: remoteThread.id,
+      tokenUsage: remoteThread.tokenUsage ?? remoteThread.token_usage ?? null
+    }, eventContext);
+  }
+
+  return {
+    remoteThread,
+    remoteTurn,
+    syncedRemoteItems,
+    syncedAssistant,
+    tokenUsageChanged
+  };
 }
 
 function buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, options = {}) {
@@ -10296,6 +10972,27 @@ const REMOTE_RESULT_ITEM_KEYS = [
   "stderr"
 ];
 
+const REMOTE_VISIBLE_ITEM_KIND_BY_TYPE = new Map([
+  ["tool_call", "tool_call"],
+  ["custom_tool_call", "tool_call"],
+  ["mcp_call", "mcp_call"],
+  ["skill_call", "skill_call"],
+  ["function_call", "function_call"],
+  ["tool_result", "tool_result"],
+  ["custom_tool_call_output", "tool_result"],
+  ["mcp_result", "mcp_result"],
+  ["skill_result", "skill_result"],
+  ["function_result", "function_result"],
+  ["function_call_output", "function_result"]
+]);
+
+const REMOTE_VISIBLE_RESULT_KIND_SET = new Set([
+  "tool_result",
+  "mcp_result",
+  "skill_result",
+  "function_result"
+]);
+
 function dedupeBackfillTextSegments(segments = []) {
   const seen = new Set();
   const deduped = [];
@@ -10328,6 +11025,290 @@ function stringifyRemoteStructuredValue(value) {
   } catch {
     return String(value ?? "");
   }
+}
+
+function normalizeRemoteItemType(item = {}) {
+  return String(item?.type ?? item?.itemType ?? "")
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s/-]+/g, "_")
+    .toLowerCase();
+}
+
+function inferRemoteVisibleItemKind(item = {}) {
+  const normalizedType = normalizeRemoteItemType(item);
+
+  if (REMOTE_VISIBLE_ITEM_KIND_BY_TYPE.has(normalizedType)) {
+    return REMOTE_VISIBLE_ITEM_KIND_BY_TYPE.get(normalizedType);
+  }
+
+  if ("mcpResult" in item || "mcp_result" in item) {
+    return "mcp_result";
+  }
+
+  if ("skillResult" in item || "skill_result" in item) {
+    return "skill_result";
+  }
+
+  if ("toolResult" in item || "tool_result" in item) {
+    return "tool_result";
+  }
+
+  if ("functionResult" in item || "function_result" in item) {
+    return "function_result";
+  }
+
+  return null;
+}
+
+function stringifyRemoteItemValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (value == null) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractRemoteTurnItemCallPayload(item = {}) {
+  const nestedPayload =
+    item.toolCall ??
+    item.tool_call ??
+    item.mcpCall ??
+    item.mcp_call ??
+    item.skillCall ??
+    item.skill_call ??
+    item.functionCall ??
+    item.function_call ??
+    item.customToolCall ??
+    item.custom_tool_call ??
+    null;
+
+  const name =
+    item.name ??
+    item.tool_name ??
+    item.toolName ??
+    item.function_name ??
+    item.functionName ??
+    item.skill_name ??
+    item.skillName ??
+    nestedPayload?.name ??
+    nestedPayload?.toolName ??
+    nestedPayload?.tool_name ??
+    nestedPayload?.functionName ??
+    nestedPayload?.function_name ??
+    nestedPayload?.skillName ??
+    nestedPayload?.skill_name ??
+    null;
+  const server =
+    item.server ??
+    item.server_name ??
+    item.serverName ??
+    item.mcp_server ??
+    item.mcpServer ??
+    nestedPayload?.server ??
+    nestedPayload?.server_name ??
+    nestedPayload?.serverName ??
+    nestedPayload?.mcp_server ??
+    nestedPayload?.mcpServer ??
+    null;
+  const tool =
+    item.tool ??
+    item.tool_name ??
+    item.toolName ??
+    nestedPayload?.tool ??
+    nestedPayload?.tool_name ??
+    nestedPayload?.toolName ??
+    null;
+  const argumentsValue =
+    item.arguments ??
+    item.args ??
+    item.input ??
+    item.parameters ??
+    nestedPayload?.arguments ??
+    nestedPayload?.args ??
+    nestedPayload?.input ??
+    nestedPayload?.parameters ??
+    null;
+  const callId = item.call_id ?? item.callId ?? nestedPayload?.call_id ?? nestedPayload?.callId ?? null;
+  const status = item.status ?? nestedPayload?.status ?? null;
+
+  return {
+    name: name == null ? "" : String(name).trim(),
+    server: server == null ? "" : String(server).trim(),
+    tool: tool == null ? "" : String(tool).trim(),
+    argumentsValue,
+    callId: callId == null ? "" : String(callId).trim(),
+    status: status == null ? "" : String(status).trim()
+  };
+}
+
+function buildRemoteTurnCallMessageContent(kind, item = {}) {
+  const payload = extractRemoteTurnItemCallPayload(item);
+  const lines = [];
+
+  if (kind === "mcp_call") {
+    if (payload.server) {
+      lines.push(`server: ${payload.server}`);
+    }
+
+    if (payload.tool) {
+      lines.push(`tool: ${payload.tool}`);
+    } else if (payload.name) {
+      lines.push(`name: ${payload.name}`);
+    }
+  } else if (payload.name) {
+    lines.push(`name: ${payload.name}`);
+  } else if (payload.tool) {
+    lines.push(`name: ${payload.tool}`);
+  }
+
+  if (payload.callId) {
+    lines.push(`call_id: ${payload.callId}`);
+  }
+
+  const normalizedArguments = stringifyRemoteItemValue(payload.argumentsValue).trim();
+
+  if (normalizedArguments) {
+    lines.push(`arguments:\n${normalizedArguments}`);
+  } else if (payload.status && payload.status !== "completed") {
+    lines.push(`status: ${payload.status}`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+function buildRemoteTurnResultMessageContent(item = {}) {
+  const primaryText = collectTextFromRemoteResultItem(item).trim();
+
+  if (primaryText) {
+    return primaryText;
+  }
+
+  return stringifyRemoteItemValue(
+    item.output ??
+      item.result ??
+      item.results ??
+      item.value ??
+      item.values ??
+      item.data ??
+      item.payload ??
+      item.error ??
+      item.errors ??
+      item.stdout ??
+      item.stderr
+  ).trim();
+}
+
+function buildRemoteTurnItemStableKey(turn = {}, item = {}, index = 0, kind = "") {
+  const turnId = String(turn?.id ?? "turn").trim() || "turn";
+  const itemId = String(
+    item?.id ??
+      item?.item_id ??
+      item?.itemId ??
+      item?.call_id ??
+      item?.callId ??
+      index
+  ).trim() || String(index);
+
+  return `${turnId}:${kind}:${itemId}`;
+}
+
+function buildVisibleRemoteTurnIssueMessage(turn = {}, item = {}, index = 0, physicalThreadId = null) {
+  const kind = inferRemoteVisibleItemKind(item);
+
+  if (!kind) {
+    return null;
+  }
+
+  const content = REMOTE_VISIBLE_RESULT_KIND_SET.has(kind)
+    ? buildRemoteTurnResultMessageContent(item)
+    : buildRemoteTurnCallMessageContent(kind, item);
+  const normalizedContent = String(content ?? "").trim();
+
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const role = REMOTE_VISIBLE_RESULT_KIND_SET.has(kind) ? "assistant" : "system";
+
+  return {
+    role,
+    kind,
+    message_class: role,
+    content: normalizedContent,
+    physical_thread_id: physicalThreadId,
+    remote_turn_id: String(turn?.id ?? "").trim() || null,
+    remote_item_key: buildRemoteTurnItemStableKey(turn, item, index, kind),
+    remote_item_type: normalizeRemoteItemType(item) || null,
+    remote_call_id: String(item?.call_id ?? item?.callId ?? "").trim() || null
+  };
+}
+
+function syncRemoteTurnItemsToIssue(issueId, turn, physicalThreadId = null) {
+  const messages = ensureIssueMessages(issueId);
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const normalizedRemoteMessages = items
+    .map((item, index) => buildVisibleRemoteTurnIssueMessage(turn, item, index, physicalThreadId))
+    .filter(Boolean);
+  let changed = false;
+  let latestContent = "";
+  let lastEvent = null;
+
+  for (const remoteMessage of normalizedRemoteMessages) {
+    const existingMessage = messages.find(
+      (candidate) =>
+        candidate?.deleted_at == null &&
+        candidate?.remote_item_key &&
+        candidate.remote_item_key === remoteMessage.remote_item_key
+    );
+
+    if (existingMessage) {
+      const hasChanged =
+        String(existingMessage.role ?? "") !== remoteMessage.role ||
+        String(existingMessage.kind ?? "") !== remoteMessage.kind ||
+        String(existingMessage.message_class ?? "") !== remoteMessage.message_class ||
+        String(existingMessage.content ?? "") !== remoteMessage.content ||
+        String(existingMessage.physical_thread_id ?? "") !== String(remoteMessage.physical_thread_id ?? "");
+
+      if (hasChanged) {
+        existingMessage.role = remoteMessage.role;
+        existingMessage.kind = remoteMessage.kind;
+        existingMessage.message_class = remoteMessage.message_class;
+        existingMessage.content = remoteMessage.content;
+        existingMessage.physical_thread_id = remoteMessage.physical_thread_id;
+        existingMessage.remote_turn_id = remoteMessage.remote_turn_id;
+        existingMessage.remote_item_type = remoteMessage.remote_item_type;
+        existingMessage.remote_call_id = remoteMessage.remote_call_id;
+        existingMessage.timestamp = now();
+        changed = true;
+      }
+    } else {
+      pushIssueMessage(issueId, remoteMessage);
+      changed = true;
+    }
+
+    latestContent = remoteMessage.content;
+    lastEvent = `item.${remoteMessage.kind}`;
+  }
+
+  return {
+    changed,
+    latestContent,
+    lastEvent,
+    count: normalizedRemoteMessages.length
+  };
 }
 
 function collectTextSegmentsFromRemoteValue(value, options = {}) {
@@ -10460,10 +11441,6 @@ function collectAssistantTextFromRemoteTurn(turn) {
             String(item.agentMessage.text ?? "").trim() ||
             collectTextFromRemoteMessageContent(item.agentMessage.content)
           );
-        }
-
-        if (isRemoteResultBearingItem(item)) {
-          return collectTextFromRemoteResultItem(item);
         }
 
         return "";
@@ -10649,6 +11626,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
   const previousComparableState = captureBackfillComparableState(thread, issue, physicalThread);
   const remoteTurn = selectRemoteTurnForBackfill(remoteThread, physicalThread?.turn_id ?? thread.turn_id ?? null);
   const remoteAssistantText = collectAssistantTextFromRemoteTurn(remoteTurn);
+  const syncedRemoteItems = syncRemoteTurnItemsToIssue(activeIssueId, remoteTurn, physicalThreadId);
   const remoteStatus = normalizeRemoteTurnRuntimeStatus(remoteThread, remoteTurn, issue.status ?? thread.status ?? "running");
   const syncedAssistant = syncAssistantSnapshotToIssue(activeIssueId, remoteAssistantText, physicalThreadId);
   const tokenUsageState = normalizeThreadTokenUsage(
@@ -10677,6 +11655,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       : "turn.started";
   const recoveredMessage =
     syncedAssistant.content ||
+    syncedRemoteItems.latestContent ||
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
     String(issue.last_message ?? "").trim();
   const tokenUsageChanged = !areThreadTokenUsageStatesEqual(previousComparableState.physicalThread ?? {}, tokenUsageState);
@@ -10693,17 +11672,23 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     Boolean(remoteTurn?.id) &&
     Boolean(
       String(remoteAssistantText ?? "").trim() ||
+      syncedRemoteItems.count > 0 ||
       remoteThread?.tokenUsage ||
       remoteThread?.token_usage
     );
   const hasObservableRunningProgress =
-    syncedAssistant.changed || tokenUsageChanged || remoteTurnChanged || remoteStatusChanged || remoteMessageChanged;
+    syncedAssistant.changed ||
+    syncedRemoteItems.changed ||
+    tokenUsageChanged ||
+    remoteTurnChanged ||
+    remoteStatusChanged ||
+    remoteMessageChanged;
   const hasRecoverableRunningSnapshot =
     hasObservableRunningProgress || hasResponsiveRunningSnapshot;
   const recoveredRunningLastEvent =
     syncedAssistant.changed || String(remoteAssistantText ?? "").trim()
       ? "item.agentMessage.delta"
-      : preservedRunningLastEvent;
+      : syncedRemoteItems.lastEvent ?? preservedRunningLastEvent;
   const threadReadDebugPatch = buildThreadReadDebugPatch(reason, remoteThread, remoteTurn, remoteAssistantText, {
     fallbackStatus: issue.status ?? thread.status ?? "running",
     appendedDeltaLength: syncedAssistant.appendedDelta.length,
@@ -10883,6 +11868,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     : physicalThread;
   const nextComparableState = captureBackfillComparableState(nextThread, nextIssue, nextPhysicalThread);
   const shouldPublishState =
+    syncedRemoteItems.changed ||
     JSON.stringify(previousComparableState) !== JSON.stringify(nextComparableState);
 
   const eventContext = {
