@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_VOICE_LEVEL_HISTORY,
+  describeRealtimeEventError,
   describeVoiceError,
+  isRealtimeAvailabilityBlockedError,
   parseRealtimeJson,
   REALTIME_EVENT_CHANNEL
 } from "./realtimeVoiceProtocol.js";
@@ -1256,12 +1258,23 @@ export default function useRealtimeVoiceSession({
 
         case "error": {
           appServerReportInFlightRef.current = false;
+          const realtimeEventError = event?.error ?? null;
+          const describedError = describeRealtimeEventError(realtimeEventError);
+          const shouldBlockAvailability = isRealtimeAvailabilityBlockedError(realtimeEventError);
+
           setState((current) => ({
             ...current,
-            error: String(event?.error?.message ?? "실시간 음성 이벤트 처리 중 오류가 발생했습니다."),
+            connectionState: shouldBlockAvailability ? "error" : current.connectionState,
+            micState: shouldBlockAvailability ? "error" : current.micState,
+            error: describedError,
             isResponding: false,
             isListening: false
           }));
+
+          if (shouldBlockAvailability) {
+            reportAvailabilityChange("blocked", describedError);
+          }
+
           return;
         }
 
@@ -1269,7 +1282,7 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [handleRealtimeResponseDone, requestVoiceTurnResponse]
+    [handleRealtimeResponseDone, reportAvailabilityChange, requestVoiceTurnResponse]
   );
 
   useEffect(() => {
