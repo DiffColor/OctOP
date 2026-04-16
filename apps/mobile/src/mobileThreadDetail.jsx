@@ -12,7 +12,16 @@ import { MessageAttachmentPreview } from "./mobileMessageAttachmentUi.jsx";
 import ThreadMessageActionSheet from "./mobileThreadMessageActionSheet.jsx";
 import VoiceModePanel from "./VoiceModePanel.jsx";
 import { useMobileFeedback } from "./mobileSharedUi.jsx";
+import useFallbackVoiceSession from "./voice/useFallbackVoiceSession.js";
 import useRealtimeVoiceSession from "./voice/useRealtimeVoiceSession.js";
+import {
+  getVoiceCapabilityDateKey,
+  readStoredVoiceCapabilitySnapshot,
+  updateStoredVoiceCapabilitySnapshot,
+  VOICE_CAPABILITY_STATUS_AVAILABLE,
+  VOICE_CAPABILITY_STATUS_BLOCKED,
+  VOICE_CAPABILITY_STATUS_UNKNOWN
+} from "./voice/voiceCapabilityCache.js";
 import {
   formatAssistantResponseForVoice,
   formatFileContextSummaryForVoice,
@@ -33,6 +42,58 @@ const CHAT_MANUAL_SCROLL_UNPIN_DELTA_PX = 2;
 const CHAT_JUMP_TO_LATEST_BUTTON_THRESHOLD_PX = 240;
 const HEADER_MENU_SCROLL_DELTA_PX = 12;
 const HEADER_MENU_VIEWPORT_SETTLE_MS = 320;
+const VOICE_MODE_VALUES = new Set(["off", "realtime", "tts", "stt_only"]);
+
+function normalizeVoiceMode(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return VOICE_MODE_VALUES.has(normalized) ? normalized : "off";
+}
+
+function normalizeVoiceCapabilityStatus(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+
+  if (
+    normalized === VOICE_CAPABILITY_STATUS_AVAILABLE ||
+    normalized === VOICE_CAPABILITY_STATUS_BLOCKED ||
+    normalized === VOICE_CAPABILITY_STATUS_UNKNOWN
+  ) {
+    return normalized;
+  }
+
+  return VOICE_CAPABILITY_STATUS_UNKNOWN;
+}
+
+function normalizeResolvedVoiceState(voiceState, createInitialThreadVoiceState) {
+  const baseState = createInitialThreadVoiceState();
+
+  if (!voiceState || typeof voiceState !== "object") {
+    return baseState;
+  }
+
+  return {
+    enabled: voiceState.enabled === true,
+    mode: normalizeVoiceMode(voiceState.mode),
+    promptSubmittedAt: String(voiceState.promptSubmittedAt ?? "").trim(),
+    lastSubmittedPrompt: String(voiceState.lastSubmittedPrompt ?? "").trim(),
+    delegatedThreadId: String(voiceState.delegatedThreadId ?? "").trim(),
+    capabilityDateKey: String(voiceState.capabilityDateKey ?? "").trim(),
+    realtimeStatus: normalizeVoiceCapabilityStatus(voiceState.realtimeStatus),
+    ttsStatus: normalizeVoiceCapabilityStatus(voiceState.ttsStatus),
+    lastError: String(voiceState.lastError ?? "").trim()
+  };
+}
+
+function describeTtsAvailabilityError(error) {
+  const message = String(error?.message ?? "").trim();
+  const code = String(error?.code ?? error?.payload?.code ?? "").trim();
+
+  if (code === "voice_narration_disabled" || code === "voice_session_api_key_missing") {
+    return "음성 TTS를 사용할 수 없습니다.";
+  }
+
+  return message || "음성 TTS를 사용할 수 없습니다.";
+}
+
 function ConversationTimeline({ entries }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return null;
@@ -190,20 +251,32 @@ export default function ThreadDetail({
   const [deletingIssueId, setDeletingIssueId] = useState("");
   const [activeMessageAction, setActiveMessageAction] = useState(null);
   const [previewAttachment, setPreviewAttachment] = useState(null);
+  const [composerSpeechInsert, setComposerSpeechInsert] = useState({
+    token: "",
+    text: ""
+  });
   const { alert: showAlert } = useMobileFeedback();
-  const resolvedVoiceState =
-    voiceState && typeof voiceState === "object"
-      ? {
-          enabled: voiceState.enabled === true,
-          promptSubmittedAt: String(voiceState.promptSubmittedAt ?? "").trim(),
-          lastSubmittedPrompt: String(voiceState.lastSubmittedPrompt ?? "").trim(),
-          delegatedThreadId: String(voiceState.delegatedThreadId ?? "").trim()
-        }
-      : createInitialThreadVoiceState();
+  const resolvedVoiceState = normalizeResolvedVoiceState(voiceState, createInitialThreadVoiceState);
   const voiceModeEnabled = resolvedVoiceState.enabled;
+  const voiceMode = resolvedVoiceState.mode;
   const voicePromptSubmittedAt = resolvedVoiceState.promptSubmittedAt;
   const voiceLastSubmittedPrompt = resolvedVoiceState.lastSubmittedPrompt;
   const voiceDelegatedThreadId = resolvedVoiceState.delegatedThreadId;
+  const voiceRealtimeStatus = resolvedVoiceState.realtimeStatus;
+  const voiceTtsStatus = resolvedVoiceState.ttsStatus;
+  const voiceLastError = resolvedVoiceState.lastError;
+  const voicePanelOpen = voiceModeEnabled && (voiceMode === "realtime" || voiceMode === "tts");
+  const voiceSttOnlyMode = voiceMode === "stt_only";
+  const currentVoiceModeRef = useRef(voiceMode);
+  const currentVoiceStateRef = useRef(resolvedVoiceState);
+  const voiceCapabilityDateKey = getVoiceCapabilityDateKey();
+  const voiceCapabilityScope = useMemo(
+    () => ({
+      loginId: sessionLoginId,
+      bridgeId
+    }),
+    [bridgeId, sessionLoginId]
+  );
   const updateVoiceState = useCallback(
     (updater) => {
       if (typeof onVoiceStateChange !== "function") {
@@ -211,34 +284,38 @@ export default function ThreadDetail({
       }
 
       onVoiceStateChange((current) => {
-        const baseState =
-          current && typeof current === "object"
-            ? {
-                enabled: current.enabled === true,
-                promptSubmittedAt: String(current.promptSubmittedAt ?? "").trim(),
-                lastSubmittedPrompt: String(current.lastSubmittedPrompt ?? "").trim(),
-                delegatedThreadId: String(current.delegatedThreadId ?? "").trim()
-              }
-            : createInitialThreadVoiceState();
+        const baseState = normalizeResolvedVoiceState(current, createInitialThreadVoiceState);
         const nextState = typeof updater === "function" ? updater(baseState) : updater;
 
         if (!nextState || typeof nextState !== "object") {
           return baseState;
         }
 
-        return {
-          enabled: nextState.enabled === true,
-          promptSubmittedAt: String(nextState.promptSubmittedAt ?? "").trim(),
-          lastSubmittedPrompt: String(nextState.lastSubmittedPrompt ?? "").trim(),
-          delegatedThreadId: String(nextState.delegatedThreadId ?? "").trim()
-        };
+        return normalizeResolvedVoiceState(nextState, createInitialThreadVoiceState);
       });
     },
-    [onVoiceStateChange]
+    [createInitialThreadVoiceState, onVoiceStateChange]
   );
   const resetVoiceState = useCallback(() => {
     updateVoiceState(createInitialThreadVoiceState());
   }, [updateVoiceState]);
+
+  useEffect(() => {
+    currentVoiceModeRef.current = voiceMode;
+    currentVoiceStateRef.current = resolvedVoiceState;
+  }, [resolvedVoiceState, voiceMode]);
+
+  const readVoiceCapabilitySnapshot = useCallback(() => {
+    return readStoredVoiceCapabilitySnapshot(voiceCapabilityScope, voiceCapabilityDateKey);
+  }, [voiceCapabilityDateKey, voiceCapabilityScope]);
+
+  const updateVoiceCapabilitySnapshot = useCallback(
+    (updater) => {
+      return updateStoredVoiceCapabilitySnapshot(voiceCapabilityScope, updater, voiceCapabilityDateKey);
+    },
+    [voiceCapabilityDateKey, voiceCapabilityScope]
+  );
+
   const handleVoicePromptSubmit = useCallback((prompt) => {
     const normalizedPrompt = buildSpeechFriendlyMessageText(prompt);
     const delegatePromptHandler =
@@ -303,6 +380,208 @@ export default function ThreadDetail({
       };
     });
   }, [onSubmitPrompt, onVoiceDelegatePrompt, project?.id, thread?.id, updateVoiceState, voiceDelegatedThreadId]);
+
+  const syncVoiceCapabilityToState = useCallback(
+    (snapshot, overrides = {}) => {
+      updateVoiceState((current) => ({
+        ...current,
+        capabilityDateKey: snapshot.dateKey,
+        realtimeStatus: snapshot.realtime,
+        ttsStatus: snapshot.tts,
+        ...(Object.prototype.hasOwnProperty.call(overrides, "lastError")
+          ? {
+              lastError: String(overrides.lastError ?? "").trim()
+            }
+          : null)
+      }));
+    },
+    [updateVoiceState]
+  );
+
+  useEffect(() => {
+    const snapshot = readStoredVoiceCapabilitySnapshot(voiceCapabilityScope, voiceCapabilityDateKey);
+
+    if (
+      resolvedVoiceState.capabilityDateKey === snapshot.dateKey &&
+      resolvedVoiceState.realtimeStatus === snapshot.realtime &&
+      resolvedVoiceState.ttsStatus === snapshot.tts
+    ) {
+      return;
+    }
+
+    syncVoiceCapabilityToState(snapshot, {
+      lastError:
+        resolvedVoiceState.capabilityDateKey && resolvedVoiceState.capabilityDateKey !== snapshot.dateKey
+          ? ""
+          : currentVoiceStateRef.current.lastError
+    });
+  }, [
+    resolvedVoiceState.capabilityDateKey,
+    resolvedVoiceState.realtimeStatus,
+    resolvedVoiceState.ttsStatus,
+    syncVoiceCapabilityToState,
+    voiceCapabilityDateKey,
+    voiceCapabilityScope
+  ]);
+
+  const probeTtsCapability = useCallback(async () => {
+    if (!sessionLoginId || !bridgeId || typeof voiceApiRequest !== "function") {
+      return updateVoiceCapabilitySnapshot((current) => ({
+        ...current,
+        tts: VOICE_CAPABILITY_STATUS_BLOCKED,
+        ttsCheckedAt: new Date().toISOString(),
+        ttsError: "음성 TTS를 사용할 수 없습니다."
+      }));
+    }
+
+    try {
+      await voiceApiRequest(
+        `/api/voice/narrations?login_id=${encodeURIComponent(sessionLoginId)}&bridge_id=${encodeURIComponent(bridgeId)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            text: "음성 준비가 완료되었습니다."
+          })
+        }
+      );
+
+      return updateVoiceCapabilitySnapshot((current) => ({
+        ...current,
+        tts: VOICE_CAPABILITY_STATUS_AVAILABLE,
+        ttsCheckedAt: new Date().toISOString(),
+        ttsError: ""
+      }));
+    } catch (error) {
+      const describedError = describeTtsAvailabilityError(error);
+
+      return updateVoiceCapabilitySnapshot((current) => ({
+        ...current,
+        tts: VOICE_CAPABILITY_STATUS_BLOCKED,
+        ttsCheckedAt: new Date().toISOString(),
+        ttsError: describedError
+      }));
+    }
+  }, [bridgeId, sessionLoginId, updateVoiceCapabilitySnapshot, voiceApiRequest]);
+
+  const activateTtsOrSttMode = useCallback(
+    async ({ capabilitySnapshot = null, errorMessage = "", announce = false } = {}) => {
+      let nextSnapshot = capabilitySnapshot ?? readVoiceCapabilitySnapshot();
+
+      if (nextSnapshot.tts !== VOICE_CAPABILITY_STATUS_BLOCKED && nextSnapshot.tts !== VOICE_CAPABILITY_STATUS_AVAILABLE) {
+        nextSnapshot = await probeTtsCapability();
+      }
+
+      const nextMode =
+        nextSnapshot.tts === VOICE_CAPABILITY_STATUS_AVAILABLE
+          ? "tts"
+          : "stt_only";
+      const nextErrorMessage = String(errorMessage || nextSnapshot.ttsError || currentVoiceStateRef.current.lastError || "").trim();
+
+      updateVoiceState((current) => ({
+        ...current,
+        enabled: nextMode === "tts",
+        mode: nextMode,
+        promptSubmittedAt: "",
+        lastSubmittedPrompt: "",
+        delegatedThreadId: "",
+        capabilityDateKey: nextSnapshot.dateKey,
+        realtimeStatus: nextSnapshot.realtime,
+        ttsStatus: nextSnapshot.tts,
+        lastError: nextErrorMessage
+      }));
+
+      if (announce) {
+        showAlert(
+          nextMode === "tts"
+            ? "실시간 음성 API를 사용할 수 없어 음성 TTS 모드로 전환했습니다."
+            : "실시간 음성과 TTS를 사용할 수 없어 일반 채팅 STT 입력 모드로 전환했습니다.",
+          {
+            title: "음성 모드",
+            tone: nextMode === "tts" ? "info" : "error"
+          }
+        );
+      }
+
+      return nextMode;
+    },
+    [probeTtsCapability, readVoiceCapabilitySnapshot, showAlert, updateVoiceState]
+  );
+
+  const handleRealtimeAvailabilityChange = useCallback(
+    async ({ status = "", error = "" } = {}) => {
+      const normalizedStatus = normalizeVoiceCapabilityStatus(status);
+
+      if (normalizedStatus === VOICE_CAPABILITY_STATUS_UNKNOWN) {
+        return;
+      }
+
+      const normalizedError = String(error ?? "").trim();
+      const nextSnapshot = updateVoiceCapabilitySnapshot((current) => ({
+        ...current,
+        realtime: normalizedStatus,
+        realtimeCheckedAt: new Date().toISOString(),
+        realtimeError: normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED ? normalizedError : ""
+      }));
+
+      syncVoiceCapabilityToState(nextSnapshot, {
+        lastError: normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED ? normalizedError : ""
+      });
+
+      if (normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED && currentVoiceModeRef.current === "realtime") {
+        await activateTtsOrSttMode({
+          capabilitySnapshot: nextSnapshot,
+          errorMessage: normalizedError,
+          announce: true
+        });
+      }
+    },
+    [activateTtsOrSttMode, syncVoiceCapabilityToState, updateVoiceCapabilitySnapshot]
+  );
+
+  const handleTtsAvailabilityChange = useCallback(
+    async ({ status = "", error = "" } = {}) => {
+      const normalizedStatus = normalizeVoiceCapabilityStatus(status);
+
+      if (normalizedStatus === VOICE_CAPABILITY_STATUS_UNKNOWN) {
+        return;
+      }
+
+      const normalizedError = String(error ?? "").trim();
+      const nextSnapshot = updateVoiceCapabilitySnapshot((current) => ({
+        ...current,
+        tts: normalizedStatus,
+        ttsCheckedAt: new Date().toISOString(),
+        ttsError: normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED ? normalizedError : ""
+      }));
+
+      syncVoiceCapabilityToState(nextSnapshot, {
+        lastError: normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED ? normalizedError : ""
+      });
+
+      if (normalizedStatus === VOICE_CAPABILITY_STATUS_BLOCKED && currentVoiceModeRef.current === "tts") {
+        await activateTtsOrSttMode({
+          capabilitySnapshot: nextSnapshot,
+          errorMessage: normalizedError,
+          announce: true
+        });
+      }
+    },
+    [activateTtsOrSttMode, syncVoiceCapabilityToState, updateVoiceCapabilitySnapshot]
+  );
+
+  const handleFallbackDraftTranscript = useCallback((transcript) => {
+    const normalizedTranscript = String(transcript ?? "").trim();
+
+    if (!normalizedTranscript) {
+      return;
+    }
+
+    setComposerSpeechInsert({
+      token: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: normalizedTranscript
+    });
+  }, []);
+
   useTouchScrollBoundaryLock(scrollRef);
   const [viewMode] = useState("chat");
   const threadTitle = thread?.title ?? "새 채팅창";
@@ -815,7 +1094,7 @@ export default function ThreadDetail({
     voicePromptSubmittedAt
   ]);
   const voiceSession = useRealtimeVoiceSession({
-    enabled: voiceModeEnabled && voiceSessionEnabled,
+    enabled: voiceMode === "realtime" && voiceSessionEnabled,
     sessionContextKey: voiceSessionContextKey,
     apiRequest: voiceApiRequest,
     loginId: sessionLoginId,
@@ -835,12 +1114,33 @@ export default function ThreadDetail({
     recentConversationSummary: voiceFollowupThreadReady ? recentVoiceContextSummary : "",
     projectProgramSummary: voiceFollowupThreadReady ? voiceProgramSummary : voiceProjectIntakeSummary,
     threadFileContextSummary: voiceFollowupThreadReady ? voiceFileContextSummary : "",
-    onSubmitPrompt: handleVoicePromptSubmit
+    onSubmitPrompt: handleVoicePromptSubmit,
+    onAvailabilityChange: handleRealtimeAvailabilityChange
   });
+  const fallbackVoiceSession = useFallbackVoiceSession({
+    active: voiceMode === "tts" || voiceSttOnlyMode,
+    ttsEnabled: voiceMode === "tts",
+    apiRequest: voiceApiRequest,
+    loginId: sessionLoginId,
+    bridgeId,
+    latestAssistantText: voiceSeedAssistantText,
+    appServerFinalText: voiceFollowupThreadReady ? voiceLinkedAssistantText : "",
+    appServerProgressText: voiceFollowupThreadReady ? voiceProgressReportText : "",
+    onSubmitPrompt: handleVoicePromptSubmit,
+    onDraftTranscript: handleFallbackDraftTranscript,
+    onTtsAvailabilityChange: handleTtsAvailabilityChange
+  });
+  const activeVoiceSession = voiceMode === "tts" ? fallbackVoiceSession : voiceSession;
   const voicePanelAssistantText =
-    voiceSession.latestAssistantSubtitle ||
-    voiceSession.latestAssistantTranscript ||
+    activeVoiceSession.latestAssistantSubtitle ||
+    activeVoiceSession.latestAssistantTranscript ||
     (voiceFollowupThreadReady ? voiceProgressReportText || voiceLinkedAssistantText : "");
+  const stopAllVoiceSessions = useCallback(async () => {
+    await Promise.allSettled([
+      voiceSession.stopSession({ preserveTranscript: true }),
+      fallbackVoiceSession.stopSession({ preserveTranscript: true })
+    ]);
+  }, [fallbackVoiceSession, voiceSession]);
   const handleOpenAttachment = useCallback((attachment) => {
     const normalizedAttachment = normalizeMessageAttachment(attachment);
 
@@ -1445,9 +1745,9 @@ export default function ThreadDetail({
   }, [showAlert]);
 
   const handleToggleVoiceMode = useCallback(async () => {
-    if (voiceModeEnabled) {
+    if (voiceModeEnabled || voiceSttOnlyMode) {
       resetVoiceState();
-      await voiceSession.stopSession({ preserveTranscript: true });
+      await stopAllVoiceSessions();
       return;
     }
 
@@ -1467,13 +1767,47 @@ export default function ThreadDetail({
       return;
     }
 
-    updateVoiceState({
+    const capabilitySnapshot = readVoiceCapabilitySnapshot();
+    syncVoiceCapabilityToState(capabilitySnapshot, {
+      lastError: capabilitySnapshot.realtimeError || capabilitySnapshot.ttsError || ""
+    });
+
+    if (capabilitySnapshot.realtime === VOICE_CAPABILITY_STATUS_BLOCKED) {
+      await activateTtsOrSttMode({
+        capabilitySnapshot,
+        errorMessage: capabilitySnapshot.realtimeError,
+        announce: true
+      });
+      return;
+    }
+
+    updateVoiceState((current) => ({
+      ...current,
       enabled: true,
+      mode: "realtime",
       promptSubmittedAt: "",
       lastSubmittedPrompt: "",
-      delegatedThreadId: ""
-    });
-  }, [bridgeId, project?.id, resetVoiceState, sessionLoginId, showAlert, thread?.id, updateVoiceState, voiceModeEnabled, voiceSession, voiceSessionEnabled]);
+      delegatedThreadId: "",
+      capabilityDateKey: capabilitySnapshot.dateKey,
+      realtimeStatus: capabilitySnapshot.realtime,
+      ttsStatus: capabilitySnapshot.tts,
+      lastError: capabilitySnapshot.realtime === VOICE_CAPABILITY_STATUS_AVAILABLE ? "" : current.lastError
+    }));
+  }, [
+    activateTtsOrSttMode,
+    bridgeId,
+    project?.id,
+    readVoiceCapabilitySnapshot,
+    resetVoiceState,
+    sessionLoginId,
+    showAlert,
+    stopAllVoiceSessions,
+    syncVoiceCapabilityToState,
+    updateVoiceState,
+    voiceModeEnabled,
+    voiceSessionEnabled,
+    voiceSttOnlyMode
+  ]);
 
   useEffect(() => {
     setActiveMessageAction(null);
@@ -1606,26 +1940,27 @@ export default function ThreadDetail({
       </header>
 
       <div className="relative min-h-0 flex-1">
-        {voiceModeEnabled ? (
+        {voicePanelOpen ? (
           <div className="h-full">
             <div className="h-full w-full">
               <VoiceModePanel
-                open={voiceModeEnabled}
-                latestUserText={voiceSession.latestUserTranscript}
+                open={voicePanelOpen}
+                mode={voiceMode}
+                latestUserText={activeVoiceSession.latestUserTranscript}
                 latestAssistantText={voicePanelAssistantText}
-                connectionState={voiceSession.connectionState}
-                micState={voiceSession.micState}
-                isListening={voiceSession.isListening}
-                isResponding={voiceSession.isResponding}
-                audioMetricsRef={voiceSession.audioMetricsRef}
-                audioMetricsStore={voiceSession.audioMetricsStore}
-                inputDevices={voiceSession.inputDevices}
-                selectedInputDeviceId={voiceSession.selectedInputDeviceId}
-                errorMessage={voiceSession.error}
-                onSelectInputDevice={(deviceId) => void voiceSession.selectInputDevice(deviceId)}
+                connectionState={activeVoiceSession.connectionState}
+                micState={activeVoiceSession.micState}
+                isListening={activeVoiceSession.isListening}
+                isResponding={activeVoiceSession.isResponding}
+                audioMetricsRef={activeVoiceSession.audioMetricsRef}
+                audioMetricsStore={activeVoiceSession.audioMetricsStore}
+                inputDevices={activeVoiceSession.inputDevices}
+                selectedInputDeviceId={activeVoiceSession.selectedInputDeviceId}
+                errorMessage={activeVoiceSession.error || voiceLastError}
+                onSelectInputDevice={(deviceId) => void activeVoiceSession.selectInputDevice?.(deviceId)}
                 onClose={() => {
                   resetVoiceState();
-                  void voiceSession.stopSession({ preserveTranscript: true });
+                  void stopAllVoiceSessions();
                 }}
               />
             </div>
@@ -1921,6 +2256,14 @@ export default function ThreadDetail({
               stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
               onInputFocus={handleComposerFocus}
               onInputBlur={handleComposerBlur}
+              speechInputEnabled={voiceSttOnlyMode}
+              speechInputSupported={fallbackVoiceSession.speechRecognitionSupported}
+              speechInputListening={fallbackVoiceSession.isListening}
+              speechInputBusy={fallbackVoiceSession.connectionState === "connecting" || fallbackVoiceSession.micState === "requesting"}
+              speechInputHint={voiceLastError || fallbackVoiceSession.error}
+              onToggleSpeechInput={() => void fallbackVoiceSession.toggleListening()}
+              externalPromptInsertText={composerSpeechInsert.text}
+              externalPromptInsertToken={composerSpeechInsert.token}
             />
           </div>
         </div>

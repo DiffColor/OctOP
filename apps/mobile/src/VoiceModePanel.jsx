@@ -158,25 +158,31 @@ function buildSubtitleFrame(text) {
   };
 }
 
-function buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }) {
+function buildVoiceModeStatus({ mode, connectionState, isResponding, isListening, micState, errorMessage }) {
   if (connectionState === "connecting" || micState === "requesting") {
-    return "OpenAI Realtime 세션과 마이크를 연결하는 중입니다.";
+    return mode === "tts" ? "브라우저 음성 입력과 TTS 보고를 연결하는 중입니다." : "OpenAI Realtime 세션과 마이크를 연결하는 중입니다.";
   }
 
   if (connectionState === "error" || micState === "error") {
-    return errorMessage || "실시간 음성 세션 연결에 실패했습니다.";
+    return errorMessage || (mode === "tts" ? "음성 TTS 세션 연결에 실패했습니다." : "실시간 음성 세션 연결에 실패했습니다.");
   }
 
   if (isResponding) {
-    return "Realtime이 app-server 결과를 자연스럽게 보고하고 있습니다.";
+    return mode === "tts"
+      ? "app-server 결과를 TTS 음성으로 보고하고 있습니다."
+      : "Realtime이 app-server 결과를 자연스럽게 보고하고 있습니다.";
   }
 
   if (isListening) {
-    return "현재 사용자의 발화를 전사하고 있습니다.";
+    return mode === "tts"
+      ? "현재 사용자의 발화를 STT로 전사해 app-server 작업으로 넘길 준비를 하고 있습니다."
+      : "현재 사용자의 발화를 전사하고 있습니다.";
   }
 
   if (connectionState === "connected") {
-    return "Realtime 음성 세션이 연결되었습니다. 말씀하시면 app-server 작업으로 전달하고 짧게 보고합니다.";
+    return mode === "tts"
+      ? "음성 TTS 세션이 연결되었습니다. 말씀하시면 app-server 작업으로 전달하고 TTS로 짧게 보고합니다."
+      : "Realtime 음성 세션이 연결되었습니다. 말씀하시면 app-server 작업으로 전달하고 짧게 보고합니다.";
   }
 
   return "음성 세션이 아직 연결되지 않았습니다.";
@@ -322,6 +328,7 @@ function VoicePerformancePanel({ audioMetricsStore, signalNotes = [] }) {
 
 export default function VoiceModePanel({
   open,
+  mode = "realtime",
   latestUserText = "",
   latestAssistantText = "",
   connectionState = "idle",
@@ -337,8 +344,8 @@ export default function VoiceModePanel({
   onClose = null
 }) {
   const statusMessage = useMemo(
-    () => buildVoiceModeStatus({ connectionState, isResponding, isListening, micState, errorMessage }),
-    [connectionState, errorMessage, isListening, isResponding, micState]
+    () => buildVoiceModeStatus({ mode, connectionState, isResponding, isListening, micState, errorMessage }),
+    [connectionState, errorMessage, isListening, isResponding, micState, mode]
   );
 
   const orbVisualConfig = useMemo(
@@ -383,15 +390,15 @@ export default function VoiceModePanel({
     const notes = [];
 
     if (connectionState === "connected") {
-      notes.push("Realtime 세션이 app-server와 동기화된 상태입니다.");
+      notes.push(mode === "tts" ? "TTS fallback 세션이 app-server 보고와 동기화된 상태입니다." : "Realtime 세션이 app-server와 동기화된 상태입니다.");
     }
 
     if (isListening) {
-      notes.push("현재 사용자 발화를 안정적으로 수집하고 있습니다.");
+      notes.push(mode === "tts" ? "브라우저 STT가 현재 사용자 발화를 안정적으로 수집하고 있습니다." : "현재 사용자 발화를 안정적으로 수집하고 있습니다.");
     }
 
     if (isResponding) {
-      notes.push("생성된 응답을 짧고 자연스럽게 음성으로 보고 중입니다.");
+      notes.push(mode === "tts" ? "생성된 응답을 TTS로 짧고 자연스럽게 보고 중입니다." : "생성된 응답을 짧고 자연스럽게 음성으로 보고 중입니다.");
     }
 
     if (!notes.length) {
@@ -399,7 +406,7 @@ export default function VoiceModePanel({
     }
 
     return notes.slice(0, 3);
-  }, [connectionState, isListening, isResponding]);
+  }, [connectionState, isListening, isResponding, mode]);
 
   return (
     <section className="voice-mode-panel" data-testid="voice-mode-panel" aria-hidden={!open}>
@@ -414,8 +421,8 @@ export default function VoiceModePanel({
                 ✦
               </div>
               <div>
-                <p className="voice-mode-panel__system-title">System Online</p>
-                <p className="voice-mode-panel__system-subtitle">{connectionLabel} voice session</p>
+                <p className="voice-mode-panel__system-title">{mode === "tts" ? "Fallback Voice" : "System Online"}</p>
+                <p className="voice-mode-panel__system-subtitle">{connectionLabel} {mode === "tts" ? "tts session" : "voice session"}</p>
               </div>
             </div>
 

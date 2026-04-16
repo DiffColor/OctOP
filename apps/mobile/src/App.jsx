@@ -1534,9 +1534,14 @@ function createDefaultThreadDetailCacheStore() {
 function createInitialThreadVoiceState() {
   return {
     enabled: false,
+    mode: "off",
     promptSubmittedAt: "",
     lastSubmittedPrompt: "",
-    delegatedThreadId: ""
+    delegatedThreadId: "",
+    capabilityDateKey: "",
+    realtimeStatus: "unknown",
+    ttsStatus: "unknown",
+    lastError: ""
   };
 }
 

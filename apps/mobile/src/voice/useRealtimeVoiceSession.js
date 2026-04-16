@@ -324,7 +324,8 @@ export default function useRealtimeVoiceSession({
   recentConversationSummary = "",
   projectProgramSummary = "",
   threadFileContextSummary = "",
-  onSubmitPrompt = null
+  onSubmitPrompt = null,
+  onAvailabilityChange = null
 }) {
   const [state, setState] = useState(createInitialState);
   const peerConnectionRef = useRef(null);
@@ -363,6 +364,10 @@ export default function useRealtimeVoiceSession({
   const lastFinalReportSourceRef = useRef("");
   const issuePollSequenceRef = useRef(0);
   const activeSessionContextKeyRef = useRef("");
+  const availabilityRef = useRef({
+    status: "",
+    error: ""
+  });
 
   const publishAudioMetricsUiSnapshot = useCallback((snapshot) => {
     audioMetricsUiSnapshotRef.current = snapshot;
@@ -394,6 +399,37 @@ export default function useRealtimeVoiceSession({
       subscribe: subscribeAudioMetrics
     }),
     [getAudioMetricsSnapshot, subscribeAudioMetrics]
+  );
+
+  const reportAvailabilityChange = useCallback(
+    (status, error = "") => {
+      if (typeof onAvailabilityChange !== "function") {
+        return;
+      }
+
+      const normalizedStatus = status === "blocked" ? "blocked" : status === "available" ? "available" : "";
+      const normalizedError = String(error ?? "").trim();
+
+      if (!normalizedStatus) {
+        return;
+      }
+
+      if (availabilityRef.current.status === normalizedStatus && availabilityRef.current.error === normalizedError) {
+        return;
+      }
+
+      availabilityRef.current = {
+        status: normalizedStatus,
+        error: normalizedError
+      };
+
+      onAvailabilityChange({
+        provider: "realtime",
+        status: normalizedStatus,
+        error: normalizedError
+      });
+    },
+    [onAvailabilityChange]
   );
 
   const refreshInputDevices = useCallback(async (preferredDeviceId = "") => {
@@ -1375,6 +1411,10 @@ export default function useRealtimeVoiceSession({
           }
 
           const nextState = peerConnection.connectionState;
+          const connectionErrorMessage =
+            nextState === "failed" || nextState === "disconnected" || nextState === "closed"
+              ? "실시간 음성 연결이 끊어졌습니다."
+              : "";
 
           setState((current) => ({
             ...current,
@@ -1391,6 +1431,10 @@ export default function useRealtimeVoiceSession({
                   ? "error"
                   : current.micState
           }));
+
+          if (connectionErrorMessage) {
+            reportAvailabilityChange("blocked", connectionErrorMessage);
+          }
         };
 
         localStream.getTracks().forEach((track) => {
@@ -1408,6 +1452,7 @@ export default function useRealtimeVoiceSession({
             connectionState: "connected",
             micState: "listening"
           }));
+          reportAvailabilityChange("available");
         };
         dataChannel.onmessage = (rawEvent) => {
           if (disconnectingRef.current || sessionVersionRef.current !== sessionVersion) {
@@ -1434,6 +1479,7 @@ export default function useRealtimeVoiceSession({
             isListening: false,
             isResponding: false
           }));
+          reportAvailabilityChange("blocked", "실시간 음성 데이터 채널이 종료되었습니다.");
         };
 
         const offer = await peerConnection.createOffer();
@@ -1479,6 +1525,7 @@ export default function useRealtimeVoiceSession({
           sessionId: String(sessionPayload?.session?.id ?? "").trim(),
           error: ""
         }));
+        reportAvailabilityChange("available");
 
         return true;
       } catch (error) {
@@ -1486,14 +1533,16 @@ export default function useRealtimeVoiceSession({
           return false;
         }
 
+        const describedError = describeVoiceError(error);
         await disconnectSession({ preserveTranscript: true, preservePendingIssuePoll: true });
         activeSessionContextKeyRef.current = normalizedSessionContextKey;
         setState((current) => ({
           ...current,
           connectionState: "error",
           micState: "error",
-          error: describeVoiceError(error)
+          error: describedError
         }));
+        reportAvailabilityChange("blocked", describedError);
         return false;
       } finally {
         connectInFlightRef.current = null;
@@ -1522,12 +1571,14 @@ export default function useRealtimeVoiceSession({
     requestPreferredMicrophoneStream,
     startAudioLevelMeter,
     latestHandoffSummary,
+    onAvailabilityChange,
     threadFileContextSummary,
     thread?.id,
     thread?.status,
     thread?.title,
     threadContinuitySummary,
-    threadDeveloperInstructions
+    threadDeveloperInstructions,
+    reportAvailabilityChange
   ]);
 
   useEffect(() => {
