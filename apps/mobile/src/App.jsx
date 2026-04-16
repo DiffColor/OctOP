@@ -21,6 +21,7 @@ import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 import buildMobileDetailProps from "./buildMobileDetailProps.js";
 import buildMobileInboxScreenProps from "./buildMobileInboxScreenProps.js";
+import buildMobileUiHelperBundles from "./buildMobileUiHelperBundles.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
 import MobileInboxScreen, {
   MobileInboxActionBar,
@@ -4079,37 +4080,28 @@ function MainPage({
     chatId: selectedTodoChat?.id ?? todoChatDetail?.chat?.id ?? selectedTodoChatId
   });
   const todoComposerDraft = todoComposerDraftKey ? threadComposerDrafts[todoComposerDraftKey] ?? "" : "";
-  const inlineIssueComposerHelpers = {
+  const {
+    inlineIssueComposerHelpers,
+    todoChatDetailUiComponents,
+    todoChatDetailUtils,
+    threadDetailHelpers,
+    threadListItemHelpers
+  } = buildMobileUiHelperBundles({
+    MessageBubble,
+    RichMessageContent,
     CHAT_COMPOSER_MAX_HEIGHT_PX,
     MAX_MESSAGE_ATTACHMENTS,
     MESSAGE_ATTACHMENT_ACCEPT,
+    THREAD_LIST_ITEM_LONG_PRESS_MS,
+    THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX,
+    THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX,
     appendMessageAttachments,
-    cleanupMessageAttachmentUpload,
-    cleanupMessageAttachmentUploads,
-    formatMessageAttachmentSize,
-    getViewportOrientation,
-    hasCoarsePointerDevice,
-    normalizeComposerDraftValue,
-    normalizeMessageAttachments,
-    resolveMessageAttachmentBadge
-  };
-  const todoChatDetailUiComponents = {
-    MessageBubbleComponent: MessageBubble,
-    RichMessageContentComponent: RichMessageContent
-  };
-  const todoChatDetailUtils = {
-    formatMessageAttachmentSize,
-    formatRelativeTime,
-    normalizeMessageAttachment,
-    normalizeMessageAttachments,
-    resolveMessageAttachmentBadge,
-    useTouchScrollBoundaryLock
-  };
-  const threadDetailHelpers = {
-    buildSpeechFriendlyMessageText,
     buildRunTimeline,
+    buildSpeechFriendlyMessageText,
     buildThreadResponseSignal,
     captureScrollAnchorSnapshot,
+    cleanupMessageAttachmentUpload,
+    cleanupMessageAttachmentUploads,
     copyTextToClipboard,
     createInitialThreadVoiceState,
     findActiveIssueForThread,
@@ -4121,25 +4113,19 @@ function MainPage({
     getRealtimeProgressText,
     getStatusMeta,
     getThreadContextUsage,
+    getThreadPreview,
+    getViewportOrientation,
+    hasCoarsePointerDevice,
     isBottomBoundaryMomentumLocked,
     isTextInputElement,
+    normalizeComposerDraftValue,
     normalizeIssue,
     normalizeMessageAttachment,
     normalizeMessageAttachments,
     resolveMessageAttachmentBadge,
     restoreScrollAnchorSnapshot,
     useTouchScrollBoundaryLock
-  };
-  const threadListItemHelpers = {
-    buildThreadResponseSignal,
-    formatRelativeTime,
-    formatThreadContextUsage,
-    getStatusMeta,
-    getThreadPreview,
-    longPressMs: THREAD_LIST_ITEM_LONG_PRESS_MS,
-    reorderMoveTolerancePx: THREAD_LIST_ITEM_REORDER_MOVE_TOLERANCE_PX,
-    longPressCancelTolerancePx: THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX
-  };
+  });
 
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
