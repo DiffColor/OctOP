@@ -58,7 +58,8 @@ const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "tool_call",
   "mcp_call",
   "skill_call",
-  "function_call"
+  "function_call",
+  "function_result"
 ]);
 
 function normalizeVoiceMode(value) {
