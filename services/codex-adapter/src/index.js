@@ -10632,8 +10632,15 @@ function mergeRemoteTurnItemsFromSessionLog(turn = {}, sessionItems = []) {
   const existingItems = Array.isArray(turn?.items) ? turn.items : [];
   const normalizedSessionItems = Array.isArray(sessionItems) ? sessionItems : [];
 
-  if (existingItems.length === 0 || normalizedSessionItems.length === 0) {
+  if (normalizedSessionItems.length === 0) {
     return turn;
+  }
+
+  if (existingItems.length === 0) {
+    return {
+      ...turn,
+      items: normalizedSessionItems
+    };
   }
 
   const hiddenToolItems = normalizedSessionItems.filter((item) => Boolean(inferRemoteVisibleItemKind(item)));
@@ -11463,32 +11470,40 @@ function collectTextFromRemoteResultItem(item) {
 
 function collectAssistantTextFromRemoteTurn(turn) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
-  return normalizeAssistantMessageContent(joinBackfillTextSegments(
-    items
-      .map((item) => {
-        if (!item || typeof item !== "object") {
-          return "";
-        }
-
-        if (String(item.type ?? "").trim() === "agentMessage") {
-          return (
-            String(item.text ?? "").trim() ||
-            collectTextFromRemoteMessageContent(item.content) ||
-            String(item?.agentMessage?.text ?? "").trim()
-          );
-        }
-
-        if (item.agentMessage && typeof item.agentMessage === "object") {
-          return (
-            String(item.agentMessage.text ?? "").trim() ||
-            collectTextFromRemoteMessageContent(item.agentMessage.content)
-          );
-        }
-
+  const assistantSegments = items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
         return "";
-      })
-      .filter(Boolean)
-  ));
+      }
+
+      if (String(item.type ?? "").trim() === "agentMessage") {
+        return (
+          String(item.text ?? "").trim() ||
+          collectTextFromRemoteMessageContent(item.content) ||
+          String(item?.agentMessage?.text ?? "").trim()
+        );
+      }
+
+      if (item.agentMessage && typeof item.agentMessage === "object") {
+        return (
+          String(item.agentMessage.text ?? "").trim() ||
+          collectTextFromRemoteMessageContent(item.agentMessage.content)
+        );
+      }
+
+      return "";
+    })
+    .filter(Boolean);
+
+  if (assistantSegments.length > 0) {
+    return normalizeAssistantMessageContent(joinBackfillTextSegments(assistantSegments));
+  }
+
+  const resultSegments = items
+    .map((item) => (isRemoteResultBearingItem(item) ? collectTextFromRemoteResultItem(item) : ""))
+    .filter(Boolean);
+
+  return normalizeAssistantMessageContent(joinBackfillTextSegments(resultSegments));
 }
 
 function normalizeRemoteTurnRuntimeStatus(remoteThread, turn, fallbackStatus = "running") {
