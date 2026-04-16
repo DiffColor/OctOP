@@ -1,16 +1,38 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const mobilePackage = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 const mobileAppVersion = String(process.env.OCTOP_MOBILE_APP_VERSION ?? mobilePackage.version ?? "").trim() || "0.0.0";
-const mobileBuildId = String(process.env.OCTOP_MOBILE_BUILD_ID ?? mobileAppVersion).trim() || mobileAppVersion;
+
+function readGitShortSha() {
+  try {
+    return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+      cwd: new URL("../../", import.meta.url),
+      stdio: ["ignore", "pipe", "ignore"]
+    })
+      .toString("utf8")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function createDefaultBuildId() {
+  const builtAt = new Date().toISOString().replace(/[-:.TZ]/g, "");
+  const gitShortSha = readGitShortSha();
+  return gitShortSha ? `${builtAt}-${gitShortSha}` : builtAt;
+}
+
+const mobileBuildId = String(process.env.OCTOP_MOBILE_BUILD_ID ?? createDefaultBuildId()).trim() || createDefaultBuildId();
 
 function mobileBuildMetadataPlugin(buildId) {
   const source = JSON.stringify(
     {
       buildId,
-      version: mobileAppVersion
+      version: mobileAppVersion,
+      builtAt: new Date().toISOString()
     },
     null,
     2
