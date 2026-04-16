@@ -1883,7 +1883,7 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
-const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+const SYSTEM_ACTIVITY_MESSAGE_KINDS = new Set([
   "tool_call",
   "tool_result",
   "mcp_call",
@@ -1892,6 +1892,12 @@ const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
   "skill_result",
   "function_call",
   "function_result"
+]);
+const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+  "tool_call",
+  "mcp_call",
+  "skill_call",
+  "function_call"
 ]);
 
 const RUN_TIMELINE_MESSAGE_TITLE_BY_KIND = {
@@ -1908,6 +1914,11 @@ const RUN_TIMELINE_MESSAGE_TITLE_BY_KIND = {
 
 function shouldHideThreadPreviewMessage(value = "") {
   return HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS.has(String(value ?? "").trim());
+}
+
+function isSystemActivityMessageKind(value = "") {
+  const normalizedKind = String(value ?? "").trim();
+  return normalizedKind === "handoff_summary" || SYSTEM_ACTIVITY_MESSAGE_KINDS.has(normalizedKind);
 }
 
 function getThreadPreviewMessageKind(thread) {
@@ -1969,7 +1980,7 @@ function buildRunTimeline(thread, messages = []) {
   const timelineMessages = (Array.isArray(messages) ? messages : [])
     .filter((message) => {
       const normalizedKind = String(message?.kind ?? "").trim();
-      return normalizedKind === "handoff_summary" || shouldHideThreadPreviewMessage(normalizedKind);
+      return isSystemActivityMessageKind(normalizedKind);
     })
     .map((message, index) => ({
       id: message.id ?? `${thread.id}-message-${index}`,

@@ -56,13 +56,9 @@ const SYSTEM_MESSAGE_TITLE_BY_KIND = {
 };
 const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "tool_call",
-  "tool_result",
   "mcp_call",
-  "mcp_result",
   "skill_call",
-  "skill_result",
-  "function_call",
-  "function_result"
+  "function_call"
 ]);
 
 function normalizeVoiceMode(value) {
@@ -2165,7 +2161,11 @@ export default function ThreadDetail({
                   ? isDraft
                     ? "첫 프롬프트를 입력해 작업을 시작해 주세요."
                     : "아직 대화가 없습니다. 첫 프롬프트를 입력해 작업을 시작해 보세요."
-                  : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
+                  : messageFilter === "responses"
+                    ? "표시할 응답이 없습니다."
+                    : messageFilter === "prompts"
+                      ? "표시할 프롬프트가 없습니다."
+                      : "타임라인으로 정리할 대화가 없습니다. 새 프롬프트를 입력해 히스토리를 만들어 보세요."}
             </div>
           ) : null}
 
