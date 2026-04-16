@@ -3967,8 +3967,16 @@ function normalizeTodoMessage(message) {
 }
 
 function getThreadPreview(thread) {
+  const status = String(thread?.status ?? "")
+    .trim()
+    .toLowerCase();
+  const shouldUseProgressPreview =
+    shouldHideThreadPreviewForThread(thread) ||
+    status === "queued" ||
+    status === "running" ||
+    status === "awaiting_input";
   const rawPreview =
-    shouldHideThreadPreviewForThread(thread)
+    shouldUseProgressPreview
       ? getRealtimeProgressText(thread)
       : thread.last_message || getRealtimeProgressText(thread);
   const normalizedPreview = normalizeAssistantMessageContent(rawPreview)
