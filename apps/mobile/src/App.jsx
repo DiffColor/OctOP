@@ -25,7 +25,9 @@ import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mo
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
 import useProjectChipReorder from "./useProjectChipReorder.js";
+import useThreadSelectionState from "./useThreadSelectionState.js";
 import useThreadListReorder from "./useThreadListReorder.js";
+import useWideThreadSplitResize from "./useWideThreadSplitResize.js";
 import {
   BottomSheet,
   LoginPage,
@@ -4004,29 +4006,13 @@ function MainPage({
 }) {
   const { confirm: confirmMobileAction } = useMobileFeedback();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [threadSelectionMode, setThreadSelectionMode] = useState(false);
   const [projectActionProjectId, setProjectActionProjectId] = useState("");
-  const [selectedThreadIds, setSelectedThreadIds] = useState([]);
   const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
   const [todoMessageEditorOpen, setTodoMessageEditorOpen] = useState(false);
   const [todoTransferOpen, setTodoTransferOpen] = useState(false);
-  const [wideThreadSplitRatio, setWideThreadSplitRatio] = useState(() =>
-    readStoredMobileWorkspaceLayout({
-      loginId: session?.loginId ?? "",
-      bridgeId: selectedBridgeId
-    }).wideThreadSplitRatio
-  );
-  const wideThreadSplitLayoutRef = useRef(null);
-  const wideThreadSplitResizePointerIdRef = useRef(null);
-  const wideThreadSplitResizeStartXRef = useRef(0);
-  const wideThreadSplitResizeStartRatioRef = useRef(0.5);
   const [optimisticProjectChipOrder, setOptimisticProjectChipOrder] = useState(null);
   const [optimisticThreadOrderByProjectId, setOptimisticThreadOrderByProjectId] = useState({});
-  const resetThreadSelection = useCallback(() => {
-    setThreadSelectionMode(false);
-    setSelectedThreadIds([]);
-  }, []);
   const deferredSearch = useDeferredValue(search);
   const searchKeyword = deferredSearch.trim().toLowerCase();
   const viewportWidth = useVisualViewportWidth();
@@ -4044,41 +4030,6 @@ function MainPage({
     return resolveOrderedProjects(projects, projectFilterUsage, effectiveProjectChipOrder);
   }, [effectiveProjectChipOrder, projectFilterUsage, projects]);
   const orderedProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
-  const {
-    projectChipRowRef,
-    projectChipNodesRef,
-    projectChipLayoutSnapshotRef,
-    draggingProjectChipId,
-    draggingProjectChipOffsetX,
-    lockProjectChipDropLayout,
-    registerProjectChipNode,
-    resolveProjectChipSlideOffsetX,
-    handleProjectChipPointerDown,
-    handleProjectChipContextMenu,
-    handleProjectChipClick
-  } = useProjectChipReorder({
-    orderedProjectIds,
-    projects,
-    projectChipOrder,
-    optimisticProjectChipOrder,
-    setOptimisticProjectChipOrder,
-    onChangeProjectChipOrder,
-    onOpenProjectEditDialog,
-    setProjectActionProjectId,
-    onResetThreadSelection: resetThreadSelection,
-    onSelectProject,
-    longPressMs: PROJECT_CHIP_LONG_PRESS_MS,
-    reorderMoveTolerancePx: PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX,
-    longPressCancelTolerancePx: PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX,
-    reorderPositionLockFrameCount: REORDER_POSITION_LOCK_FRAME_COUNT,
-    utils: {
-      areStringArraysEqual,
-      buildProjectChipCollapsedLayouts,
-      getFlexRowGapPx,
-      normalizeProjectChipOrder,
-      reorderProjectChipIdsByIndex
-    }
-  });
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedProjectName = String(selectedProject?.name ?? "").trim();
   const appHeaderTitle = !isTodoScope && selectedProjectName ? selectedProjectName : "OctOP";
@@ -4180,64 +4131,6 @@ function MainPage({
     longPressCancelTolerancePx: THREAD_LIST_ITEM_LONG_PRESS_CANCEL_TOLERANCE_PX
   };
 
-  useEffect(() => {
-    if (typeof onRegisterBackHandler !== "function") {
-      return undefined;
-    }
-
-    onRegisterBackHandler(() => {
-      if (todoTransferOpen) {
-        setTodoTransferOpen(false);
-        return true;
-      }
-
-      if (todoMessageEditorOpen) {
-        setTodoMessageEditorOpen(false);
-        return true;
-      }
-
-      if (activeTodoMessage) {
-        setActiveTodoMessage(null);
-        return true;
-      }
-
-      if (todoChatBeingEdited) {
-        setTodoChatBeingEdited(null);
-        return true;
-      }
-
-      if (projectActionTarget) {
-        setProjectActionProjectId("");
-        return true;
-      }
-
-      if (threadSelectionMode) {
-        setThreadSelectionMode(false);
-        setSelectedThreadIds([]);
-        return true;
-      }
-
-      if (searchOpen) {
-        setSearchOpen(false);
-        return true;
-      }
-
-      return false;
-    });
-
-    return () => {
-      onRegisterBackHandler(null);
-    };
-  }, [
-    activeTodoMessage,
-    onRegisterBackHandler,
-    projectActionTarget,
-    searchOpen,
-    threadSelectionMode,
-    todoChatBeingEdited,
-    todoMessageEditorOpen,
-    todoTransferOpen
-  ]);
   const filteredTodoChats = useMemo(() => {
     return todoChats.filter((chat) => {
       const normalizedTitle = String(chat?.title ?? "").toLowerCase();
@@ -4272,6 +4165,65 @@ function MainPage({
   }, [orderedThreads, searchKeyword, selectedProjectId]);
   const orderedThreadIds = useMemo(() => orderedThreads.map((thread) => thread.id), [orderedThreads]);
   const filteredThreadIds = useMemo(() => filteredThreads.map((thread) => thread.id), [filteredThreads]);
+  const selectedProjectThreadIds = useMemo(
+    () =>
+      new Set(
+        threads
+          .filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId)
+          .map((thread) => thread.id)
+      ),
+    [selectedProjectId, threads]
+  );
+  const {
+    threadSelectionMode,
+    selectedThreadIds,
+    resetThreadSelection,
+    handleEnterThreadSelectionMode,
+    handleCancelThreadSelection,
+    handleToggleThreadSelection,
+    handleDeleteSelectedThreads
+  } = useThreadSelectionState({
+    activeView,
+    filteredThreads,
+    isTodoScope,
+    onDeleteThreads,
+    selectedProjectThreadIds
+  });
+  const {
+    projectChipRowRef,
+    projectChipNodesRef,
+    projectChipLayoutSnapshotRef,
+    draggingProjectChipId,
+    draggingProjectChipOffsetX,
+    lockProjectChipDropLayout,
+    registerProjectChipNode,
+    resolveProjectChipSlideOffsetX,
+    handleProjectChipPointerDown,
+    handleProjectChipContextMenu,
+    handleProjectChipClick
+  } = useProjectChipReorder({
+    orderedProjectIds,
+    projects,
+    projectChipOrder,
+    optimisticProjectChipOrder,
+    setOptimisticProjectChipOrder,
+    onChangeProjectChipOrder,
+    onOpenProjectEditDialog,
+    setProjectActionProjectId,
+    onResetThreadSelection: resetThreadSelection,
+    onSelectProject,
+    longPressMs: PROJECT_CHIP_LONG_PRESS_MS,
+    reorderMoveTolerancePx: PROJECT_CHIP_REORDER_MOVE_TOLERANCE_PX,
+    longPressCancelTolerancePx: PROJECT_CHIP_LONG_PRESS_CANCEL_TOLERANCE_PX,
+    reorderPositionLockFrameCount: REORDER_POSITION_LOCK_FRAME_COUNT,
+    utils: {
+      areStringArraysEqual,
+      buildProjectChipCollapsedLayouts,
+      getFlexRowGapPx,
+      normalizeProjectChipOrder,
+      reorderProjectChipIdsByIndex
+    }
+  });
   const {
     registerThreadListItemNode,
     draggingThreadId,
@@ -4301,15 +4253,64 @@ function MainPage({
       reorderThreadIdsByIndex
     }
   });
-  const selectedProjectThreadIds = useMemo(
-    () =>
-      new Set(
-        threads
-          .filter((thread) => !selectedProjectId || thread.project_id === selectedProjectId)
-          .map((thread) => thread.id)
-      ),
-    [selectedProjectId, threads]
-  );
+  useEffect(() => {
+    if (typeof onRegisterBackHandler !== "function") {
+      return undefined;
+    }
+
+    onRegisterBackHandler(() => {
+      if (todoTransferOpen) {
+        setTodoTransferOpen(false);
+        return true;
+      }
+
+      if (todoMessageEditorOpen) {
+        setTodoMessageEditorOpen(false);
+        return true;
+      }
+
+      if (activeTodoMessage) {
+        setActiveTodoMessage(null);
+        return true;
+      }
+
+      if (todoChatBeingEdited) {
+        setTodoChatBeingEdited(null);
+        return true;
+      }
+
+      if (projectActionTarget) {
+        setProjectActionProjectId("");
+        return true;
+      }
+
+      if (threadSelectionMode) {
+        resetThreadSelection();
+        return true;
+      }
+
+      if (searchOpen) {
+        setSearchOpen(false);
+        return true;
+      }
+
+      return false;
+    });
+
+    return () => {
+      onRegisterBackHandler(null);
+    };
+  }, [
+    activeTodoMessage,
+    onRegisterBackHandler,
+    projectActionTarget,
+    resetThreadSelection,
+    searchOpen,
+    threadSelectionMode,
+    todoChatBeingEdited,
+    todoMessageEditorOpen,
+    todoTransferOpen
+  ]);
   const threadDetailMessages = threadDetail?.messages ?? [];
   const threadDetailLoading = threadDetail?.loading ?? false;
   const threadDetailError = threadDetail?.error ?? "";
@@ -4337,29 +4338,6 @@ function MainPage({
   const todoChatMessages = todoChatDetail?.messages ?? [];
   const todoChatLoading = todoChatDetail?.loading ?? false;
   const todoChatError = todoChatDetail?.error ?? "";
-  useEffect(() => {
-    setSelectedThreadIds((current) => current.filter((threadId) => selectedProjectThreadIds.has(threadId)));
-  }, [selectedProjectThreadIds]);
-  useEffect(() => {
-    if (activeView !== "inbox" || isTodoScope) {
-      setThreadSelectionMode(false);
-      setSelectedThreadIds([]);
-    }
-  }, [activeView, isTodoScope]);
-  useEffect(() => {
-    if (!threadSelectionMode) {
-      return;
-    }
-
-    if (filteredThreads.length === 0) {
-      setThreadSelectionMode(false);
-    }
-  }, [filteredThreads.length, threadSelectionMode]);
-  useEffect(() => {
-    if (threadSelectionMode && selectedThreadIds.length === 0) {
-      setThreadSelectionMode(false);
-    }
-  }, [selectedThreadIds.length, threadSelectionMode]);
   const requestProjectDeletion = useCallback(
     async (project) => {
       if (!project?.id || !onDeleteProject) {
@@ -4386,67 +4364,6 @@ function MainPage({
     },
     [confirmMobileAction, onDeleteProject]
   );
-  const handleEnterThreadSelectionMode = useCallback((threadId = "") => {
-    const normalizedThreadId = String(threadId ?? "").trim();
-
-    if (filteredThreads.length === 0) {
-      return;
-    }
-
-    setThreadSelectionMode(true);
-    setSelectedThreadIds((current) => {
-      if (!normalizedThreadId) {
-        return current;
-      }
-
-      if (current.includes(normalizedThreadId)) {
-        return current;
-      }
-
-      return [...current, normalizedThreadId];
-    });
-  }, [filteredThreads.length]);
-  const handleCancelThreadSelection = useCallback(() => {
-    setThreadSelectionMode(false);
-    setSelectedThreadIds([]);
-  }, []);
-  const handleToggleThreadSelection = useCallback((threadId) => {
-    const normalizedThreadId = String(threadId ?? "").trim();
-
-    if (!normalizedThreadId) {
-      return;
-    }
-
-    setThreadSelectionMode(true);
-    setSelectedThreadIds((current) =>
-      current.includes(normalizedThreadId)
-        ? current.filter((currentThreadId) => currentThreadId !== normalizedThreadId)
-        : [...current, normalizedThreadId]
-    );
-  }, []);
-  const handleDeleteSelectedThreads = useCallback(async () => {
-    if (selectedThreadIds.length === 0) {
-      return;
-    }
-
-    const result = await onDeleteThreads(selectedThreadIds);
-    const deletedThreadIds = Array.isArray(result?.deletedThreadIds)
-      ? result.deletedThreadIds.map((threadId) => String(threadId ?? "").trim()).filter(Boolean)
-      : [];
-
-    if (deletedThreadIds.length > 0) {
-      setSelectedThreadIds((current) =>
-        current.filter((threadId) => !deletedThreadIds.includes(String(threadId ?? "").trim()))
-      );
-    }
-
-    if (result?.accepted !== false && result !== false) {
-      setThreadSelectionMode(false);
-      setSelectedThreadIds([]);
-      return;
-    }
-
-  }, [onDeleteThreads, selectedThreadIds]);
   const threadProject =
     projects.find((project) => project.id === resolvedThread?.project_id) ??
     draftProject ??
@@ -4458,13 +4375,30 @@ function MainPage({
     viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_MIN_WIDTH_PX &&
     (selectedProjectId || draftThreadProjectId || selectedThreadId);
   const showWideSplitLayout = showWideTodoSplitLayout || showWideThreadSplitLayout;
-  const wideThreadSplitResizeEnabled = viewportWidth >= MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX;
+  const {
+    wideThreadSplitLayoutRef,
+    wideThreadSplitResizeEnabled,
+    wideThreadSplitLeftWeight,
+    wideThreadSplitRightWeight,
+    handleWideThreadSplitResizePointerDown,
+    handleWideThreadSplitResizePointerMove,
+    handleWideThreadSplitResizePointerUp
+  } = useWideThreadSplitResize({
+    selectedBridgeId,
+    sessionLoginId: session?.loginId ?? "",
+    showWideSplitLayout,
+    viewportWidth,
+    resizeMinWidthPx: MOBILE_WIDE_THREAD_SPLIT_RESIZE_MIN_WIDTH_PX,
+    utils: {
+      clampWideThreadSplitRatio,
+      readStoredMobileWorkspaceLayout,
+      storeMobileWorkspaceLayout
+    }
+  });
   const splitThreadEmptyStateMessage =
     !selectedThreadId && !draftProject
       ? "채팅창이 없습니다. 좌측 쓰레드를 선택하거나 새 채팅창을 시작해 주세요."
       : "";
-  const wideThreadSplitLeftWeight = Math.max(1, Math.round(wideThreadSplitRatio * 100));
-  const wideThreadSplitRightWeight = Math.max(1, 100 - wideThreadSplitLeftWeight);
   const projectChipRowProps = {
     isTodoScope,
     orderedProjects,
@@ -4483,141 +4417,6 @@ function MainPage({
     onProjectChipPointerDown: handleProjectChipPointerDown,
     onProjectChipContextMenu: handleProjectChipContextMenu
   };
-
-  useEffect(() => {
-    const storedRatio = readStoredMobileWorkspaceLayout({
-      loginId: session?.loginId ?? "",
-      bridgeId: selectedBridgeId
-    }).wideThreadSplitRatio;
-
-    setWideThreadSplitRatio(storedRatio);
-  }, [selectedBridgeId, session?.loginId]);
-
-  useEffect(() => {
-    if (!session?.loginId || !selectedBridgeId) {
-      return;
-    }
-
-    storeMobileWorkspaceLayout(
-      {
-        wideThreadSplitRatio
-      },
-      {
-        loginId: session.loginId,
-        bridgeId: selectedBridgeId
-      }
-    );
-  }, [selectedBridgeId, session?.loginId, wideThreadSplitRatio]);
-
-  useEffect(() => {
-    if (!showWideSplitLayout || !wideThreadSplitResizeEnabled) {
-      return;
-    }
-
-    const containerWidth = wideThreadSplitLayoutRef.current?.clientWidth ?? viewportWidth ?? 0;
-    setWideThreadSplitRatio((current) => clampWideThreadSplitRatio(current, containerWidth));
-  }, [showWideSplitLayout, viewportWidth, wideThreadSplitResizeEnabled]);
-
-  const updateWideThreadSplitRatioFromClientX = useCallback((clientX) => {
-    const container = wideThreadSplitLayoutRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    const rect = container.getBoundingClientRect();
-
-    if (rect.width <= 0) {
-      return;
-    }
-
-    const deltaX = clientX - wideThreadSplitResizeStartXRef.current;
-    const nextRatio = clampWideThreadSplitRatio(
-      wideThreadSplitResizeStartRatioRef.current + deltaX / rect.width,
-      rect.width
-    );
-
-    setWideThreadSplitRatio(nextRatio);
-  }, []);
-
-  const handleWideThreadSplitResizePointerDown = useCallback(
-    (event) => {
-      if (!wideThreadSplitResizeEnabled) {
-        return;
-      }
-
-      wideThreadSplitResizePointerIdRef.current = event.pointerId;
-      wideThreadSplitResizeStartXRef.current = event.clientX;
-      wideThreadSplitResizeStartRatioRef.current = wideThreadSplitRatio;
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-      event.preventDefault();
-    },
-    [wideThreadSplitRatio, wideThreadSplitResizeEnabled]
-  );
-
-  const handleWideThreadSplitResizePointerMove = useCallback(
-    (event) => {
-      if (
-        !wideThreadSplitResizeEnabled ||
-        wideThreadSplitResizePointerIdRef.current === null ||
-        event.pointerId !== wideThreadSplitResizePointerIdRef.current
-      ) {
-        return;
-      }
-
-      updateWideThreadSplitRatioFromClientX(event.clientX);
-      event.preventDefault();
-    },
-    [updateWideThreadSplitRatioFromClientX, wideThreadSplitResizeEnabled]
-  );
-
-  const handleWideThreadSplitResizePointerUp = useCallback((event) => {
-    if (wideThreadSplitResizePointerIdRef.current === null || event.pointerId !== wideThreadSplitResizePointerIdRef.current) {
-      return;
-    }
-
-    wideThreadSplitResizePointerIdRef.current = null;
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-  }, []);
-
-  useEffect(() => {
-    if (!wideThreadSplitResizeEnabled || typeof window === "undefined") {
-      return undefined;
-    }
-
-    const handleWindowPointerMove = (event) => {
-      if (
-        wideThreadSplitResizePointerIdRef.current === null ||
-        event.pointerId !== wideThreadSplitResizePointerIdRef.current
-      ) {
-        return;
-      }
-
-      updateWideThreadSplitRatioFromClientX(event.clientX);
-      event.preventDefault();
-    };
-
-    const handleWindowPointerUp = (event) => {
-      if (
-        wideThreadSplitResizePointerIdRef.current === null ||
-        event.pointerId !== wideThreadSplitResizePointerIdRef.current
-      ) {
-        return;
-      }
-
-      wideThreadSplitResizePointerIdRef.current = null;
-    };
-
-    window.addEventListener("pointermove", handleWindowPointerMove, { passive: false });
-    window.addEventListener("pointerup", handleWindowPointerUp);
-    window.addEventListener("pointercancel", handleWindowPointerUp);
-
-    return () => {
-      window.removeEventListener("pointermove", handleWindowPointerMove);
-      window.removeEventListener("pointerup", handleWindowPointerUp);
-      window.removeEventListener("pointercancel", handleWindowPointerUp);
-    };
-  }, [updateWideThreadSplitRatioFromClientX, wideThreadSplitResizeEnabled]);
 
   const chromeProps = {
     appHeaderTitle,
