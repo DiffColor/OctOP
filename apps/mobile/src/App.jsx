@@ -17,7 +17,6 @@ import {
   reduceBridgeDisconnectEvidence,
   resolveApiBaseUrl
 } from "../../../packages/domain/src/index.js";
-import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
 import buildMobileDetailProps from "./buildMobileDetailProps.js";
 import buildMobileInboxScreenProps from "./buildMobileInboxScreenProps.js";
@@ -42,7 +41,6 @@ import useThreadSelectionState from "./useThreadSelectionState.js";
 import useThreadListReorder from "./useThreadListReorder.js";
 import useWideThreadSplitResize from "./useWideThreadSplitResize.js";
 import {
-  BottomSheet,
   LoginPage,
   MobileConfirmDialog,
   MobileFeedbackContext,
