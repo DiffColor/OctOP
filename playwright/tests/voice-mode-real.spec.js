@@ -450,8 +450,44 @@ async function installVoiceBrowserMocks(page) {
         this.autoplay = true;
         this.playsInline = true;
         this.srcObject = null;
+        this._listeners = new Map();
+      }
+      addEventListener(type, listener, options = {}) {
+        const normalizedType = String(type ?? '').trim();
+        if (!normalizedType || typeof listener !== 'function') {
+          return;
+        }
+
+        const listeners = this._listeners.get(normalizedType) ?? [];
+        listeners.push({
+          listener,
+          once: options === true || Boolean(options?.once)
+        });
+        this._listeners.set(normalizedType, listeners);
+      }
+      removeEventListener(type, listener) {
+        const normalizedType = String(type ?? '').trim();
+        const listeners = this._listeners.get(normalizedType) ?? [];
+        this._listeners.set(
+          normalizedType,
+          listeners.filter((entry) => entry.listener !== listener)
+        );
+      }
+      _emit(type) {
+        const normalizedType = String(type ?? '').trim();
+        const listeners = [...(this._listeners.get(normalizedType) ?? [])];
+
+        listeners.forEach((entry) => {
+          entry.listener.call(this);
+          if (entry.once) {
+            this.removeEventListener(normalizedType, entry.listener);
+          }
+        });
       }
       play() {
+        setTimeout(() => {
+          this._emit('ended');
+        }, 0);
         return Promise.resolve();
       }
       pause() {}
@@ -1183,8 +1219,40 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
   await expect(page.getByRole('button', { name: '음성 모드 열기' })).toHaveCount(0);
   await openVoiceModeByLongPressingSend(page);
 
-  await expect(page.getByRole('combobox', { name: '마이크 입력 선택' })).toBeVisible();
-  await expect(page.getByTestId('voice-assistant-bubble')).toHaveText('OpenAI 음성 세션을 생성하지 못했습니다.');
+  const voicePanel = page.getByTestId('voice-mode-panel').last();
+  const inputSelect = voicePanel.getByRole('combobox', { name: '마이크 입력 선택' });
+  await expect(voicePanel).toBeVisible();
+  await expect(inputSelect).toBeVisible();
+  await expect(inputSelect.locator('option')).toHaveCount(1);
+  await expect(inputSelect.locator('option:checked')).toHaveText('브라우저 음성 입력');
+});
+
+test('실시간 제약 error 이벤트를 받으면 TTS 모드로 자동 전환한다', async ({ page }) => {
+  await seedMobileSession(page);
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page);
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+  await openVoiceModeByLongPressingSend(page);
+  await expect(page.getByTestId('voice-mode-panel')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__voiceTest.dataChannel.emit({
+      type: 'error',
+      error: {
+        code: 'insufficient_permissions',
+        message: 'Realtime API access is not permitted for this account.'
+      }
+    });
+  });
+
+  const voicePanel = page.getByTestId('voice-mode-panel').last();
+  const inputSelect = voicePanel.getByRole('combobox', { name: '마이크 입력 선택' });
+  await expect(voicePanel).toBeVisible();
+  await expect(inputSelect).toBeVisible();
+  await expect(inputSelect.locator('option')).toHaveCount(1);
+  await expect(inputSelect.locator('option:checked')).toHaveText('브라우저 음성 입력');
 });
 
 test('중첩된 client secret과 output_audio transcript 응답을 처리한다', async ({ page }) => {

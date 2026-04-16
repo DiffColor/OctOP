@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_VOICE_LEVEL_HISTORY,
+  describeRealtimeAvailabilityError,
   describeVoiceError,
+  isBlockedRealtimeCapabilityError,
   parseRealtimeJson,
   REALTIME_EVENT_CHANNEL
 } from "./realtimeVoiceProtocol.js";
@@ -215,6 +217,10 @@ function extractAssistantTextFromResponse(response) {
   }
 
   return textParts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function getRealtimeResponseFailureError(response) {
+  return response?.status_details?.error ?? response?.error ?? response?.status_details ?? null;
 }
 
 function normalizeToolResponse(result, fallback = {}) {
@@ -1008,6 +1014,26 @@ export default function useRealtimeVoiceSession({
 
   const handleRealtimeResponseDone = useCallback(
     async (response) => {
+      const responseStatus = String(response?.status ?? "").trim().toLowerCase();
+      const responseFailureError = getRealtimeResponseFailureError(response);
+
+      if (responseStatus === "failed") {
+        const failureMessage = describeRealtimeAvailabilityError(responseFailureError, "실시간 음성 응답 생성에 실패했습니다.");
+
+        setState((current) => ({
+          ...current,
+          error: failureMessage,
+          isResponding: false,
+          isListening: false
+        }));
+
+        if (isBlockedRealtimeCapabilityError(responseFailureError)) {
+          reportAvailabilityChange("blocked", failureMessage);
+        }
+
+        return;
+      }
+
       const responseChannel = String(response?.metadata?.channel ?? "").trim();
       const functionCalls = extractFunctionCallsFromResponse(response);
 
@@ -1082,7 +1108,7 @@ export default function useRealtimeVoiceSession({
         isResponding: false
       }));
     },
-    [executeVoiceTool, flushQueuedAppServerReport, requestVoiceTurnResponse, sendRealtimeClientEvent]
+    [executeVoiceTool, flushQueuedAppServerReport, reportAvailabilityChange, requestVoiceTurnResponse, sendRealtimeClientEvent]
   );
 
   const handleRealtimeEvent = useCallback(
@@ -1255,13 +1281,21 @@ export default function useRealtimeVoiceSession({
         }
 
         case "error": {
+          const realtimeError = event?.error ?? event;
+          const errorMessage = describeRealtimeAvailabilityError(realtimeError);
+
           appServerReportInFlightRef.current = false;
           setState((current) => ({
             ...current,
-            error: String(event?.error?.message ?? "실시간 음성 이벤트 처리 중 오류가 발생했습니다."),
+            error: errorMessage,
             isResponding: false,
             isListening: false
           }));
+
+          if (isBlockedRealtimeCapabilityError(realtimeError)) {
+            reportAvailabilityChange("blocked", errorMessage);
+          }
+
           return;
         }
 
@@ -1269,7 +1303,7 @@ export default function useRealtimeVoiceSession({
           return;
       }
     },
-    [handleRealtimeResponseDone, requestVoiceTurnResponse]
+    [handleRealtimeResponseDone, reportAvailabilityChange, requestVoiceTurnResponse]
   );
 
   useEffect(() => {
