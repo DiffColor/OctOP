@@ -105,7 +105,7 @@ function ProjectChipRow({
   );
 }
 
-function InboxListContent({
+export function MobileInboxListContent({
   isTodoScope,
   bridgeAvailable,
   loadingState,
@@ -216,7 +216,7 @@ function InboxListContent({
   ));
 }
 
-function ActionBarContent({
+export function MobileInboxActionBar({
   threadSelectionMode,
   isTodoScope,
   threadBusy,
@@ -293,109 +293,113 @@ function ActionBarContent({
   );
 }
 
+export function MobileInboxChrome({
+  appHeaderTitle,
+  bridges,
+  selectedBridgeId,
+  bridgeSignal,
+  bridgeListSyncing,
+  searchOpen,
+  search,
+  installPromptVisible,
+  installBusy,
+  projectChipRowProps,
+  onOpenUtility,
+  onSelectBridge,
+  onOpenBridgeDropdown,
+  onToggleSearch,
+  onSearchChange,
+  onInstallPwa,
+  onDismissInstallPrompt
+}) {
+  return (
+    <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
+      <header className="border-b border-white/10 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onOpenUtility}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-base font-semibold text-white">{appHeaderTitle}</h1>
+            <div className="mt-0.5">
+              <BridgeDropdown
+                bridges={bridges}
+                selectedBridgeId={selectedBridgeId}
+                bridgeSignal={bridgeSignal}
+                onSelectBridge={onSelectBridge}
+                onOpen={onOpenBridgeDropdown}
+                syncing={bridgeListSyncing}
+              />
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onToggleSearch}
+            className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
+              searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
+            }`}
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          </button>
+        </div>
+
+        {searchOpen ? (
+          <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
+            <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="채팅창 검색"
+              className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
+            />
+          </div>
+        ) : null}
+      </header>
+
+      <InstallPromptBanner
+        visible={installPromptVisible}
+        installing={installBusy}
+        onInstall={onInstallPwa}
+        onDismiss={onDismissInstallPrompt}
+      />
+
+      <ProjectChipRow {...projectChipRowProps} />
+    </div>
+  );
+}
+
 export default function MobileInboxScreen({
   chromeProps,
   listProps,
   actionBarProps,
   deferredOverlays
 }) {
-  const {
-    appHeaderTitle,
-    bridges,
-    selectedBridgeId,
-    bridgeSignal,
-    bridgeListSyncing,
-    searchOpen,
-    search,
-    installPromptVisible,
-    installBusy,
-    projectChipRowProps,
-    onOpenUtility,
-    onSelectBridge,
-    onOpenBridgeDropdown,
-    onToggleSearch,
-    onSearchChange,
-    onInstallPwa,
-    onDismissInstallPrompt
-  } = chromeProps;
-
   return (
     <div className="telegram-shell min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col">
-        <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur-xl">
-          <header className="border-b border-white/10 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={onOpenUtility}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M4 7h16M4 12h16M4 17h10" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </button>
-
-              <div className="min-w-0 flex-1">
-                <h1 className="truncate text-base font-semibold text-white">{appHeaderTitle}</h1>
-                <div className="mt-0.5">
-                  <BridgeDropdown
-                    bridges={bridges}
-                    selectedBridgeId={selectedBridgeId}
-                    bridgeSignal={bridgeSignal}
-                    onSelectBridge={onSelectBridge}
-                    onOpen={onOpenBridgeDropdown}
-                    syncing={bridgeListSyncing}
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={onToggleSearch}
-                className={`flex h-10 w-10 items-center justify-center rounded-full transition ${
-                  searchOpen ? "bg-white text-slate-900" : "bg-white/5 text-white hover:bg-white/10"
-                }`}
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-              </button>
-            </div>
-
-            {searchOpen ? (
-              <div className="mt-3 flex items-center gap-3 border-t border-white/10 pt-3">
-                <svg className="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
-                </svg>
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(event) => onSearchChange(event.target.value)}
-                  placeholder="채팅창 검색"
-                  className="w-full border-none bg-transparent p-0 text-sm text-white outline-none ring-0 placeholder:text-slate-500 focus:ring-0"
-                />
-              </div>
-            ) : null}
-          </header>
-
-          <InstallPromptBanner
-            visible={installPromptVisible}
-            installing={installBusy}
-            onInstall={onInstallPwa}
-            onDismiss={onDismissInstallPrompt}
-          />
-
-          <ProjectChipRow {...projectChipRowProps} />
-        </div>
+        <MobileInboxChrome {...chromeProps} />
 
         <main className="flex-1 px-4 pb-28 pt-3">
           <section className="mt-1">
-            <InboxListContent {...listProps} />
+            <MobileInboxListContent {...listProps} />
           </section>
         </main>
 
         <div className="telegram-safe-bottom-panel fixed inset-x-0 bottom-0 z-30 mx-auto flex w-full max-w-3xl justify-center border-t border-white/10 bg-slate-950/92 px-4 pt-2 backdrop-blur">
-          <ActionBarContent {...actionBarProps} />
+          <MobileInboxActionBar {...actionBarProps} />
         </div>
       </div>
       {deferredOverlays}

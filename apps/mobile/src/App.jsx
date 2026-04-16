@@ -19,8 +19,14 @@ import {
 } from "../../../packages/domain/src/index.js";
 import { createPortal } from "react-dom";
 import { PWA_UPDATE_ACTIVATOR_KEY, PWA_UPDATE_READY_EVENT } from "./pwaEvents.js";
+import buildMobileDetailProps from "./buildMobileDetailProps.js";
+import buildMobileInboxScreenProps from "./buildMobileInboxScreenProps.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
-import MobileInboxScreen from "./mobileInboxScreen.jsx";
+import MobileInboxScreen, {
+  MobileInboxActionBar,
+  MobileInboxChrome,
+  MobileInboxListContent
+} from "./mobileInboxScreen.jsx";
 import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mobileRichMessageUi.jsx";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
@@ -4006,6 +4012,9 @@ function MainPage({
 }) {
   const { confirm: confirmMobileAction } = useMobileFeedback();
   const [searchOpen, setSearchOpen] = useState(false);
+  const handleToggleSearch = useCallback(() => {
+    setSearchOpen((current) => !current);
+  }, []);
   const [projectActionProjectId, setProjectActionProjectId] = useState("");
   const [todoChatBeingEdited, setTodoChatBeingEdited] = useState(null);
   const [activeTodoMessage, setActiveTodoMessage] = useState(null);
@@ -4399,7 +4408,16 @@ function MainPage({
     !selectedThreadId && !draftProject
       ? "채팅창이 없습니다. 좌측 쓰레드를 선택하거나 새 채팅창을 시작해 주세요."
       : "";
-  const projectChipRowProps = {
+  const { chromeProps, listProps, actionBarProps } = buildMobileInboxScreenProps({
+    appHeaderTitle,
+    bridges,
+    selectedBridgeId,
+    bridgeSignal,
+    bridgeListSyncing,
+    searchOpen,
+    search,
+    installPromptVisible,
+    installBusy,
     isTodoScope,
     orderedProjects,
     selectedProjectId,
@@ -4415,39 +4433,22 @@ function MainPage({
     onSelectTodoScope,
     onProjectChipClick: handleProjectChipClick,
     onProjectChipPointerDown: handleProjectChipPointerDown,
-    onProjectChipContextMenu: handleProjectChipContextMenu
-  };
-
-  const chromeProps = {
-    appHeaderTitle,
-    bridges,
-    selectedBridgeId,
-    bridgeSignal,
-    bridgeListSyncing,
-    searchOpen,
-    search,
-    installPromptVisible,
-    installBusy,
-    projectChipRowProps,
+    onProjectChipContextMenu: handleProjectChipContextMenu,
     onOpenUtility,
     onSelectBridge,
     onOpenBridgeDropdown,
-    onToggleSearch: () => setSearchOpen((current) => !current),
+    onToggleSearch: handleToggleSearch,
     onSearchChange,
     onInstallPwa,
-    onDismissInstallPrompt
-  };
-  const todoListProps = {
-    chats: filteredTodoChats,
+    onDismissInstallPrompt,
+    filteredTodoChats,
     selectedTodoChatId,
     formatRelativeTime,
     getTodoChatPreview,
     onOpenTodoChat: onSelectTodoChat,
     onRenameTodoChat: (targetChat) => setTodoChatBeingEdited(targetChat),
-    onDeleteTodoChat: (targetChat) => void onDeleteTodoChat(targetChat.id)
-  };
-  const threadListProps = {
-    threads: filteredThreads,
+    onDeleteTodoChat: (targetChat) => void onDeleteTodoChat(targetChat.id),
+    filteredThreads,
     selectedThreadId,
     selectedThreadIds,
     threadSelectionMode,
@@ -4455,7 +4456,8 @@ function MainPage({
     registerThreadListItemNode,
     draggingThreadId,
     draggingThreadOffsetY,
-    transitionLocked: lockThreadListDropLayout || Boolean(optimisticThreadOrderByProjectId[selectedProjectId]),
+    lockThreadListDropLayout,
+    optimisticThreadOrderByProjectId,
     resolveThreadListItemSlideOffsetY,
     onStartThreadReorder: handleThreadReorderStart,
     onMoveThreadReorder: handleThreadReorderMove,
@@ -4466,29 +4468,17 @@ function MainPage({
     onDeleteThread: (targetThread) => void onDeleteThread(targetThread.id),
     onToggleThreadSelection: handleToggleThreadSelection,
     onEnterThreadSelectionMode: handleEnterThreadSelectionMode,
-    threadListItemHelpers
-  };
-  const listProps = {
-    isTodoScope,
+    threadListItemHelpers,
     bridgeAvailable,
     loadingState,
-    todoListProps,
-    threadListProps
-  };
-  const actionBarProps = {
-    threadSelectionMode,
-    isTodoScope,
     threadBusy,
-    selectedThreadCount: selectedThreadIds.length,
-    selectedProjectReady: Boolean(selectedProject),
-    bridgeAvailable,
-    selectedProjectId,
+    selectedProject,
     onCancelThreadSelection: handleCancelThreadSelection,
     onDeleteSelectedThreads: handleDeleteSelectedThreads,
     onCreateInstantThread,
     onOpenNewThread,
     onOpenNewTodoChat
-  };
+  });
   const { shouldRenderDeferredOverlays, deferredOverlayProps } = useMobileDeferredOverlayProps({
     threadDeleteDialog,
     threadBusy,
@@ -4565,101 +4555,71 @@ function MainPage({
       <MobileDeferredOverlays {...deferredOverlayProps} />
     </Suspense>
   ) : null;
-  const resolvedTodoChatForDetail = selectedTodoChat ?? todoChatDetail?.chat ?? null;
-  const handleDeleteResolvedTodoChat = () => {
-    const targetChat = resolvedTodoChatForDetail;
-
-    if (!targetChat) {
-      return;
-    }
-
-    void onDeleteTodoChat(targetChat.id);
-  };
-  const todoStandaloneDetailProps = {
-    chat: resolvedTodoChatForDetail,
-    bridgeId: selectedBridgeId,
-    messages: todoChatMessages,
-    loading: todoChatLoading,
-    error: todoChatError,
-    submitBusy: todoBusy,
-    composerDraftKey: todoComposerDraftKey,
-    composerDraft: todoComposerDraft,
-    onPersistComposerDraft: onChangeThreadComposerDraft,
-    onBack: onBackToInbox,
-    onRefresh: onRefreshTodoChat,
-    onRename: () => setTodoChatBeingEdited(resolvedTodoChatForDetail),
-    onDelete: handleDeleteResolvedTodoChat,
-    onSelectMessage: (message) => setActiveTodoMessage(message),
-    onSubmitMessage: onSubmitTodoMessage,
+  const {
+    todoStandaloneDetailProps,
+    todoSplitDetailProps,
+    baseThreadDetailProps,
+    threadStandaloneDetailKey,
+    threadSplitDetailKey,
+    threadSplitDetailProps
+  } = buildMobileDetailProps({
+    selectedTodoChat,
+    todoChatDetail,
+    selectedBridgeId,
+    todoChatMessages,
+    todoChatLoading,
+    todoChatError,
+    todoBusy,
+    todoComposerDraftKey,
+    todoComposerDraft,
+    onChangeThreadComposerDraft,
+    onBackToInbox,
+    onRefreshTodoChat,
+    setTodoChatBeingEdited,
+    setActiveTodoMessage,
+    onSubmitTodoMessage,
     inlineIssueComposerHelpers,
-    uiComponents: todoChatDetailUiComponents,
-    utils: todoChatDetailUtils
-  };
-  const todoSplitDetailProps = {
-    ...todoStandaloneDetailProps,
-    showBackButton: false,
-    standalone: false
-  };
-  const baseThreadDetailProps = {
-    thread: resolvedThread,
-    project: threadProject,
-    bridgeId: selectedBridgeId,
-    sessionLoginId: session?.loginId ?? "",
+    todoChatDetailUiComponents,
+    todoChatDetailUtils,
+    onDeleteTodoChat,
+    resolvedThread,
+    threadProject,
+    session,
     apiRequest,
-    messages: resolvedThread ? threadDetailMessages : [],
-    issues: resolvedThread ? threadDetail?.issues ?? [] : [],
-    historyLoading: threadDetail?.history_loading ?? false,
-    historyError: threadDetail?.history_error ?? "",
-    hasOlderMessages: Boolean(resolvedThread?.id) && hasOlderMessages,
+    threadDetailMessages,
+    threadDetail,
+    hasOlderMessages,
     remainingHistoryCount,
-    onLoadOlderMessages: resolvedThread?.id ? () => onLoadOlderMessages?.(resolvedThread.id) : null,
+    onLoadOlderMessages,
     signalNow,
-    messagesLoading: threadDetailLoading,
-    messagesError: threadDetailError,
-    onRefreshMessages: resolvedThread?.id ? onRefreshThreadDetail : null,
-    onStopThreadExecution: resolvedThread?.id ? onStopThreadExecution : null,
-    onInterruptIssue: resolvedThread?.id ? onInterruptThreadIssue : null,
-    onRetryIssue: resolvedThread?.id ? onRetryThreadIssue : null,
-    onDeleteIssue: resolvedThread?.id ? onDeleteThreadIssue : null,
+    threadDetailLoading,
+    threadDetailError,
+    onRefreshThreadDetail,
+    onStopThreadExecution,
+    onInterruptThreadIssue,
+    onRetryThreadIssue,
+    onDeleteThreadIssue,
     threadInstructionSupported,
-    onSubmitPrompt: (payload) => {
-      if (resolvedThread?.id) {
-        return onAppendThreadMessage(resolvedThread.id, payload);
-      }
-
-      return onCreateThread(payload, { stayOnThread: true });
-    },
-    onVoiceDelegatePrompt: (payload) =>
-      onCreateThread(
-        {
-          ...payload,
-          project_id: resolvedThread?.project_id ?? threadProject?.id ?? payload?.project_id
-        },
-        { stayOnThread: true, preserveCurrentThreadSelection: true }
-      ),
-    submitBusy: threadBusy,
-    onBack: onBackToInbox,
-    messageFilter: threadMessageFilter,
-    onChangeMessageFilter: onChangeThreadMessageFilter,
-    composerDraftKey: threadComposerDraftKey,
-    composerDraft: threadComposerDraft,
-    onPersistComposerDraft: onChangeThreadComposerDraft,
-    isDraft: !selectedThread && !threadDetail?.thread,
-    voiceSessionEnabled: VOICE_SESSION_ENABLED,
-    voiceState: threadVoiceState,
+    onAppendThreadMessage,
+    onCreateThread,
+    threadBusy,
+    threadMessageFilter,
+    onChangeThreadMessageFilter,
+    threadComposerDraftKey,
+    threadComposerDraft,
+    selectedThread,
+    VOICE_SESSION_ENABLED,
+    threadVoiceState,
     voiceFollowupThreadDetail,
-    onVoiceStateChange: onChangeThreadVoiceState,
-    inlineIssueComposerHelpers,
-    helpers: threadDetailHelpers
-  };
-  const threadStandaloneDetailKey = `thread-detail:${resolvedThread?.id ?? selectedThreadId ?? draftThreadProjectId ?? "empty"}`;
-  const threadSplitDetailKey = `split-thread-detail:${resolvedThread?.id ?? selectedThreadId ?? draftThreadProjectId ?? "empty"}`;
-  const threadSplitDetailProps = {
-    ...baseThreadDetailProps,
-    showBackButton: false,
-    standalone: false,
-    emptyStateMessage: splitThreadEmptyStateMessage
-  };
+    onChangeThreadVoiceState,
+    threadDetailHelpers,
+    selectedThreadId,
+    draftThreadProjectId,
+    splitThreadEmptyStateMessage
+  });
+  const appChrome = <MobileInboxChrome {...chromeProps} />;
+  const inboxListContent = <MobileInboxListContent {...listProps} />;
+  const actionBarContent = <MobileInboxActionBar {...actionBarProps} />;
 
   if (!showWideTodoSplitLayout && activeView === "todo" && selectedTodoChatId) {
     return (
