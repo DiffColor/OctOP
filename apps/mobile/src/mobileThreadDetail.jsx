@@ -837,7 +837,7 @@ export default function ThreadDetail({
 
     return groups;
   }, [messages, thread?.created_at, thread?.updated_at]);
-  const runTimeline = useMemo(() => buildRunTimeline(thread), [thread]);
+  const runTimeline = useMemo(() => buildRunTimeline(thread, messages), [buildRunTimeline, messages, thread]);
   const promptTimeline = useMemo(
     () => conversationTimeline.map((entry) => ({ ...entry, responses: [] })),
     [conversationTimeline]

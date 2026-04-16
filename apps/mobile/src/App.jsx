@@ -1883,7 +1883,58 @@ function getStatusMeta(status) {
   return STATUS_META[status] ?? STATUS_META.queued;
 }
 
-function buildRunTimeline(thread) {
+const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+  "tool_call",
+  "tool_result",
+  "mcp_call",
+  "mcp_result",
+  "skill_call",
+  "skill_result",
+  "function_call",
+  "function_result"
+]);
+
+const RUN_TIMELINE_MESSAGE_TITLE_BY_KIND = {
+  tool_call: "도구 호출",
+  tool_result: "도구 응답",
+  mcp_call: "MCP 호출",
+  mcp_result: "MCP 응답",
+  skill_call: "스킬 호출",
+  skill_result: "스킬 응답",
+  function_call: "함수 호출",
+  function_result: "함수 응답",
+  handoff_summary: "핸드오프 요약"
+};
+
+function shouldHideThreadPreviewMessage(value = "") {
+  return HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS.has(String(value ?? "").trim());
+}
+
+function getThreadPreviewMessageKind(thread) {
+  const explicitKind = String(thread?.last_message_kind ?? thread?.lastMessageKind ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (explicitKind) {
+    return explicitKind;
+  }
+
+  const lastEvent = String(thread?.last_event ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (lastEvent.startsWith("item.")) {
+    return lastEvent.slice(5);
+  }
+
+  return "";
+}
+
+function shouldHideThreadPreviewForThread(thread) {
+  return shouldHideThreadPreviewMessage(getThreadPreviewMessageKind(thread));
+}
+
+function buildRunTimeline(thread, messages = []) {
   if (!thread) {
     return [];
   }
@@ -1915,7 +1966,21 @@ function buildRunTimeline(thread) {
     });
   }
 
-  return entries.filter((entry) => entry.timestamp);
+  const timelineMessages = (Array.isArray(messages) ? messages : [])
+    .filter((message) => {
+      const normalizedKind = String(message?.kind ?? "").trim();
+      return normalizedKind === "handoff_summary" || shouldHideThreadPreviewMessage(normalizedKind);
+    })
+    .map((message, index) => ({
+      id: message.id ?? `${thread.id}-message-${index}`,
+      title: RUN_TIMELINE_MESSAGE_TITLE_BY_KIND[String(message?.kind ?? "").trim()] ?? "진행 내역",
+      description: String(message?.content ?? "").trim() || "내용이 비어 있습니다.",
+      timestamp: message.timestamp ?? message.created_at ?? thread.updated_at
+    }));
+
+  return [...entries, ...timelineMessages]
+    .filter((entry) => entry.timestamp)
+    .sort((left, right) => Date.parse(left.timestamp ?? 0) - Date.parse(right.timestamp ?? 0));
 }
 
 function isRetryableIssueStatus(status) {
@@ -3893,7 +3958,10 @@ function normalizeTodoMessage(message) {
 }
 
 function getThreadPreview(thread) {
-  const rawPreview = thread.last_message || getRealtimeProgressText(thread);
+  const rawPreview =
+    shouldHideThreadPreviewForThread(thread)
+      ? getRealtimeProgressText(thread)
+      : thread.last_message || getRealtimeProgressText(thread);
   const normalizedPreview = normalizeAssistantMessageContent(rawPreview)
     .replace(/\s+/g, " ")
     .trim();
@@ -7193,6 +7261,30 @@ export default function App() {
                 reason: "thread_issues_updated"
               });
             }
+          }
+          return;
+        }
+
+        if (payload.type === "logicalThread.timeline.updated") {
+          const threadId = payload.payload?.thread_id ?? payload.payload?.root_thread_id ?? "";
+
+          if (threadId) {
+            const nextMessages = normalizeCachedThreadMessages(payload.payload?.entries ?? []);
+
+            setThreadDetails((current) => ({
+              ...current,
+              [threadId]: {
+                ...(current[threadId] ?? {}),
+                messages: nextMessages,
+                loaded_issue_ids: normalizeIssueIdList(
+                  [
+                    ...(current[threadId]?.loaded_issue_ids ?? []),
+                    ...collectLoadedIssueIdsFromMessages(nextMessages)
+                  ],
+                  current[threadId]?.issues ?? []
+                )
+              }
+            }));
           }
           return;
         }

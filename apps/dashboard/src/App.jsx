@@ -2054,6 +2054,18 @@ function shouldHideThreadDetailMessage(message) {
   return HIDDEN_THREAD_DETAIL_MESSAGE_KINDS.has(normalizedKind);
 }
 
+function getThreadPreviewEventKind(thread) {
+  const lastEvent = String(thread?.last_event ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (lastEvent.startsWith("item.")) {
+    return lastEvent.slice(5);
+  }
+
+  return "";
+}
+
 function inferSourceLanguageFromPath(path = "") {
   const normalizedPath = normalizeSourceFilePathCandidate(path);
   const baseName = normalizedPath.split("/").at(-1)?.toLowerCase() ?? "";
@@ -3772,7 +3784,14 @@ function buildMessagePreview(thread, language) {
   const copy = getCopy(language);
   const prompt = String(thread.prompt ?? "").trim();
   const lastMessage = String(thread.last_message ?? "").trim();
-  return lastMessage || getRealtimeProgressText(thread, language) || prompt || copy.fallback.noPrompt;
+  const shouldHideLastMessage = HIDDEN_THREAD_DETAIL_MESSAGE_KINDS.has(getThreadPreviewEventKind(thread));
+
+  return (
+    (shouldHideLastMessage ? "" : lastMessage) ||
+    getRealtimeProgressText(thread, language) ||
+    prompt ||
+    copy.fallback.noPrompt
+  );
 }
 
 function getThreadTitle(thread, language) {
