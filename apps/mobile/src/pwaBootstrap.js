@@ -8,12 +8,14 @@ export default function bootstrapMobilePwaUpdateFlow() {
   const SERVICE_WORKER_BUILD_ID = typeof __APP_BUILD_ID__ === "string" ? __APP_BUILD_ID__ : "dev";
   const VERSION_METADATA_URL = "/version.json";
   const SKIP_WAITING_MESSAGE = { type: "SKIP_WAITING" };
+  const ASSET_MISMATCH_RECOVERY_MESSAGE_TYPE = "octop.asset-mismatch-recover";
   const UPDATE_CHECK_MIN_INTERVAL_MS = 3_000;
   const UPDATE_CHECK_POLL_INTERVAL_MS = 5_000;
   const UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS = 10_000;
   const UPDATE_ACTIVATION_POLL_INTERVAL_MS = 250;
   const QUEUED_PWA_UPDATE_BUILD_ID_KEY = "__octopMobileQueuedPwaUpdateBuildId";
   const UNKNOWN_QUEUED_PWA_UPDATE_BUILD_ID = "__unknown__";
+  const FORCED_BUILD_RELOAD_QUERY_KEY = "__octopPwaBuild";
   let refreshing = false;
   let controllerSeen = Boolean(navigator.serviceWorker.controller);
   let pendingActivationWorker = null;
@@ -85,7 +87,27 @@ export default function bootstrapMobilePwaUpdateFlow() {
     }
   };
 
-  const forceReload = () => {
+  const buildForcedReloadUrl = (buildId = "") => {
+    try {
+      const url = new URL(window.location.href);
+      const normalizedBuildId = String(buildId ?? "").trim();
+
+      if (normalizedBuildId) {
+        url.searchParams.set(FORCED_BUILD_RELOAD_QUERY_KEY, normalizedBuildId);
+      } else {
+        url.searchParams.set(FORCED_BUILD_RELOAD_QUERY_KEY, String(Date.now()));
+      }
+
+      return `${url.pathname}${url.search}${url.hash}`;
+    } catch {
+      const normalizedBuildId = String(buildId ?? "").trim();
+      return normalizedBuildId
+        ? `/?${FORCED_BUILD_RELOAD_QUERY_KEY}=${encodeURIComponent(normalizedBuildId)}`
+        : `/?${FORCED_BUILD_RELOAD_QUERY_KEY}=${Date.now()}`;
+    }
+  };
+
+  const forceReload = (buildId = "") => {
     if (refreshing) {
       return;
     }
@@ -94,7 +116,13 @@ export default function bootstrapMobilePwaUpdateFlow() {
     pendingActivationWorker = null;
     window[PWA_UPDATE_ACTIVATOR_KEY] = null;
     clearActivationReloadTimer();
-    window.location.reload();
+    const targetUrl = buildForcedReloadUrl(buildId);
+
+    try {
+      window.location.replace(targetUrl);
+    } catch {
+      window.location.href = targetUrl;
+    }
   };
 
   const hasActivatedTargetBuild = (registration, targetBuildId = "") => {
@@ -146,7 +174,7 @@ export default function bootstrapMobilePwaUpdateFlow() {
 
         if (hasActivatedTargetBuild(registration, normalizedTargetBuildId)) {
           resolved = true;
-          forceReload();
+          forceReload(normalizedTargetBuildId);
           return;
         }
       } catch {
@@ -156,7 +184,7 @@ export default function bootstrapMobilePwaUpdateFlow() {
       if (Date.now() - startedAt >= UPDATE_ACTIVATION_RELOAD_TIMEOUT_MS) {
         resolved = true;
         void clearServiceWorker().finally(() => {
-          forceReload();
+          forceReload(normalizedTargetBuildId);
         });
         return;
       }
@@ -252,12 +280,12 @@ export default function bootstrapMobilePwaUpdateFlow() {
       try {
         void requestServiceWorkerActivation(worker).catch(() => {
           void clearServiceWorker().finally(() => {
-            forceReload();
+            forceReload(targetBuildId ?? SERVICE_WORKER_BUILD_ID);
           });
         });
       } catch {
         void clearServiceWorker().finally(() => {
-          forceReload();
+          forceReload(targetBuildId ?? SERVICE_WORKER_BUILD_ID);
         });
       }
     };
@@ -403,7 +431,25 @@ export default function bootstrapMobilePwaUpdateFlow() {
 
     controllerSeen = true;
     activationRequested = false;
-    forceReload();
+    forceReload(getBuildIdFromScriptUrl(navigator.serviceWorker.controller?.scriptURL) ?? SERVICE_WORKER_BUILD_ID);
+  });
+
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event?.data?.type !== ASSET_MISMATCH_RECOVERY_MESSAGE_TYPE) {
+      return;
+    }
+
+    const targetUrl = String(event?.data?.targetUrl ?? "").trim();
+
+    if (!targetUrl) {
+      return;
+    }
+
+    try {
+      window.location.replace(targetUrl);
+    } catch {
+      window.location.href = targetUrl;
+    }
   });
 
   window.addEventListener("load", () => {

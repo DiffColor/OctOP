@@ -8,16 +8,27 @@ document.documentElement.dataset.octopSurface = "mobile";
 
 (() => {
   const assetMismatchRecoveryHandledKey = "__octopAssetMismatchRecoveryHandledAt";
+  const forcedBuildReloadQueryKey = "__octopPwaBuild";
 
   try {
     const url = new URL(window.location.href);
+    let shouldReplaceHistory = false;
 
-    if (url.searchParams.get("__octopAssetMismatchRecovery") !== "1") {
+    if (url.searchParams.get("__octopAssetMismatchRecovery") === "1") {
+      window.sessionStorage?.setItem?.(assetMismatchRecoveryHandledKey, String(Date.now()));
+      url.searchParams.delete("__octopAssetMismatchRecovery");
+      shouldReplaceHistory = true;
+    }
+
+    if (url.searchParams.has(forcedBuildReloadQueryKey)) {
+      url.searchParams.delete(forcedBuildReloadQueryKey);
+      shouldReplaceHistory = true;
+    }
+
+    if (!shouldReplaceHistory) {
       return;
     }
 
-    window.sessionStorage?.setItem?.(assetMismatchRecoveryHandledKey, String(Date.now()));
-    url.searchParams.delete("__octopAssetMismatchRecovery");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   } catch {
     // ignore malformed location values

@@ -11,6 +11,7 @@ const MOBILE_APP_ID = "mobile-web";
 const STANDALONE_LAUNCH_URL = "/?client_mode=standalone";
 const CLIENT_CONTEXT_REFRESH_WAIT_MS = 250;
 const ASSET_MISMATCH_RECOVERY_FLAG = "__octopAssetMismatchRecovery";
+const ASSET_MISMATCH_RECOVERY_MESSAGE_TYPE = "octop.asset-mismatch-recover";
 const clientContextById = new Map();
 const pendingNotificationLaunchByClientId = new Map();
 let assetMismatchRecoveryPromise = null;
@@ -450,6 +451,17 @@ const recoverFromAssetMismatch = async (requestUrl) => {
         }
 
         try {
+          if (typeof client.postMessage === "function") {
+            client.postMessage({
+              type: ASSET_MISMATCH_RECOVERY_MESSAGE_TYPE,
+              targetUrl: targetUrl.toString()
+            });
+          }
+        } catch {
+          // ignore postMessage failures and continue
+        }
+
+        try {
           if (typeof client.navigate === "function") {
             await client.navigate(targetUrl.toString());
             return;
@@ -542,7 +554,7 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(
-      fetch(event.request)
+      fetch(event.request, { cache: "no-store" })
         .then((response) => {
           const cloned = response.clone();
 
@@ -589,7 +601,7 @@ self.addEventListener("fetch", (event) => {
 
         if (assetRequest && isHtmlResponse(response)) {
           await removeCachedResponse(event.request);
-          void recoverFromAssetMismatch(requestUrl);
+          event.waitUntil(recoverFromAssetMismatch(requestUrl));
           return buildAssetMismatchRecoveryResponse(requestUrl, event.request.destination);
         }
 

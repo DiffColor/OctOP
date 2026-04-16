@@ -403,6 +403,11 @@ test.describe('모바일 PWA 업데이트 통보', () => {
     await server.start(SERVER_PORT);
   });
 
+  test.beforeEach(async () => {
+    await server.setRoot(OLD_BUILD_DIR);
+    await server.setFallbackMissingAssetRequestsToIndexHtml(false);
+  });
+
   test.afterAll(async () => {
     if (server) {
       await server.stop();
