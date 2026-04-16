@@ -61,6 +61,13 @@ const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "function_call",
   "function_result"
 ]);
+const USER_VISIBLE_REPORT_SECTION_HEADINGS = [
+  "[목표]",
+  "[계획]",
+  "[진행 내역]",
+  "[최종 보고]",
+  "[최종 정리]"
+];
 
 function normalizeVoiceMode(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -118,7 +125,16 @@ function isSystemLikeMessage(message) {
 
 function shouldHideMessageFromChatWindow(message) {
   const normalizedKind = String(message?.kind ?? "").trim();
-  return HIDDEN_CHAT_MESSAGE_KINDS.has(normalizedKind);
+  if (!HIDDEN_CHAT_MESSAGE_KINDS.has(normalizedKind)) {
+    return false;
+  }
+
+  if (normalizedKind !== "function_result") {
+    return true;
+  }
+
+  const normalizedContent = String(message?.content ?? "");
+  return !USER_VISIBLE_REPORT_SECTION_HEADINGS.some((heading) => normalizedContent.includes(heading));
 }
 
 function getSystemMessageTitle(message, fallback = "시스템") {
