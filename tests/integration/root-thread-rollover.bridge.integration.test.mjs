@@ -73,13 +73,14 @@ function toClientIssueAttachment(attachment = {}) {
     mime_type: attachment.mime_type == null ? null : String(attachment.mime_type),
     size_bytes: Number.isFinite(Number(attachment.size_bytes)) ? Number(attachment.size_bytes) : 0,
     preview_url: attachment.preview_url == null ? null : String(attachment.preview_url),
+    download_url: attachment.download_url == null ? null : String(attachment.download_url),
     text_content: attachment.text_content == null ? null : String(attachment.text_content),
     text_truncated: Boolean(attachment.text_truncated)
   };
 }
 
 function assertClientIssueAttachments(actualAttachments, expectedAttachments) {
-  const hiddenFields = ["upload_id", "download_url", "cleanup_url", "local_path", "uploaded_at"];
+  const hiddenFields = ["upload_id", "cleanup_url", "local_path", "uploaded_at"];
 
   assert.deepEqual(actualAttachments, expectedAttachments);
 
@@ -5427,6 +5428,7 @@ test("이미지 첨부 download_url은 로컬 파일로 staging되어 app-server
         mime_type: "image/png",
         size_bytes: pngBytes.length,
         preview_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=",
+        download_url: `http://127.0.0.1:${attachmentServerPort}/download/sample.png`,
         text_content: null,
         text_truncated: false
       }

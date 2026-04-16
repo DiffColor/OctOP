@@ -366,10 +366,11 @@ test.describe('모바일 handoff timeline UI', () => {
 
     await page.goto(baseUrl);
 
-    await expect(page.locator('.thread-title')).toHaveCount(1);
-    await expect(page.getByText('Root Thread Mobile')).toBeVisible();
+    const threadCard = page.getByTestId(`thread-list-item-${rootThreadId}`);
+    await expect(threadCard).toBeVisible();
+    await expect(threadCard).toContainText('Root Thread Mobile');
 
-    await page.getByText('Root Thread Mobile').click();
+    await threadCard.click();
 
     await expect(page.getByText('핸드오프 요약')).toBeVisible();
     await expect(page.locator('[data-testid="message-bubble-system"]')).toContainText('이전 컨텍스트 요약');
@@ -408,13 +409,13 @@ test.describe('모바일 handoff timeline UI', () => {
 
     await page.goto(baseUrl);
 
-    await page.getByText('Root Thread Mobile').click();
-    await expect(page.getByText('사용률 92%')).toBeVisible();
+    await page.getByTestId(`thread-list-item-${rootThreadId}`).click();
+    await expect(page.getByTestId('thread-detail-panel').getByText('사용률 92%', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: '마지막 이슈 락 해제 및 새로고침' }).click();
 
     await expect.poll(() => unlockRequests.length).toBe(1);
-    await expect(page.getByText('사용률 12%', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('thread-detail-panel').getByText('사용률 12%', { exact: true })).toBeVisible();
   });
 
   test('모바일 쓰레드 목록에서 여러 채팅창을 롱프레스로 선택해 한 번에 삭제할 수 있다', async ({ page }) => {

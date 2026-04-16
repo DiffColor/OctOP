@@ -6535,10 +6535,11 @@ function CompletedThreadCard({
   );
 }
 
-function ArchiveBasketButton({ active, count, title, onClick, onContextMenu, onDragOver, onDrop }) {
+function ArchiveBasketButton({ active, count, title, testId = null, onClick, onContextMenu, onDragOver, onDrop }) {
   return (
     <button
       type="button"
+      data-testid={testId ?? undefined}
       onClick={onClick}
       onContextMenu={onContextMenu}
       onDragOver={onDragOver}
@@ -8173,6 +8174,7 @@ function MainPage({
                             active={archiveViewerColumnId === column.id}
                             count={archivedCounts[column.id]}
                             title={copy.board.archiveBasket}
+                            testId={`archive-basket-${column.id}`}
                             onClick={() => setArchiveViewerColumnId((current) => (current === column.id ? "" : column.id))}
                             onContextMenu={(event) => openArchiveMenu(event, column.id)}
                             onDragOver={(event) => {

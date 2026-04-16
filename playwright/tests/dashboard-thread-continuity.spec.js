@@ -135,6 +135,13 @@ test.use({
   serviceWorkers: 'block'
 });
 
+async function dragIssueToArchive(page, source, target) {
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await source.dispatchEvent('dragstart', { dataTransfer });
+  await target.dispatchEvent('dragover', { dataTransfer });
+  await target.dispatchEvent('drop', { dataTransfer });
+}
+
 async function mockDashboardApi(page, options = {}) {
   let remoteArchives = options.initialArchives ?? {};
   const archivePutEvents = options.archivePutEvents ?? [];
@@ -516,10 +523,10 @@ test.describe('대시보드 continuity UI', () => {
 
     const doneColumn = page.locator('[data-testid="board-column-done"]');
     const completedCard = doneColumn.getByTestId('issue-card-issue-closed');
-    const archiveButton = doneColumn.getByTitle('보관함');
+    const archiveButton = page.getByTestId('archive-basket-done');
 
     await expect(completedCard).toBeVisible();
-    await completedCard.dragTo(archiveButton);
+    await dragIssueToArchive(page, completedCard, archiveButton);
     await expect(completedCard).toHaveCount(0);
     await expect(archivePutEvents.length).toBeGreaterThan(0);
 
@@ -559,14 +566,14 @@ test.describe('대시보드 continuity UI', () => {
     await page.goto(baseUrl);
 
     const doneColumn = page.locator('[data-testid="board-column-done"]');
-    const archiveButton = doneColumn.getByTitle('보관함');
+    const archiveButton = page.getByTestId('archive-basket-done');
 
     await expect(doneColumn.getByTestId('issue-card-issue-closed')).toHaveCount(0);
     await expect(doneColumn.getByTestId('issue-card-issue-closed-second')).toHaveCount(0);
     await expect(doneColumn.getByTestId('issue-card-issue-closed-third')).toBeVisible();
     await expect(archiveButton).toContainText('2');
 
-    await doneColumn.getByTestId('issue-card-issue-closed-third').dragTo(archiveButton);
+    await dragIssueToArchive(page, doneColumn.getByTestId('issue-card-issue-closed-third'), archiveButton);
 
     await expect(doneColumn.getByTestId('issue-card-issue-closed-third')).toHaveCount(0);
     await expect(archiveButton).toContainText('3');
@@ -590,7 +597,7 @@ test.describe('대시보드 continuity UI', () => {
 
     const doneColumn = page.locator('[data-testid="board-column-done"]');
     const completedCard = doneColumn.getByTestId('issue-card-issue-closed');
-    const archiveButton = doneColumn.getByTitle('보관함');
+    const archiveButton = page.getByTestId('archive-basket-done');
 
     await expect(completedCard).toBeVisible();
     await doneColumn.evaluate((column, payload) => {
@@ -611,7 +618,7 @@ test.describe('대시보드 continuity UI', () => {
         subtree: true
       });
     }, { key: SESSION_KEY, value: session });
-    await completedCard.dragTo(archiveButton);
+    await dragIssueToArchive(page, completedCard, archiveButton);
     await page.waitForLoadState('domcontentloaded');
 
     await expect(doneColumn.getByTestId('issue-card-issue-closed')).toHaveCount(0);
@@ -639,10 +646,10 @@ test.describe('대시보드 continuity UI', () => {
 
       const doneColumn = page.locator('[data-testid="board-column-done"]');
       const completedCard = doneColumn.getByTestId('issue-card-issue-closed');
-      const archiveButton = doneColumn.getByTitle('보관함');
+      const archiveButton = page.getByTestId('archive-basket-done');
 
       await expect(completedCard).toBeVisible();
-      await completedCard.dragTo(archiveButton);
+      await dragIssueToArchive(page, completedCard, archiveButton);
       await expect(completedCard).toHaveCount(0);
       await expect(apiServer.archivePutEvents.length).toBeGreaterThan(0);
 
