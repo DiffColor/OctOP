@@ -94,7 +94,7 @@ function describeTtsAvailabilityError(error) {
   return message || "음성 TTS를 사용할 수 없습니다.";
 }
 
-function ConversationTimeline({ entries }) {
+function ConversationTimeline({ entries, formatDateTime, formatRelativeTime }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return null;
   }
@@ -142,7 +142,7 @@ function ConversationTimeline({ entries }) {
   );
 }
 
-function RunTimeline({ entries }) {
+function RunTimeline({ entries, formatRelativeTime }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return null;
   }
@@ -2019,7 +2019,7 @@ export default function ThreadDetail({
           ) : null}
 
           {messageFilter === "runs" ? (
-            <RunTimeline entries={runTimeline} />
+            <RunTimeline entries={runTimeline} formatRelativeTime={formatRelativeTime} />
           ) : viewMode === "chat" ? (
             visibleChatTimeline.map((message) => {
               const canCopy = Boolean(String(message.content ?? "").trim());
@@ -2078,7 +2078,11 @@ export default function ThreadDetail({
               );
             })
           ) : messageFilter === "prompts" ? (
-            <ConversationTimeline entries={promptTimeline} />
+            <ConversationTimeline
+              entries={promptTimeline}
+              formatDateTime={formatDateTime}
+              formatRelativeTime={formatRelativeTime}
+            />
           ) : messageFilter === "responses" ? (
             <ul className="space-y-3">
               {responseTimeline.map((response) => (
@@ -2094,7 +2098,11 @@ export default function ThreadDetail({
               ))}
             </ul>
           ) : (
-            <ConversationTimeline entries={conversationTimeline} />
+            <ConversationTimeline
+              entries={conversationTimeline}
+              formatDateTime={formatDateTime}
+              formatRelativeTime={formatRelativeTime}
+            />
           )}
 
           {messagesLoading ? (
