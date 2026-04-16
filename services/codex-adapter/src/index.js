@@ -1492,6 +1492,7 @@ function normalizeProjectThread(loginId, thread = {}) {
     progress: Number.isFinite(Number(thread.progress)) ? Number(thread.progress) : 0,
     last_event: String(thread.last_event ?? "thread.ready").trim(),
     last_message: String(thread.last_message ?? "").trim(),
+    last_message_kind: String(thread.last_message_kind ?? thread.lastMessageKind ?? "").trim(),
     turn_id: thread.turn_id ? String(thread.turn_id).trim() : null,
     token_usage: tokenUsageState.token_usage,
     context_window_tokens: tokenUsageState.context_window_tokens,
@@ -1749,6 +1750,7 @@ function normalizeIssueCard(issue = {}) {
     progress: Number.isFinite(Number(issue.progress)) ? Number(issue.progress) : 0,
     last_event: String(issue.last_event ?? "issue.created").trim(),
     last_message: String(issue.last_message ?? "").trim(),
+    last_message_kind: String(issue.last_message_kind ?? issue.lastMessageKind ?? "").trim(),
     queue_position:
       queuePosition == null || queuePosition === ""
         ? null
@@ -3476,6 +3478,8 @@ function updateProjectThreadSnapshot(threadId) {
     progress: activeIssue?.progress ?? latestIssue?.progress ?? 0,
     last_event: activeIssue?.last_event ?? latestIssue?.last_event ?? thread.last_event,
     last_message: activeIssue?.last_message ?? latestIssue?.last_message ?? thread.last_message,
+    last_message_kind:
+      activeIssue?.last_message_kind ?? latestIssue?.last_message_kind ?? thread.last_message_kind ?? "",
     updated_at: latestIssue?.updated_at ?? thread.updated_at
   };
 
@@ -9688,7 +9692,12 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
           status: nextStatus,
           last_event: "thread.status.changed",
           turn_id: nextTurnId,
-          ...(errorMessage ? { last_message: errorMessage } : {})
+          ...(errorMessage
+            ? {
+                last_message: errorMessage,
+                last_message_kind: ""
+              }
+            : {})
         };
       }
     case "thread/tokenUsage/updated":
@@ -9722,7 +9731,8 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         last_event: "item.agentMessage.delta",
         last_message: normalizeAssistantMessageContent(
           `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
-        )
+        ),
+        last_message_kind: "message"
       };
     case "turn/completed":
       {
@@ -9746,7 +9756,12 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
           progress: nextProgress,
           last_event: "turn.completed",
           turn_id: null,
-          ...(errorMessage ? { last_message: errorMessage } : {})
+          ...(errorMessage
+            ? {
+                last_message: errorMessage,
+                last_message_kind: ""
+              }
+            : {})
         };
       }
     default:
@@ -9789,7 +9804,8 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`)
+        last_message: normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`),
+        last_message_kind: "message"
       };
     case "thread/status/changed":
       if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
@@ -9809,7 +9825,12 @@ function buildIssuePatch(method, params, issueId, options = {}) {
           status: "failed",
           progress: 0,
           last_event: "thread.status.changed",
-          ...(errorMessage ? { last_message: errorMessage } : {})
+          ...(errorMessage
+            ? {
+                last_message: errorMessage,
+                last_message_kind: ""
+              }
+            : {})
         };
       }
 
@@ -9820,7 +9841,12 @@ function buildIssuePatch(method, params, issueId, options = {}) {
           status: terminalStatus,
           progress: terminalStatus === "completed" ? 100 : Math.max(current.progress ?? 0, 0),
           last_event: "thread.status.changed",
-          ...(errorMessage ? { last_message: errorMessage } : {})
+          ...(errorMessage
+            ? {
+                last_message: errorMessage,
+                last_message_kind: ""
+              }
+            : {})
         };
       }
 
@@ -9832,7 +9858,12 @@ function buildIssuePatch(method, params, issueId, options = {}) {
           status: params.turn?.status === "completed" ? "completed" : "failed",
           progress: params.turn?.status === "completed" ? 100 : 0,
           last_event: "turn.completed",
-          ...(errorMessage ? { last_message: errorMessage } : {})
+          ...(errorMessage
+            ? {
+                last_message: errorMessage,
+                last_message_kind: ""
+              }
+            : {})
         };
       }
     default:
@@ -10790,6 +10821,9 @@ async function syncRemoteTurnSnapshotForNotification(
     syncedAssistant.content ||
     syncedRemoteItems.latestContent ||
     String(issue.last_message ?? "").trim();
+  const recoveredMessageKind = syncedAssistant.content
+    ? "message"
+    : syncedRemoteItems.latestKind || String(issue.last_message_kind ?? "").trim();
 
   if (tokenUsageChanged) {
     updateBackfilledPhysicalThread(normalizedThreadId, physicalThreadId, {
@@ -10800,7 +10834,12 @@ async function syncRemoteTurnSnapshotForNotification(
   if (syncedAssistant.changed || (syncedRemoteItems.changed && recoveredMessage !== String(issue.last_message ?? "").trim())) {
     updateIssueCard(normalizedIssueId, {
       ...(physicalThreadId ? { executed_physical_thread_id: physicalThreadId } : {}),
-      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+      ...(recoveredMessage
+        ? {
+            last_message: recoveredMessage,
+            last_message_kind: recoveredMessageKind
+          }
+        : {})
     });
   }
 
@@ -11264,6 +11303,7 @@ function syncRemoteTurnItemsToIssue(issueId, turn, physicalThreadId = null) {
     .filter(Boolean);
   let changed = false;
   let latestContent = "";
+  let latestKind = "";
   let lastEvent = null;
 
   for (const remoteMessage of normalizedRemoteMessages) {
@@ -11300,12 +11340,14 @@ function syncRemoteTurnItemsToIssue(issueId, turn, physicalThreadId = null) {
     }
 
     latestContent = remoteMessage.content;
+    latestKind = remoteMessage.kind;
     lastEvent = `item.${remoteMessage.kind}`;
   }
 
   return {
     changed,
     latestContent,
+    latestKind,
     lastEvent,
     count: normalizedRemoteMessages.length
   };
@@ -11658,6 +11700,9 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
     syncedRemoteItems.latestContent ||
     extractAppServerErrorMessage({ turn: remoteTurn, status: remoteThread?.status }) ||
     String(issue.last_message ?? "").trim();
+  const recoveredMessageKind = syncedAssistant.content
+    ? "message"
+    : syncedRemoteItems.latestKind || "";
   const tokenUsageChanged = !areThreadTokenUsageStatesEqual(previousComparableState.physicalThread ?? {}, tokenUsageState);
   const remoteTurnChanged =
     Boolean(remoteTurn?.id) &&
@@ -11721,6 +11766,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
       last_event: "item.agentMessage.delta",
       last_message: recoveredMessage,
+      last_message_kind: recoveredMessageKind,
       turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
     });
     updateIssueCard(activeIssueId, {
@@ -11728,7 +11774,8 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       status: "running",
       progress: Math.max(Number(issue.progress ?? 0), 90),
       last_event: "item.agentMessage.delta",
-      last_message: recoveredMessage
+      last_message: recoveredMessage,
+      last_message_kind: recoveredMessageKind
     });
   }
 
@@ -11740,6 +11787,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
         progress: Math.max(Number(physicalThread?.progress ?? 0), syncedAssistant.changed ? 90 : 20),
         last_event: recoveredRunningLastEvent,
         last_message: recoveredMessage || String(physicalThread?.last_message ?? ""),
+        ...(recoveredMessage ? { last_message_kind: recoveredMessageKind } : {}),
         turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
       });
       updateIssueCard(activeIssueId, {
@@ -11747,7 +11795,12 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
         status: "running",
         progress: Math.max(Number(issue.progress ?? 0), syncedAssistant.changed ? 90 : 20),
         last_event: recoveredRunningLastEvent,
-        ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+        ...(recoveredMessage
+          ? {
+              last_message: recoveredMessage,
+              last_message_kind: recoveredMessageKind
+            }
+          : {})
       });
     } else {
       const currentRunningThread = threadStateById.get(threadId) ?? thread;
@@ -11770,6 +11823,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
             progress: currentRunningPhysicalThread?.progress ?? physicalThread?.progress ?? 90,
             last_event: "watchdog.degraded",
             last_message: recoveredMessage || String(currentRunningPhysicalThread?.last_message ?? physicalThread?.last_message ?? ""),
+            ...(recoveredMessage ? { last_message_kind: recoveredMessageKind } : {}),
             turn_id: remoteTurn?.id ?? currentRunningPhysicalThread?.turn_id ?? physicalThread?.turn_id ?? null,
             updated_at: degradedUpdatedAt
           });
@@ -11780,13 +11834,23 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
           progress: currentRunningIssue?.progress ?? issue.progress ?? 90,
           last_event: "watchdog.degraded",
           updated_at: degradedUpdatedAt,
-          ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+          ...(recoveredMessage
+            ? {
+                last_message: recoveredMessage,
+                last_message_kind: recoveredMessageKind
+              }
+            : {})
         });
         threadStateById.set(threadId, {
           ...currentRunningThread,
           continuity_status: "degraded",
           last_event: "watchdog.degraded",
-          ...(recoveredMessage ? { last_message: recoveredMessage } : {}),
+          ...(recoveredMessage
+            ? {
+                last_message: recoveredMessage,
+                last_message_kind: recoveredMessageKind
+              }
+            : {}),
           updated_at: degradedUpdatedAt
         });
       }
@@ -11798,6 +11862,7 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       progress: Math.max(Number(physicalThread?.progress ?? 0), 90),
       last_event: "thread.status.changed",
       last_message: recoveredMessage,
+      last_message_kind: recoveredMessageKind,
       turn_id: remoteTurn?.id ?? physicalThread?.turn_id ?? null
     });
     updateIssueCard(activeIssueId, {
@@ -11805,7 +11870,12 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       status: "awaiting_input",
       progress: Math.max(Number(issue.progress ?? 0), 90),
       last_event: "thread.status.changed",
-      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+      ...(recoveredMessage
+        ? {
+            last_message: recoveredMessage,
+            last_message_kind: recoveredMessageKind
+          }
+        : {})
     });
   } else if (remoteStatus === "completed") {
     settlePhysicalThreadExecutionState(threadId, {
@@ -11821,7 +11891,12 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       status: "completed",
       progress: 100,
       last_event: "turn.completed",
-      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+      ...(recoveredMessage
+        ? {
+            last_message: recoveredMessage,
+            last_message_kind: recoveredMessageKind
+          }
+        : {})
     });
     if (physicalThreadId) {
       activeIssueByPhysicalThreadId.delete(physicalThreadId);
@@ -11841,7 +11916,12 @@ async function applyRunningIssueBackfillSnapshot(userId, threadId, remoteThread,
       status: "failed",
       progress: 0,
       last_event: "turn.completed",
-      ...(recoveredMessage ? { last_message: recoveredMessage } : {})
+      ...(recoveredMessage
+        ? {
+            last_message: recoveredMessage,
+            last_message_kind: recoveredMessageKind
+          }
+        : {})
     });
     if (physicalThreadId) {
       activeIssueByPhysicalThreadId.delete(physicalThreadId);

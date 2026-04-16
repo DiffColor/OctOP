@@ -3145,6 +3145,7 @@ function normalizeThread(thread, fallbackProjectId = null) {
     progress: clampProgress(thread.progress),
     last_event: thread.last_event ?? "thread.started",
     last_message: thread.last_message ?? "",
+    last_message_kind: thread.last_message_kind ?? thread.lastMessageKind ?? "",
     created_at: thread.created_at ?? new Date().toISOString(),
     updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
     source: thread.source ?? "appServer",
@@ -3175,6 +3176,7 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     progress: clampProgress(issue.progress),
     last_event: issue.last_event ?? "issue.created",
     last_message: issue.last_message ?? "",
+    last_message_kind: issue.last_message_kind ?? issue.lastMessageKind ?? "",
     created_at: issue.created_at ?? new Date().toISOString(),
     updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
     prompt: issue.prompt ?? "",
@@ -3591,7 +3593,12 @@ function buildLiveThreadPatch(event, currentThread = null) {
           project_id: projectId || currentThread?.project_id || null,
           status: nextStatus,
           last_event: "thread.status.changed",
-          ...(nextMessage ? { last_message: nextMessage } : {}),
+          ...(nextMessage
+            ? {
+                last_message: nextMessage,
+                last_message_kind: ""
+              }
+            : {}),
           updated_at: new Date().toISOString()
         };
       }
@@ -3654,6 +3661,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         progress: Math.max(currentThread?.progress ?? 0, 90),
         last_event: "item.agentMessage.delta",
         last_message: normalizeAssistantMessageContent(`${currentThread?.last_message ?? ""}${payload.delta ?? ""}`),
+        last_message_kind: "message",
         updated_at: new Date().toISOString()
       };
     case "turn.completed":
@@ -3678,7 +3686,8 @@ function buildLiveThreadPatch(event, currentThread = null) {
           last_event: "turn.completed",
           ...(payload.turn?.error?.message
             ? {
-                last_message: String(payload.turn.error.message).trim()
+                last_message: String(payload.turn.error.message).trim(),
+                last_message_kind: ""
               }
             : {}),
           updated_at: new Date().toISOString()

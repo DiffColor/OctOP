@@ -2055,6 +2055,14 @@ function shouldHideThreadDetailMessage(message) {
 }
 
 function getThreadPreviewEventKind(thread) {
+  const explicitKind = String(thread?.last_message_kind ?? thread?.lastMessageKind ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (explicitKind) {
+    return explicitKind;
+  }
+
   const lastEvent = String(thread?.last_event ?? "")
     .trim()
     .toLowerCase();
@@ -2778,6 +2786,7 @@ function normalizeProjectThread(thread, fallbackProjectId = null) {
     progress: clampProgress(thread.progress),
     last_event: thread.last_event ?? "thread.started",
     last_message: thread.last_message ?? "",
+    last_message_kind: thread.last_message_kind ?? thread.lastMessageKind ?? "",
     created_at: thread.created_at ?? new Date().toISOString(),
     updated_at: thread.updated_at ?? thread.created_at ?? new Date().toISOString(),
     source: thread.source ?? "appServer",
@@ -2871,6 +2880,7 @@ function normalizeIssue(issue, fallbackThreadId = null) {
     progress: clampProgress(issue.progress),
     last_event: issue.last_event ?? "issue.created",
     last_message: issue.last_message ?? "",
+    last_message_kind: issue.last_message_kind ?? issue.lastMessageKind ?? "",
     created_at: issue.created_at ?? new Date().toISOString(),
     updated_at: issue.updated_at ?? issue.created_at ?? new Date().toISOString(),
     prompt: issue.prompt ?? "",
@@ -3914,7 +3924,12 @@ function buildLiveThreadPatch(event, currentThread = null) {
           project_id: projectId || currentThread?.project_id || null,
           status: nextStatus,
           last_event: "thread.status.changed",
-          ...(nextMessage ? { last_message: nextMessage } : {}),
+          ...(nextMessage
+            ? {
+                last_message: nextMessage,
+                last_message_kind: ""
+              }
+            : {}),
           updated_at: new Date().toISOString()
         };
       }
@@ -3977,6 +3992,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         progress: Math.max(currentThread?.progress ?? 0, 90),
         last_event: "item.agentMessage.delta",
         last_message: normalizeAssistantMessageContent(`${currentThread?.last_message ?? ""}${payload.delta ?? ""}`),
+        last_message_kind: "message",
         updated_at: new Date().toISOString()
       };
     case "turn.completed":
@@ -3988,7 +4004,8 @@ function buildLiveThreadPatch(event, currentThread = null) {
         last_event: "turn.completed",
         ...(payload.turn?.error?.message
           ? {
-              last_message: String(payload.turn.error.message).trim()
+              last_message: String(payload.turn.error.message).trim(),
+              last_message_kind: ""
             }
           : {}),
         updated_at: new Date().toISOString()
@@ -4059,6 +4076,7 @@ function buildLiveIssuePatch(event, currentIssue = null) {
         progress: Math.max(currentIssue?.progress ?? 0, 90),
         last_event: "item.agentMessage.delta",
         last_message: normalizeAssistantMessageContent(`${currentIssue?.last_message ?? ""}${payload.delta ?? ""}`),
+        last_message_kind: "message",
         updated_at: new Date().toISOString()
       };
     case "thread.status.changed":
@@ -10258,6 +10276,22 @@ export default function App() {
               messages: appendIssueDeltaMessage(current.messages, payload, nextThread)
             };
           });
+        }
+
+        if (payload.type === "logicalThread.timeline.updated") {
+          const timelineThreadId = payload.payload?.thread_id ?? payload.payload?.root_thread_id ?? "";
+
+          if (
+            timelineThreadId &&
+            detailStateRef.current.open &&
+            selectedProjectThreadIdRef.current === timelineThreadId
+          ) {
+            setDetailState((current) => ({
+              ...current,
+              messages: payload.payload?.entries ?? current.messages
+            }));
+          }
+          return;
         }
 
         if (payload.type === "bridge.projects.updated") {
