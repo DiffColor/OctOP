@@ -1,4 +1,5 @@
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
+import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 
 export function findLatestLiveAssistantMessageIndex(messages = [], issueId = null) {
   const normalizedIssueId = String(issueId ?? "").trim();
@@ -47,7 +48,7 @@ export function appendLiveAssistantDelta(messages = [], options = {}) {
 
     nextMessages[targetIndex] = {
       ...currentMessage,
-      content: normalizeAssistantMessageContent(`${currentMessage.content ?? ""}${normalizedDelta}`),
+      content: mergeAssistantDeltaContent(currentMessage.content ?? "", normalizedDelta),
       timestamp,
       issue_id: normalizedIssueId ?? currentMessage.issue_id ?? null,
       issue_title: currentMessage.issue_title ?? options?.issueTitle ?? "",

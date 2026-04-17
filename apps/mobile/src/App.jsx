@@ -34,7 +34,9 @@ import {
   summarizeMessageContent
 } from "./mobileRichMessageUi.jsx";
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
+import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 import { appendLiveAssistantDelta } from "./liveAssistantMessage.js";
+import { consolidateThreadMessages } from "./threadMessageConsolidation.js";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
 import useMobileFeedbackState from "./useMobileFeedbackState.js";
@@ -1545,56 +1547,6 @@ function createInitialThreadVoiceState() {
   };
 }
 
-function selectPreferredPromptMessage(currentMessage, nextMessage) {
-  const currentOptimistic = currentMessage?.optimistic === true;
-  const nextOptimistic = nextMessage?.optimistic === true;
-
-  if (currentOptimistic !== nextOptimistic) {
-    return currentOptimistic ? nextMessage : currentMessage;
-  }
-
-  const currentTimestamp = Date.parse(currentMessage?.timestamp ?? "");
-  const nextTimestamp = Date.parse(nextMessage?.timestamp ?? "");
-
-  if (Number.isFinite(currentTimestamp) && Number.isFinite(nextTimestamp) && nextTimestamp !== currentTimestamp) {
-    return nextTimestamp > currentTimestamp ? nextMessage : currentMessage;
-  }
-
-  return nextMessage;
-}
-
-function dedupeThreadPromptMessages(messages = []) {
-  const deduped = [];
-  const promptIndexByIssueId = new Map();
-
-  (messages ?? []).forEach((message) => {
-    if (!message) {
-      return;
-    }
-
-    const issueId = String(message.issue_id ?? "").trim();
-    const role = String(message.role ?? "").trim();
-    const kind = String(message.kind ?? "").trim();
-
-    if (!issueId || role !== "user" || kind !== "prompt") {
-      deduped.push(message);
-      return;
-    }
-
-    const existingIndex = promptIndexByIssueId.get(issueId);
-
-    if (existingIndex == null) {
-      promptIndexByIssueId.set(issueId, deduped.length);
-      deduped.push(message);
-      return;
-    }
-
-    deduped[existingIndex] = selectPreferredPromptMessage(deduped[existingIndex], message);
-  });
-
-  return deduped;
-}
-
 function normalizeCachedThreadMessages(messages = []) {
   const normalizedMessages = messages
     .map((message, index) => {
@@ -1631,7 +1583,7 @@ function normalizeCachedThreadMessages(messages = []) {
     })
     .filter(Boolean);
 
-  return dedupeThreadPromptMessages(normalizedMessages)
+  return consolidateThreadMessages(normalizedMessages)
     .sort((left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? ""))
     .slice(-MAX_CACHED_THREAD_MESSAGES_PER_THREAD);
 }
@@ -3316,7 +3268,7 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
     };
   });
 
-  return dedupeThreadPromptMessages([...preservedMessages, ...normalizedMessages]).sort(
+  return consolidateThreadMessages([...preservedMessages, ...normalizedMessages]).sort(
     (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
   );
 }
@@ -3685,7 +3637,7 @@ function buildLiveThreadPatch(event, currentThread = null) {
         status: "running",
         progress: Math.max(currentThread?.progress ?? 0, 90),
         last_event: "item.agentMessage.delta",
-        last_message: normalizeAssistantMessageContent(`${currentThread?.last_message ?? ""}${payload.delta ?? ""}`),
+        last_message: mergeAssistantDeltaContent(currentThread?.last_message ?? "", payload.delta ?? ""),
         last_message_kind: "message",
         updated_at: new Date().toISOString()
       };
@@ -8952,7 +8904,7 @@ export default function App() {
               ...(current[threadId] ?? {}),
               thread: optimisticThread,
               issues: optimisticIssue ? [optimisticIssue] : current[threadId]?.issues ?? [],
-              messages: dedupeThreadPromptMessages(optimisticMessages),
+              messages: consolidateThreadMessages(optimisticMessages),
               loading: false,
               error: ""
             }
@@ -9116,7 +9068,7 @@ export default function App() {
             issues: optimisticIssue
               ? [...(currentEntry.issues ?? []).filter((issue) => issue.id !== optimisticIssue.id), optimisticIssue]
               : currentEntry.issues ?? [],
-            messages: dedupeThreadPromptMessages(nextMessages),
+            messages: consolidateThreadMessages(nextMessages),
             loading: false,
             error: ""
           }

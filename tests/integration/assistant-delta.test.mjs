@@ -78,3 +78,23 @@ test("computeEffectiveAssistantDelta는 진행 내역 이어쓰기만 실제 del
     ].join("\n")
   );
 });
+
+test("computeEffectiveAssistantDelta는 누적 재전송되는 일반 문장 chunk의 겹치는 prefix를 다시 붙이지 않는다", () => {
+  const chunks = [
+    "테스트",
+    "테스트 한",
+    "테스트 한 거",
+    "테스트 한 거 맞아",
+    "테스트 한 거 맞아 아직도",
+    "테스트 한 거 맞아 아직도 중복되는데"
+  ];
+
+  let previousContent = "";
+
+  for (const chunk of chunks) {
+    const result = computeEffectiveAssistantDelta(previousContent, chunk);
+    previousContent = result.nextContent;
+  }
+
+  assert.equal(previousContent, "테스트 한 거 맞아 아직도 중복되는데");
+});

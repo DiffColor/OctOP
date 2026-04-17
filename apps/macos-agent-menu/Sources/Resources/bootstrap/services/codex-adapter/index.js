@@ -28,7 +28,7 @@ import {
   applyCommonBaseInstructionsToProjects,
   deriveCommonBaseInstructions
 } from "./projectInstructionState.js";
-import { computeEffectiveAssistantDelta } from "./src/assistantDelta.js";
+import { computeEffectiveAssistantDelta, mergeAssistantDeltaContent } from "./src/assistantDelta.js";
 
 function normalizeAssistantMessageContent(content = "") {
   const normalized = String(content ?? "");
@@ -5916,7 +5916,7 @@ function appendAssistantDelta(threadId, delta = "") {
   const lastMessage = messages.at(-1);
 
   if (lastMessage?.role === "assistant") {
-    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
+    lastMessage.content = mergeAssistantDeltaContent(lastMessage.content ?? "", delta);
     lastMessage.timestamp = now();
     persistThreadById(threadId);
     return;
@@ -7818,7 +7818,7 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         last_event: "item.agentMessage.delta",
         last_message:
           options.assistantDeltaContext?.nextContent ??
-          normalizeAssistantMessageContent(`${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`)
+          mergeAssistantDeltaContent(currentPhysicalThread?.last_message ?? "", params.delta ?? "")
       };
     case "turn/completed":
       {
@@ -7891,7 +7891,7 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         last_event: "item.agentMessage.delta",
         last_message:
           options.assistantDeltaContext?.nextContent ??
-          normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`)
+          mergeAssistantDeltaContent(current.last_message ?? "", params.delta ?? "")
       };
     case "thread/status/changed":
       if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {

@@ -41,7 +41,7 @@ import {
   deriveCommonBaseInstructions,
   ensureDefaultCommonBaseInstructions
 } from "./projectInstructionState.js";
-import { computeEffectiveAssistantDelta } from "./assistantDelta.js";
+import { computeEffectiveAssistantDelta, mergeAssistantDeltaContent } from "./assistantDelta.js";
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 
 // Runtime update verification marker: atomic update validation sentinel.
@@ -7334,7 +7334,7 @@ function appendAssistantDelta(threadId, delta = "") {
   const lastMessage = messages.at(-1);
 
   if (lastMessage?.role === "assistant") {
-    lastMessage.content = normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${delta}`);
+    lastMessage.content = mergeAssistantDeltaContent(lastMessage.content ?? "", delta);
     lastMessage.timestamp = now();
     persistThreadById(threadId);
     return;
@@ -9900,7 +9900,7 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         last_event: "item.agentMessage.delta",
         last_message:
           options.assistantDeltaContext?.nextContent ??
-          normalizeAssistantMessageContent(`${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`),
+          mergeAssistantDeltaContent(currentPhysicalThread?.last_message ?? "", params.delta ?? ""),
         last_message_kind: "message"
       };
     case "turn/completed":
@@ -9979,7 +9979,7 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         last_event: "item.agentMessage.delta",
         last_message:
           options.assistantDeltaContext?.nextContent ??
-          normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`),
+          mergeAssistantDeltaContent(current.last_message ?? "", params.delta ?? ""),
         last_message_kind: "message"
       };
     case "thread/status/changed":
