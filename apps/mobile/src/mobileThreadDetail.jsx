@@ -29,7 +29,7 @@ import {
   formatProjectProgramSummaryForVoice,
   formatVoiceExecutionReportForVoice
 } from "./voice/voiceResponseFormatter.js";
-import { MessageBubble, RichMessageContent, summarizeMessageContent } from "./mobileRichMessageUi.jsx";
+import { MessageBubble, RichMessageContent } from "./mobileRichMessageUi.jsx";
 
 const InlineIssueComposer = MobileInlineIssueComposer;
 const THREAD_CONTENT_FILTERS = [
@@ -165,11 +165,6 @@ function shouldHideMessageFromChatWindow(message) {
 }
 
 function getSystemMessageTitle(message, fallback = "시스템") {
-  const normalizedKind = String(message?.kind ?? "").trim();
-  return SYSTEM_MESSAGE_TITLE_BY_KIND[normalizedKind] ?? fallback;
-}
-
-function getAssistantMessageTitle(message, fallback = "응답") {
   const normalizedKind = String(message?.kind ?? "").trim();
   return SYSTEM_MESSAGE_TITLE_BY_KIND[normalizedKind] ?? fallback;
 }
@@ -901,8 +896,6 @@ export default function ThreadDetail({
   }, [activePhysicalThreadId, normalizedIssues]);
   const chatTimeline = useMemo(() => {
     const normalized = [];
-    let lastPrompt = null;
-
     const safeMessages = Array.isArray(messages) ? messages.filter((message) => !shouldHideMessageFromChatWindow(message)) : [];
 
     safeMessages.forEach((message, index) => {
@@ -931,7 +924,6 @@ export default function ThreadDetail({
       };
 
       if (role === "system") {
-        lastPrompt = null;
         normalized.push({
           ...base,
           align: "center",
@@ -942,7 +934,6 @@ export default function ThreadDetail({
       }
 
       if (role === "user") {
-        lastPrompt = base;
         normalized.push({
           ...base,
           align: "right",
@@ -956,8 +947,7 @@ export default function ThreadDetail({
         ...base,
         align: "left",
         tone: "light",
-        title: getAssistantMessageTitle(message),
-        replyTo: lastPrompt
+        title: ""
       });
     });
 
@@ -2484,14 +2474,6 @@ export default function ThreadDetail({
                     }
                     longPressTitle={canOpenActionSheet ? "길게 눌러 메시지 작업 열기" : ""}
                   >
-                    {message.replyTo ? (
-                      <div className="mb-2 border-l-2 border-slate-300/45 pl-3 text-xs text-slate-700/80">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600/70">프롬프트</p>
-                        <p className="mt-1 break-words [overflow-wrap:anywhere] text-sm leading-5">
-                          {summarizeMessageContent(message.replyTo.content)}
-                        </p>
-                      </div>
-                    ) : null}
                     <RichMessageContent
                       content={
                         message.content || (message.role === "assistant" ? "응답을 기다리고 있습니다..." : "프롬프트가 비어 있습니다.")
@@ -2520,8 +2502,7 @@ export default function ThreadDetail({
             <ul className="space-y-3">
               {responseTimeline.map((response) => (
                 <li key={response.id} data-scroll-anchor-id={`response:${response.id}`} className="border-b border-white/8 px-1 pb-3">
-                  <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500">
-                    <span>응답</span>
+                  <div className="flex items-center justify-end gap-3 text-[11px] text-slate-500">
                     <span>{formatRelativeTime(response.timestamp)}</span>
                   </div>
                   <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-slate-200">

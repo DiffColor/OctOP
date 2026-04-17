@@ -102,7 +102,7 @@ function mergeAssistantMessages(currentMessage, nextMessage) {
 export function consolidateThreadMessages(messages = []) {
   const consolidated = [];
   const promptIndexByIssueId = new Map();
-  const assistantIndexByIssueId = new Map();
+  const assistantIndexByMessageId = new Map();
 
   (messages ?? []).forEach((message) => {
     if (!message) {
@@ -126,11 +126,18 @@ export function consolidateThreadMessages(messages = []) {
       return;
     }
 
-    if (role === "assistant" && kind === "message" && issueId) {
-      const existingIndex = assistantIndexByIssueId.get(issueId);
+    if (role === "assistant" && kind === "message") {
+      const assistantMessageId = String(message.id ?? "").trim();
+
+      if (!assistantMessageId) {
+        consolidated.push(message);
+        return;
+      }
+
+      const existingIndex = assistantIndexByMessageId.get(assistantMessageId);
 
       if (existingIndex == null) {
-        assistantIndexByIssueId.set(issueId, consolidated.length);
+        assistantIndexByMessageId.set(assistantMessageId, consolidated.length);
         consolidated.push(message);
         return;
       }
