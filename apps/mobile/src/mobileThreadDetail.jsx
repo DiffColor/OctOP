@@ -277,6 +277,9 @@ export default function ThreadDetail({
   const scrollContentRef = useRef(null);
   const scrollAnchorRef = useRef(null);
   const footerRef = useRef(null);
+  const composerLiveDraftRef = useRef(String(composerDraft ?? ""));
+  const speechInputBaseDraftRef = useRef("");
+  const wasComposerSpeechInputEnabledRef = useRef(false);
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
@@ -348,6 +351,22 @@ export default function ThreadDetail({
     currentVoiceModeRef.current = voiceMode;
     currentVoiceStateRef.current = resolvedVoiceState;
   }, [resolvedVoiceState, voiceMode]);
+
+  useEffect(() => {
+    composerLiveDraftRef.current = String(composerDraft ?? "");
+  }, [composerDraft]);
+
+  useEffect(() => {
+    if (composerSpeechInputEnabled && !wasComposerSpeechInputEnabledRef.current) {
+      speechInputBaseDraftRef.current = String(composerLiveDraftRef.current ?? "");
+    }
+
+    if (!composerSpeechInputEnabled) {
+      speechInputBaseDraftRef.current = "";
+    }
+
+    wasComposerSpeechInputEnabledRef.current = composerSpeechInputEnabled;
+  }, [composerSpeechInputEnabled]);
 
   const readVoiceCapabilitySnapshot = useCallback(() => {
     return readStoredVoiceCapabilitySnapshot(voiceCapabilityScope, voiceCapabilityDateKey);
@@ -621,16 +640,25 @@ export default function ThreadDetail({
 
   const handleFallbackDraftTranscript = useCallback((transcript) => {
     const normalizedTranscript = String(transcript ?? "").trim();
+    const currentBaseDraft = String(speechInputBaseDraftRef.current ?? "");
 
     if (!normalizedTranscript) {
       return;
     }
 
+    const nextPrompt =
+      currentBaseDraft && !/\s$/u.test(currentBaseDraft)
+        ? `${currentBaseDraft} ${normalizedTranscript}`
+        : `${currentBaseDraft}${normalizedTranscript}`;
+
     setComposerSpeechInsert({
       token: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      text: normalizedTranscript,
+      text: nextPrompt,
       mode: "replace"
     });
+  }, []);
+  const handleComposerPromptChange = useCallback((nextPrompt) => {
+    composerLiveDraftRef.current = String(nextPrompt ?? "");
   }, []);
 
   useTouchScrollBoundaryLock(scrollRef);
@@ -2403,6 +2431,7 @@ export default function ThreadDetail({
               stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
               onInputFocus={handleComposerFocus}
               onInputBlur={handleComposerBlur}
+              onPromptChange={handleComposerPromptChange}
               speechInputEnabled={composerSpeechInputEnabled}
               speechInputSupported={fallbackVoiceSession.speechRecognitionSupported}
               speechInputListening={fallbackVoiceSession.isListening}

@@ -20,6 +20,7 @@ export default function InlineIssueComposer({
   stopLabel = "중단",
   onInputFocus = null,
   onInputBlur = null,
+  onPromptChange = null,
   speechInputEnabled = false,
   speechInputSupported = true,
   speechInputListening = false,
@@ -102,7 +103,8 @@ export default function InlineIssueComposer({
 
   useEffect(() => {
     promptRef.current = prompt;
-  }, [prompt]);
+    onPromptChange?.(prompt);
+  }, [onPromptChange, prompt]);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
