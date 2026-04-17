@@ -541,7 +541,7 @@ export default function InlineIssueComposer({
     !disabled &&
     speechInputSupported;
   const speechInputActive = speechInputEnabled || speechInputListening || speechInputBusy;
-  const speechInputStatusLabel = speechInputActive ? "음성녹음 인식중" : "음성녹음";
+  const speechInputStatusLabel = speechInputActive ? "음성 입력중" : "STT 입력";
   const canPressSendButton = Boolean(selectedProject) && !disabled && !actionBusy && (canSubmit || canOpenVoiceMode);
   const clearSendButtonLongPress = useCallback(() => {
     if (sendButtonLongPressTimerRef.current) {
@@ -738,13 +738,13 @@ export default function InlineIssueComposer({
                           ? "border-rose-300/45 bg-rose-500/20 text-rose-100"
                           : "border-sky-300/35 bg-sky-500/10 text-sky-100"
                       } disabled:cursor-not-allowed disabled:opacity-45`}
-                      aria-label={speechInputActive ? "STT 모드 끄기" : "STT 모드 켜기"}
+                      aria-label={speechInputActive ? "음성 입력 끄기" : "STT 입력 켜기"}
                       title={
                         !speechInputSupported
                           ? "이 브라우저는 음성 입력(STT)을 지원하지 않습니다."
                           : speechInputActive
-                            ? speechInputHint || "STT 모드 끄기"
-                            : "STT 모드 켜기"
+                            ? speechInputHint || "음성 입력 끄기"
+                            : "STT 입력 켜기"
                       }
                     >
                       <span
