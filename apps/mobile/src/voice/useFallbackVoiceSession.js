@@ -32,6 +32,38 @@ function normalizeTranscript(value) {
     .trim();
 }
 
+function joinTranscriptParts(parts) {
+  return normalizeTranscript(
+    parts
+      .map((part) => normalizeTranscript(part))
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function extractTranscriptDelta(previousTranscript, nextTranscript) {
+  const normalizedPreviousTranscript = normalizeTranscript(previousTranscript);
+  const normalizedNextTranscript = normalizeTranscript(nextTranscript);
+
+  if (!normalizedNextTranscript) {
+    return "";
+  }
+
+  if (!normalizedPreviousTranscript) {
+    return normalizedNextTranscript;
+  }
+
+  if (normalizedNextTranscript === normalizedPreviousTranscript) {
+    return "";
+  }
+
+  if (!normalizedNextTranscript.startsWith(normalizedPreviousTranscript)) {
+    return "";
+  }
+
+  return normalizeTranscript(normalizedNextTranscript.slice(normalizedPreviousTranscript.length));
+}
+
 function describeSpeechRecognitionError(event) {
   const errorCode = String(event?.error ?? "").trim().toLowerCase();
 
@@ -98,7 +130,8 @@ export default function useFallbackVoiceSession({
   const audioAnimationTimerRef = useRef(null);
   const latestDeliveredTranscriptRef = useRef("");
   const latestDeliveredTranscriptAtRef = useRef(0);
-  const deliveredFinalResultMapRef = useRef(new Map());
+  const finalResultTranscriptMapRef = useRef(new Map());
+  const committedFinalTranscriptRef = useRef("");
   const narrationAudioRef = useRef(null);
   const narrationObjectUrlRef = useRef("");
   const narrationRequestIdRef = useRef(0);
@@ -249,7 +282,8 @@ export default function useFallbackVoiceSession({
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
-      deliveredFinalResultMapRef.current = new Map();
+      finalResultTranscriptMapRef.current = new Map();
+      committedFinalTranscriptRef.current = "";
 
       setState((current) => ({
         ...current,
@@ -261,12 +295,12 @@ export default function useFallbackVoiceSession({
     };
 
     recognition.onresult = (event) => {
-      let interimTranscript = "";
-      const eventFinalTranscripts = [];
-      const newlyFinalizedTranscripts = [];
+      const nextFinalResultTranscriptMap = new Map(finalResultTranscriptMapRef.current);
+      const interimTranscripts = [];
+      const speechResults = Array.from(event?.results ?? []);
 
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
+      for (let index = 0; index < speechResults.length; index += 1) {
+        const result = speechResults[index];
         const text = normalizeTranscript(result?.[0]?.transcript ?? "");
 
         if (!text) {
@@ -274,20 +308,22 @@ export default function useFallbackVoiceSession({
         }
 
         if (result.isFinal) {
-          eventFinalTranscripts.push(text);
-
-          if (deliveredFinalResultMapRef.current.get(index) !== text) {
-            deliveredFinalResultMapRef.current.set(index, text);
-            newlyFinalizedTranscripts.push(text);
-          }
+          nextFinalResultTranscriptMap.set(index, text);
         } else {
-          deliveredFinalResultMapRef.current.delete(index);
-          interimTranscript = normalizeTranscript(`${interimTranscript} ${text}`);
+          nextFinalResultTranscriptMap.delete(index);
+          interimTranscripts.push(text);
         }
       }
 
-      const latestFinalTranscript = normalizeTranscript(eventFinalTranscripts.join(" "));
-      const nextPreviewText = latestFinalTranscript || interimTranscript;
+      finalResultTranscriptMapRef.current = nextFinalResultTranscriptMap;
+
+      const latestFinalTranscript = joinTranscriptParts(
+        [...nextFinalResultTranscriptMap.entries()]
+          .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+          .map(([, text]) => text)
+      );
+      const interimTranscript = joinTranscriptParts(interimTranscripts);
+      const nextPreviewText = joinTranscriptParts([latestFinalTranscript, interimTranscript]);
 
       if (nextPreviewText) {
         setState((current) => ({
@@ -296,11 +332,13 @@ export default function useFallbackVoiceSession({
         }));
       }
 
-      const transcriptDelta = normalizeTranscript(newlyFinalizedTranscripts.join(" "));
+      const transcriptDelta = extractTranscriptDelta(committedFinalTranscriptRef.current, latestFinalTranscript);
 
       if (transcriptDelta) {
         deliverTranscript(transcriptDelta);
       }
+
+      committedFinalTranscriptRef.current = latestFinalTranscript;
     };
 
     recognition.onerror = (event) => {
@@ -396,7 +434,8 @@ export default function useFallbackVoiceSession({
       lastAssistantTextRef.current = "";
       latestDeliveredTranscriptRef.current = "";
       latestDeliveredTranscriptAtRef.current = 0;
-      deliveredFinalResultMapRef.current = new Map();
+      finalResultTranscriptMapRef.current = new Map();
+      committedFinalTranscriptRef.current = "";
       narrationRequestIdRef.current += 1;
       resetAudioMetrics();
 

@@ -1422,6 +1422,53 @@ test('stt 전용 모드에서는 누적 final transcript가 다시 와도 입력
   await expect(promptInput).not.toHaveValue('stt 모드에서 음성이 stt 모드에서 음성이 중복 입력되는 부분을');
 });
 
+test('stt 전용 모드에서는 같은 final result가 누적 확장돼도 입력창에 중복으로 붙지 않는다', async ({ page }) => {
+  await seedMobileSession(page);
+  await seedVoiceCapabilitySnapshot(page, {
+    realtime: 'blocked',
+    tts: 'blocked',
+    realtimeError: '실시간 음성을 사용할 수 없습니다.',
+    ttsError: '음성 TTS를 사용할 수 없습니다.'
+  });
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page);
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+
+  await openVoiceModeByLongPressingSend(page);
+
+  await expect(page.getByText('STT 모드로 전환했습니다.')).toBeVisible();
+  await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
+  await expect(page.getByTestId('thread-prompt-speech-button')).toContainText('STT 중');
+
+  const promptInput = page.getByTestId('thread-prompt-input');
+  const cumulativeTranscripts = [
+    'stt의',
+    'stt의 음성',
+    'stt의 음성 입력이',
+    'stt의 음성 입력이 아직도',
+    'stt의 음성 입력이 아직도 중복으로',
+    'stt의 음성 입력이 아직도 중복으로 처리되고',
+    'stt의 음성 입력이 아직도 중복으로 처리되고 있어'
+  ];
+
+  for (const transcript of cumulativeTranscripts) {
+    await page.evaluate((nextTranscript) => {
+      window.__voiceTest.emitSpeechRecognitionResult({
+        resultIndex: 0,
+        results: [{ transcript: nextTranscript, isFinal: true }]
+      });
+    }, transcript);
+
+    await expect(promptInput).toHaveValue(transcript);
+  }
+
+  await expect(promptInput).not.toHaveValue(
+    'stt의 stt의 음성 stt의 음성 입력이 stt의 음성 입력이 아직도 stt의 음성 입력이 아직도 중복으로 stt의 음성 입력이 아직도 중복으로 처리되고 stt의 음성 입력이 아직도 중복으로 처리되고 있어'
+  );
+});
+
 test('실시간 제약 error 이벤트를 받으면 사유를 알리고 TTS 모드로 자동 전환한다', async ({ page }) => {
   await seedMobileSession(page);
   await installVoiceBrowserMocks(page);
