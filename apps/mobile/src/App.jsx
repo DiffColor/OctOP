@@ -31,9 +31,10 @@ import MobileInboxScreen, {
 import {
   MessageBubble,
   RichMessageContent,
-  normalizeAssistantMessageContent,
   summarizeMessageContent
 } from "./mobileRichMessageUi.jsx";
+import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
+import { appendLiveAssistantDelta } from "./liveAssistantMessage.js";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
 import useMobileFeedbackState from "./useMobileFeedbackState.js";
@@ -1609,6 +1610,7 @@ function normalizeCachedThreadMessages(messages = []) {
             : "user";
       const timestamp = String(message.timestamp ?? new Date().toISOString());
       const id = String(message.id ?? `${role}-${index}`).trim();
+      const rawContent = typeof message.content === "string" ? message.content : String(message.content ?? "");
 
       if (!id) {
         return null;
@@ -1618,7 +1620,7 @@ function normalizeCachedThreadMessages(messages = []) {
         id,
         role,
         kind: typeof message.kind === "string" ? message.kind : "message",
-        content: typeof message.content === "string" ? message.content : String(message.content ?? ""),
+        content: role === "assistant" ? normalizeAssistantMessageContent(rawContent) : rawContent,
         timestamp,
         issue_id: message.issue_id ?? null,
         issue_title: typeof message.issue_title === "string" ? message.issue_title : String(message.issue_title ?? ""),
@@ -3291,16 +3293,28 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
   }
 
   const preservedMessages = currentMessages.filter((message) => String(message?.issue_id ?? "") !== issueId);
-  const normalizedMessages = (detailMessages ?? []).map((message, index) => ({
-    ...message,
-    id: message.id ?? `${issueId}-${index}`,
-    issue_id: issueId,
-    issue_title: issue?.title ?? "",
-    issue_status: issue?.status ?? "staged",
-    timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString(),
-    attachments: normalizeMessageAttachments(message.attachments),
-    optimistic: false
-  }));
+  const normalizedMessages = (detailMessages ?? []).map((message, index) => {
+    const role =
+      message?.role === "assistant"
+        ? "assistant"
+        : message?.role === "system" || message?.kind === "handoff_summary"
+          ? "system"
+          : "user";
+    const rawContent = typeof message?.content === "string" ? message.content : String(message?.content ?? "");
+
+    return {
+      ...message,
+      id: message.id ?? `${issueId}-${index}`,
+      role,
+      content: role === "assistant" ? normalizeAssistantMessageContent(rawContent) : rawContent,
+      issue_id: issueId,
+      issue_title: issue?.title ?? "",
+      issue_status: issue?.status ?? "staged",
+      timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString(),
+      attachments: normalizeMessageAttachments(message.attachments),
+      optimistic: false
+    };
+  });
 
   return dedupeThreadPromptMessages([...preservedMessages, ...normalizedMessages]).sort(
     (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
@@ -3749,29 +3763,13 @@ function appendLiveAssistantMessage(messages, event, fallback = {}) {
     return messages;
   }
 
-  const next = [...messages];
-  const lastMessage = next.at(-1);
-
-  if (lastMessage?.role === "assistant" && (lastMessage.issue_id ?? "") === issueId) {
-    next[next.length - 1] = {
-      ...lastMessage,
-      content: normalizeAssistantMessageContent(`${lastMessage.content ?? ""}${payload.delta}`),
-      timestamp: new Date().toISOString()
-    };
-    return next;
-  }
-
-  next.push({
-    id: `${issueId || "assistant"}-${Date.now()}`,
-    role: "assistant",
-    kind: "message",
-    content: normalizeAssistantMessageContent(String(payload.delta ?? "")),
-    timestamp: new Date().toISOString(),
-    issue_id: issueId || fallback.issue_id || null,
-    issue_title: fallback.issue_title ?? "",
-    issue_status: fallback.issue_status ?? "running"
+  return appendLiveAssistantDelta(messages, {
+    delta: payload.delta,
+    issueId: issueId || fallback.issue_id || null,
+    issueTitle: fallback.issue_title ?? "",
+    issueStatus: fallback.issue_status ?? "running",
+    timestamp: new Date().toISOString()
   });
-  return next;
 }
 
 function mergeThreads(currentThreads, nextThreads) {

@@ -1,4 +1,5 @@
 export const PROGRESS_HISTORY_HEADING = "[진행 내역]";
+
 const SECTION_HEADING_PATTERN = /^\[[^\]]+\]$/;
 const REPEATED_PROGRESS_PREFIX_PATTERN = /^(\s*[-*]\s*)?\[진행 내역\](?:\s*[:：-]\s*)?(.*)$/;
 const SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
