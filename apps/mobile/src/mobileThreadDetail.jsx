@@ -1702,6 +1702,33 @@ export default function ThreadDetail({
     }, 0);
   }, []);
 
+  useEffect(() => {
+    if (
+      viewMode !== "chat" ||
+      messagesLoading ||
+      historyLoading ||
+      Boolean(messagesError) ||
+      Boolean(historyError) ||
+      !hasOlderMessages ||
+      !onLoadOlderMessages ||
+      chatTimeline.length > 0
+    ) {
+      return;
+    }
+
+    requestOlderMessages();
+  }, [
+    chatTimeline.length,
+    hasOlderMessages,
+    historyError,
+    historyLoading,
+    messagesError,
+    messagesLoading,
+    onLoadOlderMessages,
+    requestOlderMessages,
+    viewMode
+  ]);
+
   const handleRefreshMessages = async () => {
     if (!onRefreshMessages || refreshPending) {
       return;
@@ -2146,7 +2173,7 @@ export default function ThreadDetail({
             <div ref={scrollContentRef} className={`mx-auto flex w-full ${contentWidthClassName} flex-col gap-4 pb-4`}>
           {historyLoading || historyError || hasOlderMessages ? (
             <div className="flex justify-center">
-              <div className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300">
+              <div className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-300">
                 {historyLoading
                   ? "이전 히스토리를 불러오는 중..."
                   : historyError
@@ -2165,8 +2192,17 @@ export default function ThreadDetail({
                         </>
                       )
                     : remainingHistoryCount > 0
-                      ? `이전 히스토리 ${remainingHistoryCount}개가 더 있습니다. 위로 올리면 미리 불러옵니다.`
+                      ? `이전 히스토리 ${remainingHistoryCount}개가 더 있습니다.`
                       : "이전 히스토리를 더 불러올 수 있습니다."}
+                {!historyLoading && !historyError && hasOlderMessages && onLoadOlderMessages ? (
+                  <button
+                    type="button"
+                    onClick={requestOlderMessages}
+                    className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-white transition hover:bg-white/10"
+                  >
+                    지금 불러오기
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}

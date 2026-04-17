@@ -5550,6 +5550,10 @@ export default function App() {
   const currentThreadDetailVersion = currentThreadDetail?.version ?? null;
   const currentThreadDetailLoading = currentThreadDetail?.loading ?? false;
   const currentThreadDetailHasMessages = (currentThreadDetail?.messages?.length ?? 0) > 0;
+  const currentThreadDetailLoadedIssueCount = (currentThreadDetail?.loaded_issue_ids?.length ?? 0);
+  const currentThreadDetailIssueCount = (currentThreadDetail?.issues?.length ?? 0);
+  const currentThreadDetailHydrated =
+    currentThreadDetailHasMessages || currentThreadDetailLoadedIssueCount > 0 || currentThreadDetailIssueCount === 0;
   const hasCurrentThreadDetail = Boolean(currentThreadDetail);
   const selectedThreadUpdatedAt = selectedThread?.updated_at ?? null;
   const selectedThreadStatus = selectedThread?.status ?? "queued";
@@ -8021,15 +8025,16 @@ export default function App() {
       return;
     }
 
-    if (!hasCurrentThreadDetail || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
+    if (!hasCurrentThreadDetail || !currentThreadDetailHydrated || currentThreadDetailVersion !== selectedThreadUpdatedAt) {
       scheduleThreadMessagesReload(selectedThreadId, {
         version: selectedThreadUpdatedAt,
         delay: 0,
         suppressLoadingIndicator: hasCurrentThreadDetail,
-        reason: "thread_version_mismatch"
+        reason: !currentThreadDetailHydrated ? "thread_detail_not_hydrated" : "thread_version_mismatch"
       });
     }
   }, [
+    currentThreadDetailHydrated,
     currentThreadDetailLoading,
     currentThreadDetailVersion,
     hasCurrentThreadDetail,
