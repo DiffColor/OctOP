@@ -466,17 +466,26 @@ test.describe('모바일 채팅 첨부', () => {
     await expect(page.getByText(`![본문 이미지](${dataPngUrl})`)).toHaveCount(0);
   });
 
-  test('첨부 버튼이 채팅 입력창 내부 헤더 우측에 표시된다', async ({ page }) => {
+  test('stt 버튼과 첨부 버튼이 채팅 입력창 내부 헤더 우측에 함께 표시되고 stt 버튼이 첨부 버튼 왼쪽에 위치한다', async ({ page }) => {
     await mockMobileApi(page);
     await seedMobileSession(page);
 
     await page.goto(baseUrl);
 
     const promptSurface = page.getByTestId('thread-prompt-surface');
+    const speechButton = promptSurface.getByTestId('thread-prompt-speech-button');
     const attachButton = promptSurface.getByTestId('thread-prompt-attach-button');
 
     await expect(promptSurface).toBeVisible();
+    await expect(speechButton).toBeVisible();
     await expect(attachButton).toBeVisible();
+
+    const speechBox = await speechButton.boundingBox();
+    const attachBox = await attachButton.boundingBox();
+
+    expect(speechBox).toBeTruthy();
+    expect(attachBox).toBeTruthy();
+    expect(speechBox.x).toBeLessThan(attachBox.x);
   });
 
   test('첨부만으로 이슈를 생성하면 첨부 payload가 전송되고 버블에 이미지가 표시된다', async ({ page }) => {

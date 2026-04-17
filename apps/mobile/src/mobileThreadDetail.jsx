@@ -292,6 +292,7 @@ export default function ThreadDetail({
     token: "",
     text: ""
   });
+  const [manualSpeechInputActive, setManualSpeechInputActive] = useState(false);
   const { alert: showAlert } = useMobileFeedback();
   const resolvedVoiceState = normalizeResolvedVoiceState(voiceState, createInitialThreadVoiceState);
   const voiceModeEnabled = resolvedVoiceState.enabled;
@@ -304,6 +305,7 @@ export default function ThreadDetail({
   const voiceLastError = resolvedVoiceState.lastError;
   const voicePanelOpen = voiceModeEnabled && (voiceMode === "realtime" || voiceMode === "tts");
   const voiceSttOnlyMode = voiceMode === "stt_only";
+  const composerSpeechInputEnabled = voiceSttOnlyMode || manualSpeechInputActive;
   const currentVoiceModeRef = useRef(voiceMode);
   const currentVoiceStateRef = useRef(resolvedVoiceState);
   const voiceCapabilityDateKey = getVoiceCapabilityDateKey();
@@ -531,8 +533,13 @@ export default function ThreadDetail({
         const modeSwitchMessage =
           nextMode === "tts"
             ? "실시간 음성 API를 사용할 수 없어 음성 TTS 모드로 전환했습니다."
-            : "실시간 음성과 TTS를 사용할 수 없어 일반 채팅 STT 입력 모드로 전환했습니다.";
-        const detailMessage = nextErrorMessage ? `${modeSwitchMessage}\n원인: ${nextErrorMessage}` : modeSwitchMessage;
+            : "STT 모드로 전환했습니다.";
+        const detailMessage =
+          nextMode === "stt_only"
+            ? modeSwitchMessage
+            : nextErrorMessage
+              ? `${modeSwitchMessage}\n원인: ${nextErrorMessage}`
+              : modeSwitchMessage;
 
         showAlert(detailMessage, {
           title: "음성 모드",
@@ -1156,7 +1163,7 @@ export default function ThreadDetail({
     onAvailabilityChange: handleRealtimeAvailabilityChange
   });
   const fallbackVoiceSession = useFallbackVoiceSession({
-    active: voiceMode === "tts" || voiceSttOnlyMode,
+    active: voiceMode === "tts" || composerSpeechInputEnabled,
     ttsEnabled: voiceMode === "tts",
     apiRequest: voiceApiRequest,
     loginId: sessionLoginId,
@@ -1168,6 +1175,8 @@ export default function ThreadDetail({
     onDraftTranscript: handleFallbackDraftTranscript,
     onTtsAvailabilityChange: handleTtsAvailabilityChange
   });
+  const speechInputBusy =
+    fallbackVoiceSession.connectionState === "connecting" || fallbackVoiceSession.micState === "requesting";
   const activeVoiceSession = voiceMode === "tts" ? fallbackVoiceSession : voiceSession;
   const voicePanelAssistantText =
     activeVoiceSession.latestAssistantSubtitle ||
@@ -1784,6 +1793,7 @@ export default function ThreadDetail({
 
   const handleToggleVoiceMode = useCallback(async () => {
     if (voiceModeEnabled || voiceSttOnlyMode) {
+      setManualSpeechInputActive(false);
       resetVoiceState();
       await stopAllVoiceSessions();
       return;
@@ -1847,12 +1857,45 @@ export default function ThreadDetail({
     voiceSttOnlyMode
   ]);
 
+  const handleToggleSpeechInput = useCallback(async () => {
+    if (voiceSttOnlyMode) {
+      setManualSpeechInputActive(false);
+      resetVoiceState();
+      await fallbackVoiceSession.stopSession({ preserveTranscript: true });
+      return false;
+    }
+
+    if (manualSpeechInputActive || fallbackVoiceSession.isListening || speechInputBusy) {
+      setManualSpeechInputActive(false);
+      await fallbackVoiceSession.stopSession({ preserveTranscript: true });
+      return false;
+    }
+
+    setManualSpeechInputActive(true);
+    return true;
+  }, [
+    fallbackVoiceSession,
+    manualSpeechInputActive,
+    resetVoiceState,
+    speechInputBusy,
+    voiceSttOnlyMode
+  ]);
+
   useEffect(() => {
     setActiveMessageAction(null);
     setInterruptingIssueId("");
     setRetryingIssueId("");
     setDeletingIssueId("");
+    setManualSpeechInputActive(false);
   }, [thread?.id]);
+
+  useEffect(() => {
+    if (!voiceModeEnabled || !manualSpeechInputActive) {
+      return;
+    }
+
+    setManualSpeechInputActive(false);
+  }, [manualSpeechInputActive, voiceModeEnabled]);
 
   useEffect(() => {
     if (voiceModeEnabled || !voicePromptSubmittedAt) {
@@ -2306,12 +2349,12 @@ export default function ThreadDetail({
               stopLabel={interruptibleIssue?.status === "awaiting_input" ? "입력 중단" : "중단"}
               onInputFocus={handleComposerFocus}
               onInputBlur={handleComposerBlur}
-              speechInputEnabled={voiceSttOnlyMode}
+              speechInputEnabled={composerSpeechInputEnabled}
               speechInputSupported={fallbackVoiceSession.speechRecognitionSupported}
               speechInputListening={fallbackVoiceSession.isListening}
-              speechInputBusy={fallbackVoiceSession.connectionState === "connecting" || fallbackVoiceSession.micState === "requesting"}
+              speechInputBusy={speechInputBusy}
               speechInputHint={voiceLastError || fallbackVoiceSession.error}
-              onToggleSpeechInput={() => void fallbackVoiceSession.toggleListening()}
+              onToggleSpeechInput={() => void handleToggleSpeechInput()}
               externalPromptInsertText={composerSpeechInsert.text}
               externalPromptInsertToken={composerSpeechInsert.token}
             />

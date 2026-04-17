@@ -8,6 +8,7 @@ const BRIDGE_KEY = 'octop.mobile.selectedBridge';
 const WORKSPACE_LAYOUT_KEY = 'octop.mobile.workspace.layout.v1';
 const WORKSPACE_SNAPSHOT_KEY = 'octop.mobile.workspace.snapshot.v1';
 const THREAD_DETAIL_CACHE_KEY = 'octop.mobile.threadDetails.cache.v1';
+const VOICE_CAPABILITY_CACHE_KEY = 'octop.mobile.voiceCapability.v1';
 
 const loginId = 'playwright-user';
 const bridgeId = 'bridge-voice';
@@ -349,6 +350,43 @@ async function openVoiceModeByLongPressingSend(page) {
   await page.waitForTimeout(450);
 }
 
+async function seedVoiceCapabilitySnapshot(page, { realtime = 'unknown', tts = 'unknown', realtimeError = '', ttsError = '' } = {}) {
+  const nowIso = new Date().toISOString();
+  const dateKey = nowIso.slice(0, 10);
+
+  await page.addInitScript(
+    ({ storageKey, ownerKey, nextDateKey, nextNowIso, nextRealtime, nextTts, nextRealtimeError, nextTtsError }) => {
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          version: 1,
+          scopes: {
+            [ownerKey]: {
+              dateKey: nextDateKey,
+              realtime: nextRealtime,
+              tts: nextTts,
+              realtimeCheckedAt: nextNowIso,
+              ttsCheckedAt: nextNowIso,
+              realtimeError: nextRealtimeError,
+              ttsError: nextTtsError
+            }
+          }
+        })
+      );
+    },
+    {
+      storageKey: VOICE_CAPABILITY_CACHE_KEY,
+      ownerKey: `${loginId}::${bridgeId}`,
+      nextDateKey: dateKey,
+      nextNowIso: nowIso,
+      nextRealtime: realtime,
+      nextTts: tts,
+      nextRealtimeError: realtimeError,
+      nextTtsError: ttsError
+    }
+  );
+}
+
 async function installVoiceBrowserMocks(page) {
   await page.addInitScript(() => {
     window.__voiceTest = {
@@ -491,6 +529,72 @@ async function installVoiceBrowserMocks(page) {
         return Promise.resolve();
       }
       pause() {}
+    };
+
+    class FakeSpeechRecognition {
+      constructor() {
+        this.lang = 'ko-KR';
+        this.continuous = true;
+        this.interimResults = true;
+        this.maxAlternatives = 1;
+        this.onstart = null;
+        this.onresult = null;
+        this.onerror = null;
+        this.onend = null;
+        this._started = false;
+        window.__voiceTest.speechRecognition = this;
+      }
+      start() {
+        if (this._started) {
+          throw new Error('recognition has already started');
+        }
+
+        this._started = true;
+        this.onstart?.();
+      }
+      stop() {
+        if (!this._started) {
+          return;
+        }
+
+        this._started = false;
+        this.onend?.();
+      }
+      abort() {
+        this.stop();
+      }
+      emitResult({ resultIndex = 0, results = [] } = {}) {
+        const normalizedResults = results.map(({ transcript = '', isFinal = false } = {}) => {
+          const alternative = { transcript: String(transcript ?? '') };
+          const result = [alternative];
+          result.isFinal = Boolean(isFinal);
+          return result;
+        });
+
+        this.onresult?.({
+          resultIndex,
+          results: normalizedResults
+        });
+      }
+      emitError(error = 'network') {
+        this.onerror?.({ error });
+      }
+      emitEnd() {
+        this._started = false;
+        this.onend?.();
+      }
+    }
+
+    window.SpeechRecognition = FakeSpeechRecognition;
+    window.webkitSpeechRecognition = FakeSpeechRecognition;
+    window.__voiceTest.emitSpeechRecognitionResult = (payload) => {
+      window.__voiceTest.speechRecognition?.emitResult(payload);
+    };
+    window.__voiceTest.emitSpeechRecognitionError = (error) => {
+      window.__voiceTest.speechRecognition?.emitError(error);
+    };
+    window.__voiceTest.emitSpeechRecognitionEnd = () => {
+      window.__voiceTest.speechRecognition?.emitEnd();
     };
 
     class FakeDataChannel {
@@ -1225,6 +1329,97 @@ test('음성 세션 발급 실패 시 오류를 노출한다', async ({ page }) 
   await expect(inputSelect).toBeVisible();
   await expect(inputSelect.locator('option')).toHaveCount(1);
   await expect(inputSelect.locator('option:checked')).toHaveText('브라우저 음성 입력');
+});
+
+test('채팅 입력의 stt 버튼으로 언제든 음성 인식을 켜고 끌 수 있다', async ({ page }) => {
+  await seedMobileSession(page);
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page);
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+
+  const speechButton = page.getByTestId('thread-prompt-speech-button');
+  const promptInput = page.getByTestId('thread-prompt-input');
+
+  await expect(speechButton).toHaveText('STT');
+
+  await speechButton.click();
+  await expect(speechButton).toContainText('STT 중');
+
+  await page.evaluate(() => {
+    window.__voiceTest.emitSpeechRecognitionResult({
+      resultIndex: 0,
+      results: [
+        { transcript: '수동 stt 토글 테스트', isFinal: true }
+      ]
+    });
+  });
+
+  await expect(promptInput).toHaveValue('수동 stt 토글 테스트');
+
+  await speechButton.click();
+  await expect(speechButton).toHaveText('STT');
+});
+
+test('stt 전용 모드에서는 누적 final transcript가 다시 와도 입력창에 중복으로 붙지 않는다', async ({ page }) => {
+  await seedMobileSession(page);
+  await seedVoiceCapabilitySnapshot(page, {
+    realtime: 'blocked',
+    tts: 'blocked',
+    realtimeError: '실시간 음성을 사용할 수 없습니다.',
+    ttsError: '음성 TTS를 사용할 수 없습니다.'
+  });
+  await installVoiceBrowserMocks(page);
+  await mockMobileApi(page);
+
+  await page.goto(baseUrl);
+  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
+
+  await openVoiceModeByLongPressingSend(page);
+
+  await expect(page.getByText('STT 모드로 전환했습니다.')).toBeVisible();
+  await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
+  await expect(page.getByTestId('thread-prompt-speech-button')).toContainText('STT 중');
+
+  const promptInput = page.getByTestId('thread-prompt-input');
+  await expect(promptInput).toHaveValue('');
+
+  await page.evaluate(() => {
+    window.__voiceTest.emitSpeechRecognitionResult({
+      resultIndex: 0,
+      results: [
+        { transcript: 'stt 모드에서 음성이', isFinal: true }
+      ]
+    });
+  });
+
+  await expect(promptInput).toHaveValue('stt 모드에서 음성이');
+
+  await page.evaluate(() => {
+    window.__voiceTest.emitSpeechRecognitionResult({
+      resultIndex: 0,
+      results: [
+        { transcript: 'stt 모드에서 음성이', isFinal: true },
+        { transcript: '중복 입력되는 부분을', isFinal: true }
+      ]
+    });
+  });
+
+  await expect(promptInput).toHaveValue('stt 모드에서 음성이 중복 입력되는 부분을');
+
+  await page.evaluate(() => {
+    window.__voiceTest.emitSpeechRecognitionResult({
+      resultIndex: 0,
+      results: [
+        { transcript: 'stt 모드에서 음성이', isFinal: true },
+        { transcript: '중복 입력되는 부분을', isFinal: true }
+      ]
+    });
+  });
+
+  await expect(promptInput).toHaveValue('stt 모드에서 음성이 중복 입력되는 부분을');
+  await expect(promptInput).not.toHaveValue('stt 모드에서 음성이 stt 모드에서 음성이 중복 입력되는 부분을');
 });
 
 test('실시간 제약 error 이벤트를 받으면 사유를 알리고 TTS 모드로 자동 전환한다', async ({ page }) => {

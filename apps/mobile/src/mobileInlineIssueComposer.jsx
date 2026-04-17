@@ -513,11 +513,13 @@ export default function InlineIssueComposer({
   const actionBusy = busy || attachmentBusy;
   const canSubmit = Boolean(selectedProject) && !disabled && !actionBusy && (prompt.trim() || attachmentCount > 0);
   const canOpenVoiceMode = voiceSessionEnabled && Boolean(selectedProject) && typeof onOpenVoiceMode === "function";
+  const showSpeechInputButton = typeof onToggleSpeechInput === "function";
   const canToggleSpeechInput =
-    speechInputEnabled &&
-    typeof onToggleSpeechInput === "function" &&
+    showSpeechInputButton &&
     Boolean(selectedProject) &&
-    !disabled;
+    !disabled &&
+    speechInputSupported;
+  const speechInputActive = speechInputEnabled || speechInputListening || speechInputBusy;
   const canPressSendButton = Boolean(selectedProject) && !disabled && !actionBusy && (canSubmit || canOpenVoiceMode);
   const clearSendButtonLongPress = useCallback(() => {
     if (sendButtonLongPressTimerRef.current) {
@@ -630,28 +632,6 @@ export default function InlineIssueComposer({
   return (
     <form className="pointer-events-auto w-full" onSubmit={handleFormSubmit}>
         <div className="space-y-2.5">
-          {speechInputEnabled ? (
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 px-3 py-2 text-[12px] text-sky-100">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="font-medium">{speechInputListening ? "STT 입력이 현재 듣고 있습니다." : "STT 입력 대기 상태입니다."}</p>
-                  <p className="mt-0.5 text-sky-100/75">
-                    {speechInputHint || "실시간 음성과 TTS를 사용할 수 없어 일반 채팅 입력창에 음성 텍스트만 붙여 넣습니다."}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => onToggleSpeechInput?.()}
-                  disabled={!canToggleSpeechInput || speechInputBusy}
-                  className="shrink-0 rounded-full border border-sky-300/40 bg-sky-400/15 px-3 py-1.5 font-medium text-sky-50 transition hover:bg-sky-400/25 disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {speechInputBusy ? "준비 중" : speechInputListening ? "정지" : "다시 듣기"}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           {attachmentCount > 0 ? (
             <div className="overflow-x-auto pb-1">
               <div className="flex min-w-max gap-2">
@@ -718,9 +698,10 @@ export default function InlineIssueComposer({
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  {speechInputEnabled ? (
+                  {showSpeechInputButton ? (
                     <button
                       type="button"
+                      data-testid="thread-prompt-speech-button"
                       onPointerDown={(event) => {
                         event.stopPropagation();
                       }}
@@ -729,22 +710,31 @@ export default function InlineIssueComposer({
                         event.stopPropagation();
                         onToggleSpeechInput?.();
                       }}
-                      disabled={!canToggleSpeechInput || speechInputBusy}
-                      className={`flex h-6 min-w-[2.1rem] shrink-0 items-center justify-center rounded-md border transition ${
-                        speechInputListening
+                      disabled={!canToggleSpeechInput}
+                      className={`flex h-6 min-w-[3.4rem] shrink-0 items-center justify-center gap-1 rounded-md border px-2 transition ${
+                        speechInputActive
                           ? "border-rose-300/45 bg-rose-500/20 text-rose-100"
                           : "border-sky-300/35 bg-sky-500/10 text-sky-100"
                       } disabled:cursor-not-allowed disabled:opacity-45`}
-                      aria-label={speechInputListening ? "음성 입력 정지" : "음성 입력 시작"}
+                      aria-label={speechInputActive ? "STT 모드 끄기" : "STT 모드 켜기"}
                       title={
                         !speechInputSupported
                           ? "이 브라우저는 음성 입력(STT)을 지원하지 않습니다."
-                          : speechInputListening
-                            ? "음성 입력 정지"
-                            : "음성 입력 시작"
+                          : speechInputActive
+                            ? speechInputHint || "STT 모드 끄기"
+                            : "STT 모드 켜기"
                       }
                     >
-                      {speechInputListening ? "■" : "🎤"}
+                      {speechInputBusy ? (
+                        <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current" />
+                      ) : speechInputActive ? (
+                        <>
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                          <span className="text-[10px] font-semibold tracking-[0.08em]">STT 중</span>
+                        </>
+                      ) : (
+                        <span className="text-[10px] font-semibold tracking-[0.08em]">STT</span>
+                      )}
                     </button>
                   ) : null}
 

@@ -98,6 +98,7 @@ export default function useFallbackVoiceSession({
   const audioAnimationTimerRef = useRef(null);
   const latestDeliveredTranscriptRef = useRef("");
   const latestDeliveredTranscriptAtRef = useRef(0);
+  const deliveredFinalResultMapRef = useRef(new Map());
   const narrationAudioRef = useRef(null);
   const narrationObjectUrlRef = useRef("");
   const narrationRequestIdRef = useRef(0);
@@ -248,6 +249,8 @@ export default function useFallbackVoiceSession({
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
+      deliveredFinalResultMapRef.current = new Map();
+
       setState((current) => ({
         ...current,
         connectionState: "connected",
@@ -259,7 +262,8 @@ export default function useFallbackVoiceSession({
 
     recognition.onresult = (event) => {
       let interimTranscript = "";
-      const finalTranscripts = [];
+      const eventFinalTranscripts = [];
+      const newlyFinalizedTranscripts = [];
 
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -270,13 +274,19 @@ export default function useFallbackVoiceSession({
         }
 
         if (result.isFinal) {
-          finalTranscripts.push(text);
+          eventFinalTranscripts.push(text);
+
+          if (deliveredFinalResultMapRef.current.get(index) !== text) {
+            deliveredFinalResultMapRef.current.set(index, text);
+            newlyFinalizedTranscripts.push(text);
+          }
         } else {
+          deliveredFinalResultMapRef.current.delete(index);
           interimTranscript = normalizeTranscript(`${interimTranscript} ${text}`);
         }
       }
 
-      const latestFinalTranscript = normalizeTranscript(finalTranscripts.join(" "));
+      const latestFinalTranscript = normalizeTranscript(eventFinalTranscripts.join(" "));
       const nextPreviewText = latestFinalTranscript || interimTranscript;
 
       if (nextPreviewText) {
@@ -286,8 +296,10 @@ export default function useFallbackVoiceSession({
         }));
       }
 
-      if (latestFinalTranscript) {
-        deliverTranscript(latestFinalTranscript);
+      const transcriptDelta = normalizeTranscript(newlyFinalizedTranscripts.join(" "));
+
+      if (transcriptDelta) {
+        deliverTranscript(transcriptDelta);
       }
     };
 
@@ -382,6 +394,9 @@ export default function useFallbackVoiceSession({
       stopNarrationPlayback();
       lastNarratedTextRef.current = "";
       lastAssistantTextRef.current = "";
+      latestDeliveredTranscriptRef.current = "";
+      latestDeliveredTranscriptAtRef.current = 0;
+      deliveredFinalResultMapRef.current = new Map();
       narrationRequestIdRef.current += 1;
       resetAudioMetrics();
 
