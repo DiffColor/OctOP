@@ -41,16 +41,10 @@ import {
   deriveCommonBaseInstructions,
   ensureDefaultCommonBaseInstructions
 } from "./projectInstructionState.js";
+import { computeEffectiveAssistantDelta } from "./assistantDelta.js";
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 
-// Runtime update verification marker: non-functional comment for atomic update validation.
-// Runtime update verification marker 2: second non-functional comment for follow-up validation.
-// Runtime update verification marker 3: menu indicator validation without logic change.
-// Runtime update verification marker 4: source-only change to trigger update detection.
-// Runtime update verification marker 5: atomic update smoke-test commit without behavior change.
-// Runtime update verification marker 6: push-only change to verify atomic update propagation.
-// Runtime update verification marker 7: follow-up push to recheck first-launch atomic update.
-// Runtime update verification marker 8: retest after startup/restart preparation unification.
+// Runtime update verification marker: atomic update validation sentinel.
 const HOST = process.env.OCTOP_BRIDGE_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.OCTOP_BRIDGE_PORT ?? 4100);
 const TOKEN = process.env.OCTOP_BRIDGE_TOKEN ?? "octop-local-bridge";
@@ -3380,9 +3374,8 @@ function findAssistantMessageByRemoteItemId(issueId, remoteItemId, physicalThrea
   return null;
 }
 
-function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = null, remoteItemId = null, phase = null) {
+function resolveAssistantDeltaContext(issueId, delta = "", physicalThreadId = null, remoteItemId = null, phase = null) {
   const issue = issueCardsById.get(issueId);
-  const messages = ensureIssueMessages(issueId);
   const resolvedPhysicalThreadId =
     physicalThreadId ?? issue?.executed_physical_thread_id ?? issue?.created_physical_thread_id ?? null;
   const normalizedRemoteItemId = String(remoteItemId ?? "").trim() || null;
@@ -3390,9 +3383,49 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
   const latestAssistantMessage =
     findAssistantMessageByRemoteItemId(issueId, normalizedRemoteItemId, resolvedPhysicalThreadId) ??
     findLatestAssistantMessage(issueId, resolvedPhysicalThreadId);
+  const computedDelta = computeEffectiveAssistantDelta(latestAssistantMessage?.content ?? "", delta);
+
+  return {
+    issue,
+    latestAssistantMessage,
+    resolvedPhysicalThreadId,
+    normalizedRemoteItemId,
+    normalizedPhase,
+    previousContent: computedDelta.previousContent,
+    nextContent: computedDelta.nextContent,
+    effectiveDelta: computedDelta.effectiveDelta,
+    changed: computedDelta.changed
+  };
+}
+
+function appendAssistantDeltaToIssue(
+  issueId,
+  delta = "",
+  physicalThreadId = null,
+  remoteItemId = null,
+  phase = null,
+  resolvedContext = null
+) {
+  const messages = ensureIssueMessages(issueId);
+  const context =
+    resolvedContext ??
+    resolveAssistantDeltaContext(issueId, delta, physicalThreadId, remoteItemId, phase);
+  const {
+    issue,
+    latestAssistantMessage,
+    resolvedPhysicalThreadId,
+    normalizedRemoteItemId,
+    normalizedPhase,
+    nextContent,
+    changed
+  } = context;
+
+  if (!changed) {
+    return context;
+  }
 
   if (latestAssistantMessage) {
-    latestAssistantMessage.content = normalizeAssistantMessageContent(`${latestAssistantMessage.content ?? ""}${delta}`);
+    latestAssistantMessage.content = nextContent;
     if (normalizedRemoteItemId && !String(latestAssistantMessage.remote_item_id ?? "").trim()) {
       latestAssistantMessage.remote_item_id = normalizedRemoteItemId;
     }
@@ -3400,7 +3433,7 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
       latestAssistantMessage.phase = normalizedPhase;
     }
     latestAssistantMessage.timestamp = now();
-    return;
+    return context;
   }
 
   messages.push({
@@ -3410,11 +3443,13 @@ function appendAssistantDeltaToIssue(issueId, delta = "", physicalThreadId = nul
     role: "assistant",
     kind: "message",
     message_class: "assistant",
-    content: normalizeAssistantMessageContent(String(delta ?? "")),
+    content: nextContent,
     remote_item_id: normalizedRemoteItemId,
     phase: normalizedPhase,
     timestamp: now()
   });
+
+  return context;
 }
 
 function findLatestAssistantMessage(issueId, physicalThreadId = null) {
@@ -8872,6 +8907,8 @@ class AppServerClient {
     let owner = threadId ? threadOwners.get(threadId) ?? null : resolveOwnerFromParams(params);
     let eventPatch = null;
     let issuePatch = null;
+    let assistantDeltaContext = null;
+    let notificationParams = params;
     const activeIssueId = physicalThreadId
       ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? activeIssueByThreadId.get(threadId) ?? null
       : threadId
@@ -8933,6 +8970,26 @@ class AppServerClient {
     }
 
     if (threadId) {
+      if (method === "item/agentMessage/delta" && params.delta && activeIssueId) {
+        assistantDeltaContext = resolveAssistantDeltaContext(
+          activeIssueId,
+          params.delta,
+          physicalThreadId,
+          params.itemId ?? params.item_id ?? null,
+          params.phase ?? null
+        );
+
+        notificationParams = assistantDeltaContext.changed
+          ? {
+              ...params,
+              delta: assistantDeltaContext.effectiveDelta
+            }
+          : {
+              ...params,
+              delta: ""
+            };
+      }
+
       if (
         method === "thread/started" ||
         (method === "thread/status/changed" && !ignoreTerminalThreadStatusChanged) ||
@@ -8966,8 +9023,9 @@ class AppServerClient {
         });
       }
 
-      eventPatch = buildThreadPatch(method, params, threadId, physicalThreadId, {
-        allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+      eventPatch = buildThreadPatch(method, notificationParams, threadId, physicalThreadId, {
+        allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged,
+        assistantDeltaContext
       });
 
       if (eventPatch) {
@@ -8999,8 +9057,9 @@ class AppServerClient {
       }
 
       if (activeIssueId) {
-        issuePatch = buildIssuePatch(method, params, activeIssueId, {
-          allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged
+        issuePatch = buildIssuePatch(method, notificationParams, activeIssueId, {
+          allowTerminalThreadStatusChange: !ignoreTerminalThreadStatusChanged,
+          assistantDeltaContext
         });
 
         if (issuePatch) {
@@ -9011,11 +9070,11 @@ class AppServerClient {
         }
       }
 
-      if (shouldInvalidateCodexThreadBindingForFailure(method, params, issuePatch)) {
+      if (shouldInvalidateCodexThreadBindingForFailure(method, notificationParams, issuePatch)) {
         invalidateCodexThreadBinding(threadId);
       }
 
-      if (method === "item/agentMessage/delta" && params.delta) {
+      if (method === "item/agentMessage/delta" && notificationParams.delta) {
         const activeIssueId =
           (physicalThreadId ? activeIssueByPhysicalThreadId.get(physicalThreadId) : null) ??
           activeIssueByThreadId.get(threadId);
@@ -9023,15 +9082,16 @@ class AppServerClient {
         if (activeIssueId) {
           appendAssistantDeltaToIssue(
             activeIssueId,
-            params.delta,
+            notificationParams.delta,
             physicalThreadId,
-            params.itemId ?? params.item_id ?? null,
-            params.phase ?? null
+            notificationParams.itemId ?? notificationParams.item_id ?? null,
+            notificationParams.phase ?? null,
+            assistantDeltaContext
           );
         }
       }
 
-      recoverDegradedThreadContinuity(threadId, method, params, activeIssueId);
+      recoverDegradedThreadContinuity(threadId, method, notificationParams, activeIssueId);
     }
 
     if (!owner && (threadId || codexThreadId)) {
@@ -9064,7 +9124,7 @@ class AppServerClient {
           codexThreadId,
           issueId: activeIssueId,
           method,
-          params
+          params: notificationParams
         });
       } catch (error) {
         appendDiagnosticLog(
@@ -9085,11 +9145,11 @@ class AppServerClient {
     }
 
     const projectId = threadId ? threadStateById.get(threadId)?.project_id ?? "" : "";
-    if (!ignoreTerminalThreadStatusChanged) {
+    if (!ignoreTerminalThreadStatusChanged && !(method === "item/agentMessage/delta" && !notificationParams.delta)) {
       await publishEvent(
         owner,
         method.replaceAll("/", "."),
-        buildRemoteNotificationPayload(method, params, {
+        buildRemoteNotificationPayload(method, notificationParams, {
           codexThreadId,
           threadId,
           rootThreadId: threadId,
@@ -9109,7 +9169,7 @@ class AppServerClient {
       });
     }
 
-    if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, params)) {
+    if (threadId && shouldPublishFullThreadSnapshotForNotification(method, eventPatch, issuePatch, notificationParams)) {
       await publishEvent(owner, "bridge.projectThreads.updated", {
         scope: projectId ? "project" : "all",
         project_id: projectId,
@@ -9830,13 +9890,17 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
         last_event: "turn.diff.updated"
       };
     case "item/agentMessage/delta":
+      if (options.assistantDeltaContext && options.assistantDeltaContext.changed === false) {
+        return null;
+      }
+
       return {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: normalizeAssistantMessageContent(
-          `${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`
-        ),
+        last_message:
+          options.assistantDeltaContext?.nextContent ??
+          normalizeAssistantMessageContent(`${currentPhysicalThread?.last_message ?? ""}${params.delta ?? ""}`),
         last_message_kind: "message"
       };
     case "turn/completed":
@@ -9905,11 +9969,17 @@ function buildIssuePatch(method, params, issueId, options = {}) {
         last_event: "turn.diff.updated"
       };
     case "item/agentMessage/delta":
+      if (options.assistantDeltaContext && options.assistantDeltaContext.changed === false) {
+        return null;
+      }
+
       return {
         status: "running",
         progress: 90,
         last_event: "item.agentMessage.delta",
-        last_message: normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`),
+        last_message:
+          options.assistantDeltaContext?.nextContent ??
+          normalizeAssistantMessageContent(`${current.last_message ?? ""}${params.delta ?? ""}`),
         last_message_kind: "message"
       };
     case "thread/status/changed":

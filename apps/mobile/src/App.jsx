@@ -1544,8 +1544,58 @@ function createInitialThreadVoiceState() {
   };
 }
 
+function selectPreferredPromptMessage(currentMessage, nextMessage) {
+  const currentOptimistic = currentMessage?.optimistic === true;
+  const nextOptimistic = nextMessage?.optimistic === true;
+
+  if (currentOptimistic !== nextOptimistic) {
+    return currentOptimistic ? nextMessage : currentMessage;
+  }
+
+  const currentTimestamp = Date.parse(currentMessage?.timestamp ?? "");
+  const nextTimestamp = Date.parse(nextMessage?.timestamp ?? "");
+
+  if (Number.isFinite(currentTimestamp) && Number.isFinite(nextTimestamp) && nextTimestamp !== currentTimestamp) {
+    return nextTimestamp > currentTimestamp ? nextMessage : currentMessage;
+  }
+
+  return nextMessage;
+}
+
+function dedupeThreadPromptMessages(messages = []) {
+  const deduped = [];
+  const promptIndexByIssueId = new Map();
+
+  (messages ?? []).forEach((message) => {
+    if (!message) {
+      return;
+    }
+
+    const issueId = String(message.issue_id ?? "").trim();
+    const role = String(message.role ?? "").trim();
+    const kind = String(message.kind ?? "").trim();
+
+    if (!issueId || role !== "user" || kind !== "prompt") {
+      deduped.push(message);
+      return;
+    }
+
+    const existingIndex = promptIndexByIssueId.get(issueId);
+
+    if (existingIndex == null) {
+      promptIndexByIssueId.set(issueId, deduped.length);
+      deduped.push(message);
+      return;
+    }
+
+    deduped[existingIndex] = selectPreferredPromptMessage(deduped[existingIndex], message);
+  });
+
+  return deduped;
+}
+
 function normalizeCachedThreadMessages(messages = []) {
-  return messages
+  const normalizedMessages = messages
     .map((message, index) => {
       if (!message) {
         return null;
@@ -1573,10 +1623,13 @@ function normalizeCachedThreadMessages(messages = []) {
         issue_id: message.issue_id ?? null,
         issue_title: typeof message.issue_title === "string" ? message.issue_title : String(message.issue_title ?? ""),
         issue_status: typeof message.issue_status === "string" ? message.issue_status : String(message.issue_status ?? ""),
-        attachments: normalizeMessageAttachments(message.attachments)
+        attachments: normalizeMessageAttachments(message.attachments),
+        optimistic: message.optimistic === true
       };
     })
-    .filter(Boolean)
+    .filter(Boolean);
+
+  return dedupeThreadPromptMessages(normalizedMessages)
     .sort((left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? ""))
     .slice(-MAX_CACHED_THREAD_MESSAGES_PER_THREAD);
 }
@@ -3245,10 +3298,11 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
     issue_title: issue?.title ?? "",
     issue_status: issue?.status ?? "staged",
     timestamp: message.timestamp ?? fallbackTimestamp ?? new Date().toISOString(),
-    attachments: normalizeMessageAttachments(message.attachments)
+    attachments: normalizeMessageAttachments(message.attachments),
+    optimistic: false
   }));
 
-  return [...preservedMessages, ...normalizedMessages].sort(
+  return dedupeThreadPromptMessages([...preservedMessages, ...normalizedMessages]).sort(
     (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
   );
 }
@@ -8880,7 +8934,8 @@ export default function App() {
               issue_id: optimisticIssue.id,
               issue_title: optimisticIssue.title ?? payload.title ?? "",
               issue_status: optimisticIssue.status,
-              attachments: normalizeMessageAttachments(optimisticIssue.attachments ?? payload.attachments)
+              attachments: normalizeMessageAttachments(optimisticIssue.attachments ?? payload.attachments),
+              optimistic: true
             }
           ]
         : [];
@@ -8899,7 +8954,7 @@ export default function App() {
               ...(current[threadId] ?? {}),
               thread: optimisticThread,
               issues: optimisticIssue ? [optimisticIssue] : current[threadId]?.issues ?? [],
-              messages: optimisticMessages,
+              messages: dedupeThreadPromptMessages(optimisticMessages),
               loading: false,
               error: ""
             }
@@ -9042,7 +9097,8 @@ export default function App() {
             issue_id: optimisticIssue?.id ?? null,
             issue_title: optimisticIssue?.title ?? createThreadTitleFromPrompt(prompt),
             issue_status: optimisticIssue?.status ?? "running",
-            attachments: normalizeMessageAttachments(optimisticIssue?.attachments ?? payload.attachments)
+            attachments: normalizeMessageAttachments(optimisticIssue?.attachments ?? payload.attachments),
+            optimistic: true
           }
         ];
 
@@ -9062,7 +9118,7 @@ export default function App() {
             issues: optimisticIssue
               ? [...(currentEntry.issues ?? []).filter((issue) => issue.id !== optimisticIssue.id), optimisticIssue]
               : currentEntry.issues ?? [],
-            messages: nextMessages,
+            messages: dedupeThreadPromptMessages(nextMessages),
             loading: false,
             error: ""
           }

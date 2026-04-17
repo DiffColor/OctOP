@@ -1813,6 +1813,99 @@ test("function_result 이후 assistant delta는 숨겨진 결과 메시지가 �
   );
 });
 
+test("중복 재수신된 assistant opening delta는 issue 본문에 다시 누적되지 않는다", { timeout: 90000 }, async (t) => {
+  const homeDir = await mkdtemp(join(tmpdir(), "octop-assistant-duplicate-delta-int-"));
+  const fakeAppServer = new FakeAppServer();
+  const appServerUrl = await fakeAppServer.start();
+  const bridgePort = await getFreePort();
+  const bridge = new BridgeProcess({
+    port: bridgePort,
+    token: "octop-assistant-duplicate-delta-token",
+    userId: "assistant-duplicate-delta-user",
+    bridgeId: `assistant-duplicate-delta-${randomUUID().slice(0, 8)}`,
+    homeDir,
+    appServerUrl
+  });
+
+  t.after(async () => {
+    await bridge.stop();
+    await fakeAppServer.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  await bridge.start();
+  const project = await getWorkspaceProject(bridge);
+  const scenario = await createRunningIssueScenario(bridge, {
+    project,
+    threadName: "Duplicate Assistant Delta Thread"
+  });
+
+  const openingDelta = [
+    "[목표]",
+    "- 브릿지 중복 delta 차단",
+    "",
+    "[계획]",
+    "- 영향 범위: codex adapter"
+  ].join("\n");
+
+  fakeAppServer.notify("item/agentMessage/delta", {
+    threadId: scenario.sourceCodexThreadId,
+    itemId: "agent-message-1",
+    delta: openingDelta
+  });
+
+  await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const assistantMessages = payload.messages.filter(
+      (message) => message.role === "assistant" && String(message.kind ?? "message") === "message"
+    );
+
+    assert.equal(assistantMessages.length >= 1, true);
+    assert.equal(assistantMessages.at(-1)?.content, openingDelta);
+    assert.equal(payload.issue?.last_message, openingDelta);
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "first duplicate-opening delta persisted"
+  });
+
+  fakeAppServer.notify("item/agentMessage/delta", {
+    threadId: scenario.sourceCodexThreadId,
+    itemId: "agent-message-1",
+    delta: openingDelta
+  });
+
+  const issueDetail = await waitFor(async () => {
+    const payload = await bridge.request(`/api/issues/${scenario.activeIssueId}`);
+    const assistantMessages = payload.messages.filter(
+      (message) => message.role === "assistant" && String(message.kind ?? "message") === "message"
+    );
+
+    assert.equal(assistantMessages.length >= 1, true);
+    assert.equal(assistantMessages.at(-1)?.content, openingDelta);
+    assert.equal(payload.issue?.last_message, openingDelta);
+    return payload;
+  }, {
+    timeoutMs: 30000,
+    intervalMs: 300,
+    label: "duplicate opening delta ignored"
+  });
+
+  assert.equal(
+    issueDetail.messages.filter(
+      (message) =>
+        message.role === "assistant" &&
+        String(message.kind ?? "message") === "message" &&
+        message.content === openingDelta
+    ).length,
+    1
+  );
+
+  const continuityPayload = await bridge.request(`/api/threads/${scenario.rootThreadId}/continuity`);
+  assert.equal(continuityPayload.active_physical_thread?.last_message, openingDelta);
+});
+
 test("function_result만 남은 turn은 assistant message로 승격하지 않는다", { timeout: 90000 }, async (t) => {
   const homeDir = await mkdtemp(join(tmpdir(), "octop-function-result-only-int-"));
   const fakeAppServer = new FakeAppServer();
