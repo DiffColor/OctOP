@@ -32,7 +32,78 @@ function normalizeTranscript(value) {
     .trim();
 }
 
-function joinTranscriptParts(parts) {
+const TRANSCRIPT_OVERLAP_BOUNDARY_PATTERN = /[\s.,!?;:()[\]{}"'`“”‘’\-]/u;
+const MIN_TRANSCRIPT_OVERLAP_LENGTH = 2;
+
+function isTranscriptOverlapBoundaryCharacter(character = "") {
+  return TRANSCRIPT_OVERLAP_BOUNDARY_PATTERN.test(String(character ?? ""));
+}
+
+function hasSafeTranscriptOverlap(previousTranscript, nextTranscript, overlapLength) {
+  if (overlapLength < MIN_TRANSCRIPT_OVERLAP_LENGTH) {
+    return false;
+  }
+
+  const normalizedPreviousTranscript = normalizeTranscript(previousTranscript);
+  const normalizedNextTranscript = normalizeTranscript(nextTranscript);
+  const overlapStartIndex = normalizedPreviousTranscript.length - overlapLength;
+  const overlapEndIndex = overlapLength;
+  const previousBoundaryCharacter =
+    overlapStartIndex > 0 ? normalizedPreviousTranscript.charAt(overlapStartIndex - 1) : "";
+  const nextBoundaryCharacter =
+    overlapEndIndex < normalizedNextTranscript.length ? normalizedNextTranscript.charAt(overlapEndIndex) : "";
+
+  return (
+    overlapStartIndex === 0 ||
+    overlapEndIndex === normalizedNextTranscript.length ||
+    isTranscriptOverlapBoundaryCharacter(previousBoundaryCharacter) ||
+    isTranscriptOverlapBoundaryCharacter(nextBoundaryCharacter)
+  );
+}
+
+function trimOverlappingTranscriptPrefix(previousTranscript, nextTranscript) {
+  const normalizedPreviousTranscript = normalizeTranscript(previousTranscript);
+  const normalizedNextTranscript = normalizeTranscript(nextTranscript);
+
+  if (!normalizedNextTranscript) {
+    return "";
+  }
+
+  if (!normalizedPreviousTranscript) {
+    return normalizedNextTranscript;
+  }
+
+  if (
+    normalizedNextTranscript === normalizedPreviousTranscript ||
+    normalizedPreviousTranscript.endsWith(normalizedNextTranscript)
+  ) {
+    return "";
+  }
+
+  const maxOverlapLength = Math.min(normalizedPreviousTranscript.length, normalizedNextTranscript.length);
+
+  for (
+    let overlapLength = maxOverlapLength;
+    overlapLength >= MIN_TRANSCRIPT_OVERLAP_LENGTH;
+    overlapLength -= 1
+  ) {
+    const transcriptPrefix = normalizedNextTranscript.slice(0, overlapLength);
+
+    if (!normalizedPreviousTranscript.endsWith(transcriptPrefix)) {
+      continue;
+    }
+
+    if (!hasSafeTranscriptOverlap(normalizedPreviousTranscript, normalizedNextTranscript, overlapLength)) {
+      continue;
+    }
+
+    return normalizeTranscript(normalizedNextTranscript.slice(overlapLength));
+  }
+
+  return normalizedNextTranscript;
+}
+
+export function joinTranscriptParts(parts) {
   const normalizedParts = parts
     .map((part) => normalizeTranscript(part))
     .filter(Boolean);
@@ -44,20 +115,13 @@ function joinTranscriptParts(parts) {
       continue;
     }
 
-    if (part === combinedTranscript || combinedTranscript.endsWith(part)) {
+    const delta = trimOverlappingTranscriptPrefix(combinedTranscript, part);
+
+    if (!delta) {
       continue;
     }
 
-    if (part.startsWith(combinedTranscript)) {
-      combinedTranscript = part;
-      continue;
-    }
-
-    if (combinedTranscript.startsWith(part)) {
-      continue;
-    }
-
-    combinedTranscript = normalizeTranscript(`${combinedTranscript} ${part}`);
+    combinedTranscript = normalizeTranscript(`${combinedTranscript} ${delta}`);
   }
 
   return combinedTranscript;
@@ -184,6 +248,7 @@ export default function useFallbackVoiceSession({
   const audioAnimationTimerRef = useRef(null);
   const latestDeliveredTranscriptRef = useRef("");
   const latestDeliveredTranscriptAtRef = useRef(0);
+  const accumulatedFinalTranscriptRef = useRef("");
   const finalResultTranscriptMapRef = useRef(new Map());
   const committedFinalTranscriptRef = useRef("");
   const narrationAudioRef = useRef(null);
@@ -338,7 +403,6 @@ export default function useFallbackVoiceSession({
 
     recognition.onstart = () => {
       finalResultTranscriptMapRef.current = new Map();
-      committedFinalTranscriptRef.current = "";
 
       setState((current) => ({
         ...current,
@@ -374,11 +438,15 @@ export default function useFallbackVoiceSession({
         collapseFinalTranscriptEntries([...nextFinalResultTranscriptMap.entries()])
       );
 
-      const latestFinalTranscript = joinTranscriptParts(
+      const currentRecognitionFinalTranscript = joinTranscriptParts(
         [...finalResultTranscriptMapRef.current.entries()]
           .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
           .map(([, text]) => text)
       );
+      const latestFinalTranscript = joinTranscriptParts([
+        accumulatedFinalTranscriptRef.current,
+        currentRecognitionFinalTranscript
+      ]);
       const interimTranscript = joinTranscriptParts(interimTranscripts);
       const nextPreviewText = joinTranscriptParts([latestFinalTranscript, interimTranscript]);
 
@@ -419,6 +487,8 @@ export default function useFallbackVoiceSession({
 
     recognition.onend = () => {
       const shouldRestart = activeRef.current && !manualStopRef.current;
+      accumulatedFinalTranscriptRef.current = committedFinalTranscriptRef.current;
+      finalResultTranscriptMapRef.current = new Map();
 
       setState((current) => ({
         ...current,
@@ -504,6 +574,7 @@ export default function useFallbackVoiceSession({
       lastAssistantTextRef.current = "";
       latestDeliveredTranscriptRef.current = "";
       latestDeliveredTranscriptAtRef.current = 0;
+      accumulatedFinalTranscriptRef.current = "";
       finalResultTranscriptMapRef.current = new Map();
       committedFinalTranscriptRef.current = "";
       narrationRequestIdRef.current += 1;
