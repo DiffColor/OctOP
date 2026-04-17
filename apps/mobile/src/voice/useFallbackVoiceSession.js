@@ -36,31 +36,25 @@ function joinTranscriptParts(parts) {
   const normalizedParts = parts
     .map((part) => normalizeTranscript(part))
     .filter(Boolean);
-  let combinedTranscript = "";
+  const combinedParts = [];
 
   for (const part of normalizedParts) {
-    if (!combinedTranscript) {
-      combinedTranscript = part;
+    const latestPart = combinedParts.at(-1) ?? "";
+
+    if (!latestPart) {
+      combinedParts.push(part);
       continue;
     }
 
-    if (part === combinedTranscript || combinedTranscript.endsWith(part)) {
+    if (part !== latestPart && part.startsWith(latestPart)) {
+      combinedParts[combinedParts.length - 1] = part;
       continue;
     }
 
-    if (part.startsWith(combinedTranscript)) {
-      combinedTranscript = part;
-      continue;
-    }
-
-    if (combinedTranscript.startsWith(part)) {
-      continue;
-    }
-
-    combinedTranscript = normalizeTranscript(`${combinedTranscript} ${part}`);
+    combinedParts.push(part);
   }
 
-  return combinedTranscript;
+  return normalizeTranscript(combinedParts.join(" "));
 }
 
 function extractTranscriptDelta(previousTranscript, nextTranscript) {

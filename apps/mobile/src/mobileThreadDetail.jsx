@@ -56,8 +56,11 @@ const SYSTEM_MESSAGE_TITLE_BY_KIND = {
 };
 const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "tool_call",
+  "tool_result",
   "mcp_call",
+  "mcp_result",
   "skill_call",
+  "skill_result",
   "function_call",
   "function_result"
 ]);

@@ -1901,11 +1901,21 @@ const SYSTEM_ACTIVITY_MESSAGE_KINDS = new Set([
   "function_call",
   "function_result"
 ]);
-const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+const TOOL_ACTIVITY_CALL_MESSAGE_KINDS = new Set([
   "tool_call",
   "mcp_call",
   "skill_call",
   "function_call"
+]);
+const TOOL_ACTIVITY_RESULT_MESSAGE_KINDS = new Set([
+  "tool_result",
+  "mcp_result",
+  "skill_result",
+  "function_result"
+]);
+const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+  ...TOOL_ACTIVITY_CALL_MESSAGE_KINDS,
+  ...TOOL_ACTIVITY_RESULT_MESSAGE_KINDS
 ]);
 
 const RUN_TIMELINE_MESSAGE_TITLE_BY_KIND = {
@@ -1919,6 +1929,25 @@ const RUN_TIMELINE_MESSAGE_TITLE_BY_KIND = {
   function_result: "함수 응답",
   handoff_summary: "핸드오프 요약"
 };
+const SYSTEM_ACTIVITY_FALLBACK_DESCRIPTION_BY_KIND = {
+  tool_call: "도구 실행",
+  tool_result: "도구 응답 수신",
+  mcp_call: "MCP 실행",
+  mcp_result: "MCP 응답 수신",
+  skill_call: "스킬 실행",
+  skill_result: "스킬 응답 수신",
+  function_call: "함수 실행",
+  function_result: "함수 응답 수신",
+  handoff_summary: "핸드오프 요약"
+};
+const TOOL_ACTIVITY_SECTION_LABEL_PATTERN = /^(?:프롬프트|prompt|arguments|input|요청|request)$/i;
+const TOOL_ACTIVITY_METADATA_PREFIX_PATTERN = /^(?:server|tool|name|call_id|status)\s*:/i;
+const TOOL_ACTIVITY_OUTCOME_LINE_PATTERN =
+  /^(?:success\b|updated\b|created\b|deleted\b|removed\b|failed\b|error\b|warning\b|done\b|completed\b|finished\b|interrupted\b|cancelled\b|canceled\b|성공\b|완료\b|실패\b|오류\b|경고\b)/i;
+const TOOL_ACTIVITY_CHANGE_MARKER_PATTERN = /^(?:[ACDMRTU?!]{1,2})$/;
+const TOOL_ACTIVITY_FILE_LIST_HEADER_PATTERN = /(?:^|[\s.])updated the following files:?$/i;
+const TOOL_ACTIVITY_PATH_PATTERN =
+  /^(?:(?:\.{0,2}\/)?(?:apps|packages|services|tests|scripts|docs|docker|design|dist|tmp|outputs|playwright)\/.+|[^/\s]+\/[^/\s]+(?:\.[A-Za-z0-9_-]+)+)$/;
 
 function shouldHideThreadPreviewMessage(value = "") {
   return HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS.has(String(value ?? "").trim());
@@ -1947,6 +1976,160 @@ function getThreadPreviewMessageKind(thread) {
   }
 
   return "";
+}
+
+function parseSystemActivityMetadata(content = "", key = "") {
+  const normalizedKey = String(key ?? "").trim();
+
+  if (!normalizedKey) {
+    return "";
+  }
+
+  const pattern = new RegExp(`^${normalizedKey}\\s*:\\s*(.+)$`, "im");
+  const match = String(content ?? "").match(pattern);
+  return match?.[1]?.trim() ?? "";
+}
+
+function splitSystemActivityLines(content = "") {
+  return String(content ?? "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function looksLikeSystemActivityPath(value = "") {
+  return TOOL_ACTIVITY_PATH_PATTERN.test(String(value ?? "").trim());
+}
+
+function summarizeSystemActivityUpdatedFiles(lines = []) {
+  const updatedFiles = [];
+  const safeLines = Array.isArray(lines) ? lines : [];
+  const headerIndex = safeLines.findIndex((line) => TOOL_ACTIVITY_FILE_LIST_HEADER_PATTERN.test(line));
+
+  if (headerIndex < 0) {
+    return "";
+  }
+
+  for (let index = headerIndex + 1; index < safeLines.length; index += 1) {
+    const currentLine = safeLines[index];
+
+    if (TOOL_ACTIVITY_CHANGE_MARKER_PATTERN.test(currentLine)) {
+      const nextLine = safeLines[index + 1] ?? "";
+
+      if (looksLikeSystemActivityPath(nextLine)) {
+        updatedFiles.push(nextLine);
+        index += 1;
+      }
+
+      continue;
+    }
+
+    if (looksLikeSystemActivityPath(currentLine)) {
+      updatedFiles.push(currentLine);
+      continue;
+    }
+
+    break;
+  }
+
+  if (updatedFiles.length === 0) {
+    return "";
+  }
+
+  const uniqueFiles = [...new Set(updatedFiles)];
+  const firstFile = shortenPath(uniqueFiles[0]);
+  return uniqueFiles.length === 1
+    ? `파일 업데이트 · ${firstFile}`
+    : `파일 ${uniqueFiles.length}개 업데이트 · ${firstFile} 외 ${uniqueFiles.length - 1}개`;
+}
+
+function summarizeSystemActivityResult(content = "", fallback = "응답 수신") {
+  const lines = splitSystemActivityLines(content);
+  const fileSummary = summarizeSystemActivityUpdatedFiles(lines);
+
+  if (fileSummary) {
+    return fileSummary;
+  }
+
+  let skipDetailUntilOutcome = false;
+
+  for (const line of lines) {
+    if (TOOL_ACTIVITY_SECTION_LABEL_PATTERN.test(line)) {
+      skipDetailUntilOutcome = true;
+      continue;
+    }
+
+    if (skipDetailUntilOutcome && !TOOL_ACTIVITY_OUTCOME_LINE_PATTERN.test(line)) {
+      continue;
+    }
+
+    skipDetailUntilOutcome = false;
+
+    if (TOOL_ACTIVITY_METADATA_PREFIX_PATTERN.test(line) || TOOL_ACTIVITY_CHANGE_MARKER_PATTERN.test(line)) {
+      continue;
+    }
+
+    if (looksLikeSystemActivityPath(line)) {
+      return `관련 파일 · ${shortenPath(line)}`;
+    }
+
+    if (/^success[.!]*$/i.test(line)) {
+      return "실행 완료";
+    }
+
+    if (/^completed[.!]*$/i.test(line)) {
+      return "완료";
+    }
+
+    return summarizeMessageContent(line, 96);
+  }
+
+  return fallback;
+}
+
+function summarizeSystemActivityCall(kind = "", content = "") {
+  if (kind === "mcp_call") {
+    const server = parseSystemActivityMetadata(content, "server");
+    const tool = parseSystemActivityMetadata(content, "tool") || parseSystemActivityMetadata(content, "name");
+    const summary = [server, tool].filter(Boolean).join(" · ");
+    return summary || "MCP 실행";
+  }
+
+  const name = parseSystemActivityMetadata(content, "name") || parseSystemActivityMetadata(content, "tool");
+
+  if (kind === "skill_call") {
+    return name || "스킬 실행";
+  }
+
+  if (kind === "tool_call") {
+    return name || "도구 실행";
+  }
+
+  if (kind === "function_call") {
+    return name || "함수 실행";
+  }
+
+  return summarizeMessageContent(content, 96);
+}
+
+function summarizeSystemActivityMessage(message = {}) {
+  const kind = String(message?.kind ?? "").trim();
+  const content = String(message?.content ?? "").trim();
+  const fallback = SYSTEM_ACTIVITY_FALLBACK_DESCRIPTION_BY_KIND[kind] ?? "진행 내역";
+
+  if (!content) {
+    return fallback;
+  }
+
+  if (TOOL_ACTIVITY_CALL_MESSAGE_KINDS.has(kind)) {
+    return summarizeSystemActivityCall(kind, content);
+  }
+
+  if (TOOL_ACTIVITY_RESULT_MESSAGE_KINDS.has(kind)) {
+    return summarizeSystemActivityResult(content, fallback);
+  }
+
+  return summarizeMessageContent(content, 120);
 }
 
 function shouldHideThreadPreviewForThread(thread) {
@@ -1993,7 +2176,7 @@ function buildRunTimeline(thread, messages = []) {
     .map((message, index) => ({
       id: message.id ?? `${thread.id}-message-${index}`,
       title: RUN_TIMELINE_MESSAGE_TITLE_BY_KIND[String(message?.kind ?? "").trim()] ?? "진행 내역",
-      description: String(message?.content ?? "").trim() || "내용이 비어 있습니다.",
+      description: summarizeSystemActivityMessage(message),
       timestamp: message.timestamp ?? message.created_at ?? thread.updated_at
     }));
 
