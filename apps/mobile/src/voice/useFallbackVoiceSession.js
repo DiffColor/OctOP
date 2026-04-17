@@ -225,23 +225,24 @@ export default function useFallbackVoiceSession({
   }, [stopListening]);
 
   const deliverTranscript = useCallback(
-    (transcript) => {
+    (transcript, { dedupeKey } = {}) => {
       const normalizedTranscript = normalizeTranscript(transcript);
+      const normalizedDedupeKey = normalizeTranscript(dedupeKey || normalizedTranscript);
 
-      if (!normalizedTranscript) {
+      if (!normalizedTranscript || !normalizedDedupeKey) {
         return;
       }
 
       const now = Date.now();
 
       if (
-        latestDeliveredTranscriptRef.current === normalizedTranscript &&
+        latestDeliveredTranscriptRef.current === normalizedDedupeKey &&
         now - latestDeliveredTranscriptAtRef.current < 1800
       ) {
         return;
       }
 
-      latestDeliveredTranscriptRef.current = normalizedTranscript;
+      latestDeliveredTranscriptRef.current = normalizedDedupeKey;
       latestDeliveredTranscriptAtRef.current = now;
 
       if (ttsEnabled) {
@@ -335,7 +336,9 @@ export default function useFallbackVoiceSession({
       const transcriptDelta = extractTranscriptDelta(committedFinalTranscriptRef.current, latestFinalTranscript);
 
       if (transcriptDelta) {
-        deliverTranscript(transcriptDelta);
+        deliverTranscript(transcriptDelta, {
+          dedupeKey: latestFinalTranscript
+        });
       }
 
       committedFinalTranscriptRef.current = latestFinalTranscript;
