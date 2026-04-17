@@ -702,6 +702,16 @@ export default function ThreadDetail({
     },
     [applyComposerSpeechPrompt, composerDraftKey, onPersistComposerDraft]
   );
+  const clearComposerSpeechDraft = useCallback(() => {
+    composerLiveDraftRef.current = "";
+    speechInputBaseDraftRef.current = "";
+
+    if (typeof onPersistComposerDraft === "function" && composerDraftKey) {
+      onPersistComposerDraft(composerDraftKey, "");
+    }
+
+    applyComposerSpeechPrompt("");
+  }, [applyComposerSpeechPrompt, composerDraftKey, onPersistComposerDraft]);
   const stopComposerSpeechInputAfterSubmit = useCallback(async () => {
     speechInputBaseDraftRef.current = "";
     speechInputLastHandledCommandRef.current = "";
@@ -737,11 +747,7 @@ export default function ThreadDetail({
 
       speechInputCommandInFlightRef.current = true;
       speechInputLastHandledCommandRef.current = commandSignature;
-      composerLiveDraftRef.current = normalizedPrompt;
-
-      if (typeof onPersistComposerDraft === "function" && composerDraftKey) {
-        onPersistComposerDraft(composerDraftKey, "");
-      }
+      clearComposerSpeechDraft();
 
       try {
         const accepted = await onSubmitPrompt({
@@ -768,9 +774,8 @@ export default function ThreadDetail({
       }
     },
     [
-      composerDraftKey,
+      clearComposerSpeechDraft,
       isInputDisabled,
-      onPersistComposerDraft,
       onSubmitPrompt,
       project?.id,
       restoreComposerSpeechDraft,

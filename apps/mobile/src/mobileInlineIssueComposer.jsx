@@ -139,10 +139,12 @@ export default function InlineIssueComposer({
 
   useEffect(() => {
     const normalizedInsertToken = String(externalPromptInsertToken ?? "").trim();
-    const normalizedInsertText = String(externalPromptInsertText ?? "").trim();
+    const rawInsertText = String(externalPromptInsertText ?? "");
+    const normalizedInsertText = rawInsertText.trim();
     const shouldReplacePrompt = String(externalPromptInsertMode ?? "").trim() === "replace";
+    const canApplyInsert = shouldReplacePrompt || Boolean(normalizedInsertText);
 
-    if (!normalizedInsertToken || normalizedInsertToken === lastExternalPromptInsertTokenRef.current || !normalizedInsertText) {
+    if (!normalizedInsertToken || normalizedInsertToken === lastExternalPromptInsertTokenRef.current || !canApplyInsert) {
       return;
     }
 
@@ -151,7 +153,7 @@ export default function InlineIssueComposer({
     setInternalPrompt((currentPrompt) => {
       const normalizedCurrentPrompt = String(currentPrompt ?? "");
       const nextPrompt = shouldReplacePrompt
-        ? normalizedInsertText
+        ? rawInsertText
         : normalizedCurrentPrompt.trim()
           ? `${normalizedCurrentPrompt.trimEnd()} ${normalizedInsertText}`.trim()
           : normalizedInsertText;
