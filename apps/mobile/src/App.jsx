@@ -363,11 +363,35 @@ function hasStandaloneVisibleNestedView({
   draftThreadProjectId = "",
   wideSplitEnabled = false
 } = {}) {
-  if (String(draftThreadProjectId ?? "").trim()) {
+  const normalizedActiveView =
+    activeView === "thread" || activeView === "todo" || activeView === "inbox" ? activeView : "inbox";
+  const hasDraftThread = Boolean(String(draftThreadProjectId ?? "").trim());
+  const hasSelectedThread = Boolean(String(selectedThreadId ?? "").trim());
+  const hasSelectedTodoChat = Boolean(String(selectedTodoChatId ?? "").trim());
+  const wideTodoSplitVisible = wideSplitEnabled && selectedScopeKind === "todo";
+  const wideThreadSplitVisible =
+    wideSplitEnabled &&
+    selectedScopeKind === "project" &&
+    normalizedActiveView !== "todo" &&
+    (hasDraftThread || hasSelectedThread);
+
+  if (wideTodoSplitVisible && hasSelectedTodoChat) {
+    return false;
+  }
+
+  if (wideThreadSplitVisible) {
+    return false;
+  }
+
+  if (hasDraftThread) {
     return true;
   }
 
-  if (activeView === "thread" || activeView === "todo") {
+  if (normalizedActiveView === "thread" && hasSelectedThread) {
+    return true;
+  }
+
+  if (normalizedActiveView === "todo" && hasSelectedTodoChat) {
     return true;
   }
 
