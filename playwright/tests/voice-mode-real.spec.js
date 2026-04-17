@@ -1593,50 +1593,6 @@ test('stt 전용 모드에서는 바로 전과 같은 final result가 다시 오
   await expect(promptInput).toHaveValue('반복 발화');
 });
 
-test('stt 전용 모드에서는 앞부분이 겹치는 다른 final result가 새 index로 들어와도 이전 입력을 지우지 않는다', async ({ page }) => {
-  await seedMobileSession(page);
-  await seedVoiceCapabilitySnapshot(page, {
-    realtime: 'blocked',
-    tts: 'blocked',
-    realtimeError: '실시간 음성을 사용할 수 없습니다.',
-    ttsError: '음성 TTS를 사용할 수 없습니다.'
-  });
-  await installVoiceBrowserMocks(page);
-  await mockMobileApi(page);
-
-  await page.goto(baseUrl);
-  await expect(page.getByTestId('thread-detail-panel')).toBeVisible();
-
-  await openVoiceModeByLongPressingSend(page);
-
-  await expect(page.getByText('STT 모드로 전환했습니다.')).toBeVisible();
-  await expect(page.getByTestId('voice-mode-panel')).toHaveCount(0);
-  await expect(page.getByTestId('thread-prompt-speech-button')).toContainText('STT 중');
-
-  const promptInput = page.getByTestId('thread-prompt-input');
-
-  await page.evaluate(() => {
-    window.__voiceTest.emitSpeechRecognitionResult({
-      resultIndex: 0,
-      results: [{ transcript: '반복 발화', isFinal: true }]
-    });
-  });
-
-  await expect(promptInput).toHaveValue('반복 발화');
-
-  await page.evaluate(() => {
-    window.__voiceTest.emitSpeechRecognitionResult({
-      resultIndex: 1,
-      results: [
-        { transcript: '반복 발화', isFinal: true },
-        { transcript: '반복 발화 다음 입력', isFinal: true }
-      ]
-    });
-  });
-
-  await expect(promptInput).toHaveValue('반복 발화 반복 발화 다음 입력');
-});
-
 test('실시간 제약 error 이벤트를 받으면 사유를 알리고 TTS 모드로 자동 전환한다', async ({ page }) => {
   await seedMobileSession(page);
   await installVoiceBrowserMocks(page);

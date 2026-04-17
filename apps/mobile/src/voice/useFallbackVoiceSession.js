@@ -32,71 +32,35 @@ function normalizeTranscript(value) {
     .trim();
 }
 
-function joinTranscriptParts(parts, { mergeStrategy = "prefix" } = {}) {
+function joinTranscriptParts(parts) {
   const normalizedParts = parts
     .map((part) => normalizeTranscript(part))
     .filter(Boolean);
-  const combinedParts = [];
+  let combinedTranscript = "";
 
   for (const part of normalizedParts) {
-    const latestPart = combinedParts.at(-1) ?? "";
-
-    if (!latestPart) {
-      combinedParts.push(part);
+    if (!combinedTranscript) {
+      combinedTranscript = part;
       continue;
     }
 
-    if (part === latestPart) {
+    if (part === combinedTranscript || combinedTranscript.endsWith(part)) {
       continue;
     }
 
-    if (mergeStrategy === "prefix") {
-      if (part.startsWith(latestPart)) {
-        combinedParts[combinedParts.length - 1] = part;
-        continue;
-      }
-
-      if (latestPart.startsWith(part)) {
-        continue;
-      }
+    if (part.startsWith(combinedTranscript)) {
+      combinedTranscript = part;
+      continue;
     }
 
-    combinedParts.push(part);
+    if (combinedTranscript.startsWith(part)) {
+      continue;
+    }
+
+    combinedTranscript = normalizeTranscript(`${combinedTranscript} ${part}`);
   }
 
-  return normalizeTranscript(combinedParts.join(" "));
-}
-
-function buildFinalTranscriptFromEntries(entries, resultIndex = 0) {
-  const normalizedResultIndex = Number.isInteger(resultIndex) ? resultIndex : 0;
-  const stableParts = [];
-  const changedParts = [];
-
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const [index, text] = Array.isArray(entry) ? entry : [];
-
-    if (!normalizeTranscript(text)) {
-      continue;
-    }
-
-    if (Number(index) < normalizedResultIndex) {
-      stableParts.push(text);
-      continue;
-    }
-
-    changedParts.push(text);
-  }
-
-  const stableTranscript = joinTranscriptParts(stableParts, {
-    mergeStrategy: "exact"
-  });
-  const changedTranscript = joinTranscriptParts(changedParts, {
-    mergeStrategy: "prefix"
-  });
-
-  return joinTranscriptParts([stableTranscript, changedTranscript], {
-    mergeStrategy: "exact"
-  });
+  return combinedTranscript;
 }
 
 function extractTranscriptDelta(previousTranscript, nextTranscript) {
@@ -376,11 +340,10 @@ export default function useFallbackVoiceSession({
 
       finalResultTranscriptMapRef.current = nextFinalResultTranscriptMap;
 
-      const latestFinalTranscript = buildFinalTranscriptFromEntries(
-        [...nextFinalResultTranscriptMap.entries()].sort(
-          ([leftIndex], [rightIndex]) => leftIndex - rightIndex
-        ),
-        event?.resultIndex ?? 0
+      const latestFinalTranscript = joinTranscriptParts(
+        [...nextFinalResultTranscriptMap.entries()]
+          .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+          .map(([, text]) => text)
       );
       const interimTranscript = joinTranscriptParts(interimTranscripts);
       const nextPreviewText = joinTranscriptParts([latestFinalTranscript, interimTranscript]);
