@@ -129,6 +129,8 @@ export function resolveApiBaseUrl(configuredBaseUrl, locationLike = globalThis?.
   return normalizeApiBaseUrl(configuredBaseUrl) || resolveDefaultApiBaseUrl(locationLike);
 }
 
+export { resolveRealtimeProgressText } from "./realtimeProgressText.js";
+
 export function createBridgeDisconnectEvidence() {
   return {
     socketDisconnectedAt: 0,

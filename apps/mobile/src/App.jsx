@@ -14,6 +14,7 @@ import {
   isBridgeDisconnectConfirmed,
   mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
+  resolveRealtimeProgressText,
   reduceBridgeDisconnectEvidence,
   resolveApiBaseUrl
 } from "../../../packages/domain/src/index.js";
@@ -2737,62 +2738,7 @@ function useTouchScrollBoundaryLock(scrollRef) {
 }
 
 function getRealtimeProgressText(entity) {
-  const status = entity?.status ?? "queued";
-  const lastEvent = entity?.last_event ?? "";
-
-  if (status === "awaiting_input") {
-    return "입력 대기 중";
-  }
-
-  if (status === "failed") {
-    return "실패 확인 필요";
-  }
-
-  if (status === "interrupted") {
-    return "중단됨";
-  }
-
-  if (status === "completed") {
-    return "완료됨";
-  }
-
-  if (lastEvent === "turn.starting") {
-    return "Codex 실행 요청 중";
-  }
-
-  if (lastEvent === "turn.started") {
-    return "작업 시작됨";
-  }
-
-  if (lastEvent === "turn.plan.updated") {
-    return "계획 수립 중";
-  }
-
-  if (lastEvent === "turn.diff.updated") {
-    return "변경 적용 중";
-  }
-
-  if (lastEvent === "item.agentMessage.delta") {
-    return "응답 생성 중";
-  }
-
-  if (lastEvent === "turn.completed") {
-    return "마무리 정리 중";
-  }
-
-  if (status === "running") {
-    return "실행 중";
-  }
-
-  if (status === "queued") {
-    return "대기열에서 대기 중";
-  }
-
-  if (status === "idle") {
-    return "다음 작업 대기 중";
-  }
-
-  return "상태 동기화 중";
+  return resolveRealtimeProgressText(entity, { language: "ko" });
 }
 
 function normalizeNullableInteger(value) {

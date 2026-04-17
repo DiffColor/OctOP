@@ -3,6 +3,7 @@ import {
   isBridgeDisconnectConfirmed,
   mergeProjectSnapshots,
   normalizeBridgeDisconnectEvidence,
+  resolveRealtimeProgressText,
   reduceBridgeDisconnectEvidence,
   resolveApiBaseUrl
 } from "../../../packages/domain/src/index.js";
@@ -1779,6 +1780,13 @@ function normalizeAssistantMessageContent(content) {
 
   const sectionHeadingPattern = /^\[[^\]]+\]$/;
   const repeatedProgressPrefixPattern = /^(\s*[-*]\s*)?\[진행 내역\](?:\s*[:：-]\s*)?(.*)$/;
+  const singleInstanceSectionHeadings = new Set([
+    "[목표]",
+    "[계획]",
+    "[작업 계획]",
+    "[최종 보고]",
+    "[최종 정리]"
+  ]);
   const normalizeProgressHistoryLine = (line, insideProgressHistorySection) => {
     if (!insideProgressHistorySection) {
       return String(line ?? "");
@@ -1802,29 +1810,53 @@ function normalizeAssistantMessageContent(content) {
   };
   const lines = normalized.split("\n");
   const result = [];
+  const seenSingleInstanceSectionHeadings = new Set();
   let seenProgressHistoryHeading = false;
   let skippedDuplicateHeading = false;
   let insideProgressHistorySection = false;
+  let insideSkippedSingleInstanceSection = false;
 
   for (const line of lines) {
     const trimmed = String(line ?? "").trim();
     const isSectionHeading = sectionHeadingPattern.test(trimmed);
 
+    if (isSectionHeading && singleInstanceSectionHeadings.has(trimmed)) {
+      insideProgressHistorySection = false;
+      skippedDuplicateHeading = false;
+
+      if (seenSingleInstanceSectionHeadings.has(trimmed)) {
+        insideSkippedSingleInstanceSection = true;
+        continue;
+      }
+
+      seenSingleInstanceSectionHeadings.add(trimmed);
+      insideSkippedSingleInstanceSection = false;
+      result.push(trimmed);
+      continue;
+    }
+
     if (trimmed === "[진행 내역]") {
       if (seenProgressHistoryHeading) {
         skippedDuplicateHeading = true;
+        insideSkippedSingleInstanceSection = false;
         continue;
       }
 
       seenProgressHistoryHeading = true;
       skippedDuplicateHeading = false;
       insideProgressHistorySection = true;
+      insideSkippedSingleInstanceSection = false;
       result.push("[진행 내역]");
       continue;
     }
 
     if (isSectionHeading) {
       insideProgressHistorySection = false;
+      insideSkippedSingleInstanceSection = false;
+    }
+
+    if (insideSkippedSingleInstanceSection) {
+      continue;
     }
 
     const normalizedLine = normalizeProgressHistoryLine(line, insideProgressHistorySection);
@@ -2516,67 +2548,7 @@ function isRetryableIssueStatus(status) {
 }
 
 function getRealtimeProgressText(entity, language) {
-  const isKorean = language === "ko";
-  const status = entity?.status ?? "queued";
-  const lastEvent = entity?.last_event ?? "";
-
-  if (status === "awaiting_input") {
-    return isKorean ? "입력 대기 중" : "Waiting for input";
-  }
-
-  if (status === "failed") {
-    return isKorean ? "실패 확인 필요" : "Needs attention";
-  }
-
-  if (status === "interrupted") {
-    return isKorean ? "중단됨" : "Interrupted";
-  }
-
-  if (status === "completed") {
-    return isKorean ? "완료됨" : "Completed";
-  }
-
-  if (lastEvent === "turn.starting") {
-    return isKorean ? "Codex 실행 요청 중" : "Sending to Codex";
-  }
-
-  if (lastEvent === "turn.started") {
-    return isKorean ? "작업 시작됨" : "Task started";
-  }
-
-  if (lastEvent === "turn.plan.updated") {
-    return isKorean ? "계획 수립 중" : "Planning next steps";
-  }
-
-  if (lastEvent === "turn.diff.updated") {
-    return isKorean ? "변경 적용 중" : "Applying edits";
-  }
-
-  if (lastEvent === "item.agentMessage.delta") {
-    return isKorean ? "응답 생성 중" : "Streaming response";
-  }
-
-  if (lastEvent === "turn.completed") {
-    return isKorean ? "마무리 정리 중" : "Wrapping up";
-  }
-
-  if (status === "running") {
-    return isKorean ? "실행 중" : "Running";
-  }
-
-  if (status === "queued") {
-    return isKorean ? "대기열에서 대기 중" : "Waiting in queue";
-  }
-
-  if (status === "staged") {
-    return isKorean ? "준비 단계" : "Ready to queue";
-  }
-
-  if (status === "idle") {
-    return isKorean ? "다음 작업 대기 중" : "Waiting for next task";
-  }
-
-  return isKorean ? "상태 동기화 중" : "Syncing status";
+  return resolveRealtimeProgressText(entity, { language });
 }
 
 function parseResponseBody(response, text) {

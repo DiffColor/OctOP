@@ -528,15 +528,16 @@ export default function ThreadDetail({
       }));
 
       if (announce) {
-        showAlert(
+        const modeSwitchMessage =
           nextMode === "tts"
             ? "실시간 음성 API를 사용할 수 없어 음성 TTS 모드로 전환했습니다."
-            : "실시간 음성과 TTS를 사용할 수 없어 일반 채팅 STT 입력 모드로 전환했습니다.",
-          {
-            title: "음성 모드",
-            tone: nextMode === "tts" ? "info" : "error"
-          }
-        );
+            : "실시간 음성과 TTS를 사용할 수 없어 일반 채팅 STT 입력 모드로 전환했습니다.";
+        const detailMessage = nextErrorMessage ? `${modeSwitchMessage}\n원인: ${nextErrorMessage}` : modeSwitchMessage;
+
+        showAlert(detailMessage, {
+          title: "음성 모드",
+          tone: nextMode === "tts" ? "info" : "error"
+        });
       }
 
       return nextMode;
