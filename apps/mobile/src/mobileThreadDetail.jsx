@@ -9,6 +9,7 @@ import {
 import AttachmentPreviewDialog from "./mobileAttachmentPreviewDialog.jsx";
 import MobileInlineIssueComposer from "./mobileInlineIssueComposer.jsx";
 import { MessageAttachmentPreview } from "./mobileMessageAttachmentUi.jsx";
+import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import ThreadMessageActionSheet from "./mobileThreadMessageActionSheet.jsx";
 import VoiceModePanel from "./VoiceModePanel.jsx";
 import { useMobileFeedback } from "./mobileSharedUi.jsx";
@@ -64,6 +65,45 @@ const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
   "function_call",
   "function_result"
 ]);
+const STT_SUBMIT_COMMAND_PATTERN = /^(.*?)(?:[\s,.!?~…]*(?:전송\s*해))[\s,.!?~…]*$/u;
+
+function buildSpeechDraft(baseDraft, transcript) {
+  const normalizedBaseDraft = String(baseDraft ?? "");
+  const normalizedTranscript = String(transcript ?? "").trim();
+
+  if (!normalizedTranscript) {
+    return normalizedBaseDraft;
+  }
+
+  return normalizedBaseDraft && !/\s$/u.test(normalizedBaseDraft)
+    ? `${normalizedBaseDraft} ${normalizedTranscript}`
+    : `${normalizedBaseDraft}${normalizedTranscript}`;
+}
+
+function resolveSpeechSubmitCommand(transcript) {
+  const normalizedTranscript = String(transcript ?? "").trim();
+
+  if (!normalizedTranscript) {
+    return {
+      shouldSubmit: false,
+      transcript: ""
+    };
+  }
+
+  const match = normalizedTranscript.match(STT_SUBMIT_COMMAND_PATTERN);
+
+  if (!match) {
+    return {
+      shouldSubmit: false,
+      transcript: normalizedTranscript
+    };
+  }
+
+  return {
+    shouldSubmit: true,
+    transcript: String(match[1] ?? "").trim()
+  };
+}
 
 function normalizeVoiceMode(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -281,6 +321,8 @@ export default function ThreadDetail({
   const speechInputBaseDraftRef = useRef("");
   const wasComposerSpeechInputEnabledRef = useRef(false);
   const speechInputManualEditTimerRef = useRef(null);
+  const speechInputCommandInFlightRef = useRef(false);
+  const speechInputLastHandledCommandRef = useRef("");
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
@@ -315,8 +357,10 @@ export default function ThreadDetail({
   const voicePanelOpen = voiceModeEnabled && (voiceMode === "realtime" || voiceMode === "tts");
   const voiceSttOnlyMode = voiceMode === "stt_only";
   const composerSpeechInputEnabled = voiceSttOnlyMode || manualSpeechInputActive;
+  const isInputDisabled = !isDraft && thread?.status === "running";
   const currentVoiceModeRef = useRef(voiceMode);
   const currentVoiceStateRef = useRef(resolvedVoiceState);
+  const fallbackVoiceSessionStopSessionRef = useRef(null);
   const voiceCapabilityDateKey = getVoiceCapabilityDateKey();
   const voiceCapabilityScope = useMemo(
     () => ({
@@ -360,10 +404,13 @@ export default function ThreadDetail({
   useEffect(() => {
     if (composerSpeechInputEnabled && !wasComposerSpeechInputEnabledRef.current) {
       speechInputBaseDraftRef.current = String(composerLiveDraftRef.current ?? "");
+      speechInputLastHandledCommandRef.current = "";
     }
 
     if (!composerSpeechInputEnabled) {
       speechInputBaseDraftRef.current = "";
+      speechInputLastHandledCommandRef.current = "";
+      speechInputCommandInFlightRef.current = false;
     }
 
     wasComposerSpeechInputEnabledRef.current = composerSpeechInputEnabled;
@@ -639,25 +686,149 @@ export default function ThreadDetail({
     [activateTtsOrSttMode, syncVoiceCapabilityToState, updateVoiceCapabilitySnapshot]
   );
 
-  const handleFallbackDraftTranscript = useCallback((transcript) => {
-    const normalizedTranscript = String(transcript ?? "").trim();
-    const currentBaseDraft = String(speechInputBaseDraftRef.current ?? "");
-
-    if (!normalizedTranscript) {
-      return;
-    }
-
-    const nextPrompt =
-      currentBaseDraft && !/\s$/u.test(currentBaseDraft)
-        ? `${currentBaseDraft} ${normalizedTranscript}`
-        : `${currentBaseDraft}${normalizedTranscript}`;
-
+  const applyComposerSpeechPrompt = useCallback((nextPrompt) => {
     setComposerSpeechInsert({
       token: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      text: nextPrompt,
+      text: String(nextPrompt ?? ""),
       mode: "replace"
     });
   }, []);
+  const restoreComposerSpeechDraft = useCallback(
+    (nextPrompt) => {
+      const normalizedPrompt = String(nextPrompt ?? "");
+      composerLiveDraftRef.current = normalizedPrompt;
+      speechInputBaseDraftRef.current = normalizedPrompt;
+
+      if (typeof onPersistComposerDraft === "function" && composerDraftKey) {
+        onPersistComposerDraft(composerDraftKey, normalizedPrompt);
+      }
+
+      applyComposerSpeechPrompt(normalizedPrompt);
+    },
+    [applyComposerSpeechPrompt, composerDraftKey, onPersistComposerDraft]
+  );
+  const stopComposerSpeechInputAfterSubmit = useCallback(async () => {
+    speechInputBaseDraftRef.current = "";
+    speechInputLastHandledCommandRef.current = "";
+    const stopSession = fallbackVoiceSessionStopSessionRef.current;
+
+    if (voiceSttOnlyMode) {
+      resetVoiceState();
+      if (typeof stopSession === "function") {
+        await stopSession({ preserveTranscript: false });
+      }
+      return;
+    }
+
+    setManualSpeechInputActive(false);
+    if (typeof stopSession === "function") {
+      await stopSession({ preserveTranscript: false });
+    }
+  }, [resetVoiceState, voiceSttOnlyMode]);
+  const handleSpeechCommandSubmit = useCallback(
+    async (nextPrompt, commandSignature) => {
+      const normalizedPrompt = String(nextPrompt ?? "").trim();
+
+      if (
+        !normalizedPrompt ||
+        !project?.id ||
+        typeof onSubmitPrompt !== "function" ||
+        submitBusy ||
+        isInputDisabled ||
+        speechInputCommandInFlightRef.current
+      ) {
+        return false;
+      }
+
+      speechInputCommandInFlightRef.current = true;
+      speechInputLastHandledCommandRef.current = commandSignature;
+      composerLiveDraftRef.current = normalizedPrompt;
+
+      if (typeof onPersistComposerDraft === "function" && composerDraftKey) {
+        onPersistComposerDraft(composerDraftKey, "");
+      }
+
+      try {
+        const accepted = await onSubmitPrompt({
+          title: createThreadTitleFromPrompt(normalizedPrompt),
+          prompt: normalizedPrompt,
+          project_id: project.id,
+          attachments: []
+        });
+
+        if (accepted === false) {
+          restoreComposerSpeechDraft(normalizedPrompt);
+          speechInputLastHandledCommandRef.current = "";
+          return false;
+        }
+
+        await stopComposerSpeechInputAfterSubmit();
+        return true;
+      } catch (error) {
+        restoreComposerSpeechDraft(normalizedPrompt);
+        speechInputLastHandledCommandRef.current = "";
+        throw error;
+      } finally {
+        speechInputCommandInFlightRef.current = false;
+      }
+    },
+    [
+      composerDraftKey,
+      isInputDisabled,
+      onPersistComposerDraft,
+      onSubmitPrompt,
+      project?.id,
+      restoreComposerSpeechDraft,
+      stopComposerSpeechInputAfterSubmit,
+      submitBusy
+    ]
+  );
+  const handleFallbackDraftTranscript = useCallback(
+    (transcript) => {
+      if (speechInputCommandInFlightRef.current) {
+        return;
+      }
+
+      const normalizedTranscript = String(transcript ?? "").trim();
+      const currentBaseDraft = String(speechInputBaseDraftRef.current ?? "");
+
+      if (!normalizedTranscript) {
+        return;
+      }
+
+      const resolvedCommand = resolveSpeechSubmitCommand(normalizedTranscript);
+      const canHandleSubmitCommand =
+        resolvedCommand.shouldSubmit &&
+        Boolean(project?.id) &&
+        typeof onSubmitPrompt === "function" &&
+        !submitBusy &&
+        !isInputDisabled;
+      const effectiveTranscript = canHandleSubmitCommand ? resolvedCommand.transcript : normalizedTranscript;
+      const nextPrompt = buildSpeechDraft(currentBaseDraft, effectiveTranscript);
+
+      if (canHandleSubmitCommand) {
+        const commandSignature = `${currentBaseDraft}\u0000${normalizedTranscript}`;
+
+        if (speechInputLastHandledCommandRef.current === commandSignature) {
+          return;
+        }
+
+        if (!nextPrompt.trim()) {
+          return;
+        }
+
+        void handleSpeechCommandSubmit(nextPrompt, commandSignature);
+        return;
+      }
+
+      if (!nextPrompt.trim()) {
+        return;
+      }
+
+      applyComposerSpeechPrompt(nextPrompt);
+    },
+    [applyComposerSpeechPrompt, handleSpeechCommandSubmit, isInputDisabled, onSubmitPrompt, project?.id, submitBusy]
+  );
   const handleComposerPromptChange = useCallback((nextPrompt) => {
     composerLiveDraftRef.current = String(nextPrompt ?? "");
   }, []);
@@ -728,7 +899,6 @@ export default function ThreadDetail({
 
     return activeIssue;
   }, [activePhysicalThreadId, normalizedIssues]);
-  const isInputDisabled = !isDraft && thread?.status === "running";
   const chatTimeline = useMemo(() => {
     const normalized = [];
     let lastPrompt = null;
@@ -1210,6 +1380,9 @@ export default function ThreadDetail({
     onDraftTranscript: handleFallbackDraftTranscript,
     onTtsAvailabilityChange: handleTtsAvailabilityChange
   });
+  useEffect(() => {
+    fallbackVoiceSessionStopSessionRef.current = fallbackVoiceSession.stopSession;
+  }, [fallbackVoiceSession.stopSession]);
   const speechInputBusy =
     fallbackVoiceSession.connectionState === "connecting" || fallbackVoiceSession.micState === "requesting";
   const handleComposerManualPromptChange = useCallback(
@@ -1974,6 +2147,8 @@ export default function ThreadDetail({
     setRetryingIssueId("");
     setDeletingIssueId("");
     setManualSpeechInputActive(false);
+    speechInputCommandInFlightRef.current = false;
+    speechInputLastHandledCommandRef.current = "";
   }, [thread?.id]);
 
   useEffect(
@@ -1995,6 +2170,9 @@ export default function ThreadDetail({
       window.clearTimeout(speechInputManualEditTimerRef.current);
       speechInputManualEditTimerRef.current = null;
     }
+
+    speechInputCommandInFlightRef.current = false;
+    speechInputLastHandledCommandRef.current = "";
   }, [composerSpeechInputEnabled]);
 
   useEffect(() => {
