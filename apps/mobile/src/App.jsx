@@ -5097,6 +5097,7 @@ export default function App() {
     noticeAutoDismissMs: MOBILE_NOTICE_AUTO_DISMISS_MS,
     noticeErrorDismissMs: MOBILE_NOTICE_ERROR_DISMISS_MS
   });
+  const mobileConfirmOpenRef = useRef(mobileConfirmState.open);
   const selectedBridgeKnown = !selectedBridgeId || bridges.some((bridge) => bridge.bridge_id === selectedBridgeId);
 
   const status = useMemo(
@@ -5670,6 +5671,10 @@ export default function App() {
   useEffect(() => {
     selectedTodoChatIdRef.current = selectedTodoChatId;
   }, [selectedTodoChatId]);
+
+  useEffect(() => {
+    mobileConfirmOpenRef.current = mobileConfirmState.open === true;
+  }, [mobileConfirmState.open]);
 
   useEffect(() => {
     utilityOpenRef.current = utilityOpen;
@@ -7001,7 +7006,7 @@ export default function App() {
   }, []);
 
   const consumeStandaloneBackPress = useCallback(() => {
-    if (mobileConfirmResolverRef.current) {
+    if (mobileConfirmOpenRef.current) {
       resolveMobileConfirm(false);
       return true;
     }
