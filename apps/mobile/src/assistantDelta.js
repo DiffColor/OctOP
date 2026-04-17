@@ -8,23 +8,25 @@ const ASSISTANT_SECTION_HEADING_START_PATTERN =
 function normalizeAssistantDeltaJoin(previousContent = "", delta = "") {
   const normalizedPreviousContent = String(previousContent ?? "");
   const rawDelta = String(delta ?? "");
+  const trimmedRawDelta = trimLeadingBlankLines(rawDelta);
 
   if (!normalizedPreviousContent || !rawDelta) {
     return `${normalizedPreviousContent}${rawDelta}`;
   }
 
   if (
-    ASSISTANT_SECTION_HEADING_START_PATTERN.test(rawDelta)
+    trimmedRawDelta &&
+    ASSISTANT_SECTION_HEADING_START_PATTERN.test(trimmedRawDelta)
   ) {
     if (normalizedPreviousContent.endsWith("\n\n")) {
-      return `${normalizedPreviousContent}${rawDelta}`;
+      return `${normalizedPreviousContent}${trimmedRawDelta}`;
     }
 
     if (normalizedPreviousContent.endsWith("\n")) {
-      return `${normalizedPreviousContent}\n${rawDelta}`;
+      return `${normalizedPreviousContent}\n${trimmedRawDelta}`;
     }
 
-    return `${normalizedPreviousContent}\n\n${rawDelta}`;
+    return `${normalizedPreviousContent}\n\n${trimmedRawDelta}`;
   }
 
   return `${normalizedPreviousContent}${rawDelta}`;

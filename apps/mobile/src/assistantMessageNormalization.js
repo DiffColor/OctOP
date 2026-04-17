@@ -7,10 +7,7 @@ const SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
   "[계획]",
   "[작업 계획]"
 ]);
-const REPEATABLE_SECTION_HEADINGS = new Set([
-  "[최종 보고]",
-  "[최종 정리]"
-]);
+const REPEATABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
 
 function normalizeProgressHistoryLine(line = "", insideProgressHistorySection = false) {
   if (!insideProgressHistorySection) {
@@ -47,6 +44,7 @@ export function normalizeAssistantMessageContent(content = "") {
   let seenProgressHistoryHeading = false;
   let skippedDuplicateHeading = false;
   let insideProgressHistorySection = false;
+  let insideSkippedSingleInstanceSection = false;
 
   for (const line of lines) {
     const trimmed = String(line ?? "").trim();
@@ -57,10 +55,12 @@ export function normalizeAssistantMessageContent(content = "") {
       skippedDuplicateHeading = false;
 
       if (seenSingleInstanceSectionHeadings.has(trimmed)) {
+        insideSkippedSingleInstanceSection = true;
         continue;
       }
 
       seenSingleInstanceSectionHeadings.add(trimmed);
+      insideSkippedSingleInstanceSection = false;
       result.push(trimmed);
       continue;
     }
@@ -68,6 +68,7 @@ export function normalizeAssistantMessageContent(content = "") {
     if (isSectionHeading && REPEATABLE_SECTION_HEADINGS.has(trimmed)) {
       insideProgressHistorySection = false;
       skippedDuplicateHeading = false;
+      insideSkippedSingleInstanceSection = false;
       result.push(trimmed);
       continue;
     }
@@ -75,18 +76,25 @@ export function normalizeAssistantMessageContent(content = "") {
     if (trimmed === PROGRESS_HISTORY_HEADING) {
       if (seenProgressHistoryHeading) {
         skippedDuplicateHeading = true;
+        insideSkippedSingleInstanceSection = false;
         continue;
       }
 
       seenProgressHistoryHeading = true;
       skippedDuplicateHeading = false;
       insideProgressHistorySection = true;
+      insideSkippedSingleInstanceSection = false;
       result.push(PROGRESS_HISTORY_HEADING);
       continue;
     }
 
     if (isSectionHeading) {
       insideProgressHistorySection = false;
+      insideSkippedSingleInstanceSection = false;
+    }
+
+    if (insideSkippedSingleInstanceSection) {
+      continue;
     }
 
     const normalizedLine = normalizeProgressHistoryLine(line, insideProgressHistorySection);

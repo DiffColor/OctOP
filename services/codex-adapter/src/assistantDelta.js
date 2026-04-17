@@ -9,26 +9,31 @@ const COMPARABLE_REPEATED_PROGRESS_PREFIX_PATTERN =
 const COMPARABLE_SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
   "[목표]",
   "[계획]",
-  "[작업 계획]",
-  "[최종 보고]",
-  "[최종 정리]"
+  "[작업 계획]"
 ]);
+const COMPARABLE_REPEATABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
 const OVERLAP_BOUNDARY_PATTERN = /[\s.,!?;:()[\]{}"'`“”‘’\-]/u;
 const MIN_ASSISTANT_DELTA_OVERLAP_LENGTH = 2;
 
 function normalizeAssistantDeltaJoin(previousContent = "", delta = "") {
   const normalizedPreviousContent = String(previousContent ?? "");
   const rawDelta = String(delta ?? "");
+  const trimmedRawDelta = trimLeadingBlankLines(rawDelta);
 
   if (!normalizedPreviousContent || !rawDelta) {
     return `${normalizedPreviousContent}${rawDelta}`;
   }
 
-  if (
-    !normalizedPreviousContent.endsWith("\n") &&
-    ASSISTANT_SECTION_HEADING_START_PATTERN.test(rawDelta)
-  ) {
-    return `${normalizedPreviousContent}\n${rawDelta}`;
+  if (trimmedRawDelta && ASSISTANT_SECTION_HEADING_START_PATTERN.test(trimmedRawDelta)) {
+    if (normalizedPreviousContent.endsWith("\n\n")) {
+      return `${normalizedPreviousContent}${trimmedRawDelta}`;
+    }
+
+    if (normalizedPreviousContent.endsWith("\n")) {
+      return `${normalizedPreviousContent}\n${trimmedRawDelta}`;
+    }
+
+    return `${normalizedPreviousContent}\n\n${trimmedRawDelta}`;
   }
 
   return `${normalizedPreviousContent}${rawDelta}`;
@@ -85,6 +90,14 @@ function normalizeComparableAssistantContent(content = "") {
       }
 
       seenSingleInstanceSectionHeadings.add(trimmed);
+      insideSkippedSingleInstanceSection = false;
+      result.push(trimmed);
+      continue;
+    }
+
+    if (isSectionHeading && COMPARABLE_REPEATABLE_SECTION_HEADINGS.has(trimmed)) {
+      insideProgressHistorySection = false;
+      skippedDuplicateHeading = false;
       insideSkippedSingleInstanceSection = false;
       result.push(trimmed);
       continue;

@@ -1,17 +1,6 @@
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 
-const SYSTEM_ACTIVITY_BOUNDARY_KINDS = new Set([
-  "tool_call",
-  "tool_result",
-  "mcp_call",
-  "mcp_result",
-  "skill_call",
-  "skill_result",
-  "function_call",
-  "function_result"
-]);
-
 function normalizeRole(message = {}) {
   if (message?.role === "assistant") {
     return "assistant";
@@ -26,10 +15,6 @@ function normalizeRole(message = {}) {
 
 function normalizeKind(message = {}) {
   return typeof message?.kind === "string" ? message.kind : "message";
-}
-
-function isSystemActivityBoundaryKind(kind = "") {
-  return SYSTEM_ACTIVITY_BOUNDARY_KINDS.has(String(kind ?? "").trim());
 }
 
 function resolveLatestTimestamp(currentMessage = {}, nextMessage = {}) {
@@ -118,8 +103,6 @@ export function consolidateThreadMessages(messages = []) {
   const consolidated = [];
   const promptIndexByIssueId = new Map();
   const assistantIndexBySegmentKey = new Map();
-  const assistantSegmentPhaseByIssueId = new Map();
-  const lastCategoryByIssueId = new Map();
 
   (messages ?? []).forEach((message) => {
     if (!message) {
@@ -129,18 +112,8 @@ export function consolidateThreadMessages(messages = []) {
     const role = normalizeRole(message);
     const kind = normalizeKind(message);
     const issueId = String(message.issue_id ?? "").trim();
-    const category =
-      role === "assistant" && kind === "message"
-        ? "assistant"
-        : role === "user" && kind === "prompt"
-          ? "prompt"
-          : issueId && isSystemActivityBoundaryKind(kind)
-            ? "system_activity"
-            : "other";
 
     if (role === "user" && kind === "prompt" && issueId) {
-      assistantSegmentPhaseByIssueId.set(issueId, 0);
-      lastCategoryByIssueId.set(issueId, "prompt");
       const existingIndex = promptIndexByIssueId.get(issueId);
 
       if (existingIndex == null) {
@@ -153,31 +126,12 @@ export function consolidateThreadMessages(messages = []) {
       return;
     }
 
-    if (category === "system_activity" && issueId) {
-      const previousCategory = lastCategoryByIssueId.get(issueId) ?? "";
-      const nextPhase =
-        previousCategory === "system_activity"
-          ? assistantSegmentPhaseByIssueId.get(issueId) ?? 0
-          : (assistantSegmentPhaseByIssueId.get(issueId) ?? 0) + 1;
-
-      assistantSegmentPhaseByIssueId.set(issueId, nextPhase);
-      lastCategoryByIssueId.set(issueId, "system_activity");
-      consolidated.push(message);
-      return;
-    }
-
     if (role === "assistant" && kind === "message") {
-      const assistantSegmentKey = issueId
-        ? `${issueId}:${assistantSegmentPhaseByIssueId.get(issueId) ?? 0}`
-        : `message:${String(message.id ?? "").trim()}`;
+      const assistantSegmentKey = issueId ? issueId : `message:${String(message.id ?? "").trim()}`;
 
       if (!assistantSegmentKey || assistantSegmentKey === "message:") {
         consolidated.push(message);
         return;
-      }
-
-      if (issueId) {
-        lastCategoryByIssueId.set(issueId, "assistant");
       }
 
       const existingIndex = assistantIndexBySegmentKey.get(assistantSegmentKey);
@@ -190,10 +144,6 @@ export function consolidateThreadMessages(messages = []) {
 
       consolidated[existingIndex] = mergeAssistantMessages(consolidated[existingIndex], message);
       return;
-    }
-
-    if (issueId) {
-      lastCategoryByIssueId.set(issueId, category);
     }
 
     consolidated.push(message);

@@ -4,10 +4,9 @@ const REPEATED_PROGRESS_PREFIX_PATTERN = /^(\s*[-*]\s*)?\[진행 내역\](?:\s*[
 const SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
   "[목표]",
   "[계획]",
-  "[작업 계획]",
-  "[최종 보고]",
-  "[최종 정리]"
+  "[작업 계획]"
 ]);
+const REPEATABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
 
 function normalizeProgressHistoryLine(line = "", insideProgressHistorySection = false) {
   if (!insideProgressHistorySection) {
@@ -60,6 +59,14 @@ export function normalizeAssistantMessageContent(content = "") {
       }
 
       seenSingleInstanceSectionHeadings.add(trimmed);
+      insideSkippedSingleInstanceSection = false;
+      result.push(trimmed);
+      continue;
+    }
+
+    if (isSectionHeading && REPEATABLE_SECTION_HEADINGS.has(trimmed)) {
+      insideProgressHistorySection = false;
+      skippedDuplicateHeading = false;
       insideSkippedSingleInstanceSection = false;
       result.push(trimmed);
       continue;

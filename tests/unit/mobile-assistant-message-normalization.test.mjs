@@ -57,7 +57,40 @@ test("최종 보고 continuation 병합 시 뒤쪽 섹션을 제거하지 않는
   );
 });
 
-test("도구 응답 이후의 assistant 최종 보고는 별도 메시지로 유지된다", () => {
+test("중복된 목표/계획 섹션 본문은 함께 제거되고 진행 내역만 남는다", () => {
+  const content = [
+    "[목표]",
+    "- 최초 목표",
+    "",
+    "[계획]",
+    "- 최초 계획",
+    "",
+    "[목표]",
+    "- 중복 목표",
+    "",
+    "[계획]",
+    "- 중복 계획",
+    "",
+    "[진행 내역]",
+    "- 실제 진행"
+  ].join("\n");
+
+  assert.equal(
+    normalizeAssistantMessageContent(content),
+    [
+      "[목표]",
+      "- 최초 목표",
+      "",
+      "[계획]",
+      "- 최초 계획",
+      "",
+      "[진행 내역]",
+      "- 실제 진행"
+    ].join("\n")
+  );
+});
+
+test("도구 응답 이후의 assistant 최종 보고도 같은 이슈 안에서는 하나의 메시지로 합쳐진다", () => {
   const issueId = "issue-1";
   const messages = [
     {
@@ -112,19 +145,13 @@ test("도구 응답 이후의 assistant 최종 보고는 별도 메시지로 유
         id: "assistant-1",
         role: "assistant",
         kind: "message",
-        content: "[계획]\n- 1차 계획"
+        content: "[계획]\n- 1차 계획\n\n[최종 보고]\n- 후속 보고"
       },
       {
         id: "mcp-result-1",
         role: "system",
         kind: "mcp_result",
         content: "도구 응답"
-      },
-      {
-        id: "assistant-2",
-        role: "assistant",
-        kind: "message",
-        content: "[최종 보고]\n- 후속 보고"
       }
     ]
   );
