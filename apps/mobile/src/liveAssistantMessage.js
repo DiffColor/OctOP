@@ -1,6 +1,17 @@
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 
+const SYSTEM_ACTIVITY_BOUNDARY_KINDS = new Set([
+  "tool_call",
+  "tool_result",
+  "mcp_call",
+  "mcp_result",
+  "skill_call",
+  "skill_result",
+  "function_call",
+  "function_result"
+]);
+
 export function findLatestLiveAssistantMessageIndex(messages = [], issueId = null) {
   const normalizedIssueId = String(issueId ?? "").trim();
 
@@ -21,6 +32,10 @@ export function findLatestLiveAssistantMessageIndex(messages = [], issueId = nul
 
     if (role === "assistant" && kind === "message") {
       return index;
+    }
+
+    if (SYSTEM_ACTIVITY_BOUNDARY_KINDS.has(kind)) {
+      break;
     }
 
     if (role === "user" && kind === "prompt" && (!normalizedIssueId || candidateIssueId === normalizedIssueId)) {

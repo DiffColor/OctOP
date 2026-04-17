@@ -14,10 +14,17 @@ function normalizeAssistantDeltaJoin(previousContent = "", delta = "") {
   }
 
   if (
-    !normalizedPreviousContent.endsWith("\n") &&
     ASSISTANT_SECTION_HEADING_START_PATTERN.test(rawDelta)
   ) {
-    return `${normalizedPreviousContent}\n${rawDelta}`;
+    if (normalizedPreviousContent.endsWith("\n\n")) {
+      return `${normalizedPreviousContent}${rawDelta}`;
+    }
+
+    if (normalizedPreviousContent.endsWith("\n")) {
+      return `${normalizedPreviousContent}\n${rawDelta}`;
+    }
+
+    return `${normalizedPreviousContent}\n\n${rawDelta}`;
   }
 
   return `${normalizedPreviousContent}${rawDelta}`;
