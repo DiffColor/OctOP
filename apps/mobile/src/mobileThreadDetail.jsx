@@ -280,6 +280,7 @@ export default function ThreadDetail({
   const composerLiveDraftRef = useRef(String(composerDraft ?? ""));
   const speechInputBaseDraftRef = useRef("");
   const wasComposerSpeechInputEnabledRef = useRef(false);
+  const speechInputManualEditTimerRef = useRef(null);
   const previousScrollTopRef = useRef(0);
   const pinnedToLatestRef = useRef(true);
   const [isPinnedToLatest, setIsPinnedToLatest] = useState(true);
@@ -1211,6 +1212,31 @@ export default function ThreadDetail({
   });
   const speechInputBusy =
     fallbackVoiceSession.connectionState === "connecting" || fallbackVoiceSession.micState === "requesting";
+  const handleComposerManualPromptChange = useCallback(
+    (nextPrompt) => {
+      const normalizedPrompt = String(nextPrompt ?? "");
+      composerLiveDraftRef.current = normalizedPrompt;
+
+      if (!composerSpeechInputEnabled) {
+        return;
+      }
+
+      speechInputBaseDraftRef.current = normalizedPrompt;
+
+      if (speechInputManualEditTimerRef.current) {
+        window.clearTimeout(speechInputManualEditTimerRef.current);
+        speechInputManualEditTimerRef.current = null;
+      }
+
+      speechInputManualEditTimerRef.current = window.setTimeout(() => {
+        speechInputManualEditTimerRef.current = null;
+        fallbackVoiceSession.resetTranscriptCapture({
+          restartListening: true
+        });
+      }, 180);
+    },
+    [composerSpeechInputEnabled, fallbackVoiceSession]
+  );
   const activeVoiceSession = voiceMode === "tts" ? fallbackVoiceSession : voiceSession;
   const voicePanelAssistantText =
     activeVoiceSession.latestAssistantSubtitle ||
@@ -1950,6 +1976,27 @@ export default function ThreadDetail({
     setManualSpeechInputActive(false);
   }, [thread?.id]);
 
+  useEffect(
+    () => () => {
+      if (speechInputManualEditTimerRef.current) {
+        window.clearTimeout(speechInputManualEditTimerRef.current);
+        speechInputManualEditTimerRef.current = null;
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (composerSpeechInputEnabled) {
+      return;
+    }
+
+    if (speechInputManualEditTimerRef.current) {
+      window.clearTimeout(speechInputManualEditTimerRef.current);
+      speechInputManualEditTimerRef.current = null;
+    }
+  }, [composerSpeechInputEnabled]);
+
   useEffect(() => {
     if (!voiceModeEnabled || !manualSpeechInputActive) {
       return;
@@ -2468,6 +2515,7 @@ export default function ThreadDetail({
               onInputFocus={handleComposerFocus}
               onInputBlur={handleComposerBlur}
               onPromptChange={handleComposerPromptChange}
+              onManualPromptChange={handleComposerManualPromptChange}
               speechInputEnabled={composerSpeechInputEnabled}
               speechInputSupported={fallbackVoiceSession.speechRecognitionSupported}
               speechInputListening={fallbackVoiceSession.isListening}
@@ -2477,6 +2525,7 @@ export default function ThreadDetail({
               externalPromptInsertText={composerSpeechInsert.text}
               externalPromptInsertToken={composerSpeechInsert.token}
               externalPromptInsertMode={composerSpeechInsert.mode}
+              autoFocusOnExternalPromptInsert={!composerSpeechInputEnabled}
             />
           </div>
         </div>

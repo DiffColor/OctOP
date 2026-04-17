@@ -591,6 +591,47 @@ export default function useFallbackVoiceSession({
     [cleanupRecognition, resetAudioMetrics, stopNarrationPlayback]
   );
 
+  const resetTranscriptCapture = useCallback(
+    ({ restartListening = false } = {}) => {
+      latestDeliveredTranscriptRef.current = "";
+      latestDeliveredTranscriptAtRef.current = 0;
+      accumulatedFinalTranscriptRef.current = "";
+      finalResultTranscriptMapRef.current = new Map();
+      committedFinalTranscriptRef.current = "";
+
+      setState((current) => ({
+        ...current,
+        latestUserTranscript: ""
+      }));
+
+      if (!restartListening || !activeRef.current) {
+        return;
+      }
+
+      manualStopRef.current = true;
+
+      if (recognitionRestartTimerRef.current) {
+        window.clearTimeout(recognitionRestartTimerRef.current);
+        recognitionRestartTimerRef.current = null;
+      }
+
+      try {
+        recognitionRef.current?.stop?.();
+      } catch {
+        // ignore
+      }
+
+      window.setTimeout(() => {
+        if (!activeRef.current) {
+          return;
+        }
+
+        startListening();
+      }, 0);
+    },
+    [startListening]
+  );
+
   const toggleListening = useCallback(() => {
     if (state.isListening) {
       stopListening();
@@ -797,6 +838,7 @@ export default function useFallbackVoiceSession({
     stopSession,
     stopListening,
     toggleListening,
+    resetTranscriptCapture,
     speechRecognitionSupported: Boolean(
       typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition)
     )

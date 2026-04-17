@@ -21,6 +21,7 @@ export default function InlineIssueComposer({
   onInputFocus = null,
   onInputBlur = null,
   onPromptChange = null,
+  onManualPromptChange = null,
   speechInputEnabled = false,
   speechInputSupported = true,
   speechInputListening = false,
@@ -30,6 +31,7 @@ export default function InlineIssueComposer({
   externalPromptInsertText = "",
   externalPromptInsertToken = "",
   externalPromptInsertMode = "append",
+  autoFocusOnExternalPromptInsert = true,
   helpers
 }) {
   const {
@@ -169,9 +171,20 @@ export default function InlineIssueComposer({
 
     window.requestAnimationFrame(() => {
       syncPromptHeight();
-      textareaRef.current?.focus?.({ preventScroll: true });
+
+      if (autoFocusOnExternalPromptInsert) {
+        textareaRef.current?.focus?.({ preventScroll: true });
+      }
     });
-  }, [externalPromptInsertMode, externalPromptInsertText, externalPromptInsertToken, normalizedDraftKey, onDraftPersist, syncPromptHeight]);
+  }, [
+    autoFocusOnExternalPromptInsert,
+    externalPromptInsertMode,
+    externalPromptInsertText,
+    externalPromptInsertToken,
+    normalizedDraftKey,
+    onDraftPersist,
+    syncPromptHeight
+  ]);
 
   useEffect(
     () => () => {
@@ -296,10 +309,12 @@ export default function InlineIssueComposer({
 
   const handlePromptChange = useCallback(
     (event) => {
-      setInternalPrompt(event.target.value);
+      const nextValue = String(event.target.value ?? "");
+      setInternalPrompt(nextValue);
+      onManualPromptChange?.(nextValue);
       syncPromptHeight(event.target);
     },
-    [syncPromptHeight]
+    [onManualPromptChange, syncPromptHeight]
   );
 
   const focusPromptTextareaFromSurface = useCallback(
@@ -526,6 +541,7 @@ export default function InlineIssueComposer({
     !disabled &&
     speechInputSupported;
   const speechInputActive = speechInputEnabled || speechInputListening || speechInputBusy;
+  const speechInputStatusLabel = speechInputActive ? "음성녹음 인식중" : "음성녹음";
   const canPressSendButton = Boolean(selectedProject) && !disabled && !actionBusy && (canSubmit || canOpenVoiceMode);
   const clearSendButtonLongPress = useCallback(() => {
     if (sendButtonLongPressTimerRef.current) {
@@ -717,7 +733,7 @@ export default function InlineIssueComposer({
                         onToggleSpeechInput?.();
                       }}
                       disabled={!canToggleSpeechInput}
-                      className={`flex h-6 min-w-[3.4rem] shrink-0 items-center justify-center gap-1 rounded-md border px-2 transition ${
+                      className={`flex h-6 min-w-[7.75rem] shrink-0 items-center justify-center gap-1 rounded-md border px-2 transition ${
                         speechInputActive
                           ? "border-rose-300/45 bg-rose-500/20 text-rose-100"
                           : "border-sky-300/35 bg-sky-500/10 text-sky-100"
@@ -731,16 +747,14 @@ export default function InlineIssueComposer({
                             : "STT 모드 켜기"
                       }
                     >
-                      {speechInputBusy ? (
-                        <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current" />
-                      ) : speechInputActive ? (
-                        <>
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-                          <span className="text-[10px] font-semibold tracking-[0.08em]">STT 중</span>
-                        </>
-                      ) : (
-                        <span className="text-[10px] font-semibold tracking-[0.08em]">STT</span>
-                      )}
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${
+                          speechInputActive ? "animate-pulse bg-current" : "bg-current/80"
+                        }`}
+                      />
+                      <span className="text-[10px] font-semibold tracking-[0.02em]">
+                        {speechInputStatusLabel}
+                      </span>
                     </button>
                   ) : null}
 
