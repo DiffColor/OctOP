@@ -36,7 +36,7 @@ import {
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 import { appendLiveAssistantDelta } from "./liveAssistantMessage.js";
-import { consolidateThreadMessages } from "./threadMessageConsolidation.js";
+import { consolidateThreadMessages, mergeThreadMessages } from "./threadMessageConsolidation.js";
 import { createThreadTitleFromPrompt } from "./mobileOverlayUtils.js";
 import useMobileDeferredOverlayProps from "./useMobileDeferredOverlayProps.js";
 import useMobileFeedbackState from "./useMobileFeedbackState.js";
@@ -3451,7 +3451,6 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
     return currentMessages;
   }
 
-  const preservedMessages = currentMessages.filter((message) => String(message?.issue_id ?? "") !== issueId);
   const normalizedMessages = (detailMessages ?? []).map((message, index) => {
     const role =
       message?.role === "assistant"
@@ -3475,9 +3474,7 @@ function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = n
     };
   });
 
-  return consolidateThreadMessages([...preservedMessages, ...normalizedMessages]).sort(
-    (left, right) => Date.parse(left.timestamp ?? "") - Date.parse(right.timestamp ?? "")
-  );
+  return mergeThreadMessages(currentMessages, normalizedMessages);
 }
 
 function collectLoadedIssueIdsFromMessages(messages = []) {
@@ -7604,20 +7601,24 @@ export default function App() {
           if (threadId) {
             const nextMessages = normalizeCachedThreadMessages(payload.payload?.entries ?? []);
 
-            setThreadDetails((current) => ({
-              ...current,
-              [threadId]: {
-                ...(current[threadId] ?? {}),
-                messages: nextMessages,
-                loaded_issue_ids: normalizeIssueIdList(
-                  [
-                    ...(current[threadId]?.loaded_issue_ids ?? []),
-                    ...collectLoadedIssueIdsFromMessages(nextMessages)
-                  ],
-                  current[threadId]?.issues ?? []
-                )
-              }
-            }));
+            setThreadDetails((current) => {
+              const mergedMessages = mergeThreadMessages(current[threadId]?.messages ?? [], nextMessages);
+
+              return {
+                ...current,
+                [threadId]: {
+                  ...(current[threadId] ?? {}),
+                  messages: mergedMessages,
+                  loaded_issue_ids: normalizeIssueIdList(
+                    [
+                      ...(current[threadId]?.loaded_issue_ids ?? []),
+                      ...collectLoadedIssueIdsFromMessages(mergedMessages)
+                    ],
+                    current[threadId]?.issues ?? []
+                  )
+                }
+              };
+            });
           }
           return;
         }

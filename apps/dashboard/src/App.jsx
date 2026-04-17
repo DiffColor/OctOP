@@ -12,6 +12,10 @@ import {
   resolveRealtimeIssuePayloadScope,
   shouldApplyRealtimeIssueToSelectedThread
 } from "./realtimeIssue";
+import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
+import { mergeAssistantDeltaContent } from "./assistantDelta.js";
+import { appendLiveAssistantDelta } from "./liveAssistantMessage.js";
+import { mergeThreadMessages } from "./threadMessageConsolidation.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
 
 const LOCAL_STORAGE_KEY = "octop.dashboard.session";
@@ -1771,161 +1775,6 @@ function parseRichMessageContent(content) {
   return segments;
 }
 
-function normalizeAssistantMessageContent(content) {
-  const normalized = String(content ?? "");
-
-  if (!normalized) {
-    return "";
-  }
-
-  const sectionHeadingPattern = /^\[[^\]]+\]$/;
-  const repeatedProgressPrefixPattern = /^(\s*[-*]\s*)?\[진행 내역\](?:\s*[:：-]\s*)?(.*)$/;
-  const normalizeProgressHistoryLine = (line, insideProgressHistorySection) => {
-    if (!insideProgressHistorySection) {
-      return String(line ?? "");
-    }
-
-    const normalizedLine = String(line ?? "");
-    const match = normalizedLine.match(repeatedProgressPrefixPattern);
-
-    if (!match) {
-      return normalizedLine;
-    }
-
-    const [, bullet = "", rest = ""] = match;
-    const normalizedRest = String(rest ?? "").replace(/^\s+/, "");
-
-    if (!normalizedRest.trim()) {
-      return "";
-    }
-
-    return `${bullet}${normalizedRest}`;
-  };
-  const lines = normalized.split("\n");
-  const result = [];
-  let seenProgressHistoryHeading = false;
-  let skippedDuplicateHeading = false;
-  let insideProgressHistorySection = false;
-
-  for (const line of lines) {
-    const trimmed = String(line ?? "").trim();
-    const isSectionHeading = sectionHeadingPattern.test(trimmed);
-
-    if (trimmed === "[진행 내역]") {
-      if (seenProgressHistoryHeading) {
-        skippedDuplicateHeading = true;
-        continue;
-      }
-
-      seenProgressHistoryHeading = true;
-      skippedDuplicateHeading = false;
-      insideProgressHistorySection = true;
-      result.push("[진행 내역]");
-      continue;
-    }
-
-    if (isSectionHeading) {
-      insideProgressHistorySection = false;
-    }
-
-    const normalizedLine = normalizeProgressHistoryLine(line, insideProgressHistorySection);
-    const normalizedTrimmed = normalizedLine.trim();
-
-    if (skippedDuplicateHeading && normalizedTrimmed === "" && String(result.at(-1) ?? "").trim() === "") {
-      continue;
-    }
-
-    skippedDuplicateHeading = false;
-    result.push(normalizedLine);
-  }
-
-  return result.join("\n");
-}
-
-const ASSISTANT_DELTA_OVERLAP_BOUNDARY_PATTERN = /[\s.,!?;:()[\]{}"'`“”‘’\-]/u;
-const MIN_ASSISTANT_DELTA_OVERLAP_LENGTH = 2;
-const ASSISTANT_SECTION_HEADING_START_PATTERN =
-  /^\s*\[(목표|계획|작업 계획|진행 내역|최종 보고|최종 정리)\](?:\s|$)/;
-
-function normalizeAssistantDeltaJoin(previousContent, delta) {
-  const normalizedPreviousContent = String(previousContent ?? "");
-  const rawDelta = String(delta ?? "");
-
-  if (!normalizedPreviousContent || !rawDelta) {
-    return `${normalizedPreviousContent}${rawDelta}`;
-  }
-
-  if (
-    !normalizedPreviousContent.endsWith("\n") &&
-    ASSISTANT_SECTION_HEADING_START_PATTERN.test(rawDelta)
-  ) {
-    return `${normalizedPreviousContent}\n${rawDelta}`;
-  }
-
-  return `${normalizedPreviousContent}${rawDelta}`;
-}
-
-function isAssistantDeltaOverlapBoundaryCharacter(character) {
-  return ASSISTANT_DELTA_OVERLAP_BOUNDARY_PATTERN.test(String(character ?? ""));
-}
-
-function hasSafeAssistantDeltaOverlap(previousContent, delta, overlapLength) {
-  if (overlapLength < MIN_ASSISTANT_DELTA_OVERLAP_LENGTH) {
-    return false;
-  }
-
-  const normalizedPreviousContent = String(previousContent ?? "");
-  const rawDelta = String(delta ?? "");
-  const overlapStartIndex = normalizedPreviousContent.length - overlapLength;
-  const overlapEndIndex = overlapLength;
-  const previousBoundaryCharacter =
-    overlapStartIndex > 0 ? normalizedPreviousContent.charAt(overlapStartIndex - 1) : "";
-  const deltaBoundaryCharacter =
-    overlapEndIndex < rawDelta.length ? rawDelta.charAt(overlapEndIndex) : "";
-
-  return (
-    overlapStartIndex === 0 ||
-    overlapEndIndex === rawDelta.length ||
-    isAssistantDeltaOverlapBoundaryCharacter(previousBoundaryCharacter) ||
-    isAssistantDeltaOverlapBoundaryCharacter(deltaBoundaryCharacter)
-  );
-}
-
-function trimOverlappingAssistantDelta(previousContent, delta) {
-  const normalizedPreviousContent = String(previousContent ?? "");
-  const rawDelta = String(delta ?? "");
-  const maxOverlapLength = Math.min(normalizedPreviousContent.length, rawDelta.length);
-
-  if (!normalizedPreviousContent || !rawDelta || maxOverlapLength < MIN_ASSISTANT_DELTA_OVERLAP_LENGTH) {
-    return rawDelta;
-  }
-
-  for (let overlapLength = maxOverlapLength; overlapLength >= MIN_ASSISTANT_DELTA_OVERLAP_LENGTH; overlapLength -= 1) {
-    const deltaPrefix = rawDelta.slice(0, overlapLength);
-
-    if (!normalizedPreviousContent.endsWith(deltaPrefix)) {
-      continue;
-    }
-
-    if (!hasSafeAssistantDeltaOverlap(normalizedPreviousContent, rawDelta, overlapLength)) {
-      continue;
-    }
-
-    return rawDelta.slice(overlapLength);
-  }
-
-  return rawDelta;
-}
-
-function mergeAssistantDeltaContent(previousContent, delta) {
-  const normalizedPreviousContent = normalizeAssistantMessageContent(String(previousContent ?? ""));
-  const effectiveRawDelta = trimOverlappingAssistantDelta(normalizedPreviousContent, delta);
-
-  return normalizeAssistantMessageContent(
-    normalizeAssistantDeltaJoin(normalizedPreviousContent, effectiveRawDelta)
-  );
-}
-
 function inferCodeBlockLabel(language, content) {
   const normalizedLanguage = String(language ?? "").trim().toLowerCase();
 
@@ -1959,6 +1808,47 @@ function createDetailState(overrides = {}) {
     sourcePreviewError: "",
     ...overrides
   };
+}
+
+function normalizeDetailMessages(messages = [], fallbackIssue = null, fallbackTimestamp = null) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((message, index) => {
+      if (!message) {
+        return null;
+      }
+
+      const role =
+        message?.role === "assistant"
+          ? "assistant"
+          : message?.role === "system" || message?.kind === "handoff_summary"
+            ? "system"
+            : "user";
+      const rawContent = typeof message?.content === "string" ? message.content : String(message?.content ?? "");
+      const issueId = message?.issue_id ?? fallbackIssue?.id ?? null;
+      const timestamp = message?.timestamp ?? fallbackTimestamp ?? new Date().toISOString();
+      const id = String(message?.id ?? `${String(issueId ?? role ?? "message")}-${index}`).trim();
+
+      if (!id) {
+        return null;
+      }
+
+      return {
+        ...message,
+        id,
+        role,
+        kind: typeof message?.kind === "string" ? message.kind : role === "user" ? "prompt" : "message",
+        content: role === "assistant" ? normalizeAssistantMessageContent(rawContent) : rawContent,
+        timestamp,
+        issue_id: issueId,
+        issue_title: typeof message?.issue_title === "string" ? message.issue_title : String(fallbackIssue?.title ?? ""),
+        issue_status: typeof message?.issue_status === "string" ? message.issue_status : String(fallbackIssue?.status ?? "")
+      };
+    })
+    .filter(Boolean);
+}
+
+function mergeIssueMessages(currentMessages = [], detailMessages = [], issue = null, fallbackTimestamp = null) {
+  return mergeThreadMessages(currentMessages, normalizeDetailMessages(detailMessages, issue, fallbackTimestamp));
 }
 
 function normalizeSourceFilePathCandidate(value = "") {
@@ -4191,29 +4081,13 @@ function appendIssueDeltaMessage(messages, event, fallbackIssue) {
     return messages;
   }
 
-  const next = [...messages];
-  const lastMessage = next.at(-1);
-
-  if (lastMessage?.role === "assistant" && (lastMessage.issue_id ?? "") === issueId) {
-    next[next.length - 1] = {
-      ...lastMessage,
-      content: mergeAssistantDeltaContent(lastMessage.content ?? "", payload.delta),
-      timestamp: new Date().toISOString()
-    };
-    return next;
-  }
-
-  next.push({
-    id: `${issueId || "assistant"}-${Date.now()}`,
-    role: "assistant",
-    kind: "message",
-    content: normalizeAssistantMessageContent(String(payload.delta ?? "")),
+  return appendLiveAssistantDelta(messages, {
+    delta: payload.delta,
     timestamp: new Date().toISOString(),
-    issue_id: issueId || fallbackIssue?.id || null,
-    issue_title: fallbackIssue?.title ?? "",
-    issue_status: fallbackIssue?.status ?? "running"
+    issueId: issueId || fallbackIssue?.id || null,
+    issueTitle: fallbackIssue?.title ?? "",
+    issueStatus: fallbackIssue?.status ?? "running"
   });
-  return next;
 }
 
 function summarizeProjects(projects, language) {
@@ -9924,12 +9798,16 @@ export default function App() {
       }
 
       if (detailStateRef.current.open && detailStateRef.current.thread?.id === issueId) {
-        setDetailState((current) => ({
-          ...current,
-          loading: false,
-          thread: payload?.issue ?? current.thread,
-          messages: payload?.messages ?? current.messages
-        }));
+        setDetailState((current) => {
+          const nextDetailIssue = nextIssue ?? current.thread;
+
+          return {
+            ...current,
+            loading: false,
+            thread: nextDetailIssue,
+            messages: mergeIssueMessages(current.messages, payload?.messages ?? [], nextDetailIssue)
+          };
+        });
 
         if (detailStateRef.current.selectedSourcePath) {
           void handleSelectDetailSourceFile(detailStateRef.current.selectedSourcePath, { force: true });
@@ -10313,7 +10191,10 @@ export default function App() {
           ) {
             setDetailState((current) => ({
               ...current,
-              messages: payload.payload?.entries ?? current.messages
+              messages: mergeThreadMessages(
+                current.messages,
+                normalizeDetailMessages(payload.payload?.entries ?? [], current.thread)
+              )
             }));
           }
           return;
@@ -11218,11 +11099,13 @@ export default function App() {
       const payload = await apiRequest(
         `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
       );
+      const normalizedIssue = normalizeIssue(payload?.issue, fallbackThreadId) ?? issue;
+
       setDetailState(createDetailState({
         open: true,
         loading: false,
-        thread: normalizeIssue(payload?.issue, fallbackThreadId) ?? issue,
-        messages: payload?.messages ?? []
+        thread: normalizedIssue,
+        messages: mergeIssueMessages([], payload?.messages ?? [], normalizedIssue)
       }));
     } catch (error) {
       setDetailState(createDetailState({
@@ -12632,12 +12515,16 @@ export default function App() {
             return;
           }
 
-          setDetailState((current) => ({
-            ...current,
-            loading: false,
-            thread: payload.issue ?? current.thread,
-            messages: payload.messages ?? []
-          }));
+          setDetailState((current) => {
+            const nextDetailIssue = normalizeIssue(payload.issue, activeThreadId) ?? current.thread;
+
+            return {
+              ...current,
+              loading: false,
+              thread: nextDetailIssue,
+              messages: mergeIssueMessages(current.messages, payload.messages ?? [], nextDetailIssue)
+            };
+          });
 
           if (detailStateRef.current.selectedSourcePath) {
             void handleSelectDetailSourceFile(detailStateRef.current.selectedSourcePath, { force: true });

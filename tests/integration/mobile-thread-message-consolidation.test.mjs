@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { consolidateThreadMessages } from "../../apps/mobile/src/threadMessageConsolidation.js";
+import { consolidateThreadMessages, mergeThreadMessages } from "../../apps/mobile/src/threadMessageConsolidation.js";
 
 test("consolidateThreadMessages는 같은 이슈의 중복 prompt를 하나만 유지한다", () => {
   const messages = consolidateThreadMessages([
@@ -130,4 +130,51 @@ test("consolidateThreadMessages는 숨겨진 도구 응답 사이에 끊긴 assi
   assert.equal(messages[1]?.content.includes("[계획]"), true);
   assert.equal(messages[1]?.content.includes("[진행 내역]"), true);
   assert.equal(messages[2]?.kind, "tool_result");
+});
+
+test("mergeThreadMessages는 현재 화면의 더 긴 assistant 응답을 늦게 온 짧은 snapshot으로 줄이지 않는다", () => {
+  const merged = mergeThreadMessages(
+    [
+      {
+        id: "prompt-1",
+        role: "user",
+        kind: "prompt",
+        content: "응답을 하나의 버블로 유지해줘",
+        issue_id: "issue-1",
+        timestamp: "2026-04-17T10:00:00.000Z"
+      },
+      {
+        id: "assistant-live",
+        role: "assistant",
+        kind: "message",
+        content: "[목표]\n- 원인 확인\n\n[계획]\n- 누적 유지\n\n[진행 내역]\n- 실시간 delta 반영",
+        issue_id: "issue-1",
+        timestamp: "2026-04-17T10:00:05.000Z"
+      }
+    ],
+    [
+      {
+        id: "prompt-final",
+        role: "user",
+        kind: "prompt",
+        content: "응답을 하나의 버블로 유지해줘",
+        issue_id: "issue-1",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        optimistic: false
+      },
+      {
+        id: "assistant-stale",
+        role: "assistant",
+        kind: "message",
+        content: "[목표]\n- 원인 확인",
+        issue_id: "issue-1",
+        timestamp: "2026-04-17T10:00:06.000Z"
+      }
+    ]
+  );
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]?.id, "prompt-final");
+  assert.equal(merged[1]?.content.includes("[진행 내역]"), true);
+  assert.equal(merged[1]?.content.includes("실시간 delta 반영"), true);
 });
