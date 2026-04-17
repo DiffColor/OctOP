@@ -72,3 +72,20 @@ test("appendLiveAssistantDelta는 누적 재전송되는 일반 문장 chunk를 
 
   assert.equal(assistantMessage?.content, "테스트 한 거 맞아 아직도 중복되는데");
 });
+
+test("appendLiveAssistantDelta는 바로 전 문장이 다시 포함된 다음 chunk가 오면 이전 표시를 교체해 중복 줄을 남기지 않는다", () => {
+  const messages = [
+    { id: "prompt-1", role: "user", kind: "prompt", content: "프롬프트", issue_id: "issue-1" },
+    { id: "assistant-1", role: "assistant", kind: "message", content: "첫 문장", issue_id: "issue-1" }
+  ];
+
+  const nextMessages = appendLiveAssistantDelta(messages, {
+    delta: "\n첫 문장\n다음 문장",
+    issueId: "issue-1",
+    issueTitle: "이슈",
+    issueStatus: "running",
+    timestamp: "2026-04-17T00:00:00.000Z"
+  });
+
+  assert.equal(nextMessages[1]?.content, "첫 문장\n다음 문장");
+});

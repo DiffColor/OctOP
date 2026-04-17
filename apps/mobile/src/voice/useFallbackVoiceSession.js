@@ -33,12 +33,20 @@ function normalizeTranscript(value) {
 }
 
 function joinTranscriptParts(parts) {
-  return normalizeTranscript(
-    parts
-      .map((part) => normalizeTranscript(part))
-      .filter(Boolean)
-      .join(" ")
-  );
+  const normalizedParts = parts
+    .map((part) => normalizeTranscript(part))
+    .filter(Boolean);
+  const collapsedParts = [];
+
+  for (const part of normalizedParts) {
+    if (collapsedParts.at(-1) === part) {
+      continue;
+    }
+
+    collapsedParts.push(part);
+  }
+
+  return normalizeTranscript(collapsedParts.join(" "));
 }
 
 function extractTranscriptDelta(previousTranscript, nextTranscript) {

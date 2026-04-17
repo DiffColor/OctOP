@@ -98,3 +98,13 @@ test("computeEffectiveAssistantDelta는 누적 재전송되는 일반 문장 chu
 
   assert.equal(previousContent, "테스트 한 거 맞아 아직도 중복되는데");
 });
+
+test("computeEffectiveAssistantDelta는 바로 직전과 같은 문장이 다시 온 경우 이전 결과를 교체해 중복 표시하지 않는다", () => {
+  const previousContent = "첫 문장";
+  const duplicateDelta = "\n첫 문장\n다음 문장";
+
+  const result = computeEffectiveAssistantDelta(previousContent, duplicateDelta);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.nextContent, "첫 문장\n다음 문장");
+});

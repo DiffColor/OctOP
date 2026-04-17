@@ -180,12 +180,77 @@ function trimOverlappingAssistantDelta(previousContent = "", delta = "") {
   return rawDelta;
 }
 
+function collapseAdjacentDuplicateAssistantLines(content = "") {
+  const lines = String(content ?? "").split("\n");
+  const result = [];
+  let lastNonEmptyIndex = -1;
+
+  for (const rawLine of lines) {
+    const line = String(rawLine ?? "");
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      result.push(line);
+      continue;
+    }
+
+    if (lastNonEmptyIndex >= 0 && String(result[lastNonEmptyIndex] ?? "").trim() === trimmed) {
+      while (result.length > lastNonEmptyIndex + 1 && String(result.at(-1) ?? "").trim() === "") {
+        result.pop();
+      }
+
+      continue;
+    }
+
+    result.push(line);
+    lastNonEmptyIndex = result.length - 1;
+  }
+
+  return result.join("\n");
+}
+
+function trimLeadingBlankLines(content = "") {
+  return String(content ?? "").replace(/^(?:\s*\n)+/u, "");
+}
+
+function getAssistantReplacementMode(previousContent = "", delta = "") {
+  const comparablePreviousContent = normalizeComparableAssistantContent(previousContent).trim();
+  const comparableDelta = normalizeComparableAssistantContent(delta).trim();
+
+  if (!comparablePreviousContent || !comparableDelta) {
+    return "";
+  }
+
+  if (comparableDelta === comparablePreviousContent) {
+    return "same";
+  }
+
+  if (comparableDelta.startsWith(comparablePreviousContent)) {
+    return "expanded";
+  }
+
+  return "";
+}
+
 export function mergeAssistantDeltaContent(previousContent = "", delta = "") {
   const normalizedPreviousContent = normalizeAssistantMessageContent(String(previousContent ?? ""));
+  const normalizedDelta = normalizeAssistantMessageContent(String(delta ?? ""));
+  const replacementMode = getAssistantReplacementMode(normalizedPreviousContent, normalizedDelta);
+
+  if (replacementMode === "same") {
+    return normalizedPreviousContent;
+  }
+
+  if (replacementMode === "expanded") {
+    return collapseAdjacentDuplicateAssistantLines(trimLeadingBlankLines(normalizedDelta));
+  }
+
   const effectiveRawDelta = trimOverlappingAssistantDelta(normalizedPreviousContent, delta);
 
-  return normalizeAssistantMessageContent(
+  return collapseAdjacentDuplicateAssistantLines(
+    normalizeAssistantMessageContent(
     normalizeAssistantDeltaJoin(normalizedPreviousContent, effectiveRawDelta)
+    )
   );
 }
 
@@ -203,7 +268,7 @@ export function computeEffectiveAssistantDelta(previousContent = "", delta = "")
   }
 
   const effectiveRawDelta = trimOverlappingAssistantDelta(normalizedPreviousContent, rawDelta);
-  const normalizedNextContent = mergeAssistantDeltaContent(normalizedPreviousContent, effectiveRawDelta);
+  const normalizedNextContent = mergeAssistantDeltaContent(normalizedPreviousContent, rawDelta);
   const comparablePreviousContent = normalizeComparableAssistantContent(normalizedPreviousContent).replace(/\s+$/u, "");
   const comparableNextContent = normalizeComparableAssistantContent(normalizedNextContent).replace(/\s+$/u, "");
 
