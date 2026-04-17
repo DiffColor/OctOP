@@ -335,10 +335,14 @@ export default function useFallbackVoiceSession({
 
       const transcriptDelta = extractTranscriptDelta(committedFinalTranscriptRef.current, latestFinalTranscript);
 
-      if (transcriptDelta) {
+      if (ttsEnabled && transcriptDelta) {
         deliverTranscript(transcriptDelta, {
           dedupeKey: latestFinalTranscript
         });
+      }
+
+      if (!ttsEnabled && latestFinalTranscript && latestFinalTranscript !== committedFinalTranscriptRef.current) {
+        onDraftTranscript?.(latestFinalTranscript);
       }
 
       committedFinalTranscriptRef.current = latestFinalTranscript;
@@ -346,24 +350,31 @@ export default function useFallbackVoiceSession({
 
     recognition.onerror = (event) => {
       const nextError = describeSpeechRecognitionError(event);
+      const shouldKeepListening = activeRef.current && !manualStopRef.current && !nextError;
 
       setState((current) => ({
         ...current,
         connectionState: activeRef.current ? "connected" : "idle",
-        micState: nextError ? "error" : "idle",
-        isListening: false,
+        micState: nextError ? "error" : shouldKeepListening ? "listening" : "idle",
+        isListening: shouldKeepListening ? current.isListening : false,
         error: nextError
       }));
     };
 
     recognition.onend = () => {
+      const shouldRestart = activeRef.current && !manualStopRef.current;
+
       setState((current) => ({
         ...current,
-        isListening: false,
-        micState: activeRef.current && !manualStopRef.current ? "idle" : current.micState
+        isListening: shouldRestart ? true : false,
+        micState: shouldRestart
+          ? current.micState === "error"
+            ? "error"
+            : "listening"
+          : current.micState
       }));
 
-      if (!activeRef.current || manualStopRef.current) {
+      if (!shouldRestart) {
         return;
       }
 
@@ -380,7 +391,7 @@ export default function useFallbackVoiceSession({
 
     recognitionRef.current = recognition;
     return recognition;
-  }, [deliverTranscript]);
+  }, [deliverTranscript, onDraftTranscript, ttsEnabled]);
 
   const startListening = useCallback(() => {
     if (!activeRef.current) {

@@ -4054,6 +4054,7 @@ function MainPage({
   onLogout,
   onBackToInbox,
   onRegisterBackHandler,
+  onRegisterDetailBackHandler,
   threadVoiceState,
   voiceFollowupThreadDetail,
   onChangeThreadVoiceState
@@ -4649,7 +4650,8 @@ function MainPage({
     threadDetailHelpers,
     selectedThreadId,
     draftThreadProjectId,
-    splitThreadEmptyStateMessage
+    splitThreadEmptyStateMessage,
+    onRegisterDetailBackHandler
   });
   const appChrome = <MobileInboxChrome {...chromeProps} />;
   const inboxListContent = <MobileInboxListContent {...listProps} />;
@@ -4823,6 +4825,8 @@ export default function App() {
   const activeViewRef = useRef(activeView);
   const pendingUpdateActivatorRef = useRef(null);
   const pwaUpdateActivationInFlightRef = useRef(false);
+  const browserBackNavigationInFlightRef = useRef(false);
+  const allowBrowserNativeBackCountRef = useRef(0);
   const standaloneBackNavigationInFlightRef = useRef(false);
   const allowStandaloneNativeBackCountRef = useRef(0);
   const threadLoadRequestIdByIdRef = useRef(new Map());
@@ -4848,6 +4852,7 @@ export default function App() {
   const eventStreamReconnectTimerRef = useRef(null);
   const threadDeleteDialogResolverRef = useRef(null);
   const mainPageBackHandlerRef = useRef(null);
+  const detailBackHandlerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
@@ -6775,28 +6780,175 @@ export default function App() {
     activeViewRef.current = "inbox";
   }, [clearInstantThreadIfNeeded, setActiveView, setDraftThreadProjectId]);
 
+  const requestBrowserPageExit = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    allowBrowserNativeBackCountRef.current = Math.max(allowBrowserNativeBackCountRef.current, 1);
+
+    window.setTimeout(() => {
+      window.history.back();
+    }, 0);
+  }, []);
+
+  const consumeStandaloneBackPress = useCallback(() => {
+    if (mobileConfirmResolverRef.current) {
+      resolveMobileConfirm(false);
+      return true;
+    }
+
+    if (threadDeleteDialogOpenRef.current) {
+      if (threadBusyRef.current) {
+        return true;
+      }
+
+      closeThreadDeleteDialog(false);
+      return true;
+    }
+
+    if (threadInstructionDialogOpenRef.current) {
+      if (threadInstructionBusyRef.current) {
+        return true;
+      }
+
+      setThreadInstructionError("");
+      setThreadInstructionDialogOpen(false);
+      setThreadInstructionTarget(null);
+      return true;
+    }
+
+    if (projectEditDialogOpenRef.current) {
+      if (projectEditBusyRef.current) {
+        return true;
+      }
+
+      setProjectEditError("");
+      setProjectEditDialogOpen(false);
+      setProjectEditTargetId("");
+      return true;
+    }
+
+    if (projectInstructionDialogOpenRef.current) {
+      if (projectInstructionBusyRef.current) {
+        return true;
+      }
+
+      setProjectInstructionDialogOpen(false);
+      return true;
+    }
+
+    if (threadCreateDialogOpenRef.current) {
+      if (threadBusyRef.current) {
+        return true;
+      }
+
+      setThreadCreateDialogOpen(false);
+      return true;
+    }
+
+    if (projectComposerOpenRef.current) {
+      setProjectComposerOpen(false);
+      setSelectedWorkspacePath("");
+      setFolderState({ path: "", parent_path: null, entries: [] });
+      return true;
+    }
+
+    if (utilityOpenRef.current) {
+      setUtilityOpen(false);
+      return true;
+    }
+
+    return false;
+  }, [closeThreadDeleteDialog, resolveMobileConfirm]);
+
   useEffect(() => {
     if (typeof window === "undefined" || !window.history?.pushState || isStandaloneDisplayMode()) {
       return undefined;
     }
 
-    const handlePopState = (event) => {
-      event?.preventDefault?.();
-
-      if (activeViewRef.current === "thread") {
-        handleBackToInbox();
+    const pushBrowserBackGuard = () => {
+      if (allowBrowserNativeBackCountRef.current > 0) {
+        return;
       }
 
-      window.history.pushState(null, "", window.location.href);
+      window.history.pushState({ octopBrowserBackGuard: true }, "", window.location.href);
     };
 
-    window.history.pushState(null, "", window.location.href);
+    const handlePopState = (event) => {
+      if (allowBrowserNativeBackCountRef.current > 0) {
+        allowBrowserNativeBackCountRef.current -= 1;
+        return;
+      }
+
+      event?.preventDefault?.();
+
+      if (consumeStandaloneBackPress()) {
+        pushBrowserBackGuard();
+        return;
+      }
+
+      if (typeof detailBackHandlerRef.current === "function" && detailBackHandlerRef.current() === true) {
+        pushBrowserBackGuard();
+        return;
+      }
+
+      if (typeof mainPageBackHandlerRef.current === "function" && mainPageBackHandlerRef.current() === true) {
+        pushBrowserBackGuard();
+        return;
+      }
+
+      if (hasStandaloneVisibleNestedView({
+        activeView: activeViewRef.current,
+        selectedScopeKind: selectedScopeKindRef.current,
+        selectedThreadId: selectedThreadIdRef.current,
+        selectedTodoChatId: selectedTodoChatIdRef.current,
+        draftThreadProjectId: draftThreadProjectIdRef.current,
+        wideSplitEnabled: wideThreadSplitEnabledRef.current
+      })) {
+        handleBackToInbox();
+        pushBrowserBackGuard();
+        return;
+      }
+
+      if (browserBackNavigationInFlightRef.current) {
+        pushBrowserBackGuard();
+        return;
+      }
+
+      browserBackNavigationInFlightRef.current = true;
+
+      void (async () => {
+        try {
+          const confirmed = await confirmMobileAction({
+            title: "종료 안내",
+            message: "OctOP 화면을 나가시겠습니까?",
+            confirmLabel: "나가기",
+            cancelLabel: "취소",
+            tone: "danger"
+          });
+
+          if (confirmed) {
+            requestBrowserPageExit();
+            return;
+          }
+
+          pushBrowserBackGuard();
+        } finally {
+          browserBackNavigationInFlightRef.current = false;
+        }
+      })();
+    };
+
+    pushBrowserBackGuard();
     window.addEventListener("popstate", handlePopState);
 
     return () => {
       window.removeEventListener("popstate", handlePopState);
+      browserBackNavigationInFlightRef.current = false;
+      allowBrowserNativeBackCountRef.current = 0;
     };
-  }, [handleBackToInbox]);
+  }, [confirmMobileAction, consumeStandaloneBackPress, handleBackToInbox, requestBrowserPageExit]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -9677,85 +9829,6 @@ export default function App() {
     setThreadInstructionTarget(null);
   };
 
-  const handleBackToMainPage = useCallback(() => {
-    clearInstantThreadIfNeeded();
-    setSelectedThreadId("");
-    setSelectedTodoChatId("");
-    setDraftThreadProjectId("");
-    setActiveView("inbox");
-    activeViewRef.current = "inbox";
-  }, [clearInstantThreadIfNeeded]);
-
-  const consumeStandaloneBackPress = useCallback(() => {
-    if (mobileConfirmResolverRef.current) {
-      resolveMobileConfirm(false);
-      return true;
-    }
-
-    if (threadDeleteDialogOpenRef.current) {
-      if (threadBusyRef.current) {
-        return true;
-      }
-
-      closeThreadDeleteDialog(false);
-      return true;
-    }
-
-    if (threadInstructionDialogOpenRef.current) {
-      if (threadInstructionBusyRef.current) {
-        return true;
-      }
-
-      setThreadInstructionError("");
-      setThreadInstructionDialogOpen(false);
-      setThreadInstructionTarget(null);
-      return true;
-    }
-
-    if (projectEditDialogOpenRef.current) {
-      if (projectEditBusyRef.current) {
-        return true;
-      }
-
-      setProjectEditError("");
-      setProjectEditDialogOpen(false);
-      setProjectEditTargetId("");
-      return true;
-    }
-
-    if (projectInstructionDialogOpenRef.current) {
-      if (projectInstructionBusyRef.current) {
-        return true;
-      }
-
-      setProjectInstructionDialogOpen(false);
-      return true;
-    }
-
-    if (threadCreateDialogOpenRef.current) {
-      if (threadBusyRef.current) {
-        return true;
-      }
-
-      setThreadCreateDialogOpen(false);
-      return true;
-    }
-
-    if (projectComposerOpenRef.current) {
-      setProjectComposerOpen(false);
-      setSelectedWorkspacePath("");
-      setFolderState({ path: "", parent_path: null, entries: [] });
-      return true;
-    }
-
-    if (utilityOpenRef.current) {
-      setUtilityOpen(false);
-      return true;
-    }
-
-    return false;
-  }, [closeThreadDeleteDialog, resolveMobileConfirm]);
-
   const requestStandaloneAppExit = useCallback(() => {
     if (typeof window === "undefined") {
       return;
@@ -9996,6 +10069,10 @@ export default function App() {
     mainPageBackHandlerRef.current = typeof handler === "function" ? handler : null;
   }, []);
 
+  const registerDetailBackHandler = useCallback((handler) => {
+    detailBackHandlerRef.current = typeof handler === "function" ? handler : null;
+  }, []);
+
   useEffect(() => {
     if (typeof window === "undefined" || !window.history?.pushState || !session || !isStandaloneDisplayMode()) {
       return undefined;
@@ -10035,6 +10112,11 @@ export default function App() {
         return;
       }
 
+      if (typeof detailBackHandlerRef.current === "function" && detailBackHandlerRef.current() === true) {
+        pushStandaloneBackGuard();
+        return;
+      }
+
       if (typeof mainPageBackHandlerRef.current === "function" && mainPageBackHandlerRef.current() === true) {
         pushStandaloneBackGuard();
         return;
@@ -10059,7 +10141,7 @@ export default function App() {
           });
 
           if (hasNestedView) {
-            handleBackToMainPage();
+            handleBackToInbox();
             pushStandaloneBackGuard();
             return;
           }
@@ -10092,8 +10174,9 @@ export default function App() {
       standaloneBackNavigationInFlightRef.current = false;
       allowStandaloneNativeBackCountRef.current = 0;
       mainPageBackHandlerRef.current = null;
+      detailBackHandlerRef.current = null;
     };
-  }, [confirmMobileAction, consumeStandaloneBackPress, handleBackToMainPage, requestStandaloneAppExit, session]);
+  }, [confirmMobileAction, consumeStandaloneBackPress, handleBackToInbox, requestStandaloneAppExit, session]);
 
   if (!session) {
     return (
@@ -10258,6 +10341,7 @@ export default function App() {
         onLogout={handleLogout}
         onBackToInbox={handleBackToInbox}
         onRegisterBackHandler={registerMainPageBackHandler}
+        onRegisterDetailBackHandler={registerDetailBackHandler}
         threadVoiceState={threadVoiceState}
         voiceFollowupThreadDetail={currentVoiceFollowupThreadDetailState}
         onChangeThreadVoiceState={setThreadVoiceState}

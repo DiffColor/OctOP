@@ -219,6 +219,43 @@ function extractAssistantTextFromResponse(response) {
   return textParts.join(" ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeRealtimeTranscriptText(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mergeRealtimeTranscriptDelta(currentTranscript = "", delta = "") {
+  const normalizedCurrentTranscript = normalizeRealtimeTranscriptText(currentTranscript);
+  const normalizedDelta = normalizeRealtimeTranscriptText(delta);
+
+  if (!normalizedDelta) {
+    return normalizedCurrentTranscript;
+  }
+
+  if (!normalizedCurrentTranscript) {
+    return normalizedDelta;
+  }
+
+  if (normalizedCurrentTranscript.endsWith(normalizedDelta)) {
+    return normalizedCurrentTranscript;
+  }
+
+  const maxOverlap = Math.min(normalizedCurrentTranscript.length, normalizedDelta.length);
+
+  for (let overlapLength = maxOverlap; overlapLength > 0; overlapLength -= 1) {
+    if (normalizedCurrentTranscript.slice(-overlapLength) !== normalizedDelta.slice(0, overlapLength)) {
+      continue;
+    }
+
+    return normalizeRealtimeTranscriptText(
+      `${normalizedCurrentTranscript}${normalizedDelta.slice(overlapLength)}`
+    );
+  }
+
+  return normalizeRealtimeTranscriptText(`${normalizedCurrentTranscript}${normalizedDelta}`);
+}
+
 function getRealtimeResponseFailureError(response) {
   return response?.status_details?.error ?? response?.error ?? response?.status_details ?? null;
 }
@@ -1159,7 +1196,7 @@ export default function useRealtimeVoiceSession({
             return;
           }
 
-          assistantTranscriptBufferRef.current += delta;
+          assistantTranscriptBufferRef.current = mergeRealtimeTranscriptDelta(assistantTranscriptBufferRef.current, delta);
           setState((current) => ({
             ...current,
             latestAssistantTranscript: assistantTranscriptBufferRef.current.trim(),
@@ -1191,8 +1228,8 @@ export default function useRealtimeVoiceSession({
             return;
           }
 
-          assistantTranscriptBufferRef.current += delta;
-          assistantSubtitleBufferRef.current += delta;
+          assistantTranscriptBufferRef.current = mergeRealtimeTranscriptDelta(assistantTranscriptBufferRef.current, delta);
+          assistantSubtitleBufferRef.current = mergeRealtimeTranscriptDelta(assistantSubtitleBufferRef.current, delta);
           setState((current) => ({
             ...current,
             latestAssistantTranscript: assistantTranscriptBufferRef.current.trim(),
@@ -1248,7 +1285,7 @@ export default function useRealtimeVoiceSession({
             return;
           }
 
-          userTranscriptBufferRef.current += delta;
+          userTranscriptBufferRef.current = mergeRealtimeTranscriptDelta(userTranscriptBufferRef.current, delta);
           setState((current) => ({
             ...current,
             latestUserTranscript: userTranscriptBufferRef.current

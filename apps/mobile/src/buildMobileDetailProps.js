@@ -51,7 +51,8 @@ export default function buildMobileDetailProps({
   threadDetailHelpers,
   selectedThreadId,
   draftThreadProjectId,
-  splitThreadEmptyStateMessage
+  splitThreadEmptyStateMessage,
+  onRegisterDetailBackHandler
 }) {
   const resolvedTodoChatForDetail = selectedTodoChat ?? todoChatDetail?.chat ?? null;
   const handleDeleteResolvedTodoChat = () => {
@@ -82,7 +83,8 @@ export default function buildMobileDetailProps({
     onSubmitMessage: onSubmitTodoMessage,
     inlineIssueComposerHelpers,
     uiComponents: todoChatDetailUiComponents,
-    utils: todoChatDetailUtils
+    utils: todoChatDetailUtils,
+    onRegisterBackHandler: onRegisterDetailBackHandler
   };
 
   const todoSplitDetailProps = {
@@ -141,7 +143,8 @@ export default function buildMobileDetailProps({
     voiceFollowupThreadDetail,
     onVoiceStateChange: onChangeThreadVoiceState,
     inlineIssueComposerHelpers,
-    helpers: threadDetailHelpers
+    helpers: threadDetailHelpers,
+    onRegisterBackHandler: onRegisterDetailBackHandler
   };
 
   const threadStandaloneDetailKey = `thread-detail:${resolvedThread?.id ?? selectedThreadId ?? draftThreadProjectId ?? "empty"}`;

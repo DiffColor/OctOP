@@ -28,6 +28,7 @@ export default function InlineIssueComposer({
   onToggleSpeechInput = null,
   externalPromptInsertText = "",
   externalPromptInsertToken = "",
+  externalPromptInsertMode = "append",
   helpers
 }) {
   const {
@@ -135,6 +136,7 @@ export default function InlineIssueComposer({
   useEffect(() => {
     const normalizedInsertToken = String(externalPromptInsertToken ?? "").trim();
     const normalizedInsertText = String(externalPromptInsertText ?? "").trim();
+    const shouldReplacePrompt = String(externalPromptInsertMode ?? "").trim() === "replace";
 
     if (!normalizedInsertToken || normalizedInsertToken === lastExternalPromptInsertTokenRef.current || !normalizedInsertText) {
       return;
@@ -144,9 +146,11 @@ export default function InlineIssueComposer({
 
     setInternalPrompt((currentPrompt) => {
       const normalizedCurrentPrompt = String(currentPrompt ?? "");
-      const nextPrompt = normalizedCurrentPrompt.trim()
-        ? `${normalizedCurrentPrompt.trimEnd()} ${normalizedInsertText}`.trim()
-        : normalizedInsertText;
+      const nextPrompt = shouldReplacePrompt
+        ? normalizedInsertText
+        : normalizedCurrentPrompt.trim()
+          ? `${normalizedCurrentPrompt.trimEnd()} ${normalizedInsertText}`.trim()
+          : normalizedInsertText;
 
       promptRef.current = nextPrompt;
       lastHydratedDraftRef.current = {
@@ -165,7 +169,7 @@ export default function InlineIssueComposer({
       syncPromptHeight();
       textareaRef.current?.focus?.({ preventScroll: true });
     });
-  }, [externalPromptInsertText, externalPromptInsertToken, normalizedDraftKey, onDraftPersist, syncPromptHeight]);
+  }, [externalPromptInsertMode, externalPromptInsertText, externalPromptInsertToken, normalizedDraftKey, onDraftPersist, syncPromptHeight]);
 
   useEffect(
     () => () => {

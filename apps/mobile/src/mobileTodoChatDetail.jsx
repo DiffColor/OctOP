@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AttachmentPreviewDialog from "./mobileAttachmentPreviewDialog.jsx";
 import MobileInlineIssueComposer from "./mobileInlineIssueComposer.jsx";
 import { MessageAttachmentPreview } from "./mobileMessageAttachmentUi.jsx";
@@ -27,7 +27,8 @@ export default function MobileTodoChatDetail({
   standalone = true,
   inlineIssueComposerHelpers,
   uiComponents,
-  utils
+  utils,
+  onRegisterBackHandler = null
 }) {
   const { MessageBubbleComponent, RichMessageContentComponent } = uiComponents;
   const {
@@ -76,6 +77,30 @@ export default function MobileTodoChatDetail({
       title: "첨부 미리보기"
     });
   }, [showAlert]);
+
+  useEffect(() => {
+    if (typeof onRegisterBackHandler !== "function") {
+      return undefined;
+    }
+
+    onRegisterBackHandler(() => {
+      if (previewAttachment) {
+        setPreviewAttachment(null);
+        return true;
+      }
+
+      if (showBackButton && typeof onBack === "function") {
+        onBack();
+        return true;
+      }
+
+      return false;
+    });
+
+    return () => {
+      onRegisterBackHandler(null);
+    };
+  }, [onBack, onRegisterBackHandler, previewAttachment, showBackButton]);
 
   return (
     <div className={rootClassName} style={rootStyle}>

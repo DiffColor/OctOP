@@ -239,7 +239,8 @@ export default function ThreadDetail({
   onVoiceStateChange = null,
   voiceFollowupThreadDetail = null,
   inlineIssueComposerHelpers,
-  helpers = {}
+  helpers = {},
+  onRegisterBackHandler = null
 }) {
   const {
     buildSpeechFriendlyMessageText,
@@ -290,7 +291,8 @@ export default function ThreadDetail({
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [composerSpeechInsert, setComposerSpeechInsert] = useState({
     token: "",
-    text: ""
+    text: "",
+    mode: "append"
   });
   const [manualSpeechInputActive, setManualSpeechInputActive] = useState(false);
   const { alert: showAlert } = useMobileFeedback();
@@ -623,7 +625,8 @@ export default function ThreadDetail({
 
     setComposerSpeechInsert({
       token: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      text: normalizedTranscript
+      text: normalizedTranscript,
+      mode: "replace"
     });
   }, []);
 
@@ -1906,6 +1909,14 @@ export default function ThreadDetail({
   }, [resetVoiceState, voiceModeEnabled, voicePromptSubmittedAt]);
 
   const canRefresh = Boolean(thread?.id && onRefreshMessages);
+  const activeMessageActionBusy = Boolean(
+    activeMessageAction?.issueId &&
+      (
+        interruptingIssueId === activeMessageAction.issueId ||
+        retryingIssueId === activeMessageAction.issueId ||
+        deletingIssueId === activeMessageAction.issueId
+      )
+  );
   const rootStyle = standalone ? { height: "calc(var(--app-stable-viewport-height) - var(--app-safe-area-top))" } : undefined;
   const rootClassName = standalone
     ? "flex min-h-0 flex-col overflow-hidden"
@@ -1935,6 +1946,55 @@ export default function ThreadDetail({
 
     return conversationTimeline.length === 0;
   })();
+
+  useEffect(() => {
+    if (typeof onRegisterBackHandler !== "function") {
+      return undefined;
+    }
+
+    onRegisterBackHandler(() => {
+      if (previewAttachment) {
+        setPreviewAttachment(null);
+        return true;
+      }
+
+      if (activeMessageAction) {
+        if (!activeMessageActionBusy) {
+          setActiveMessageAction(null);
+        }
+
+        return true;
+      }
+
+      if (voicePanelOpen) {
+        resetVoiceState();
+        void stopAllVoiceSessions();
+        return true;
+      }
+
+      if (showBackButton && typeof onBack === "function") {
+        onBack();
+        return true;
+      }
+
+      return false;
+    });
+
+    return () => {
+      onRegisterBackHandler(null);
+    };
+  }, [
+    activeMessageAction,
+    activeMessageActionBusy,
+    onBack,
+    onRegisterBackHandler,
+    previewAttachment,
+    resetVoiceState,
+    showBackButton,
+    stopAllVoiceSessions,
+    voicePanelOpen
+  ]);
+
   return (
     <div className={rootClassName} style={rootStyle} data-testid="thread-detail-panel">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950 px-4 py-3">
@@ -2274,16 +2334,7 @@ export default function ThreadDetail({
       <ThreadMessageActionSheet
         open={Boolean(activeMessageAction)}
         message={activeMessageAction}
-        busy={
-          Boolean(
-            activeMessageAction?.issueId &&
-              (
-                interruptingIssueId === activeMessageAction.issueId ||
-                retryingIssueId === activeMessageAction.issueId ||
-                deletingIssueId === activeMessageAction.issueId
-              )
-          )
-        }
+        busy={activeMessageActionBusy}
         onClose={() => {
           if (!interruptingIssueId && !retryingIssueId && !deletingIssueId) {
             setActiveMessageAction(null);
@@ -2357,6 +2408,7 @@ export default function ThreadDetail({
               onToggleSpeechInput={() => void handleToggleSpeechInput()}
               externalPromptInsertText={composerSpeechInsert.text}
               externalPromptInsertToken={composerSpeechInsert.token}
+              externalPromptInsertMode={composerSpeechInsert.mode}
             />
           </div>
         </div>
