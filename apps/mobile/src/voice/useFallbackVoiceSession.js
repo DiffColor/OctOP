@@ -63,6 +63,38 @@ function joinTranscriptParts(parts) {
   return combinedTranscript;
 }
 
+export function collapseFinalTranscriptEntries(entries) {
+  const collapsedEntries = [];
+  const normalizedEntries = (Array.isArray(entries) ? entries : [])
+    .map((entry) => {
+      const [index, text] = Array.isArray(entry) ? entry : [];
+      return [Number(index), normalizeTranscript(text)];
+    })
+    .filter(([index, text]) => Number.isFinite(index) && text)
+    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex);
+
+  for (const [index, text] of normalizedEntries) {
+    while (collapsedEntries.length > 0) {
+      const [, previousText] = collapsedEntries[collapsedEntries.length - 1];
+
+      if (
+        text === previousText ||
+        text.startsWith(previousText) ||
+        previousText.startsWith(text)
+      ) {
+        collapsedEntries.pop();
+        continue;
+      }
+
+      break;
+    }
+
+    collapsedEntries.push([index, text]);
+  }
+
+  return collapsedEntries;
+}
+
 function extractTranscriptDelta(previousTranscript, nextTranscript) {
   const normalizedPreviousTranscript = normalizeTranscript(previousTranscript);
   const normalizedNextTranscript = normalizeTranscript(nextTranscript);
@@ -338,10 +370,12 @@ export default function useFallbackVoiceSession({
         }
       }
 
-      finalResultTranscriptMapRef.current = nextFinalResultTranscriptMap;
+      finalResultTranscriptMapRef.current = new Map(
+        collapseFinalTranscriptEntries([...nextFinalResultTranscriptMap.entries()])
+      );
 
       const latestFinalTranscript = joinTranscriptParts(
-        [...nextFinalResultTranscriptMap.entries()]
+        [...finalResultTranscriptMapRef.current.entries()]
           .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
           .map(([, text]) => text)
       );
