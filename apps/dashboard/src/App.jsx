@@ -15,6 +15,11 @@ import {
 import { normalizeAssistantMessageContent } from "./assistantMessageNormalization.js";
 import { mergeAssistantDeltaContent } from "./assistantDelta.js";
 import { appendLiveAssistantDelta } from "./liveAssistantMessage.js";
+import {
+  applyLiveIssueStatusUpdate,
+  applyLiveMessageIssueStatusUpdate,
+  resolveLiveIssueStatusUpdate
+} from "./liveIssueStatus.js";
 import { mergeThreadMessages } from "./threadMessageConsolidation.js";
 import PushNotificationCard from "./PushNotificationCard.jsx";
 
@@ -25,6 +30,7 @@ const SIDEBAR_WIDTH_STORAGE_KEY = "octop.dashboard.sidebar.width";
 const ARCHIVE_STORAGE_KEY = "octop.dashboard.archives";
 const SELECTED_BRIDGE_STORAGE_KEY = "octop.dashboard.selectedBridge";
 const PROJECT_LIST_ORDER_STORAGE_KEY = "octop.dashboard.projectListOrder";
+const THREAD_LIST_ORDER_STORAGE_KEY = "octop.dashboard.threadListOrder";
 const ISSUE_SOURCE_APP_ID = "dashboard-web";
 const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const STREAM_SILENCE_START_MS = 60_000;
@@ -35,12 +41,17 @@ const BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS = 3_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
 const ACTIVE_ISSUE_POLL_INTERVAL_MS = 2_000;
 const ACTIVE_ISSUE_POLL_SUPPRESS_AFTER_LIVE_MS = 6_000;
+const ACTIVE_ISSUE_POLL_FAILURE_BASE_BACKOFF_MS = 10_000;
+const ACTIVE_ISSUE_POLL_FAILURE_MAX_BACKOFF_MS = 60_000;
+const ACTIVE_ISSUE_POLL_RECOVERY_FAILURE_THRESHOLD = 2;
+const ACTIVE_ISSUE_POLL_RECOVERY_COOLDOWN_MS = 15_000;
 const ACTIVE_ISSUE_POLL_RESUME_GRACE_MS = 8_000;
 const ACTIVE_ISSUE_SYNC_STALE_MS = 15_000;
 const ACTIVE_ISSUE_DETAIL_REQUEST_TIMEOUT_MS = 12_000;
 const API_REQUEST_TIMEOUT_MS = 20_000;
 const DASHBOARD_RESUME_ENABLE_DELAY_MS = 5_000;
 const DASHBOARD_RESUME_COALESCE_MS = 400;
+const DETAIL_RELOAD_MIN_INTERVAL_MS = 1_500;
 const BRIDGE_TRANSPORT_ERROR_STATUS_CODES = new Set([503, 504]);
 const MAX_ISSUE_ATTACHMENTS = 8;
 const MAX_ISSUE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -1180,6 +1191,28 @@ function buildProjectListOrderScopeKey({ loginId = "", bridgeId = "" } = {}) {
   return `${normalizedLoginId}::${normalizedBridgeId}`;
 }
 
+function buildThreadListOrderScopePrefix({ loginId = "", bridgeId = "" } = {}) {
+  const normalizedLoginId = String(loginId ?? "").trim();
+  const normalizedBridgeId = String(bridgeId ?? "").trim();
+
+  if (!normalizedLoginId || !normalizedBridgeId) {
+    return "";
+  }
+
+  return `${normalizedLoginId}::${normalizedBridgeId}`;
+}
+
+function buildThreadListOrderScopeKey({ loginId = "", bridgeId = "", projectId = "" } = {}) {
+  const scopePrefix = buildThreadListOrderScopePrefix({ loginId, bridgeId });
+  const normalizedProjectId = String(projectId ?? "").trim();
+
+  if (!scopePrefix || !normalizedProjectId) {
+    return "";
+  }
+
+  return `${scopePrefix}::${normalizedProjectId}`;
+}
+
 function normalizeProjectListOrder(source, availableProjectIds = null) {
   if (!Array.isArray(source)) {
     return [];
@@ -1213,6 +1246,65 @@ function normalizeProjectListOrder(source, availableProjectIds = null) {
   return next.slice(0, 512);
 }
 
+function normalizeThreadListOrder(source, availableThreadIds = null) {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  const allowedThreadIds = Array.isArray(availableThreadIds)
+    ? new Set(
+        availableThreadIds
+          .map((threadId) => String(threadId ?? "").trim())
+          .filter(Boolean)
+      )
+    : null;
+  const seen = new Set();
+  const next = [];
+
+  for (const rawThreadId of source) {
+    const threadId = String(rawThreadId ?? "").trim();
+
+    if (!threadId || seen.has(threadId)) {
+      continue;
+    }
+
+    if (allowedThreadIds && !allowedThreadIds.has(threadId)) {
+      continue;
+    }
+
+    seen.add(threadId);
+    next.push(threadId);
+  }
+
+  return next.slice(0, 512);
+}
+
+function normalizeThreadListOrderByProjectId(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([rawProjectId, rawThreadOrder]) => {
+        const projectId = String(rawProjectId ?? "").trim();
+
+        if (!projectId) {
+          return null;
+        }
+
+        const normalizedThreadOrder = normalizeThreadListOrder(rawThreadOrder);
+
+        if (normalizedThreadOrder.length === 0) {
+          return null;
+        }
+
+        return [projectId, normalizedThreadOrder];
+      })
+      .filter(Boolean)
+  );
+}
+
 function areStringArraysEqual(left = [], right = []) {
   if (left === right) {
     return true;
@@ -1229,6 +1321,28 @@ function areStringArraysEqual(left = [], right = []) {
   }
 
   return true;
+}
+
+function areStringArrayRecordEqual(left = {}, right = {}) {
+  if (left === right) {
+    return true;
+  }
+
+  const leftEntries = Object.entries(left ?? {});
+  const rightEntries = Object.entries(right ?? {});
+
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+
+  const leftKeys = leftEntries.map(([key]) => key).sort();
+  const rightKeys = rightEntries.map(([key]) => key).sort();
+
+  if (!areStringArraysEqual(leftKeys, rightKeys)) {
+    return false;
+  }
+
+  return leftKeys.every((key) => areStringArraysEqual(left?.[key] ?? [], right?.[key] ?? []));
 }
 
 function readStoredProjectListOrderMap() {
@@ -1259,6 +1373,65 @@ function readStoredProjectListOrder(scope = {}) {
 
   const stored = readStoredProjectListOrderMap();
   return normalizeProjectListOrder(stored[scopeKey]);
+}
+
+function readStoredThreadListOrderMap() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(THREAD_LIST_ORDER_STORAGE_KEY);
+
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStoredThreadListOrder(scope = {}) {
+  const scopeKey = buildThreadListOrderScopeKey(scope);
+
+  if (!scopeKey) {
+    return [];
+  }
+
+  const stored = readStoredThreadListOrderMap();
+  return normalizeThreadListOrder(stored[scopeKey]);
+}
+
+function readStoredThreadListOrderByProjectId(scope = {}) {
+  const scopePrefix = buildThreadListOrderScopePrefix(scope);
+
+  if (!scopePrefix) {
+    return {};
+  }
+
+  const prefix = `${scopePrefix}::`;
+  const stored = readStoredThreadListOrderMap();
+  const next = {};
+
+  for (const [scopeKey, rawThreadOrder] of Object.entries(stored)) {
+    if (!scopeKey.startsWith(prefix)) {
+      continue;
+    }
+
+    const projectId = String(scopeKey.slice(prefix.length) ?? "").trim();
+    const normalizedThreadOrder = normalizeThreadListOrder(rawThreadOrder);
+
+    if (!projectId || normalizedThreadOrder.length === 0) {
+      continue;
+    }
+
+    next[projectId] = normalizedThreadOrder;
+  }
+
+  return next;
 }
 
 function storeProjectListOrder(order, scope = {}) {
@@ -1293,6 +1466,53 @@ function storeProjectListOrder(order, scope = {}) {
   }
 }
 
+function storeThreadListOrderByProjectId(orderByProjectId, scope = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const scopePrefix = buildThreadListOrderScopePrefix(scope);
+
+  if (!scopePrefix) {
+    return;
+  }
+
+  const prefix = `${scopePrefix}::`;
+  const normalizedOrderByProjectId = normalizeThreadListOrderByProjectId(orderByProjectId);
+  const nextState = readStoredThreadListOrderMap();
+
+  for (const scopeKey of Object.keys(nextState)) {
+    if (scopeKey.startsWith(prefix)) {
+      delete nextState[scopeKey];
+    }
+  }
+
+  for (const [projectId, threadOrder] of Object.entries(normalizedOrderByProjectId)) {
+    const scopeKey = buildThreadListOrderScopeKey({
+      loginId: scope.loginId,
+      bridgeId: scope.bridgeId,
+      projectId
+    });
+
+    if (!scopeKey || threadOrder.length === 0) {
+      continue;
+    }
+
+    nextState[scopeKey] = threadOrder;
+  }
+
+  try {
+    if (Object.keys(nextState).length === 0) {
+      window.localStorage.removeItem(THREAD_LIST_ORDER_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(THREAD_LIST_ORDER_STORAGE_KEY, JSON.stringify(nextState));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 function resolveOrderedProjectList(projects, preferredOrderIds = []) {
   const normalizedProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const availableProjectIds = normalizedProjects.map((project) => String(project.id ?? "").trim()).filter(Boolean);
@@ -1306,8 +1526,25 @@ function resolveOrderedProjectList(projects, preferredOrderIds = []) {
   ];
 }
 
+function resolveOrderedThreadList(threads, preferredOrderIds = []) {
+  const normalizedThreads = Array.isArray(threads) ? threads.filter(Boolean) : [];
+  const availableThreadIds = normalizedThreads.map((thread) => String(thread.id ?? "").trim()).filter(Boolean);
+  const normalizedPreferredOrder = normalizeThreadListOrder(preferredOrderIds, availableThreadIds);
+  const preferredThreadIdSet = new Set(normalizedPreferredOrder);
+  const threadById = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
+
+  return [
+    ...normalizedPreferredOrder.map((threadId) => threadById.get(threadId)).filter(Boolean),
+    ...normalizedThreads.filter((thread) => !preferredThreadIdSet.has(thread.id))
+  ];
+}
+
 function pickFirstOrderedProjectId(projects, scope = {}) {
   return resolveOrderedProjectList(projects, readStoredProjectListOrder(scope))[0]?.id ?? "";
+}
+
+function pickFirstOrderedThreadId(threads, scope = {}) {
+  return resolveOrderedThreadList(threads, readStoredThreadListOrder(scope))[0]?.id ?? "";
 }
 
 function normalizeArchivedIssueIds(rawIds) {
@@ -1808,6 +2045,57 @@ function createDetailState(overrides = {}) {
     sourcePreviewError: "",
     ...overrides
   };
+}
+
+function buildIssueReloadFingerprint(issues = [], fallbackThreadId = null) {
+  return issues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean)
+    .map((issue) =>
+      [
+        issue.id,
+        issue.status,
+        issue.progress,
+        issue.last_event,
+        issue.updated_at,
+        issue.executed_physical_thread_id ?? "",
+        issue.created_physical_thread_id ?? ""
+      ].join(":")
+    )
+    .join("|");
+}
+
+function shouldReloadThreadFromIssueSnapshot(currentIssues = [], nextIssues = [], fallbackThreadId = null) {
+  const normalizedCurrent = currentIssues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean);
+  const normalizedNext = nextIssues
+    .map((issue) => normalizeIssue(issue, fallbackThreadId))
+    .filter(Boolean);
+
+  if (normalizedCurrent.length === 0) {
+    return normalizedNext.length > 0;
+  }
+
+  if (normalizedCurrent.length !== normalizedNext.length) {
+    return true;
+  }
+
+  const currentIds = normalizedCurrent.map((issue) => issue.id).join("|");
+  const nextIds = normalizedNext.map((issue) => issue.id).join("|");
+
+  if (currentIds !== nextIds) {
+    return true;
+  }
+
+  const currentFingerprint = buildIssueReloadFingerprint(normalizedCurrent, fallbackThreadId);
+  const nextFingerprint = buildIssueReloadFingerprint(normalizedNext, fallbackThreadId);
+
+  if (currentFingerprint === nextFingerprint) {
+    return false;
+  }
+
+  return normalizedNext.some((issue) => ["awaiting_input", "completed", "failed", "interrupted"].includes(issue.status));
 }
 
 function normalizeDetailMessages(messages = [], fallbackIssue = null, fallbackTimestamp = null) {
@@ -3748,8 +4036,18 @@ function normalizeLiveThreadStatus(statusType, currentStatus = "queued") {
   }
 }
 
+function isTerminalThreadStatus(status) {
+  return ["completed", "failed", "interrupted"].includes(status);
+}
+
 function isTerminalIssueStatus(status) {
   return ["completed", "failed", "interrupted"].includes(status);
+}
+
+function isLiveThreadProgressEvent(eventType) {
+  return ["turn.started", "turn.starting", "turn.plan.updated", "turn.diff.updated", "item.agentMessage.delta"].includes(
+    eventType ?? ""
+  );
 }
 
 function isLiveIssueProgressEvent(eventType) {
@@ -3809,6 +4107,10 @@ function buildLiveThreadPatch(event, currentThread = null) {
   const { payload, threadId, projectId } = getLiveEventContext(event);
 
   if (!threadId) {
+    return null;
+  }
+
+  if (isTerminalThreadStatus(currentThread?.status) && isLiveThreadProgressEvent(event?.type)) {
     return null;
   }
 
@@ -5546,9 +5848,17 @@ function SidebarThreadItem({
   language,
   thread,
   active,
+  dragging,
+  showDropBefore,
+  showDropAfter,
+  threadDragEnabled,
   onSelect,
   onEdit,
   onContextMenu,
+  onThreadDragStart,
+  onThreadDragEnd,
+  onThreadDragOver,
+  onThreadDrop,
   issueDropActive,
   canAcceptIssueDrop,
   onIssueDragOver,
@@ -5562,6 +5872,12 @@ function SidebarThreadItem({
     <div
       onContextMenu={(event) => onContextMenu(event, thread)}
       onDragOver={(event) => {
+        if (threadDragEnabled) {
+          event.preventDefault();
+          onThreadDragOver?.(thread.id, event);
+          return;
+        }
+
         if (!canAcceptIssueDrop) {
           return;
         }
@@ -5570,6 +5886,10 @@ function SidebarThreadItem({
         onIssueDragOver?.(thread.id);
       }}
       onDragLeave={() => {
+        if (threadDragEnabled) {
+          return;
+        }
+
         if (!canAcceptIssueDrop) {
           return;
         }
@@ -5577,6 +5897,12 @@ function SidebarThreadItem({
         onIssueDragLeave?.(thread.id);
       }}
       onDrop={(event) => {
+        if (threadDragEnabled) {
+          event.preventDefault();
+          onThreadDrop?.(thread.id, event);
+          return;
+        }
+
         if (!canAcceptIssueDrop) {
           return;
         }
@@ -5584,25 +5910,54 @@ function SidebarThreadItem({
         event.preventDefault();
         onIssueDrop?.(thread.id);
       }}
-      className={`group ml-2.5 flex items-center rounded-md px-1.5 py-1.5 transition ${
-        issueDropActive
-          ? "border border-emerald-400/40 bg-emerald-500/10 text-white"
-          : active
-            ? "bg-sky-500/10 text-white"
-            : "text-slate-400 hover:bg-slate-800 hover:text-white"
-      }`}
+      className="ml-2.5 rounded-md px-0.5 py-0.5 transition-all duration-180 ease-out"
     >
-      <button
-        type="button"
-        onClick={() => onSelect(thread.id)}
-        onDoubleClick={() => onEdit(thread.id)}
-        className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+      {showDropBefore ? (
+        <div className="mb-1.5 h-1 rounded-full bg-sky-400/90 shadow-[0_0_0_1px_rgba(56,189,248,0.2)]" />
+      ) : null}
+
+      <div
+        className={`group flex items-center rounded-md px-1.5 py-1.5 transition ${
+          issueDropActive
+            ? "border border-emerald-400/40 bg-emerald-500/10 text-white"
+            : active
+              ? "bg-sky-500/10 text-white"
+              : "text-slate-400 hover:bg-slate-800 hover:text-white"
+        } ${
+          dragging ? "opacity-35 ring-1 ring-sky-400/35" : ""
+        }`}
       >
-        <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
-        <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
-          {compactUpdatedAt}
-        </span>
-      </button>
+        <div
+          draggable={typeof onThreadDragStart === "function"}
+          onDragStart={(event) => onThreadDragStart?.(thread.id, event)}
+          onDragEnd={() => onThreadDragEnd?.()}
+          className={`mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition ${
+            dragging ? "cursor-grabbing text-sky-200" : "cursor-grab hover:bg-slate-900 hover:text-slate-300"
+          }`}
+          title={language === "ko" ? "드래그해서 쓰레드 순서를 바꿉니다." : "Drag to reorder threads."}
+          aria-label={language === "ko" ? "쓰레드 순서 변경" : "Reorder thread"}
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+          </svg>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => onSelect(thread.id)}
+          onDoubleClick={() => onEdit(thread.id)}
+          className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+        >
+          <OverflowRevealText value={getThreadTitle(thread, language)} className="min-w-0 flex-1 text-sm font-medium" />
+          <span className="shrink-0 text-[10px] text-slate-500" title={updatedAtTitle}>
+            {compactUpdatedAt}
+          </span>
+        </button>
+      </div>
+
+      {showDropAfter ? (
+        <div className="mt-1.5 h-1 rounded-full bg-sky-400/90 shadow-[0_0_0_1px_rgba(56,189,248,0.2)]" />
+      ) : null}
     </div>
   );
 }
@@ -5633,6 +5988,7 @@ function ThreadDetailModal({
     [messages]
   );
   const modifiedSourceFiles = useMemo(() => inferModifiedSourceFilesFromMessages(visibleMessages), [visibleMessages]);
+  const hasModifiedSourceFiles = modifiedSourceFiles.length > 0;
   const selectedPreviewPath = normalizeSourceFilePathCandidate(selectedSourcePath);
   const scrollRef = useRef(null);
   const [showJumpToLatestButton, setShowJumpToLatestButton] = useState(false);
@@ -5780,7 +6136,11 @@ function ThreadDetailModal({
 
         <div className="min-h-0 flex-1 px-4 py-4 sm:px-6 sm:py-5">
           <div className="flex h-full min-h-0 flex-col gap-4 xl:flex-row">
-            <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.8rem] border border-slate-800 bg-slate-900/60 xl:basis-[46%]">
+            <section
+              className={`relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.8rem] border border-slate-800 bg-slate-900/60 ${
+                hasModifiedSourceFiles ? "xl:basis-[46%]" : ""
+              }`}
+            >
               <div className="border-b border-slate-800 px-5 py-4">
                 <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.detail.eyebrow}</p>
                 <p className="mt-2 text-sm text-slate-400">{copy.detail.response}</p>
@@ -5854,20 +6214,18 @@ function ThreadDetailModal({
               ) : null}
             </section>
 
-            <aside className="flex min-h-0 flex-1 flex-col rounded-[1.8rem] border border-slate-800 bg-slate-900/35 xl:basis-[54%]">
-              <div className="border-b border-slate-800 px-5 py-4">
-                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.detail.sourceTitle}</p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <p className="text-sm text-slate-300">{copy.detail.sourceSubtitle}</p>
-                  {modifiedSourceFiles.length > 0 ? (
+            {hasModifiedSourceFiles ? (
+              <aside className="flex min-h-0 flex-1 flex-col rounded-[1.8rem] border border-slate-800 bg-slate-900/35 xl:basis-[54%]">
+                <div className="border-b border-slate-800 px-5 py-4">
+                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{copy.detail.sourceTitle}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <p className="text-sm text-slate-300">{copy.detail.sourceSubtitle}</p>
                     <span className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2.5 py-1 text-[11px] font-semibold text-sky-200">
                       {modifiedSourceFiles.length}
                     </span>
-                  ) : null}
+                  </div>
                 </div>
-              </div>
 
-              {modifiedSourceFiles.length > 0 ? (
                 <div className="border-b border-slate-800 px-5 py-3">
                   <div className="custom-scrollbar flex gap-2 overflow-x-auto pb-1">
                     {modifiedSourceFiles.map((filePath) => {
@@ -5890,18 +6248,18 @@ function ThreadDetailModal({
                     })}
                   </div>
                 </div>
-              ) : null}
 
-              <div className="min-h-0 flex-1 p-5">
-                <IssueSourceCodeViewer
-                  language={language}
-                  filePath={selectedPreviewPath}
-                  preview={sourcePreview}
-                  loading={Boolean(selectedPreviewPath) && sourcePreviewLoadingPath === selectedPreviewPath}
-                  errorMessage={selectedPreviewPath ? sourcePreviewError : ""}
-                />
-              </div>
-            </aside>
+                <div className="min-h-0 flex-1 p-5">
+                  <IssueSourceCodeViewer
+                    language={language}
+                    filePath={selectedPreviewPath}
+                    preview={sourcePreview}
+                    loading={Boolean(selectedPreviewPath) && sourcePreviewLoadingPath === selectedPreviewPath}
+                    errorMessage={selectedPreviewPath ? sourcePreviewError : ""}
+                  />
+                </div>
+              </aside>
+            ) : null}
           </div>
         </div>
       </div>
@@ -6684,9 +7042,24 @@ function MainPage({
           bridgeId: selectedBridgeId
         })
   );
+  const [threadOrderIdsByProjectId, setThreadOrderIdsByProjectId] = useState(() =>
+    typeof window === "undefined"
+      ? {}
+      : readStoredThreadListOrderByProjectId({
+          loginId: session?.loginId,
+          bridgeId: selectedBridgeId
+        })
+  );
   const [draggingProjectId, setDraggingProjectId] = useState("");
   const [projectDropIndicator, setProjectDropIndicator] = useState({
     projectId: "",
+    position: "before"
+  });
+  const [draggingThreadId, setDraggingThreadId] = useState("");
+  const [draggingThreadProjectId, setDraggingThreadProjectId] = useState("");
+  const [threadDropIndicator, setThreadDropIndicator] = useState({
+    projectId: "",
+    threadId: "",
     position: "before"
   });
   const [expandedProjectIds, setExpandedProjectIds] = useState({});
@@ -6829,7 +7202,8 @@ function MainPage({
   const handleSelectProject = useCallback((projectId) => {
     onSelectProject(projectId);
     markProjectsExpanded([selectedProjectId, projectId]);
-  }, [markProjectsExpanded, onSelectProject, selectedProjectId]);
+    void onExpandProject(projectId);
+  }, [markProjectsExpanded, onExpandProject, onSelectProject, selectedProjectId]);
   const handleSelectSidebarThread = useCallback((threadId) => {
     if (!threadId) {
       onSelectProjectThread("");
@@ -7140,6 +7514,22 @@ function MainPage({
   }, [selectedBridgeId, session?.loginId]);
 
   useEffect(() => {
+    setThreadOrderIdsByProjectId(
+      readStoredThreadListOrderByProjectId({
+        loginId: session?.loginId,
+        bridgeId: selectedBridgeId
+      })
+    );
+    setDraggingThreadId("");
+    setDraggingThreadProjectId("");
+    setThreadDropIndicator({
+      projectId: "",
+      threadId: "",
+      position: "before"
+    });
+  }, [selectedBridgeId, session?.loginId]);
+
+  useEffect(() => {
     if (!session?.loginId || !selectedBridgeId) {
       return;
     }
@@ -7157,6 +7547,51 @@ function MainPage({
       bridgeId: selectedBridgeId
     });
   }, [projectOrderIds, projects, selectedBridgeId, session?.loginId]);
+
+  useEffect(() => {
+    if (!session?.loginId || !selectedBridgeId) {
+      return;
+    }
+
+    const availableProjectIds = projects.map((project) => String(project.id ?? "").trim()).filter(Boolean);
+    const loadedThreadIdsByProjectId = projectThreads.reduce((accumulator, thread) => {
+      const projectId = String(thread?.project_id ?? "").trim();
+      const threadId = String(thread?.id ?? "").trim();
+
+      if (!projectId || !threadId) {
+        return accumulator;
+      }
+
+      if (!Array.isArray(accumulator[projectId])) {
+        accumulator[projectId] = [];
+      }
+
+      accumulator[projectId].push(threadId);
+      return accumulator;
+    }, {});
+    const normalizedOrderByProjectId = availableProjectIds.reduce((accumulator, projectId) => {
+      const availableThreadIds = loadedThreadIdsByProjectId[projectId];
+      const normalizedThreadOrder = Array.isArray(availableThreadIds)
+        ? normalizeThreadListOrder(threadOrderIdsByProjectId[projectId], availableThreadIds)
+        : normalizeThreadListOrder(threadOrderIdsByProjectId[projectId]);
+
+      if (normalizedThreadOrder.length > 0) {
+        accumulator[projectId] = normalizedThreadOrder;
+      }
+
+      return accumulator;
+    }, {});
+
+    if (!areStringArrayRecordEqual(normalizedOrderByProjectId, threadOrderIdsByProjectId)) {
+      setThreadOrderIdsByProjectId(normalizedOrderByProjectId);
+      return;
+    }
+
+    storeThreadListOrderByProjectId(normalizedOrderByProjectId, {
+      loginId: session.loginId,
+      bridgeId: selectedBridgeId
+    });
+  }, [projectThreads, projects, selectedBridgeId, session?.loginId, threadOrderIdsByProjectId]);
 
   useEffect(() => {
     if (!languageMenuOpen) {
@@ -7686,9 +8121,175 @@ function MainPage({
     clearProjectDragState();
   }, [clearPendingProjectLongPress, clearProjectDragPreview, clearProjectDragState]);
 
+  const clearThreadDragState = useCallback(() => {
+    setDraggingThreadId("");
+    setDraggingThreadProjectId("");
+    setThreadDropIndicator({
+      projectId: "",
+      threadId: "",
+      position: "before"
+    });
+  }, []);
+
+  const resolveThreadDropPosition = useCallback((threadId, event) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const relativeY = event.clientY - rect.top;
+    const edgeThreshold = rect.height * SIDEBAR_PROJECT_DROP_EDGE_RATIO;
+
+    if (relativeY <= edgeThreshold) {
+      return "before";
+    }
+
+    if (relativeY >= rect.height - edgeThreshold) {
+      return "after";
+    }
+
+    if (
+      threadDropIndicator.projectId === draggingThreadProjectId &&
+      threadDropIndicator.threadId === normalizedThreadId
+    ) {
+      return threadDropIndicator.position;
+    }
+
+    return relativeY >= rect.height / 2 ? "after" : "before";
+  }, [draggingThreadProjectId, threadDropIndicator]);
+
+  const handleThreadDragStart = useCallback(
+    (threadId, event) => {
+      const normalizedThreadId = String(threadId ?? "").trim();
+      const sourceThread = projectThreads.find((thread) => thread.id === normalizedThreadId) ?? null;
+      const projectId = String(sourceThread?.project_id ?? "").trim();
+
+      if (!normalizedThreadId || !projectId) {
+        event.preventDefault();
+        return;
+      }
+
+      setDraggingThreadId(normalizedThreadId);
+      setDraggingThreadProjectId(projectId);
+      setThreadDropIndicator({
+        projectId,
+        threadId: normalizedThreadId,
+        position: "before"
+      });
+
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+
+        try {
+          event.dataTransfer.setData("text/plain", normalizedThreadId);
+        } catch {
+          // ignore data transfer errors
+        }
+      }
+    },
+    [projectThreads]
+  );
+
+  const handleThreadDragOver = useCallback(
+    (threadId, event) => {
+      if (!draggingThreadId || !draggingThreadProjectId) {
+        return;
+      }
+
+      const normalizedThreadId = String(threadId ?? "").trim();
+      const targetThread = projectThreads.find((thread) => thread.id === normalizedThreadId) ?? null;
+      const targetProjectId = String(targetThread?.project_id ?? "").trim();
+
+      if (!normalizedThreadId || !targetProjectId || targetProjectId !== draggingThreadProjectId) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+
+      const position = resolveThreadDropPosition(normalizedThreadId, event);
+      setThreadDropIndicator((current) =>
+        current.projectId === targetProjectId &&
+        current.threadId === normalizedThreadId &&
+        current.position === position
+          ? current
+          : {
+              projectId: targetProjectId,
+              threadId: normalizedThreadId,
+              position
+            }
+      );
+    },
+    [draggingThreadId, draggingThreadProjectId, projectThreads, resolveThreadDropPosition]
+  );
+
+  const handleThreadDrop = useCallback(
+    (threadId, event) => {
+      if (!draggingThreadId || !draggingThreadProjectId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const normalizedThreadId = String(threadId ?? "").trim();
+      const targetThread = projectThreads.find((thread) => thread.id === normalizedThreadId) ?? null;
+      const targetProjectId = String(targetThread?.project_id ?? "").trim();
+
+      if (!normalizedThreadId || !targetProjectId || targetProjectId !== draggingThreadProjectId) {
+        clearThreadDragState();
+        return;
+      }
+
+      const orderedThreadIds = resolveOrderedThreadList(
+        projectThreads.filter((thread) => thread.project_id === targetProjectId),
+        threadOrderIdsByProjectId[targetProjectId] ?? []
+      )
+        .map((thread) => String(thread.id ?? "").trim())
+        .filter(Boolean);
+      const position = resolveThreadDropPosition(normalizedThreadId, event);
+      const nextThreadOrder = normalizeThreadListOrder(
+        reorderIdsByPlacement(orderedThreadIds, draggingThreadId, normalizedThreadId, position === "after"),
+        orderedThreadIds
+      );
+
+      setThreadOrderIdsByProjectId((current) => {
+        const currentProjectOrder = current[targetProjectId] ?? [];
+
+        if (areStringArraysEqual(currentProjectOrder, nextThreadOrder)) {
+          return current;
+        }
+
+        if (nextThreadOrder.length === 0) {
+          const next = { ...current };
+          delete next[targetProjectId];
+          return next;
+        }
+
+        return {
+          ...current,
+          [targetProjectId]: nextThreadOrder
+        };
+      });
+      clearThreadDragState();
+    },
+    [
+      clearThreadDragState,
+      draggingThreadId,
+      draggingThreadProjectId,
+      projectThreads,
+      resolveThreadDropPosition,
+      threadOrderIdsByProjectId
+    ]
+  );
+
+  const handleThreadDragEnd = useCallback(() => {
+    clearThreadDragState();
+  }, [clearThreadDragState]);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200">
-      <div className="flex min-h-screen flex-col">
+    <div className="h-screen overflow-hidden bg-slate-950 text-slate-200">
+      <div className="flex h-full min-h-0 flex-col">
         <div className="flex flex-1 overflow-hidden">
           <aside
             className="hidden shrink-0 border-r border-slate-800 bg-[#0f172a] md:flex md:flex-col"
@@ -7760,7 +8361,10 @@ function MainPage({
                     ) : (
                       orderedSidebarProjects.map((project) => {
                         const active = project.id === selectedProjectId;
-                        const sidebarThreads = projectThreads.filter((thread) => thread.project_id === project.id);
+                        const sidebarThreads = resolveOrderedThreadList(
+                          projectThreads.filter((thread) => thread.project_id === project.id),
+                          threadOrderIdsByProjectId[project.id] ?? []
+                        );
                         const expanded = expandedProjectIds[project.id] ?? active;
                         const projectWrapperPaddingStyle = draggingProjectId
                           ? {
@@ -7879,9 +8483,29 @@ function MainPage({
                                     language={language}
                                     thread={thread}
                                     active={thread.id === selectedProjectThreadId}
+                                    dragging={draggingThreadId === thread.id}
+                                    showDropBefore={
+                                      draggingThreadProjectId === project.id &&
+                                      draggingThreadId !== thread.id &&
+                                      threadDropIndicator.projectId === project.id &&
+                                      threadDropIndicator.threadId === thread.id &&
+                                      threadDropIndicator.position === "before"
+                                    }
+                                    showDropAfter={
+                                      draggingThreadProjectId === project.id &&
+                                      draggingThreadId !== thread.id &&
+                                      threadDropIndicator.projectId === project.id &&
+                                      threadDropIndicator.threadId === thread.id &&
+                                      threadDropIndicator.position === "after"
+                                    }
+                                    threadDragEnabled={Boolean(draggingThreadId)}
                                     onSelect={handleSelectSidebarThread}
                                     onEdit={onOpenThreadInstructionDialog}
                                     onContextMenu={onOpenThreadMenu}
+                                    onThreadDragStart={handleThreadDragStart}
+                                    onThreadDragEnd={handleThreadDragEnd}
+                                    onThreadDragOver={handleThreadDragOver}
+                                    onThreadDrop={handleThreadDrop}
                                     issueDropActive={issueMoveTargetThreadId === thread.id}
                                     canAcceptIssueDrop={draggingMovableIssueIds.length > 0 && thread.id !== selectedProjectThreadId}
                                     onIssueDragOver={onIssueMoveTargetOver}
@@ -8081,12 +8705,12 @@ function MainPage({
                       className="octop-board-frame flex h-full min-h-0"
                       style={{ width: `${boardContentWidth}px`, minWidth: "100%" }}
                     >
-                      <div className="octop-board-columns flex h-full min-w-0 space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
+                      <div className="octop-board-columns flex h-full min-w-0 items-stretch space-x-6 px-4 py-4 pb-3 pr-8 md:px-8 md:py-6 md:pb-4 md:pr-12">
                 {columns.map((column) => (
                   <section
                     key={column.id}
                     data-testid={`board-column-${column.id}`}
-                    className={`flex w-80 flex-col rounded-2xl ${column.id === "todo" ? "ring-1 ring-transparent" : ""}`}
+                    className={`flex h-full min-h-0 w-80 flex-col overflow-hidden rounded-2xl ${column.id === "todo" ? "ring-1 ring-transparent" : ""}`}
                     onDragOver={(event) => {
                       if (column.id === "todo" || column.id === "prep") {
                         event.preventDefault();
@@ -8198,7 +8822,7 @@ function MainPage({
                       )}
                     </div>
 
-                    <div className="space-y-3">
+                    <div className="custom-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
                       {column.threads.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-slate-800 px-4 py-5 text-sm text-slate-500">
                           {copy.board.emptyColumn}
@@ -8735,11 +9359,29 @@ export default function App() {
   const visibleIssueSnapshotsRef = useRef({});
   const threadLiveProgressAtByIdRef = useRef(new Map());
   const activeIssueSyncStateRef = useRef({ inFlight: false, issueId: "", startedAt: 0, requestId: 0 });
+  const activeIssuePollFailureStateRef = useRef({
+    threadId: "",
+    issueId: "",
+    consecutiveFailures: 0,
+    nextRetryAt: 0,
+    lastRecoveryAttemptAt: 0
+  });
   const lastForegroundResumeAtRef = useRef(0);
   const activeIssuePollPausedUntilRef = useRef(0);
   const foregroundResumeEnabledAtRef = useRef(0);
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
+  const scheduleDashboardForegroundResumeRef = useRef(null);
+  const detailReloadTimerRef = useRef(null);
+  const detailReloadMetaRef = useRef({
+    threadId: "",
+    issueId: "",
+    inFlight: false,
+    lastStartedAt: 0,
+    lastCompletedAt: 0,
+    lastReason: ""
+  });
+  const eventStreamReconnectTimerRef = useRef(null);
   const locallyInterruptedIssueIdsRef = useRef(new Set());
   const confirmationResolverRef = useRef(null);
   const detailStateRef = useRef(createDetailState());
@@ -8927,6 +9569,32 @@ export default function App() {
     () => findActiveIssueForThread(issues, selectedProjectThread?.active_physical_thread_id ?? null),
     [issues, selectedProjectThread?.active_physical_thread_id]
   );
+  const resetActiveIssuePollFailureState = useCallback((threadId = "", issueId = "") => {
+    activeIssuePollFailureStateRef.current = {
+      threadId: String(threadId ?? "").trim(),
+      issueId: String(issueId ?? "").trim(),
+      consecutiveFailures: 0,
+      nextRetryAt: 0,
+      lastRecoveryAttemptAt: 0
+    };
+  }, []);
+  const getActiveIssuePollFailureState = useCallback((threadId = "", issueId = "") => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+    const currentState = activeIssuePollFailureStateRef.current;
+
+    if (currentState.threadId === normalizedThreadId && currentState.issueId === normalizedIssueId) {
+      return currentState;
+    }
+
+    return {
+      threadId: normalizedThreadId,
+      issueId: normalizedIssueId,
+      consecutiveFailures: 0,
+      nextRetryAt: 0,
+      lastRecoveryAttemptAt: 0
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -8937,6 +9605,10 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    resetActiveIssuePollFailureState(selectedProjectThreadId, selectedActiveIssue?.id ?? "");
+  }, [resetActiveIssuePollFailureState, selectedActiveIssue?.id, selectedProjectThreadId]);
 
   const orderedPrepIssueIds = useMemo(() => {
     const prepIssues = issues
@@ -9263,7 +9935,7 @@ export default function App() {
   useEffect(() => {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
-  }, [selectedBridgeId]);
+  }, [resetActiveIssuePollFailureState, selectedBridgeId]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -9301,9 +9973,11 @@ export default function App() {
       return;
     }
 
+    const scopedVisibleIssues = visibleIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? [];
+    const scopedArchivedIssues = archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? [];
     const combinedIssues = mergeIssues(
-      issuesRef.current,
-      archivedIssueSnapshotsRef.current[selectedBridgeId]?.[selectedProjectThreadId] ?? []
+      scopedVisibleIssues,
+      scopedArchivedIssues
     );
 
     if (combinedIssues.length === 0) {
@@ -9596,7 +10270,6 @@ export default function App() {
 
   async function loadProjectThreads(sessionArg, bridgeId, projectId) {
     if (!sessionArg?.loginId || !bridgeId || !projectId) {
-      setProjectThreads([]);
       return [];
     }
 
@@ -9620,7 +10293,7 @@ export default function App() {
     }
 
     if (loadedProjectThreadsRef.current[bridgeId]?.[projectId]) {
-      return [];
+      return projectThreadsRef.current.filter((thread) => thread.project_id === projectId);
     }
 
     const cacheKey = `${bridgeId}:${projectId}`;
@@ -9778,6 +10451,13 @@ export default function App() {
       startedAt: Date.now(),
       requestId
     };
+    detailReloadMetaRef.current = {
+      ...detailReloadMetaRef.current,
+      threadId,
+      issueId,
+      inFlight: true,
+      lastStartedAt: Date.now()
+    };
 
     try {
       const payload = await loadIssueDetail(sessionArg, bridgeId, issueId, {
@@ -9814,8 +10494,46 @@ export default function App() {
         }
       }
 
+      resetActiveIssuePollFailureState(threadId, nextIssue?.id ?? issueId);
+
       return payload;
+    } catch (error) {
+      const currentFailureState = getActiveIssuePollFailureState(threadId, issueId);
+      const now = Date.now();
+      const consecutiveFailures = currentFailureState.consecutiveFailures + 1;
+      const backoffMs = Math.min(
+        ACTIVE_ISSUE_POLL_FAILURE_BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1),
+        ACTIVE_ISSUE_POLL_FAILURE_MAX_BACKOFF_MS
+      );
+      const shouldAttemptRecovery =
+        !BRIDGE_TRANSPORT_ERROR_STATUS_CODES.has(Number(error?.status ?? 0)) &&
+        consecutiveFailures >= ACTIVE_ISSUE_POLL_RECOVERY_FAILURE_THRESHOLD &&
+        now - Number(currentFailureState.lastRecoveryAttemptAt ?? 0) >= ACTIVE_ISSUE_POLL_RECOVERY_COOLDOWN_MS;
+
+      activeIssuePollFailureStateRef.current = {
+        threadId,
+        issueId,
+        consecutiveFailures,
+        nextRetryAt: now + backoffMs,
+        lastRecoveryAttemptAt: shouldAttemptRecovery ? now : Number(currentFailureState.lastRecoveryAttemptAt ?? 0)
+      };
+
+      if (shouldAttemptRecovery) {
+        window.setTimeout(() => {
+          scheduleDashboardForegroundResumeRef.current?.("active_issue_poll_recovery");
+        }, 0);
+      }
+
+      throw error;
     } finally {
+      detailReloadMetaRef.current = {
+        ...detailReloadMetaRef.current,
+        threadId,
+        issueId,
+        inFlight: false,
+        lastCompletedAt: Date.now()
+      };
+
       if (activeIssueSyncStateRef.current.requestId === requestId) {
         activeIssueSyncStateRef.current = {
           inFlight: false,
@@ -9825,7 +10543,13 @@ export default function App() {
         };
       }
     }
-  }, [applyIssueStateForScope, handleSelectDetailSourceFile, loadIssueDetail]);
+  }, [
+    applyIssueStateForScope,
+    getActiveIssuePollFailureState,
+    handleSelectDetailSourceFile,
+    loadIssueDetail,
+    resetActiveIssuePollFailureState
+  ]);
 
   const handleDashboardForegroundResume = useCallback(async (reason = "foreground_resume") => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -9912,6 +10636,74 @@ export default function App() {
       void handleDashboardForegroundResume(reasonLabel || reason);
     }, DASHBOARD_RESUME_COALESCE_MS);
   }, [handleDashboardForegroundResume]);
+
+  useEffect(() => {
+    scheduleDashboardForegroundResumeRef.current = scheduleDashboardForegroundResume;
+  }, [scheduleDashboardForegroundResume]);
+
+  const scheduleIssueDetailReload = useCallback((threadId, issueId, options = {}) => {
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedIssueId = String(issueId ?? "").trim();
+
+    if (!normalizedThreadId || !normalizedIssueId) {
+      return;
+    }
+
+    const {
+      delay = 180,
+      bypassThrottle = false,
+      reason = "unspecified"
+    } = options;
+    const currentTimer = detailReloadTimerRef.current;
+    const currentMeta = detailReloadMetaRef.current;
+    const now = Date.now();
+    const lastActivityAt =
+      currentMeta.threadId === normalizedThreadId && currentMeta.issueId === normalizedIssueId
+        ? Math.max(currentMeta.lastStartedAt ?? 0, currentMeta.lastCompletedAt ?? 0)
+        : 0;
+    const throttleDelay =
+      bypassThrottle || lastActivityAt <= 0
+        ? 0
+        : Math.max(0, DETAIL_RELOAD_MIN_INTERVAL_MS - (now - lastActivityAt));
+    const effectiveDelay = Math.max(delay, throttleDelay, currentMeta.inFlight ? 400 : 0);
+
+    if (currentTimer) {
+      window.clearTimeout(currentTimer);
+      detailReloadTimerRef.current = null;
+    }
+
+    detailReloadMetaRef.current = {
+      ...currentMeta,
+      threadId: normalizedThreadId,
+      issueId: normalizedIssueId,
+      lastReason: reason
+    };
+
+    detailReloadTimerRef.current = window.setTimeout(() => {
+      detailReloadTimerRef.current = null;
+      void syncActiveIssueDetail(
+        sessionRef.current,
+        selectedBridgeIdRef.current,
+        normalizedThreadId,
+        normalizedIssueId,
+        { force: true }
+      ).catch(() => {});
+    }, effectiveDelay);
+  }, [syncActiveIssueDetail]);
+
+  useEffect(() => {
+    return () => {
+      if (detailReloadTimerRef.current) {
+        window.clearTimeout(detailReloadTimerRef.current);
+        detailReloadTimerRef.current = null;
+      }
+
+      if (eventStreamReconnectTimerRef.current) {
+        window.clearTimeout(eventStreamReconnectTimerRef.current);
+        eventStreamReconnectTimerRef.current = null;
+      }
+    };
+  }, []);
 
   async function loadWorkspaceRoots(sessionArg, bridgeId) {
     if (!sessionArg?.loginId || !bridgeId) {
@@ -10042,9 +10834,37 @@ export default function App() {
 
   useEffect(() => {
     setStreamActivityAt(null);
+    threadLiveProgressAtByIdRef.current = new Map();
     locallyInterruptedIssueIdsRef.current.clear();
+    activeIssueSyncStateRef.current = {
+      inFlight: false,
+      issueId: "",
+      startedAt: 0,
+      requestId: 0
+    };
+    detailReloadMetaRef.current = {
+      threadId: "",
+      issueId: "",
+      inFlight: false,
+      lastStartedAt: 0,
+      lastCompletedAt: 0,
+      lastReason: ""
+    };
+    lastForegroundResumeAtRef.current = 0;
+    activeIssuePollPausedUntilRef.current = 0;
     foregroundResumeEnabledAtRef.current = Date.now() + DASHBOARD_RESUME_ENABLE_DELAY_MS;
-  }, [selectedBridgeId]);
+    resetActiveIssuePollFailureState("", "");
+
+    if (detailReloadTimerRef.current) {
+      window.clearTimeout(detailReloadTimerRef.current);
+      detailReloadTimerRef.current = null;
+    }
+
+    if (eventStreamReconnectTimerRef.current) {
+      window.clearTimeout(eventStreamReconnectTimerRef.current);
+      eventStreamReconnectTimerRef.current = null;
+    }
+  }, [resetActiveIssuePollFailureState, selectedBridgeId]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -10068,6 +10888,10 @@ export default function App() {
     };
 
     eventSource.addEventListener("ready", () => {
+      if (eventStreamReconnectTimerRef.current) {
+        window.clearTimeout(eventStreamReconnectTimerRef.current);
+        eventStreamReconnectTimerRef.current = null;
+      }
       markStreamActivity();
     });
 
@@ -10087,6 +10911,10 @@ export default function App() {
       } catch {
         // ignore malformed snapshot
       }
+    });
+
+    eventSource.addEventListener("heartbeat", () => {
+      markStreamActivity();
     });
 
     eventSource.addEventListener("message", (event) => {
@@ -10135,6 +10963,7 @@ export default function App() {
 
         if (eventThreadId && eventThreadId === activeThreadId && isLiveIssueProgressEvent(payload.type)) {
           threadLiveProgressAtByIdRef.current.set(eventThreadId, Date.now());
+          resetActiveIssuePollFailureState(eventThreadId, eventIssueId);
         }
 
         if (
@@ -10149,6 +10978,20 @@ export default function App() {
           )
         ) {
           threadLiveProgressAtByIdRef.current.delete(eventThreadId);
+
+          const openDetailIssueId =
+            detailStateRef.current.open &&
+            detailStateRef.current.thread?.thread_id === eventThreadId
+              ? String(detailStateRef.current.thread?.id ?? "").trim()
+              : "";
+
+          if (openDetailIssueId) {
+            scheduleIssueDetailReload(eventThreadId, openDetailIssueId, {
+              delay: 0,
+              bypassThrottle: true,
+              reason: payload.type
+            });
+          }
         }
 
         if (eventThreadId) {
@@ -10156,27 +10999,44 @@ export default function App() {
         }
 
         if (eventThreadId && eventThreadId === activeThreadId) {
-          setIssues((current) => upsertLiveIssuePatch(current, payload));
+          setIssues((current) => {
+            const currentActiveIssue = findActiveIssueForThread(
+              current,
+              projectThreadsRef.current.find((thread) => thread.id === eventThreadId)?.active_physical_thread_id ?? null
+            );
+            const liveStatusUpdate = resolveLiveIssueStatusUpdate(payload, currentActiveIssue?.id ?? "");
+
+            return applyLiveIssueStatusUpdate(upsertLiveIssuePatch(current, payload), liveStatusUpdate);
+          });
         }
 
         if (
           detailStateRef.current.open &&
           detailStateRef.current.thread?.id &&
-          eventIssueId &&
-          detailStateRef.current.thread.id === eventIssueId
+          eventThreadId &&
+          detailStateRef.current.thread.thread_id === eventThreadId
         ) {
           setDetailState((current) => {
-            const nextThread = current.thread
+            const currentDetailThread = current.thread ?? null;
+            const liveStatusUpdate = resolveLiveIssueStatusUpdate(payload, currentDetailThread?.id ?? "");
+            const nextThreadList = currentDetailThread
+              ? applyLiveIssueStatusUpdate([currentDetailThread], liveStatusUpdate)
+              : [];
+            const nextThread = currentDetailThread
               ? {
-                  ...current.thread,
-                  ...(buildLiveIssuePatch(payload, current.thread) ?? {})
+                  ...(nextThreadList[0] ?? currentDetailThread),
+                  ...(buildLiveIssuePatch(payload, currentDetailThread) ?? {})
                 }
-              : current.thread;
+              : currentDetailThread;
+            const nextMessages = applyLiveMessageIssueStatusUpdate(
+              appendIssueDeltaMessage(current.messages, payload, nextThread),
+              liveStatusUpdate
+            );
 
             return {
               ...current,
               thread: nextThread,
-              messages: appendIssueDeltaMessage(current.messages, payload, nextThread)
+              messages: nextMessages
             };
           });
         }
@@ -10261,13 +11121,33 @@ export default function App() {
             return;
           }
 
+          const currentScopedIssues = mergeIssues(
+            visibleIssueSnapshotsRef.current[activeBridgeId]?.[targetThreadId || activeThreadId] ?? [],
+            archivedIssueSnapshotsRef.current[activeBridgeId]?.[targetThreadId || activeThreadId] ?? []
+          );
           const nextIssues = mergeIssues([], payload.payload?.issues ?? []);
+          const shouldReloadOpenDetail =
+            Boolean(targetThreadId || activeThreadId) &&
+            shouldReloadThreadFromIssueSnapshot(currentScopedIssues, nextIssues, targetThreadId || activeThreadId);
           for (const nextIssue of nextIssues) {
             if (nextIssue?.id && !["running", "awaiting_input"].includes(nextIssue.status ?? "")) {
               releaseLocalIssueInterrupt(nextIssue.id);
             }
           }
           applyIssueStateForScope(activeBridgeId, targetThreadId || activeThreadId, nextIssues);
+
+          const openDetailIssueId =
+            detailStateRef.current.open &&
+            detailStateRef.current.thread?.thread_id === (targetThreadId || activeThreadId)
+              ? String(detailStateRef.current.thread?.id ?? "").trim()
+              : "";
+
+          if (shouldReloadOpenDetail && openDetailIssueId) {
+            scheduleIssueDetailReload(targetThreadId || activeThreadId, openDetailIssueId, {
+              bypassThrottle: true,
+              reason: "thread_issues_updated"
+            });
+          }
 
           if (!findActiveIssueForThread(nextIssues, projectThreadsRef.current.find((thread) => thread.id === (targetThreadId || activeThreadId))?.active_physical_thread_id ?? null)) {
             threadLiveProgressAtByIdRef.current.delete(targetThreadId || activeThreadId);
@@ -10348,14 +11228,31 @@ export default function App() {
         }
       }));
       void refreshBridgeStatus(session, selectedBridgeId);
+
+      const browserOnline =
+        typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+          ? true
+          : navigator.onLine;
+
+      if (browserOnline && !eventStreamReconnectTimerRef.current) {
+        eventStreamReconnectTimerRef.current = window.setTimeout(() => {
+          eventStreamReconnectTimerRef.current = null;
+          setEventStreamReconnectToken((current) => current + 1);
+        }, 1000);
+      }
     });
 
     return () => {
+      if (eventStreamReconnectTimerRef.current) {
+        window.clearTimeout(eventStreamReconnectTimerRef.current);
+        eventStreamReconnectTimerRef.current = null;
+      }
       eventSource.close();
     };
   }, [
     copy.alerts.sseReconnect,
     eventStreamReconnectToken,
+    resetActiveIssuePollFailureState,
     isLocalIssueInterruptHeld,
     markBridgeSocketConnected,
     markBridgeSocketDisconnected,
@@ -10364,6 +11261,7 @@ export default function App() {
     releaseLocalIssueInterrupt,
     reloadBridgeWorkspaceOnReconnect,
     refreshBridgeStatus,
+    scheduleIssueDetailReload,
     session,
     setBridgeStatus,
     selectedBridgeId
@@ -10521,13 +11419,11 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectId) {
-      setProjectThreads([]);
-      setSelectedProjectThreadId("");
       return;
     }
 
-    void loadProjectThreads(session, selectedBridgeId, selectedProjectId);
-  }, [session, selectedBridgeId, selectedProjectId]);
+    void ensureProjectThreadsLoaded(session, selectedBridgeId, selectedProjectId);
+  }, [ensureProjectThreadsLoaded, selectedBridgeId, selectedProjectId, session]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId) {
@@ -10561,9 +11457,15 @@ export default function App() {
     }
 
     if (!selectedProjectThreadId || !scopedThreads.some((thread) => thread.id === selectedProjectThreadId)) {
-      setSelectedProjectThreadId(scopedThreads[0]?.id ?? "");
+      setSelectedProjectThreadId(
+        pickFirstOrderedThreadId(scopedThreads, {
+          loginId: session?.loginId,
+          bridgeId: selectedBridgeId,
+          projectId: selectedProjectId
+        }) || scopedThreads[0]?.id || ""
+      );
     }
-  }, [selectedProjectId, selectedProjectThreadId, projectThreads]);
+  }, [projectThreads, selectedBridgeId, selectedProjectId, selectedProjectThreadId, session?.loginId]);
 
   useEffect(() => {
     if (!session?.loginId || !selectedBridgeId || !selectedProjectThreadId || !archivesHydrated) {
@@ -10597,6 +11499,12 @@ export default function App() {
         return;
       }
 
+      const failureState = getActiveIssuePollFailureState(selectedProjectThreadId, selectedActiveIssue.id);
+
+      if (failureState.nextRetryAt > Date.now()) {
+        return;
+      }
+
       void syncActiveIssueDetail(session, selectedBridgeId, selectedProjectThreadId, selectedActiveIssue.id);
     };
 
@@ -10605,7 +11513,14 @@ export default function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [selectedActiveIssue, selectedBridgeId, selectedProjectThreadId, session, syncActiveIssueDetail]);
+  }, [
+    getActiveIssuePollFailureState,
+    selectedActiveIssue,
+    selectedBridgeId,
+    selectedProjectThreadId,
+    session,
+    syncActiveIssueDetail
+  ]);
 
   useEffect(() => {
     const todoIds = issues
@@ -11080,14 +11995,20 @@ export default function App() {
     await movePrepIssuesToTodo(selectedIssueIds);
   };
 
-  const handleOpenIssueDetail = async (issueId) => {
+  const handleOpenIssueDetail = useCallback(async (issueId) => {
     if (!session?.loginId || !selectedBridgeId || !issueId) {
       return;
     }
 
-    const issue = issues.find((item) => item.id === issueId) ?? null;
+    const normalizedIssueId = String(issueId ?? "").trim();
+    const issue = issuesRef.current.find((item) => item.id === normalizedIssueId) ?? null;
     const fallbackThreadId = issue?.thread_id ?? selectedProjectThreadId;
-    setSelectedIssueId(issueId);
+
+    if (!normalizedIssueId || !fallbackThreadId) {
+      return;
+    }
+
+    setSelectedIssueId(normalizedIssueId);
     setDetailState(createDetailState({
       open: true,
       loading: true,
@@ -11096,17 +12017,7 @@ export default function App() {
     }));
 
     try {
-      const payload = await apiRequest(
-        `/api/issues/${encodeURIComponent(issueId)}?login_id=${encodeURIComponent(session.loginId)}&bridge_id=${encodeURIComponent(selectedBridgeId)}`
-      );
-      const normalizedIssue = normalizeIssue(payload?.issue, fallbackThreadId) ?? issue;
-
-      setDetailState(createDetailState({
-        open: true,
-        loading: false,
-        thread: normalizedIssue,
-        messages: mergeIssueMessages([], payload?.messages ?? [], normalizedIssue)
-      }));
+      await syncActiveIssueDetail(session, selectedBridgeId, fallbackThreadId, normalizedIssueId, { force: true });
     } catch (error) {
       setDetailState(createDetailState({
         open: true,
@@ -11122,7 +12033,7 @@ export default function App() {
         ]
       }));
     }
-  };
+  }, [selectedBridgeId, selectedProjectThreadId, session, syncActiveIssueDetail]);
 
   const handleOpenIssueEditor = (threadId) => {
     const issue = issues.find(
@@ -12509,25 +13420,10 @@ export default function App() {
 
       if (openIssueId) {
         try {
-          const payload = await loadIssueDetail(session, targetBridgeId, openIssueId);
+          const openDetailThreadId = String(detailStateRef.current.thread?.thread_id ?? activeThreadId ?? "").trim();
 
-          if (!payload) {
-            return;
-          }
-
-          setDetailState((current) => {
-            const nextDetailIssue = normalizeIssue(payload.issue, activeThreadId) ?? current.thread;
-
-            return {
-              ...current,
-              loading: false,
-              thread: nextDetailIssue,
-              messages: mergeIssueMessages(current.messages, payload.messages ?? [], nextDetailIssue)
-            };
-          });
-
-          if (detailStateRef.current.selectedSourcePath) {
-            void handleSelectDetailSourceFile(detailStateRef.current.selectedSourcePath, { force: true });
+          if (openDetailThreadId) {
+            await syncActiveIssueDetail(session, targetBridgeId, openDetailThreadId, openIssueId, { force: true });
           }
         } catch (error) {
           setRecentEvents((current) => [

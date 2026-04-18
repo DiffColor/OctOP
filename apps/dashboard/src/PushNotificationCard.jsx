@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const APP_ID = "dashboard-web";
 const PUSH_MESSAGE_TYPE = "octop.push.received";
 const MAX_LOG_ENTRIES = 5;
+const CLIENT_MODE_STANDALONE = "standalone";
 const CLIENT_MODE_BROWSER = "browser";
 
 function supportsPush() {
@@ -18,7 +19,7 @@ function createInitialState() {
   return {
     configured: false,
     loading: false,
-    bridgeRegistered: false,
+    deviceRegistered: false,
     browserSubscriptionReady: false,
     permission: typeof Notification === "undefined" ? "default" : Notification.permission,
     subscriptionCount: 0,
@@ -39,6 +40,17 @@ function delay(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function resolveClientMode() {
+  if (typeof window === "undefined") {
+    return CLIENT_MODE_BROWSER;
+  }
+
+  const isStandalone =
+    window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+  return isStandalone ? CLIENT_MODE_STANDALONE : CLIENT_MODE_BROWSER;
 }
 
 async function readExistingSubscription(registration, attempts = 1, delayMs = 0) {
@@ -147,7 +159,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         ...current,
         configured: false,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         browserSubscriptionReady: false,
         permission: typeof Notification === "undefined" ? "default" : Notification.permission,
         subscriptionCount: 0,
@@ -161,7 +173,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       setState((current) => ({
         ...current,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         browserSubscriptionReady: false,
         subscriptionCount: 0,
         notice: "",
@@ -194,7 +206,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
             ...current,
             configured: false,
             loading: false,
-            bridgeRegistered: false,
+            deviceRegistered: false,
             browserSubscriptionReady: false,
             permission: Notification.permission,
             subscriptionCount: 0,
@@ -212,7 +224,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         );
 
         if (subscription) {
-          await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, CLIENT_MODE_BROWSER);
+          await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, resolveClientMode());
         }
 
         const summary = await apiRequest(subscriptionsPath);
@@ -229,7 +241,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           ...current,
           configured: true,
           loading: false,
-          bridgeRegistered: currentEndpointRegistered,
+          deviceRegistered: currentEndpointRegistered,
           browserSubscriptionReady: Boolean(subscription),
           permission: Notification.permission,
           subscriptionCount: Number(summary?.count ?? endpoints.length ?? 0),
@@ -282,7 +294,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     };
   }, []);
 
-  const enablePushForBridge = async () => {
+  const enablePushOnThisDevice = async () => {
     if (!supportsPush() || !configPath || !subscriptionsPath || state.loading) {
       return;
     }
@@ -334,7 +346,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         throw new Error("브라우저 푸시 구독 객체를 읽지 못했습니다.");
       }
 
-      await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, CLIENT_MODE_BROWSER);
+      await syncSubscriptionRegistration(apiRequest, subscriptionsPath, subscription, resolveClientMode());
 
       const summary = await apiRequest(subscriptionsPath);
       endpointRef.current = payload.endpoint;
@@ -343,7 +355,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         ...current,
         configured: true,
         loading: false,
-        bridgeRegistered: true,
+        deviceRegistered: true,
         browserSubscriptionReady: true,
         permission,
         subscriptionCount: Number(summary?.count ?? 1),
@@ -361,7 +373,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     }
   };
 
-  const disablePushForBridge = async () => {
+  const disablePushOnThisDevice = async () => {
     if (!supportsPush() || !subscriptionsPath || state.loading) {
       return;
     }
@@ -371,7 +383,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     if (!endpoint) {
       setState((current) => ({
         ...current,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         loading: false
       }));
       return;
@@ -394,7 +406,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       setState((current) => ({
         ...current,
         loading: false,
-        bridgeRegistered: false,
+        deviceRegistered: false,
         subscriptionCount: Number(summary?.count ?? 0),
         notice: "",
         error: ""
@@ -409,20 +421,20 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
     }
   };
 
-  const togglePushForBridge = async () => {
-    if (state.bridgeRegistered) {
-      await disablePushForBridge();
+  const togglePushOnThisDevice = async () => {
+    if (state.deviceRegistered) {
+      await disablePushOnThisDevice();
       return;
     }
 
-    await enablePushForBridge();
+    await enablePushOnThisDevice();
   };
 
   const canTogglePush =
     Boolean(selectedBridgeId) &&
     !state.loading &&
     supportsPush() &&
-    (state.configured || state.bridgeRegistered);
+    (state.configured || state.deviceRegistered);
 
   return (
     <section className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 shadow-telegram-card">
@@ -432,10 +444,10 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         </div>
         <span
           className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-            state.bridgeRegistered ? "bg-emerald-400/10 text-emerald-300" : "bg-white/5 text-slate-300"
+            state.deviceRegistered ? "bg-emerald-400/10 text-emerald-300" : "bg-white/5 text-slate-300"
           }`}
         >
-          {state.bridgeRegistered ? "켜짐" : "꺼짐"}
+          {state.deviceRegistered ? "켜짐" : "꺼짐"}
         </span>
       </div>
 
@@ -460,8 +472,8 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
         </div>
         <div className="flex items-center justify-between gap-3">
           <span>알림 등록 상태</span>
-          <span className={state.bridgeRegistered ? "text-emerald-300" : "text-slate-500"}>
-            {state.bridgeRegistered ? "등록됨" : "등록 안 됨"}
+          <span className={state.deviceRegistered ? "text-emerald-300" : "text-slate-500"}>
+            {state.deviceRegistered ? "등록됨" : "등록 안 됨"}
           </span>
         </div>
       </div>
@@ -472,15 +484,15 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
       <div className="mt-3">
         <button
           type="button"
-          onClick={() => void togglePushForBridge()}
+          onClick={() => void togglePushOnThisDevice()}
           disabled={!canTogglePush}
           className={`w-full rounded-2xl px-3 py-2 text-[12px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
-            state.bridgeRegistered
+            state.deviceRegistered
               ? "border border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10"
               : "bg-telegram-500 hover:bg-telegram-400"
           }`}
         >
-          {state.loading ? "처리 중..." : state.bridgeRegistered ? "알림 끄기" : "알림 받기"}
+          {state.loading ? "처리 중..." : state.deviceRegistered ? "알림 끄기" : "알림 받기"}
         </button>
       </div>
 
@@ -489,10 +501,7 @@ export default function PushNotificationCard({ apiRequest, session, selectedBrid
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Recent</p>
           <ul className="mt-2 space-y-2">
             {state.received.map((entry) => (
-              <li
-                key={`${entry.issueId ?? entry.tag ?? entry.sentAt}-${entry.sentAt}`}
-                className="rounded-2xl bg-slate-950/70 px-3 py-2"
-              >
+              <li key={`${entry.issueId ?? entry.tag ?? entry.sentAt}-${entry.sentAt}`} className="rounded-2xl bg-slate-950/70 px-3 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-[12px] font-medium text-white">{entry.title ?? "OctOP 알림"}</p>
                   <span className="shrink-0 text-[11px] text-slate-500">{formatRelativeTimestamp(entry.sentAt)}</span>
