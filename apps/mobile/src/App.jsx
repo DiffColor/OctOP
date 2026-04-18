@@ -133,6 +133,8 @@ const VOICE_SESSION_ENABLED = String(import.meta.env.VITE_VOICE_SESSION_ENABLED 
 const STREAM_SILENCE_START_MS = 60_000;
 const STREAM_SILENCE_STEP_MS = 30_000;
 const STREAM_SILENCE_MAX_MS = 180_000;
+const SILENT_EVENT_STREAM_RECONNECT_DELAY_MS = 1_000;
+const SILENT_EVENT_STREAM_RECONNECT_COOLDOWN_MS = 90_000;
 const BRIDGE_STATUS_POLL_INTERVAL_MS = 10_000;
 const BRIDGE_RECONNECT_WORKSPACE_RELOAD_DEBOUNCE_MS = 3_000;
 const BRIDGE_STALE_DISCONNECT_MS = 150_000;
@@ -5054,12 +5056,15 @@ export default function App() {
   const scheduledResumeTimerRef = useRef(null);
   const scheduledResumeReasonsRef = useRef(new Set());
   const eventStreamReconnectTimerRef = useRef(null);
+  const silentStreamReconnectTimerRef = useRef(null);
+  const lastSilentStreamReconnectAtRef = useRef(0);
   const threadDeleteDialogResolverRef = useRef(null);
   const mainPageBackHandlerRef = useRef(null);
   const detailBackHandlerRef = useRef(null);
   const selectedThreadIdRef = useRef("");
   const instantThreadIdRef = useRef("");
   const selectedBridgeIdRef = useRef("");
+  const streamActivityAtRef = useRef(streamActivityAt);
   const selectedScopeKindRef = useRef(selectedScope.kind);
   const draftThreadProjectIdRef = useRef(draftThreadProjectId);
   const wideThreadSplitEnabledRef = useRef(wideThreadSplitEnabled);
@@ -5511,6 +5516,10 @@ export default function App() {
     return true;
   }, [clearInstantThread, confirmMobileAction, threads]);
   const markStreamActivity = useCallback(() => {
+    if (silentStreamReconnectTimerRef.current) {
+      window.clearTimeout(silentStreamReconnectTimerRef.current);
+      silentStreamReconnectTimerRef.current = null;
+    }
     setStreamActivityAt(Date.now());
   }, []);
 
@@ -5651,6 +5660,10 @@ export default function App() {
     selectedBridgeIdRef.current = selectedBridgeId;
     storeSelectedBridgeId(selectedBridgeId);
   }, [selectedBridgeId]);
+
+  useEffect(() => {
+    streamActivityAtRef.current = streamActivityAt;
+  }, [streamActivityAt]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -7326,6 +7339,10 @@ export default function App() {
       }
     });
 
+    eventSource.addEventListener("heartbeat", () => {
+      markStreamActivity();
+    });
+
     eventSource.addEventListener("message", (event) => {
       try {
         markStreamActivity();
@@ -7729,6 +7746,117 @@ export default function App() {
       return undefined;
     }
 
+    if (
+      !session?.loginId ||
+      !selectedBridgeId ||
+      !selectedBridgeKnown ||
+      !threadPanelVisible ||
+      !selectedThreadId ||
+      !selectedActiveIssue ||
+      !["running", "awaiting_input"].includes(selectedActiveIssue.status ?? "")
+    ) {
+      return undefined;
+    }
+
+    if (document.visibilityState === "hidden") {
+      return undefined;
+    }
+
+    const browserOnline =
+      typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+        ? true
+        : navigator.onLine;
+
+    if (!browserOnline) {
+      return undefined;
+    }
+
+    const lastActivityAt = Number(streamActivityAt ?? 0);
+
+    if (!Number.isFinite(lastActivityAt) || lastActivityAt <= 0) {
+      return undefined;
+    }
+
+    if (streamNow - lastActivityAt < STREAM_SILENCE_START_MS) {
+      return undefined;
+    }
+
+    if (Date.now() - lastSilentStreamReconnectAtRef.current < SILENT_EVENT_STREAM_RECONNECT_COOLDOWN_MS) {
+      return undefined;
+    }
+
+    if (silentStreamReconnectTimerRef.current) {
+      return undefined;
+    }
+
+    silentStreamReconnectTimerRef.current = window.setTimeout(() => {
+      silentStreamReconnectTimerRef.current = null;
+
+      const latestBrowserOnline =
+        typeof navigator === "undefined" || typeof navigator.onLine !== "boolean"
+          ? true
+          : navigator.onLine;
+
+      if (!latestBrowserOnline || document.visibilityState === "hidden") {
+        return;
+      }
+
+      if (selectedBridgeIdRef.current !== selectedBridgeId) {
+        return;
+      }
+
+      const activeThreadId = selectedThreadIdRef.current;
+
+      if (!activeThreadId || activeThreadId !== selectedThreadId) {
+        return;
+      }
+
+      const latestActivityAt = Number(streamActivityAtRef.current ?? 0);
+
+      if (Number.isFinite(latestActivityAt) && latestActivityAt > 0 && Date.now() - latestActivityAt < STREAM_SILENCE_START_MS) {
+        return;
+      }
+
+      const currentEntry = threadDetailsRef.current?.[activeThreadId] ?? null;
+      const currentThread = currentEntry?.thread ?? null;
+      const currentIssues = (currentEntry?.issues ?? [])
+        .map((issue) => normalizeIssue(issue, activeThreadId))
+        .filter(Boolean);
+      const currentActiveIssue = findActiveIssueForThread(
+        currentIssues,
+        currentThread?.active_physical_thread_id ?? null
+      );
+
+      if (!currentActiveIssue || !["running", "awaiting_input"].includes(currentActiveIssue.status ?? "")) {
+        return;
+      }
+
+      lastSilentStreamReconnectAtRef.current = Date.now();
+      setEventStreamReconnectToken((current) => current + 1);
+    }, SILENT_EVENT_STREAM_RECONNECT_DELAY_MS);
+
+    return () => {
+      if (silentStreamReconnectTimerRef.current) {
+        window.clearTimeout(silentStreamReconnectTimerRef.current);
+        silentStreamReconnectTimerRef.current = null;
+      }
+    };
+  }, [
+    selectedActiveIssue,
+    selectedBridgeId,
+    selectedBridgeKnown,
+    selectedThreadId,
+    streamActivityAt,
+    streamNow,
+    threadPanelVisible,
+    session?.loginId
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
     void publishServiceWorkerClientContext();
 
     const handleVisibilityChange = () => {
@@ -7815,6 +7943,11 @@ export default function App() {
       if (eventStreamReconnectTimerRef.current) {
         window.clearTimeout(eventStreamReconnectTimerRef.current);
         eventStreamReconnectTimerRef.current = null;
+      }
+
+      if (silentStreamReconnectTimerRef.current) {
+        window.clearTimeout(silentStreamReconnectTimerRef.current);
+        silentStreamReconnectTimerRef.current = null;
       }
     };
   }, []);
