@@ -11,7 +11,7 @@ const COMPARABLE_SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
   "[계획]",
   "[작업 계획]"
 ]);
-const COMPARABLE_REPEATABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
+const COMPARABLE_MERGEABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
 const OVERLAP_BOUNDARY_PATTERN = /[\s.,!?;:()[\]{}"'`“”‘’\-]/u;
 const MIN_ASSISTANT_DELTA_OVERLAP_LENGTH = 2;
 
@@ -71,8 +71,10 @@ function normalizeComparableAssistantContent(content = "") {
   const lines = normalized.split("\n");
   const result = [];
   const seenSingleInstanceSectionHeadings = new Set();
+  const seenMergeableSectionHeadings = new Set();
   let seenProgressHistoryHeading = false;
   let skippedDuplicateHeading = false;
+  let skippedMergeableHeading = false;
   let insideProgressHistorySection = false;
   let insideSkippedSingleInstanceSection = false;
 
@@ -95,10 +97,18 @@ function normalizeComparableAssistantContent(content = "") {
       continue;
     }
 
-    if (isSectionHeading && COMPARABLE_REPEATABLE_SECTION_HEADINGS.has(trimmed)) {
+    if (isSectionHeading && COMPARABLE_MERGEABLE_SECTION_HEADINGS.has(trimmed)) {
       insideProgressHistorySection = false;
       skippedDuplicateHeading = false;
       insideSkippedSingleInstanceSection = false;
+
+      if (seenMergeableSectionHeadings.has(trimmed)) {
+        skippedMergeableHeading = true;
+        continue;
+      }
+
+      seenMergeableSectionHeadings.add(trimmed);
+      skippedMergeableHeading = false;
       result.push(trimmed);
       continue;
     }
@@ -106,12 +116,14 @@ function normalizeComparableAssistantContent(content = "") {
     if (trimmed === COMPARABLE_PROGRESS_HISTORY_HEADING) {
       if (seenProgressHistoryHeading) {
         skippedDuplicateHeading = true;
+        skippedMergeableHeading = false;
         insideSkippedSingleInstanceSection = false;
         continue;
       }
 
       seenProgressHistoryHeading = true;
       skippedDuplicateHeading = false;
+      skippedMergeableHeading = false;
       insideProgressHistorySection = true;
       insideSkippedSingleInstanceSection = false;
       result.push(COMPARABLE_PROGRESS_HISTORY_HEADING);
@@ -120,6 +132,7 @@ function normalizeComparableAssistantContent(content = "") {
 
     if (isSectionHeading) {
       insideProgressHistorySection = false;
+      skippedMergeableHeading = false;
       insideSkippedSingleInstanceSection = false;
     }
 
@@ -135,6 +148,12 @@ function normalizeComparableAssistantContent(content = "") {
     }
 
     skippedDuplicateHeading = false;
+
+    if (skippedMergeableHeading && normalizedTrimmed === "" && String(result.at(-1) ?? "").trim() === "") {
+      continue;
+    }
+
+    skippedMergeableHeading = false;
     result.push(normalizedLine);
   }
 

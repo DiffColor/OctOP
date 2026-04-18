@@ -7,7 +7,7 @@ const SINGLE_INSTANCE_SECTION_HEADINGS = new Set([
   "[계획]",
   "[작업 계획]"
 ]);
-const REPEATABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
+const MERGEABLE_SECTION_HEADINGS = new Set(["[최종 보고]", "[최종 정리]"]);
 
 function normalizeProgressHistoryLine(line = "", insideProgressHistorySection = false) {
   if (!insideProgressHistorySection) {
@@ -41,8 +41,10 @@ export function normalizeAssistantMessageContent(content = "") {
   const lines = normalized.split("\n");
   const result = [];
   const seenSingleInstanceSectionHeadings = new Set();
+  const seenMergeableSectionHeadings = new Set();
   let seenProgressHistoryHeading = false;
   let skippedDuplicateHeading = false;
+  let skippedMergeableHeading = false;
   let insideProgressHistorySection = false;
   let insideSkippedSingleInstanceSection = false;
 
@@ -65,10 +67,18 @@ export function normalizeAssistantMessageContent(content = "") {
       continue;
     }
 
-    if (isSectionHeading && REPEATABLE_SECTION_HEADINGS.has(trimmed)) {
+    if (isSectionHeading && MERGEABLE_SECTION_HEADINGS.has(trimmed)) {
       insideProgressHistorySection = false;
       skippedDuplicateHeading = false;
       insideSkippedSingleInstanceSection = false;
+
+      if (seenMergeableSectionHeadings.has(trimmed)) {
+        skippedMergeableHeading = true;
+        continue;
+      }
+
+      seenMergeableSectionHeadings.add(trimmed);
+      skippedMergeableHeading = false;
       result.push(trimmed);
       continue;
     }
@@ -76,12 +86,14 @@ export function normalizeAssistantMessageContent(content = "") {
     if (trimmed === PROGRESS_HISTORY_HEADING) {
       if (seenProgressHistoryHeading) {
         skippedDuplicateHeading = true;
+        skippedMergeableHeading = false;
         insideSkippedSingleInstanceSection = false;
         continue;
       }
 
       seenProgressHistoryHeading = true;
       skippedDuplicateHeading = false;
+      skippedMergeableHeading = false;
       insideProgressHistorySection = true;
       insideSkippedSingleInstanceSection = false;
       result.push(PROGRESS_HISTORY_HEADING);
@@ -90,6 +102,7 @@ export function normalizeAssistantMessageContent(content = "") {
 
     if (isSectionHeading) {
       insideProgressHistorySection = false;
+      skippedMergeableHeading = false;
       insideSkippedSingleInstanceSection = false;
     }
 
@@ -105,6 +118,12 @@ export function normalizeAssistantMessageContent(content = "") {
     }
 
     skippedDuplicateHeading = false;
+
+    if (skippedMergeableHeading && normalizedTrimmed === "" && String(result.at(-1) ?? "").trim() === "") {
+      continue;
+    }
+
+    skippedMergeableHeading = false;
     result.push(normalizedLine);
   }
 

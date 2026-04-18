@@ -5,7 +5,7 @@ import { normalizeAssistantMessageContent } from "../../apps/mobile/src/assistan
 import { mergeAssistantDeltaContent } from "../../apps/mobile/src/assistantDelta.js";
 import { consolidateThreadMessages } from "../../apps/mobile/src/threadMessageConsolidation.js";
 
-test("뒤에 다시 오는 최종 보고 섹션 제목을 유지한다", () => {
+test("뒤에 다시 오는 최종 보고 섹션 제목은 하나만 남기고 본문은 유지한다", () => {
   const content = [
     "[목표]",
     "- 목표",
@@ -19,11 +19,19 @@ test("뒤에 다시 오는 최종 보고 섹션 제목을 유지한다", () => {
 
   assert.equal(
     normalizeAssistantMessageContent(content),
-    content
+    [
+      "[목표]",
+      "- 목표",
+      "",
+      "[최종 보고]",
+      "- 첫 보고",
+      "",
+      "- 두 번째 보고"
+    ].join("\n")
   );
 });
 
-test("최종 보고 continuation 병합 시 뒤쪽 섹션을 제거하지 않는다", () => {
+test("최종 보고 continuation 병합 시 제목 중복 없이 뒤쪽 본문을 이어 붙인다", () => {
   const previousContent = [
     "[목표]",
     "- 목표",
@@ -51,7 +59,6 @@ test("최종 보고 continuation 병합 시 뒤쪽 섹션을 제거하지 않는
       "[최종 보고]",
       "- 첫 보고",
       "",
-      "[최종 보고]",
       "- 두 번째 보고"
     ].join("\n")
   );
