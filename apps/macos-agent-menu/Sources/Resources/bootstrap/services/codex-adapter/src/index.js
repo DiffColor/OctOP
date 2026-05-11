@@ -552,7 +552,7 @@ async function connectToNats() {
 
 function normalizeCodexModel(value) {
   const normalized = String(value ?? "").trim();
-  return normalized || "gpt-5.4";
+  return normalized || "gpt-5.5";
 }
 
 function resolveCodexModelFromOptions(options = {}) {

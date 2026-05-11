@@ -84,7 +84,7 @@ export function loadOctopEnv(workspaceRoot) {
   env.OCTOP_BRIDGE_TOKEN = withDefault(env.OCTOP_BRIDGE_TOKEN, "octop-local-bridge");
   env.OCTOP_APP_SERVER_MODE = withDefault(env.OCTOP_APP_SERVER_MODE, "ws-local");
   env.OCTOP_APP_SERVER_WS_URL = withDefault(env.OCTOP_APP_SERVER_WS_URL, "ws://127.0.0.1:4600");
-  env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.4");
+  env.OCTOP_CODEX_MODEL = withDefault(env.OCTOP_CODEX_MODEL, "gpt-5.5");
   env.OCTOP_CODEX_REASONING_EFFORT = withDefault(env.OCTOP_CODEX_REASONING_EFFORT, "none");
   env.OCTOP_CODEX_APPROVAL_POLICY = withDefault(env.OCTOP_CODEX_APPROVAL_POLICY, "on-request");
   env.OCTOP_CODEX_SANDBOX = withDefault(env.OCTOP_CODEX_SANDBOX, "danger-full-access");

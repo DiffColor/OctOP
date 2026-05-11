@@ -23,6 +23,7 @@ sealed class SetupWindow : Window
 
   private static readonly string[] KnownCodexModelOptions =
   [
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex",
@@ -556,7 +557,7 @@ sealed class SetupWindow : Window
       WorkspaceRootsText = _workspaceRootTextBox.Text.Trim(),
       AppServerMode = "ws-local",
       AppServerWsUrl = _appServerWsUrlTextBox.Text.Trim(),
-      CodexModel = GetSelectedComboValue(_codexModelComboBox, "gpt-5.4"),
+      CodexModel = GetSelectedComboValue(_codexModelComboBox, "gpt-5.5"),
       CodexReasoningEffort = GetSelectedComboValue(_reasoningComboBox, "high"),
       CodexApprovalPolicy = GetSelectedComboValue(_approvalComboBox, "on-request"),
       CodexSandbox = GetSelectedComboValue(_sandboxComboBox, "danger-full-access"),

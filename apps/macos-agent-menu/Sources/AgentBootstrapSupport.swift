@@ -730,7 +730,7 @@ struct AgentBootstrapConfiguration: Codable {
       bridgeToken: "octop-local-bridge",
       appServerMode: "ws-local",
       appServerWsUrl: "ws://127.0.0.1:4600",
-      codexModel: "gpt-5.4",
+      codexModel: "gpt-5.5",
       reasoningEffort: "high",
       approvalPolicy: "on-request",
       sandboxMode: "danger-full-access",
@@ -880,6 +880,7 @@ private final class BrowserLoginHelperState: @unchecked Sendable {
 @MainActor
 final class AgentBootstrapStore: ObservableObject {
   private static let knownModelOptions = [
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex",

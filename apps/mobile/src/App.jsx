@@ -1940,6 +1940,7 @@ const TOOL_ACTIVITY_RESULT_MESSAGE_KINDS = new Set([
   "function_result"
 ]);
 const HIDDEN_THREAD_PREVIEW_MESSAGE_KINDS = new Set([
+  "handoff_summary",
   ...TOOL_ACTIVITY_CALL_MESSAGE_KINDS,
   ...TOOL_ACTIVITY_RESULT_MESSAGE_KINDS
 ]);

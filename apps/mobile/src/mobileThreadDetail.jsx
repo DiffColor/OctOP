@@ -56,6 +56,7 @@ const SYSTEM_MESSAGE_TITLE_BY_KIND = {
   function_result: "함수 응답"
 };
 const HIDDEN_CHAT_MESSAGE_KINDS = new Set([
+  "handoff_summary",
   "tool_call",
   "tool_result",
   "mcp_call",
@@ -1154,6 +1155,10 @@ export default function ThreadDetail({
           return null;
         }
 
+        if (message.kind === "handoff_summary") {
+          return null;
+        }
+
         const content = String(message.content ?? "").trim();
 
         if (!content) {
@@ -1161,9 +1166,7 @@ export default function ThreadDetail({
         }
 
         const role =
-          message.kind === "handoff_summary"
-            ? "handoff"
-            : message.role === "assistant"
+          message.role === "assistant"
               ? "assistant"
               : message.role === "system"
                 ? "system"

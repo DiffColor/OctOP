@@ -4851,6 +4851,19 @@ test("브리지 root thread rollover 통합 검증", { timeout: 120000 }, async 
       timelineAfterRollover.entries.some((entry) => entry.kind === "handoff_summary" && entry.physical_thread_id === targetPhysicalThreadId),
       true
     );
+    const latestHandoffSummary = timelineAfterRollover.continuity?.handoff_summaries?.at(-1) ?? null;
+    assert.ok(latestHandoffSummary);
+    assert.equal(String(latestHandoffSummary.content_markdown ?? "").includes("recent issues:"), false);
+    assert.equal(String(latestHandoffSummary.content_markdown ?? "").includes("recent messages:"), false);
+    assert.equal(String(latestHandoffSummary.content_markdown ?? "").includes(`issue prompt: ${PROMPT}`), false);
+    assert.equal(
+      String(latestHandoffSummary.content_markdown ?? "").includes("[현재 issue 원본 프롬프트]"),
+      false
+    );
+    assert.equal(
+      String(latestHandoffSummary.content_markdown ?? "").split(PROMPT).length - 1,
+      0
+    );
 
     const threadStoragePath = resolve(homeDir, ".octop", `${bridge.bridgeId}-threads.json`);
     const persistedBeforeDelete = await readPersistedThreadStorage(

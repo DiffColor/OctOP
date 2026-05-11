@@ -2302,6 +2302,7 @@ function inferModifiedSourceFilesFromMessages(messages = []) {
 }
 
 const HIDDEN_THREAD_DETAIL_MESSAGE_KINDS = new Set([
+  "handoff_summary",
   "tool_call",
   "tool_result",
   "mcp_call",
