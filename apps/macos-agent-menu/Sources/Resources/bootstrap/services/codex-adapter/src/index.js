@@ -7518,12 +7518,56 @@ function buildIssueTurnInput(issue = null, inputPrompt = "") {
   return input;
 }
 
+function normalizeHandoffContextText(value = "") {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function collectHandoffContextMessages(issue = null, messages = [], maxItems = 4) {
+  const normalizedIssuePrompt = normalizeHandoffContextText(issue?.prompt ?? "");
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const collected = [];
+  const seen = new Set();
+
+  for (let index = safeMessages.length - 1; index >= 0; index -= 1) {
+    const message = safeMessages[index];
+
+    if (!message) {
+      continue;
+    }
+
+    const role = String(message.role ?? "").trim().toLowerCase();
+
+    if (!["user", "assistant", "system"].includes(role)) {
+      continue;
+    }
+
+    const content = String(message.content ?? "").trim();
+    const normalizedContent = normalizeHandoffContextText(content);
+
+    if (!normalizedContent || normalizedContent === normalizedIssuePrompt || seen.has(`${role}:${normalizedContent}`)) {
+      continue;
+    }
+
+    seen.add(`${role}:${normalizedContent}`);
+    collected.push({
+      role,
+      content
+    });
+
+    if (collected.length >= maxItems) {
+      break;
+    }
+  }
+
+  return collected.reverse();
+}
+
 function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, issueId = null) {
   const rootThread = threadStateById.get(rootThreadId);
   const sourcePhysicalThread = physicalThreadStateById.get(sourcePhysicalThreadId);
   const activeIssue = issueId ? issueCardsById.get(issueId) : null;
-  const recentMessages = activeIssue ? listIssueMessages(activeIssue.id).slice(-8) : [];
-  const recentIssues = listThreadIssues(rootThreadId).slice(0, 5);
+  const recentMessages = activeIssue ? listIssueMessages(activeIssue.id).slice(-12) : [];
+  const handoffContextMessages = collectHandoffContextMessages(activeIssue, recentMessages);
   const contentJson = {
     root_thread_id: rootThreadId,
     source_physical_thread_id: sourcePhysicalThreadId,
@@ -7538,13 +7582,7 @@ function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, 
           last_message: activeIssue.last_message ?? ""
         }
       : null,
-    recent_issues: recentIssues.map((issue) => ({
-      id: issue.id,
-      title: issue.title,
-      status: issue.status,
-      last_message: issue.last_message ?? ""
-    })),
-    recent_messages: recentMessages.map((message) => ({
+    resume_messages: handoffContextMessages.map((message) => ({
       role: message.role ?? "system",
       content: String(message.content ?? "").trim()
     })),
@@ -7553,14 +7591,11 @@ function buildDeterministicHandoffSummary(rootThreadId, sourcePhysicalThreadId, 
     source_context_window_tokens: sourcePhysicalThread?.context_window_tokens ?? null
   };
   const markdownLines = [
-    `root thread: ${rootThread?.name ?? rootThreadId}`,
-    `source physical thread: ${sourcePhysicalThreadId}`,
     activeIssue ? `active issue: ${activeIssue.title}` : "active issue: 없음",
-    activeIssue?.prompt ? `issue prompt: ${activeIssue.prompt}` : null,
-    recentIssues.length > 0 ? "recent issues:" : null,
-    ...recentIssues.map((issue) => `- ${issue.title} [${issue.status}] ${issue.last_message ?? ""}`),
-    recentMessages.length > 0 ? "recent messages:" : null,
-    ...recentMessages.map((message) => `- ${message.role}: ${String(message.content ?? "").trim()}`)
+    activeIssue?.status ? `issue status: ${activeIssue.status}` : null,
+    activeIssue?.last_message ? `latest status: ${String(activeIssue.last_message ?? "").trim()}` : null,
+    handoffContextMessages.length > 0 ? "resume context:" : null,
+    ...handoffContextMessages.map((message) => `- ${message.role}: ${String(message.content ?? "").trim()}`)
   ].filter(Boolean);
 
   return normalizeHandoffSummary({

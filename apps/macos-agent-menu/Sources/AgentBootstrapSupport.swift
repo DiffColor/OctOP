@@ -879,7 +879,7 @@ private final class BrowserLoginHelperState: @unchecked Sendable {
 
 @MainActor
 final class AgentBootstrapStore: ObservableObject {
-  private static let knownModelOptions = [
+  private static let seededModelOptions = [
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -895,6 +895,7 @@ final class AgentBootstrapStore: ObservableObject {
     "gpt-5-codex-mini",
     "gpt-5"
   ]
+  private static let defaultReasoningOptions = ["none", "low", "medium", "high", "xhigh"]
 
   @Published var configuration: AgentBootstrapConfiguration
   @Published var diagnostics: [AgentDiagnosticItem] = []
@@ -914,6 +915,9 @@ final class AgentBootstrapStore: ObservableObject {
   @Published var lastAppUpdateCheckError: String? = nil
   @Published var runtimeUpdateCheckInProgress = false
   @Published var lastRuntimeUpdateCheckError: String? = nil
+  @Published private(set) var appServerModelCatalog: [CodexAppServerModelDescriptor] = []
+  @Published var modelCatalogRefreshInProgress = false
+  @Published private(set) var modelCatalogStatusMessage = "app-server model/list 동기화 대기 중"
   private var automaticBootstrapAttempted = false
   private var pendingLoginRecoveryAttempted = false
   private var bootstrapTask: Task<Bool, Never>? = nil
@@ -927,7 +931,6 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   let appServerModeOptions = ["ws-local"]
-  let reasoningOptions = ["none", "low", "medium", "high", "xhigh"]
   let approvalOptions = ["on-request", "never", "untrusted"]
   let sandboxOptions = [
     AgentBootstrapConfiguration.dangerouslyBypassApprovalsAndSandbox,
@@ -977,16 +980,61 @@ final class AgentBootstrapStore: ObservableObject {
   }
 
   var modelOptions: [String] {
+    let discoveredModels = deduplicatedModelIds(from: appServerModelCatalog.map(\.id))
     let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !discoveredModels.isEmpty else {
+      guard !selectedModel.isEmpty else {
+        return Self.seededModelOptions
+      }
+
+      if Self.seededModelOptions.contains(selectedModel) {
+        return Self.seededModelOptions
+      }
+
+      return [selectedModel] + Self.seededModelOptions
+    }
+
     guard !selectedModel.isEmpty else {
-      return Self.knownModelOptions
+      return discoveredModels
     }
 
-    if Self.knownModelOptions.contains(selectedModel) {
-      return Self.knownModelOptions
+    if discoveredModels.contains(selectedModel) {
+      return discoveredModels
     }
 
-    return [selectedModel] + Self.knownModelOptions
+    return [selectedModel] + discoveredModels
+  }
+
+  var reasoningOptions: [String] {
+    let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let descriptor = modelDescriptor(for: selectedModel) else {
+      return Self.defaultReasoningOptions
+    }
+
+    let discoveredOptions = deduplicatedReasoningOptions(from: descriptor)
+    if discoveredOptions.isEmpty {
+      return Self.defaultReasoningOptions
+    }
+
+    let currentReasoning = configuration.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    if currentReasoning.isEmpty || discoveredOptions.contains(currentReasoning) {
+      return discoveredOptions
+    }
+
+    return [currentReasoning] + discoveredOptions
+  }
+
+  var modelCatalogStatusText: String {
+    if modelCatalogRefreshInProgress {
+      return "app-server model/list를 동기화하고 있습니다."
+    }
+
+    if !appServerModelCatalog.isEmpty {
+      return "app-server model/list 기준 \(appServerModelCatalog.count)개 모델이 적용되었습니다."
+    }
+
+    return modelCatalogStatusMessage
   }
 
   var appSupportURL: URL {
@@ -1365,6 +1413,7 @@ final class AgentBootstrapStore: ObservableObject {
 
   func saveConfiguration() {
     do {
+      synchronizeReasoningEffortWithSelectedModel()
       try persistApiKeyInputIfNeeded()
       try persistConfiguration()
       try installLaunchAgent(enabled: configuration.autoStartAtLogin, log: { _ in })
@@ -1372,6 +1421,9 @@ final class AgentBootstrapStore: ObservableObject {
       configurationSavedAt = Date()
       bootstrapSummary = "설정을 저장했습니다."
       refreshDiagnostics()
+      Task {
+        await refreshAvailableModels()
+      }
     } catch {
       bootstrapSummary = "설정 저장 실패: \(error.localizedDescription)"
     }
@@ -1398,6 +1450,35 @@ final class AgentBootstrapStore: ObservableObject {
     codexLoggedIn = status.loggedIn
     codexLoginStatus = status.summary
     codexLoginStatusResolved = true
+  }
+
+  func refreshAvailableModels(
+    log: @escaping @MainActor (String) -> Void = { _ in }
+  ) async {
+    guard !modelCatalogRefreshInProgress else {
+      return
+    }
+
+    guard FileManager.default.isExecutableFile(atPath: runtimeCodexURL.path) else {
+      appServerModelCatalog = []
+      modelCatalogStatusMessage = "Codex 설치 후 app-server model/list를 자동으로 불러옵니다."
+      return
+    }
+
+    modelCatalogRefreshInProgress = true
+    defer { modelCatalogRefreshInProgress = false }
+
+    do {
+      let models = try await withCodexAppServerSession(log: log) { session in
+        try await session.listModels(includeHidden: true)
+      }
+      applyDiscoveredModelCatalog(models)
+      modelCatalogStatusMessage = "app-server model/list 기준 \(appServerModelCatalog.count)개 모델이 적용되었습니다."
+    } catch {
+      let message = "app-server model/list 조회 실패: \(error.localizedDescription)"
+      modelCatalogStatusMessage = message
+      log(message)
+    }
   }
 
   func refreshAvailableRuntimeUpdate(
@@ -1659,6 +1740,7 @@ final class AgentBootstrapStore: ObservableObject {
       codexLoginStatus = status.summary
       codexLoginStatusResolved = true
       if status.loggedIn {
+        await refreshAvailableModels(log: log)
         bootstrapSummary = "실행 준비됨"
         refreshDiagnostics()
         return true
@@ -1685,6 +1767,7 @@ final class AgentBootstrapStore: ObservableObject {
       self.codexLoggedIn = status.loggedIn
       self.codexLoginStatus = status.summary
       self.codexLoginStatusResolved = true
+      await self.refreshAvailableModels(log: log)
       self.bootstrapSummary = "환경 자동 설치 완료"
       self.lastBootstrapAt = Date()
       return true
@@ -2671,6 +2754,9 @@ final class AgentBootstrapStore: ObservableObject {
 
     do {
       try await loginWithAuthSelection(log: log, authMode: authMode, apiKey: apiKey, logoutFirst: true)
+      if codexLoggedIn {
+        await refreshAvailableModels(log: log)
+      }
       bootstrapSummary = codexLoggedIn ? "Codex 계정 전환 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 계정 전환 실패: \(error.localizedDescription)"
@@ -2695,6 +2781,9 @@ final class AgentBootstrapStore: ObservableObject {
 
     do {
       try await loginWithAuthSelection(log: log, authMode: authMode, apiKey: apiKey, logoutFirst: false)
+      if codexLoggedIn {
+        await refreshAvailableModels(log: log)
+      }
       bootstrapSummary = codexLoggedIn ? "Codex 로그인 완료" : "Codex 로그인 필요"
     } catch {
       bootstrapSummary = "Codex 로그인 실패: \(error.localizedDescription)"
@@ -3494,6 +3583,115 @@ final class AgentBootstrapStore: ObservableObject {
     return "'\(text.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
   }
 
+  func applyDiscoveredModelCatalog(_ models: [CodexAppServerModelDescriptor]) {
+    var deduplicatedModels: [CodexAppServerModelDescriptor] = []
+    var seenIds = Set<String>()
+
+    for model in models {
+      let normalizedId = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedId.isEmpty, seenIds.insert(normalizedId).inserted else {
+        continue
+      }
+      deduplicatedModels.append(model)
+    }
+
+    appServerModelCatalog = deduplicatedModels
+
+    let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    if selectedModel.isEmpty,
+       let preferredModel = deduplicatedModels.first(where: \.isDefault) ?? deduplicatedModels.first {
+      configuration.codexModel = preferredModel.id
+    }
+
+    synchronizeReasoningEffortWithSelectedModel()
+  }
+
+  func synchronizeReasoningEffortWithSelectedModel() {
+    let selectedModel = configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let descriptor = modelDescriptor(for: selectedModel) else {
+      return
+    }
+
+    let supportedOptions = deduplicatedReasoningOptions(from: descriptor)
+    guard !supportedOptions.isEmpty else {
+      return
+    }
+
+    let currentReasoning = configuration.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    if supportedOptions.contains(currentReasoning) {
+      return
+    }
+
+    if let defaultReasoningEffort = descriptor.defaultReasoningEffort?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       supportedOptions.contains(defaultReasoningEffort) {
+      configuration.reasoningEffort = defaultReasoningEffort
+      return
+    }
+
+    configuration.reasoningEffort = supportedOptions[0]
+  }
+
+  func modelOptionLabel(for value: String) -> String {
+    let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let descriptor = modelDescriptor(for: trimmedValue) else {
+      return trimmedValue
+    }
+
+    var suffixes: [String] = []
+    if descriptor.isDefault {
+      suffixes.append("기본")
+    }
+    if descriptor.hidden {
+      suffixes.append("숨김")
+    }
+
+    let baseLabel = descriptor.displayName == descriptor.id
+      ? descriptor.displayName
+      : "\(descriptor.displayName) (\(descriptor.id))"
+    guard !suffixes.isEmpty else {
+      return baseLabel
+    }
+
+    return "\(baseLabel) · \(suffixes.joined(separator: " · "))"
+  }
+
+  private func modelDescriptor(for modelId: String) -> CodexAppServerModelDescriptor? {
+    let trimmedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedModelId.isEmpty else {
+      return nil
+    }
+
+    return appServerModelCatalog.first {
+      $0.id.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedModelId
+    }
+  }
+
+  private func deduplicatedModelIds(from values: [String]) -> [String] {
+    var seen = Set<String>()
+    return values.compactMap { value in
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty, seen.insert(trimmed).inserted else {
+        return nil
+      }
+      return trimmed
+    }
+  }
+
+  private func deduplicatedReasoningOptions(from descriptor: CodexAppServerModelDescriptor) -> [String] {
+    let discoveredOptions = descriptor.supportedReasoningEfforts.map(\.reasoningEffort)
+    var options = deduplicatedModelIds(from: discoveredOptions)
+
+    if let defaultReasoningEffort = descriptor.defaultReasoningEffort?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !defaultReasoningEffort.isEmpty,
+       !options.contains(defaultReasoningEffort) {
+      options.insert(defaultReasoningEffort, at: 0)
+    }
+
+    return options
+  }
+
   private func currentCodexLoginStatus() async -> (loggedIn: Bool, summary: String) {
     let effectiveAuthMode = AgentBootstrapConfiguration.chatGptAuthMode
     if effectiveAuthMode == AgentBootstrapConfiguration.authModeApiKey {
@@ -4121,7 +4319,24 @@ struct AgentSetupWindow: View {
         }
 
         configurationCard(title: "Codex 실행 정책", icon: "slider.horizontal.3") {
-          pickerField("모델", selection: $bootstrap.configuration.codexModel, options: bootstrap.modelOptions)
+          pickerField(
+            "모델",
+            selection: $bootstrap.configuration.codexModel,
+            options: bootstrap.modelOptions,
+            optionLabel: bootstrap.modelOptionLabel(for:)
+          )
+          HStack(alignment: .center, spacing: 10) {
+            Text(bootstrap.modelCatalogStatusText)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Spacer()
+            Button(bootstrap.modelCatalogRefreshInProgress ? "동기화 중..." : "모델 목록 새로고침") {
+              Task {
+                await bootstrap.refreshAvailableModels()
+              }
+            }
+            .disabled(bootstrap.modelCatalogRefreshInProgress || bootstrap.bootstrapInProgress)
+          }
           pickerField("추론 강도", selection: $bootstrap.configuration.reasoningEffort, options: bootstrap.reasoningOptions)
           pickerField(
             "승인 정책",
@@ -4179,8 +4394,12 @@ struct AgentSetupWindow: View {
     )
     .background(WindowTitleConfigurator(title: "환경설정"))
     .frame(minWidth: 520, minHeight: 680)
+    .onChange(of: bootstrap.configuration.codexModel) { _, _ in
+      bootstrap.synchronizeReasoningEffortWithSelectedModel()
+    }
     .task {
       await bootstrap.refreshCodexLoginStatus()
+      await bootstrap.refreshAvailableModels()
     }
   }
 

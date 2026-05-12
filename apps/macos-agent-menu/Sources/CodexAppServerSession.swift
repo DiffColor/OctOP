@@ -22,6 +22,24 @@ struct CodexAppServerAccountUpdatedResult: Sendable {
   let authMode: String?
 }
 
+struct CodexAppServerReasoningEffortOption: Sendable, Hashable {
+  let reasoningEffort: String
+  let description: String?
+}
+
+struct CodexAppServerModelDescriptor: Identifiable, Sendable, Hashable {
+  let id: String
+  let model: String
+  let displayName: String
+  let hidden: Bool
+  let defaultReasoningEffort: String?
+  let supportedReasoningEfforts: [CodexAppServerReasoningEffortOption]
+  let inputModalities: [String]
+  let supportsPersonality: Bool
+  let isDefault: Bool
+  let upgrade: String?
+}
+
 private enum CodexAppServerSessionError: LocalizedError {
   case terminated(String)
   case invalidResponse(String)
@@ -318,6 +336,7 @@ final class CodexAppServerSession: @unchecked Sendable {
         ]
       ]
     )
+    try sendNotification(method: "initialized", params: nil)
   }
 
   func readAccount(refreshToken: Bool = false) async throws -> CodexAppServerAccountStatus {
@@ -433,6 +452,49 @@ final class CodexAppServerSession: @unchecked Sendable {
     )
   }
 
+  func listModels(
+    includeHidden: Bool = true,
+    limit: Int = 200
+  ) async throws -> [CodexAppServerModelDescriptor] {
+    var results: [CodexAppServerModelDescriptor] = []
+    var seenModelIds = Set<String>()
+    var cursor: String? = nil
+
+    while true {
+      var params: [String: Any] = [
+        "includeHidden": includeHidden,
+        "limit": limit
+      ]
+
+      if let cursor, !cursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        params["cursor"] = cursor
+      }
+
+      let raw = try await request(method: "model/list", params: params)
+      guard let payload = raw as? [String: Any],
+            let data = payload["data"] as? [[String: Any]] else {
+        throw CodexAppServerSessionError.invalidResponse("model/list 응답 형식이 올바르지 않습니다.")
+      }
+
+      for item in data {
+        let descriptor = try Self.parseModelDescriptor(item)
+        if seenModelIds.insert(descriptor.id).inserted {
+          results.append(descriptor)
+        }
+      }
+
+      let nextCursor = (payload["nextCursor"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard let nextCursor, !nextCursor.isEmpty, nextCursor != cursor else {
+        break
+      }
+
+      cursor = nextCursor
+    }
+
+    return results
+  }
+
   func shutdown() async {
     stdoutTask?.cancel()
     stderrTask?.cancel()
@@ -472,10 +534,30 @@ final class CodexAppServerSession: @unchecked Sendable {
     return try JSONSerialization.jsonObject(with: responseData, options: [])
   }
 
+  private func sendNotification(method: String, params: Any?) throws {
+    let notificationData = try buildNotificationData(method: method, params: params)
+    try standardInput.write(contentsOf: notificationData)
+  }
+
   private func buildRequestData(id: String, method: String, params: Any?) throws -> Data {
     var payload: [String: Any] = [
       "jsonrpc": "2.0",
       "id": id,
+      "method": method
+    ]
+
+    if let params {
+      payload["params"] = params
+    }
+
+    var data = try JSONSerialization.data(withJSONObject: payload, options: [])
+    data.append(0x0A)
+    return data
+  }
+
+  private func buildNotificationData(method: String, params: Any?) throws -> Data {
+    var payload: [String: Any] = [
+      "jsonrpc": "2.0",
       "method": method
     ]
 
@@ -536,5 +618,52 @@ final class CodexAppServerSession: @unchecked Sendable {
       )
       await state.handleAccountUpdated(updated)
     }
+  }
+
+  private static func parseModelDescriptor(_ raw: [String: Any]) throws -> CodexAppServerModelDescriptor {
+    let resolvedId = (raw["id"] as? String ?? raw["model"] as? String ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !resolvedId.isEmpty else {
+      throw CodexAppServerSessionError.invalidResponse("model/list 항목에 model id가 없습니다.")
+    }
+
+    let model = (raw["model"] as? String ?? resolvedId)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let displayName = (raw["displayName"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let defaultReasoningEffort = (raw["defaultReasoningEffort"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let inputModalities = (raw["inputModalities"] as? [String])?
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+
+    let supportedReasoningEfforts = ((raw["supportedReasoningEfforts"] as? [[String: Any]]) ?? [])
+      .compactMap { effort -> CodexAppServerReasoningEffortOption? in
+        let reasoningEffort = (effort["reasoningEffort"] as? String ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reasoningEffort.isEmpty else {
+          return nil
+        }
+
+        let description = (effort["description"] as? String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        return CodexAppServerReasoningEffortOption(
+          reasoningEffort: reasoningEffort,
+          description: description?.isEmpty == false ? description : nil
+        )
+      }
+
+    return CodexAppServerModelDescriptor(
+      id: resolvedId,
+      model: model.isEmpty ? resolvedId : model,
+      displayName: displayName?.isEmpty == false ? displayName! : resolvedId,
+      hidden: raw["hidden"] as? Bool ?? false,
+      defaultReasoningEffort: defaultReasoningEffort?.isEmpty == false ? defaultReasoningEffort : nil,
+      supportedReasoningEfforts: supportedReasoningEfforts,
+      inputModalities: inputModalities?.isEmpty == false ? inputModalities! : ["text", "image"],
+      supportsPersonality: raw["supportsPersonality"] as? Bool ?? false,
+      isDefault: raw["isDefault"] as? Bool ?? false,
+      upgrade: (raw["upgrade"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
   }
 }

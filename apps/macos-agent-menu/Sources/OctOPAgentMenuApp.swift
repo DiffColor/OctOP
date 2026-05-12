@@ -1173,6 +1173,7 @@ struct OctOPAgentMenuApp: App {
           }
 
           await bootstrap.refreshCodexLoginStatus()
+          await bootstrap.refreshAvailableModels(log: model.appendInstallerLog)
           await bootstrap.refreshAvailableAppUpdate(log: model.appendInstallerLog)
           await bootstrap.refreshAvailableRuntimeUpdate(
             log: model.appendInstallerLog

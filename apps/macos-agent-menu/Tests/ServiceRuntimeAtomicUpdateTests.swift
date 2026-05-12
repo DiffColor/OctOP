@@ -249,6 +249,64 @@ final class ServiceRuntimeAtomicUpdateTests: XCTestCase {
   }
 
   @MainActor
+  func testAppServerModelCatalogUpdatesModelPickerAndReasoningEffort() {
+    let bootstrap = makeBootstrap()
+    bootstrap.configuration.codexModel = ""
+    bootstrap.configuration.reasoningEffort = "xhigh"
+
+    bootstrap.applyDiscoveredModelCatalog([
+      CodexAppServerModelDescriptor(
+        id: "gpt-5.4",
+        model: "gpt-5.4",
+        displayName: "GPT-5.4",
+        hidden: false,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          CodexAppServerReasoningEffortOption(reasoningEffort: "low", description: "Lower latency"),
+          CodexAppServerReasoningEffortOption(reasoningEffort: "medium", description: "Balanced")
+        ],
+        inputModalities: ["text", "image"],
+        supportsPersonality: true,
+        isDefault: true,
+        upgrade: nil
+      ),
+      CodexAppServerModelDescriptor(
+        id: "gpt-5.4-mini",
+        model: "gpt-5.4-mini",
+        displayName: "GPT-5.4 Mini",
+        hidden: true,
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          CodexAppServerReasoningEffortOption(reasoningEffort: "low", description: nil)
+        ],
+        inputModalities: ["text"],
+        supportsPersonality: true,
+        isDefault: false,
+        upgrade: nil
+      )
+    ])
+
+    XCTAssertEqual(bootstrap.configuration.codexModel, "gpt-5.4")
+    XCTAssertEqual(bootstrap.configuration.reasoningEffort, "medium")
+    XCTAssertEqual(bootstrap.modelOptions, ["gpt-5.4", "gpt-5.4-mini"])
+    XCTAssertEqual(bootstrap.reasoningOptions, ["low", "medium"])
+    XCTAssertEqual(
+      bootstrap.modelOptionLabel(for: "gpt-5.4"),
+      "GPT-5.4 (gpt-5.4) · 기본"
+    )
+    XCTAssertEqual(
+      bootstrap.modelOptionLabel(for: "gpt-5.4-mini"),
+      "GPT-5.4 Mini (gpt-5.4-mini) · 숨김"
+    )
+
+    bootstrap.configuration.codexModel = "gpt-5.4-mini"
+    bootstrap.synchronizeReasoningEffortWithSelectedModel()
+
+    XCTAssertEqual(bootstrap.configuration.reasoningEffort, "low")
+    XCTAssertEqual(bootstrap.reasoningOptions, ["low"])
+  }
+
+  @MainActor
   func testDisplayedVersionsUseDeclaredAppVersionAndRuntimeCommit() async throws {
     let revision = try initializeGitRepository(at: codexAdapterSourceURL)
 
