@@ -194,6 +194,8 @@ const todoMessageIdsByChatId = new Map();
 const activeIssueByThreadId = new Map();
 const activeIssueByPhysicalThreadId = new Map();
 const runningIssueMetaByThreadId = new Map();
+const notificationTurnContextById = new Map();
+const notificationItemContextById = new Map();
 const issueQueueProcessingStateByThreadId = new Map();
 let runningIssueBackfillPromise = null;
 let runningIssueThreadReadSamplePromise = null;
@@ -224,6 +226,9 @@ const RUNNING_ISSUE_BACKFILL_NO_PROGRESS_FORCE_RECONNECT_COUNT = Number(
 );
 const RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS = Number(
   process.env.OCTOP_RUNNING_ISSUE_DEGRADED_FORCE_RECONNECT_DELAY_MS ?? 30000
+);
+const NOTIFICATION_CONTEXT_TTL_MS = Number(
+  process.env.OCTOP_NOTIFICATION_CONTEXT_TTL_MS ?? 3600000
 );
 const THREAD_DELETE_STOP_TIMEOUT_MS = Number(process.env.OCTOP_THREAD_DELETE_STOP_TIMEOUT_MS ?? 2500);
 const NATS_DELTA_CHUNK_MAX_BYTES = Number(process.env.OCTOP_NATS_DELTA_CHUNK_MAX_BYTES ?? 12000);
@@ -4458,6 +4463,16 @@ async function startTurnOnPhysicalThread(
         });
       }
 
+      if (turn?.id) {
+        rememberNotificationTurnContext(turn.id, {
+          threadId: rootThreadId,
+          physicalThreadId,
+          codexThreadId: activeCodexThreadId,
+          turnId: turn.id,
+          issueId
+        });
+      }
+
       updateIssueCard(issueId, {
         executed_physical_thread_id: physicalThreadId,
         status: "running",
@@ -5653,17 +5668,62 @@ function isIssueTerminalStatus(status) {
 }
 
 function isIssueProgressEvent(method) {
-  return ["turn/started", "turn/plan/updated", "turn/diff/updated", "item/agentMessage/delta"].includes(method);
+  return [
+    "turn/started",
+    "turn/plan/updated",
+    "turn/diff/updated",
+    "item/agentMessage/delta",
+    "item/started",
+    "item/completed"
+  ].includes(method);
 }
 
 function extractNotificationTurnId(params = {}) {
   const candidate = String(
     params.turn?.id ??
+      params.item?.turnId ??
+      params.item?.turn_id ??
       params.turnId ??
       params.turn_id ??
       ""
   ).trim();
   return candidate || null;
+}
+
+function extractNotificationItem(params = {}) {
+  return params.item && typeof params.item === "object" ? params.item : null;
+}
+
+function extractNotificationItemId(params = {}) {
+  const item = extractNotificationItem(params);
+  const candidate = String(
+    params.itemId ??
+      params.item_id ??
+      item?.id ??
+      ""
+  ).trim();
+  return candidate || null;
+}
+
+function extractNotificationItemType(params = {}) {
+  const item = extractNotificationItem(params);
+  const candidate = String(
+    item?.type ??
+      params.itemType ??
+      params.item_type ??
+      ""
+  ).trim();
+  return candidate || null;
+}
+
+function extractNotificationItemText(params = {}) {
+  const item = extractNotificationItem(params);
+
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+
+  return collectAssistantTextFromRemoteItem(item);
 }
 
 function getTrackedExecutionTurnId(rootThreadId, physicalThreadId = null) {
@@ -5677,6 +5737,335 @@ function getTrackedExecutionTurnId(rootThreadId, physicalThreadId = null) {
       ""
   ).trim();
   return candidate || null;
+}
+
+function buildNotificationExecutionContext({
+  threadId = null,
+  physicalThreadId = null,
+  codexThreadId = null,
+  turnId = null,
+  itemId = null,
+  issueId = null
+} = {}) {
+  const resolvedThreadId = threadId ? String(threadId).trim() : null;
+  const resolvedPhysicalThreadId = physicalThreadId ? String(physicalThreadId).trim() : null;
+  const resolvedCodexThreadId = codexThreadId ? String(codexThreadId).trim() : null;
+  const resolvedTurnId = turnId ? String(turnId).trim() : null;
+  const resolvedItemId = itemId ? String(itemId).trim() : null;
+  const resolvedIssueId = issueId ? String(issueId).trim() : null;
+
+  if (
+    !resolvedThreadId &&
+    !resolvedPhysicalThreadId &&
+    !resolvedCodexThreadId &&
+    !resolvedTurnId &&
+    !resolvedItemId &&
+    !resolvedIssueId
+  ) {
+    return null;
+  }
+
+  return {
+    threadId: resolvedThreadId,
+    physicalThreadId: resolvedPhysicalThreadId,
+    codexThreadId: resolvedCodexThreadId,
+    turnId: resolvedTurnId,
+    itemId: resolvedItemId,
+    issueId: resolvedIssueId,
+    updatedAt: now()
+  };
+}
+
+function cleanupExpiredNotificationContexts() {
+  if (NOTIFICATION_CONTEXT_TTL_MS <= 0) {
+    return;
+  }
+
+  const cutoffMs = Date.now() - NOTIFICATION_CONTEXT_TTL_MS;
+
+  for (const [turnId, context] of notificationTurnContextById.entries()) {
+    const updatedAtMs = Date.parse(context?.updatedAt ?? 0);
+    if (!Number.isFinite(updatedAtMs) || updatedAtMs < cutoffMs) {
+      notificationTurnContextById.delete(turnId);
+    }
+  }
+
+  for (const [itemId, context] of notificationItemContextById.entries()) {
+    const updatedAtMs = Date.parse(context?.updatedAt ?? 0);
+    if (!Number.isFinite(updatedAtMs) || updatedAtMs < cutoffMs) {
+      notificationItemContextById.delete(itemId);
+    }
+  }
+}
+
+function rememberNotificationTurnContext(turnId, context = {}) {
+  const normalizedTurnId = String(turnId ?? "").trim();
+
+  if (!normalizedTurnId) {
+    return null;
+  }
+
+  const nextContext = buildNotificationExecutionContext({
+    ...notificationTurnContextById.get(normalizedTurnId),
+    ...context,
+    turnId: normalizedTurnId
+  });
+
+  if (!nextContext) {
+    return null;
+  }
+
+  notificationTurnContextById.set(normalizedTurnId, nextContext);
+  return nextContext;
+}
+
+function rememberNotificationItemContext(itemId, context = {}) {
+  const normalizedItemId = String(itemId ?? "").trim();
+
+  if (!normalizedItemId) {
+    return null;
+  }
+
+  const nextContext = buildNotificationExecutionContext({
+    ...notificationItemContextById.get(normalizedItemId),
+    ...context,
+    itemId: normalizedItemId
+  });
+
+  if (!nextContext) {
+    return null;
+  }
+
+  notificationItemContextById.set(normalizedItemId, nextContext);
+  return nextContext;
+}
+
+function findNotificationContextByTurnId(turnId) {
+  const normalizedTurnId = String(turnId ?? "").trim();
+
+  if (!normalizedTurnId) {
+    return null;
+  }
+
+  const cachedContext = notificationTurnContextById.get(normalizedTurnId) ?? null;
+
+  if (cachedContext?.threadId || cachedContext?.physicalThreadId || cachedContext?.codexThreadId) {
+    return cachedContext;
+  }
+
+  for (const [physicalThreadId, physicalThread] of physicalThreadStateById.entries()) {
+    if (
+      !physicalThread ||
+      physicalThread.deleted_at ||
+      physicalThread.closed_at ||
+      String(physicalThread.turn_id ?? "").trim() !== normalizedTurnId
+    ) {
+      continue;
+    }
+
+    const nextContext = buildNotificationExecutionContext({
+      threadId: physicalThread.root_thread_id ?? null,
+      physicalThreadId,
+      codexThreadId: physicalThread.codex_thread_id ?? null,
+      turnId: normalizedTurnId,
+      issueId:
+        activeIssueByPhysicalThreadId.get(physicalThreadId) ??
+        activeIssueByThreadId.get(physicalThread.root_thread_id) ??
+        null
+    });
+
+    if (nextContext) {
+      rememberNotificationTurnContext(normalizedTurnId, nextContext);
+      return nextContext;
+    }
+  }
+
+  for (const [threadId, rootThread] of threadStateById.entries()) {
+    if (
+      !rootThread ||
+      rootThread.deleted_at ||
+      String(rootThread.turn_id ?? "").trim() !== normalizedTurnId
+    ) {
+      continue;
+    }
+
+    const activePhysicalThread = getActivePhysicalThread(threadId);
+    const nextContext = buildNotificationExecutionContext({
+      threadId,
+      physicalThreadId: activePhysicalThread?.id ?? null,
+      codexThreadId: activePhysicalThread?.codex_thread_id ?? rootThread.codex_thread_id ?? null,
+      turnId: normalizedTurnId,
+      issueId:
+        (activePhysicalThread?.id ? activeIssueByPhysicalThreadId.get(activePhysicalThread.id) : null) ??
+        activeIssueByThreadId.get(threadId) ??
+        null
+    });
+
+    if (nextContext) {
+      rememberNotificationTurnContext(normalizedTurnId, nextContext);
+      return nextContext;
+    }
+  }
+
+  return null;
+}
+
+function findNotificationContextByItemId(itemId) {
+  const normalizedItemId = String(itemId ?? "").trim();
+
+  if (!normalizedItemId) {
+    return null;
+  }
+
+  return notificationItemContextById.get(normalizedItemId) ?? null;
+}
+
+function isExecutionScopedNotificationMethod(method = "") {
+  return String(method ?? "").startsWith("turn/") || String(method ?? "").startsWith("item/");
+}
+
+function getSingleActiveExecutionContext() {
+  const contexts = [];
+
+  for (const [threadId, issueId] of activeIssueByThreadId.entries()) {
+    const thread = threadStateById.get(threadId) ?? null;
+    const issue = issueId ? issueCardsById.get(issueId) ?? null : null;
+    const activePhysicalThread = getActivePhysicalThread(threadId);
+
+    if (
+      !thread ||
+      !issue ||
+      thread.deleted_at ||
+      issue.deleted_at ||
+      !["running", "awaiting_input"].includes(issue.status ?? thread.status ?? "")
+    ) {
+      continue;
+    }
+
+    contexts.push(buildNotificationExecutionContext({
+      threadId,
+      physicalThreadId: activePhysicalThread?.id ?? null,
+      codexThreadId: activePhysicalThread?.codex_thread_id ?? thread.codex_thread_id ?? null,
+      turnId: activePhysicalThread?.turn_id ?? thread.turn_id ?? null,
+      issueId
+    }));
+  }
+
+  const uniqueContexts = contexts.filter(Boolean);
+  return uniqueContexts.length === 1 ? uniqueContexts[0] : null;
+}
+
+function resolveNotificationExecutionContext(method, params = {}) {
+  const turnId = extractNotificationTurnId(params);
+  const itemId = extractNotificationItemId(params);
+  let codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
+  let physicalThreadId =
+    params.physical_thread_id ??
+    resolvePhysicalThreadIdByCodexThreadId(codexThreadId) ??
+    null;
+  let threadId =
+    params.root_thread_id ??
+    (physicalThreadId ? physicalThreadStateById.get(physicalThreadId)?.root_thread_id ?? null : null) ??
+    resolveLocalThreadId(codexThreadId);
+  let issueId =
+    (physicalThreadId ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? null : null) ??
+    (threadId ? activeIssueByThreadId.get(threadId) ?? null : null) ??
+    null;
+
+  if (itemId) {
+    const itemContext = findNotificationContextByItemId(itemId);
+
+    if (itemContext) {
+      threadId = threadId ?? itemContext.threadId ?? null;
+      physicalThreadId = physicalThreadId ?? itemContext.physicalThreadId ?? null;
+      codexThreadId = codexThreadId ?? itemContext.codexThreadId ?? null;
+      issueId = issueId ?? itemContext.issueId ?? null;
+    }
+  }
+
+  if (turnId) {
+    const turnContext = findNotificationContextByTurnId(turnId);
+
+    if (turnContext) {
+      threadId = threadId ?? turnContext.threadId ?? null;
+      physicalThreadId = physicalThreadId ?? turnContext.physicalThreadId ?? null;
+      codexThreadId = codexThreadId ?? turnContext.codexThreadId ?? null;
+      issueId = issueId ?? turnContext.issueId ?? null;
+    }
+  }
+
+  if (!threadId && !physicalThreadId && codexThreadId) {
+    const reboundBinding = tryRebindOwnerlessCodexThread(codexThreadId);
+
+    if (reboundBinding) {
+      physicalThreadId = reboundBinding.physicalThreadId ?? physicalThreadId;
+      threadId = reboundBinding.threadId ?? threadId;
+    }
+  }
+
+  if (!threadId && !physicalThreadId && isExecutionScopedNotificationMethod(method)) {
+    const singleActiveContext = getSingleActiveExecutionContext();
+
+    if (singleActiveContext) {
+      threadId = singleActiveContext.threadId ?? threadId;
+      physicalThreadId = singleActiveContext.physicalThreadId ?? physicalThreadId;
+      codexThreadId = codexThreadId ?? singleActiveContext.codexThreadId ?? null;
+      issueId = issueId ?? singleActiveContext.issueId ?? null;
+    }
+  }
+
+  if (!physicalThreadId && threadId) {
+    physicalThreadId = getActivePhysicalThread(threadId)?.id ?? null;
+  }
+
+  if (!codexThreadId) {
+    codexThreadId =
+      (physicalThreadId ? physicalThreadStateById.get(physicalThreadId)?.codex_thread_id ?? null : null) ??
+      (threadId ? threadStateById.get(threadId)?.codex_thread_id ?? null : null) ??
+      null;
+  }
+
+  if (!threadId && physicalThreadId) {
+    threadId = physicalThreadStateById.get(physicalThreadId)?.root_thread_id ?? null;
+  }
+
+  if (!issueId) {
+    issueId =
+      (physicalThreadId ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? null : null) ??
+      (threadId ? activeIssueByThreadId.get(threadId) ?? null : null) ??
+      null;
+  }
+
+  return buildNotificationExecutionContext({
+    threadId,
+    physicalThreadId,
+    codexThreadId,
+    turnId,
+    itemId,
+    issueId
+  });
+}
+
+function rememberNotificationExecutionContext(method, params = {}, context = {}) {
+  const resolvedContext = buildNotificationExecutionContext({
+    ...context,
+    turnId: context.turnId ?? extractNotificationTurnId(params),
+    itemId: context.itemId ?? extractNotificationItemId(params)
+  });
+
+  if (!resolvedContext) {
+    return null;
+  }
+
+  if (resolvedContext.turnId && isExecutionScopedNotificationMethod(method)) {
+    rememberNotificationTurnContext(resolvedContext.turnId, resolvedContext);
+  }
+
+  if (resolvedContext.itemId) {
+    rememberNotificationItemContext(resolvedContext.itemId, resolvedContext);
+  }
+
+  return resolvedContext;
 }
 
 function shouldApplyTerminalThreadStatusChanged(params = {}, rootThreadId, physicalThreadId = null) {
@@ -6476,6 +6865,8 @@ function isContinuityRecoverySignal(method, params = {}) {
     case "turn/started":
     case "turn/plan/updated":
     case "turn/diff/updated":
+    case "item/started":
+    case "item/completed":
     case "item/agentMessage/delta":
     case "turn/completed":
       return true;
@@ -6545,6 +6936,14 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
     remotePayload.physical_thread_id = context.physicalThreadId;
   }
 
+  if (context.turnId && !remotePayload.turn_id && !remotePayload.turnId) {
+    remotePayload.turn_id = context.turnId;
+  }
+
+  if (context.itemId && !remotePayload.item_id && !remotePayload.itemId) {
+    remotePayload.item_id = context.itemId;
+  }
+
   if (context.projectId) {
     remotePayload.project_id = context.projectId;
   }
@@ -6554,6 +6953,50 @@ function buildRemoteNotificationPayload(method, params = {}, context = {}) {
   }
 
   return remotePayload;
+}
+
+function compactThreadItem(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const compact = {
+    id: item.id ?? null,
+    type: item.type ?? null,
+    status: item.status ?? null
+  };
+
+  if (item.phase) {
+    compact.phase = item.phase;
+  }
+
+  const text = collectAssistantTextFromRemoteItem(item);
+
+  if (text) {
+    compact.text = truncateNotificationText(text, 16000);
+  }
+
+  if (Array.isArray(item.summary) && item.summary.length > 0) {
+    compact.summary = item.summary;
+  }
+
+  if (item.query) {
+    compact.query = item.query;
+  }
+
+  if (item.server) {
+    compact.server = item.server;
+  }
+
+  if (item.tool) {
+    compact.tool = item.tool;
+  }
+
+  if (item.path) {
+    compact.path = item.path;
+  }
+
+  return compact;
 }
 
 function buildCompactRemoteNotificationPayload(method, params = {}) {
@@ -6588,17 +7031,28 @@ function buildCompactRemoteNotificationPayload(method, params = {}) {
                       message: truncateNotificationText(params.turn.error.message, 4000)
                     }
                   }
-                : {})
+              : {})
             }
           : undefined
       };
+    case "item/started":
+    case "item/completed":
+      return {
+        itemId: extractNotificationItemId(params),
+        turnId: extractNotificationTurnId(params),
+        item: compactThreadItem(extractNotificationItem(params))
+      };
     case "item/agentMessage/delta":
       return {
+        itemId: extractNotificationItemId(params),
+        turnId: extractNotificationTurnId(params),
         delta: String(params.delta ?? "")
       };
     case "turn/plan/updated":
     case "turn/diff/updated":
-      return {};
+      return {
+        turnId: extractNotificationTurnId(params)
+      };
     default:
       return compactGenericNotificationPayload(params);
   }
@@ -6646,6 +7100,10 @@ function compactGenericNotificationPayload(params = {}) {
     };
   }
 
+  if (params.item && typeof params.item === "object") {
+    compact.item = compactThreadItem(params.item);
+  }
+
   if (params.delta) {
     compact.delta = truncateNotificationText(params.delta, 16000);
   }
@@ -6660,6 +7118,22 @@ function compactGenericNotificationPayload(params = {}) {
 
   if (params.thread_id) {
     compact.thread_id = params.thread_id;
+  }
+
+  if (params.turnId) {
+    compact.turnId = params.turnId;
+  }
+
+  if (params.turn_id) {
+    compact.turn_id = params.turn_id;
+  }
+
+  if (params.itemId) {
+    compact.itemId = params.itemId;
+  }
+
+  if (params.item_id) {
+    compact.item_id = params.item_id;
   }
 
   if (params.root_thread_id) {
@@ -7070,35 +7544,26 @@ class AppServerClient {
     }
 
     cleanupExpiredEventDropTombstones();
+    cleanupExpiredNotificationContexts();
 
-    const codexThreadId = params.thread?.id ?? params.threadId ?? params.conversationId ?? params.thread_id ?? null;
-    let physicalThreadId =
-      params.physical_thread_id ??
-      resolvePhysicalThreadIdByCodexThreadId(codexThreadId) ??
-      null;
-    let threadId =
-      params.root_thread_id ??
-      (physicalThreadId ? physicalThreadStateById.get(physicalThreadId)?.root_thread_id ?? null : null) ??
-      resolveLocalThreadId(codexThreadId);
-    const reboundBinding =
-      !threadId && !physicalThreadId && codexThreadId
-        ? tryRebindOwnerlessCodexThread(codexThreadId)
-        : null;
-
-    if (reboundBinding) {
-      physicalThreadId = reboundBinding.physicalThreadId ?? physicalThreadId;
-      threadId = reboundBinding.threadId ?? threadId;
-    }
+    const notificationContext = resolveNotificationExecutionContext(method, params) ?? {};
+    let codexThreadId = notificationContext.codexThreadId ?? null;
+    let physicalThreadId = notificationContext.physicalThreadId ?? null;
+    let threadId = notificationContext.threadId ?? null;
+    let turnId = notificationContext.turnId ?? null;
+    let itemId = notificationContext.itemId ?? null;
     let owner = threadId ? threadOwners.get(threadId) ?? null : resolveOwnerFromParams(params);
     let eventPatch = null;
     let issuePatch = null;
     let assistantDeltaContext = null;
     let notificationParams = params;
-    const activeIssueId = physicalThreadId
-      ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? activeIssueByThreadId.get(threadId) ?? null
-      : threadId
-        ? activeIssueByThreadId.get(threadId) ?? null
-        : null;
+    const activeIssueId =
+      notificationContext.issueId ??
+      (physicalThreadId
+        ? activeIssueByPhysicalThreadId.get(physicalThreadId) ?? activeIssueByThreadId.get(threadId) ?? null
+        : threadId
+          ? activeIssueByThreadId.get(threadId) ?? null
+          : null);
     const ignoreTerminalThreadStatusChanged =
       method === "thread/status/changed" &&
       threadId &&
@@ -7134,6 +7599,15 @@ class AppServerClient {
     }
 
     if (threadId) {
+      rememberNotificationExecutionContext(method, params, {
+        threadId,
+        physicalThreadId,
+        codexThreadId,
+        turnId,
+        itemId,
+        issueId: activeIssueId
+      });
+
       if (method === "item/agentMessage/delta" && params.delta && activeIssueId) {
         assistantDeltaContext = resolveAssistantDeltaContext(
           activeIssueId,
@@ -7159,6 +7633,8 @@ class AppServerClient {
         method === "turn/started" ||
         method === "turn/plan/updated" ||
         method === "turn/diff/updated" ||
+        method === "item/started" ||
+        method === "item/completed" ||
         method === "item/agentMessage/delta"
       ) {
         markRunningIssueActivity(threadId, {
@@ -7171,6 +7647,47 @@ class AppServerClient {
           backfillLastPolledAt: now(),
           ...(codexThreadId ? { lastSeenCodexThreadId: codexThreadId } : {})
         });
+      }
+
+      if (method === "turn/started") {
+        turnId = extractNotificationTurnId(params) ?? turnId;
+
+        if (turnId) {
+          rememberNotificationTurnContext(turnId, {
+            threadId,
+            physicalThreadId,
+            codexThreadId,
+            turnId,
+            issueId: activeIssueId
+          });
+        }
+      }
+
+      if (method === "item/started" || method === "item/completed") {
+        itemId = extractNotificationItemId(params) ?? itemId;
+        turnId = extractNotificationTurnId(params) ?? turnId;
+
+        if (turnId) {
+          rememberNotificationTurnContext(turnId, {
+            threadId,
+            physicalThreadId,
+            codexThreadId,
+            turnId,
+            itemId,
+            issueId: activeIssueId
+          });
+        }
+
+        if (itemId) {
+          rememberNotificationItemContext(itemId, {
+            threadId,
+            physicalThreadId,
+            codexThreadId,
+            turnId,
+            itemId,
+            issueId: activeIssueId
+          });
+        }
       }
 
       if (ignoreTerminalThreadStatusChanged) {
@@ -7246,6 +7763,41 @@ class AppServerClient {
         }
       }
 
+      if ((method === "item/started" || method === "item/completed") && activeIssueId) {
+        const itemType = extractNotificationItemType(notificationParams);
+        const itemText = extractNotificationItemText(notificationParams);
+
+        if (itemType === "agentMessage" && itemText) {
+          const syncedAssistant = syncAssistantSnapshotToIssue(activeIssueId, itemText, physicalThreadId);
+
+          if (syncedAssistant.changed) {
+            updateIssueCard(activeIssueId, {
+              executed_physical_thread_id: physicalThreadId,
+              status: "running",
+              progress: Math.max(
+                Number(issueCardsById.get(activeIssueId)?.progress ?? 0),
+                method === "item/completed" ? 95 : 90
+              ),
+              last_event: method.replaceAll("/", "."),
+              last_message: syncedAssistant.content
+            });
+
+            if (physicalThreadId) {
+              updateBackfilledPhysicalThread(threadId, physicalThreadId, {
+                status: "running",
+                progress: Math.max(
+                  Number(physicalThreadStateById.get(physicalThreadId)?.progress ?? 0),
+                  method === "item/completed" ? 95 : 90
+                ),
+                last_event: method.replaceAll("/", "."),
+                last_message: syncedAssistant.content,
+                turn_id: turnId ?? physicalThreadStateById.get(physicalThreadId)?.turn_id ?? null
+              });
+            }
+          }
+        }
+      }
+
       recoverDegradedThreadContinuity(threadId, method, notificationParams, activeIssueId);
     }
 
@@ -7281,6 +7833,8 @@ class AppServerClient {
           threadId,
           rootThreadId: threadId,
           physicalThreadId,
+          turnId,
+          itemId,
           projectId,
           issueId: activeIssueId
         })
@@ -7820,6 +8374,24 @@ function buildThreadPatch(method, params, rootThreadId = null, physicalThreadId 
           options.assistantDeltaContext?.nextContent ??
           mergeAssistantDeltaContent(currentPhysicalThread?.last_message ?? "", params.delta ?? "")
       };
+    case "item/started":
+    case "item/completed":
+      {
+        const itemType = extractNotificationItemType(params);
+        const itemText = extractNotificationItemText(params);
+
+        if (itemType !== "agentMessage" || !itemText) {
+          return null;
+        }
+
+        return {
+          status: "running",
+          progress: method === "item/completed" ? 95 : 90,
+          last_event: method.replaceAll("/", "."),
+          last_message: itemText,
+          turn_id: extractNotificationTurnId(params) ?? currentPhysicalThread?.turn_id ?? null
+        };
+      }
     case "turn/completed":
       {
         const nextStatus = params.turn?.status === "completed" ? "idle" : "failed";
@@ -7893,6 +8465,23 @@ function buildIssuePatch(method, params, issueId, options = {}) {
           options.assistantDeltaContext?.nextContent ??
           mergeAssistantDeltaContent(current.last_message ?? "", params.delta ?? "")
       };
+    case "item/started":
+    case "item/completed":
+      {
+        const itemType = extractNotificationItemType(params);
+        const itemText = extractNotificationItemText(params);
+
+        if (itemType !== "agentMessage" || !itemText) {
+          return null;
+        }
+
+        return {
+          status: "running",
+          progress: method === "item/completed" ? 95 : 90,
+          last_event: method.replaceAll("/", "."),
+          last_message: itemText
+        };
+      }
     case "thread/status/changed":
       if (isTerminalThreadStatusType(params.status?.type) && options.allowTerminalThreadStatusChange === false) {
         return null;
@@ -8300,25 +8889,179 @@ function selectRemoteTurnForBackfill(remoteThread, expectedTurnId = null) {
   return turns.at(-1) ?? null;
 }
 
+function joinRemoteTextSegments(segments = []) {
+  return segments.reduce((combined, segment) => {
+    const nextSegment = String(segment ?? "");
+
+    if (!nextSegment) {
+      return combined;
+    }
+
+    if (!combined) {
+      return nextSegment;
+    }
+
+    if (combined.endsWith("\n") || nextSegment.startsWith("\n")) {
+      return `${combined}${nextSegment}`;
+    }
+
+    return `${combined}\n${nextSegment}`;
+  }, "");
+}
+
+const REMOTE_MESSAGE_TEXT_KEYS = [
+  "text",
+  "value",
+  "input_text",
+  "output_text",
+  "transcript",
+  "markdown",
+  "content",
+  "message",
+  "messages"
+];
+
+const REMOTE_MESSAGE_STRUCTURED_FALLBACK_KEYS = new Set([
+  "content",
+  "message",
+  "messages"
+]);
+
+function dedupeRemoteTextSegments(segments = []) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const segment of segments) {
+    const normalized = String(segment ?? "");
+
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+
+  return deduped;
+}
+
+function stringifyRemoteStructuredValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function collectTextSegmentsFromRemoteValue(value, options = {}) {
+  const depth = Number(options.depth ?? 0);
+  const allowStructuredFallback = options.allowStructuredFallback === true;
+  const visited = options.visited ?? new WeakSet();
+
+  if (depth > 6 || value == null) {
+    return [];
+  }
+
+  if (typeof value === "string") {
+    return value.trim() ? [value] : [];
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return allowStructuredFallback ? [String(value)] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return dedupeRemoteTextSegments(
+      value.flatMap((entry) =>
+        collectTextSegmentsFromRemoteValue(entry, {
+          depth: depth + 1,
+          allowStructuredFallback,
+          visited
+        })
+      )
+    );
+  }
+
+  if (typeof value !== "object") {
+    return [];
+  }
+
+  if (visited.has(value)) {
+    return [];
+  }
+
+  visited.add(value);
+
+  const segments = dedupeRemoteTextSegments(
+    REMOTE_MESSAGE_TEXT_KEYS.flatMap((key) => {
+      if (!(key in value)) {
+        return [];
+      }
+
+      return collectTextSegmentsFromRemoteValue(value[key], {
+        depth: depth + 1,
+        allowStructuredFallback:
+          allowStructuredFallback || REMOTE_MESSAGE_STRUCTURED_FALLBACK_KEYS.has(key),
+        visited
+      });
+    })
+  );
+
+  if (segments.length > 0) {
+    return segments;
+  }
+
+  if (!allowStructuredFallback) {
+    return [];
+  }
+
+  const structuredFallback = stringifyRemoteStructuredValue(value).trim();
+
+  if (!structuredFallback || structuredFallback === "{}" || structuredFallback === "[]") {
+    return [];
+  }
+
+  return [structuredFallback];
+}
+
 function collectTextFromRemoteMessageContent(content) {
-  if (!Array.isArray(content)) {
+  return joinRemoteTextSegments(collectTextSegmentsFromRemoteValue(content));
+}
+
+function collectAssistantTextFromRemoteItem(item = {}) {
+  if (!item || typeof item !== "object") {
     return "";
   }
 
-  return content
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
-        return "";
-      }
+  const directText = joinRemoteTextSegments(
+    collectTextSegmentsFromRemoteValue(
+      item.text ??
+        item.value ??
+        item.input_text ??
+        item.output_text ??
+        item.transcript ??
+        item.agentMessage?.text ??
+        item.agentMessage?.value ??
+        item.agentMessage?.input_text ??
+        item.agentMessage?.output_text ??
+        item.agentMessage?.transcript ??
+        ""
+    )
+  );
 
-      if (typeof entry.text === "string" && entry.text.trim()) {
-        return entry.text;
-      }
+  const contentText = collectTextFromRemoteMessageContent(
+    item.content ?? item.agentMessage?.content ?? null
+  );
 
-      return "";
-    })
-    .filter(Boolean)
-    .join("");
+  return normalizeAssistantMessageContent(directText || contentText);
 }
 
 function collectAssistantTextFromRemoteTurn(turn) {
@@ -8330,18 +9073,11 @@ function collectAssistantTextFromRemoteTurn(turn) {
       }
 
       if (String(item.type ?? "").trim() === "agentMessage") {
-        return (
-          String(item.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.content) ||
-          String(item?.agentMessage?.text ?? "").trim()
-        );
+        return collectAssistantTextFromRemoteItem(item);
       }
 
       if (item.agentMessage && typeof item.agentMessage === "object") {
-        return (
-          String(item.agentMessage.text ?? "").trim() ||
-          collectTextFromRemoteMessageContent(item.agentMessage.content)
-        );
+        return collectAssistantTextFromRemoteItem(item);
       }
 
       return "";
